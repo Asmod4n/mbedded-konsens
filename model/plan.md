@@ -411,8 +411,8 @@ bounds. Three means make the gaps smaller.
    a deliberate fault, on which the run must fail. Done so far: G (no
    rule R, S2 violated), F6a (no recovery, S2 violated),
    DecidedIdxMonotone = FALSE (S7 violated), and the constant Mutation
-   with one fault each for S1, S2b, S3 and S5 (all four violated). E1
-   needs the model of run (f) first.
+   with one fault each for S1, S2b, S3, S5, E1 and R1 (all six
+   violated).
 2. Bounds. For cases with no bound: inductive invariants with Apalache
    or proofs with TLAPS (open question Q3).
 3. Code against model. Trace validation: the C++ code records each

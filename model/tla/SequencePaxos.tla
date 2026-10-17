@@ -8,7 +8,8 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Values, MaxBallot, MaxLog, MaxCounter, MaxSession,
           Cap, MaxCrash, MaxWipe, MaxLoss, MaxDuplicate, MaxTimeout, MaxElection, RuleR,
-          DecidedIdxMonotone, MaxRollback, Recovery, Mutation
+          DecidedIdxMonotone, MaxRollback, Recovery, Mutation,
+          ClientSessions, MaxClientSend, MaxRequest, ReadIndex, MaxRead
 
 VARIABLES
   promise, n_accepted, log, decided_idx,
@@ -18,7 +19,9 @@ VARIABLES
   wiped, crashes, wipes, losses, duplicates, timeouts, elections,
   proposed, decided_history, decided_ballot,
   recovering, nonce, recovery_responses,
-  rolled_back, past_durable
+  rolled_back, past_durable,
+  client,
+  reads, read_pending, read_round
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -27,7 +30,8 @@ env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections>>
 ghost    == <<proposed, decided_history, decided_ballot>>
 recovery == <<recovering, nonce, recovery_responses>>
 rollback == <<rolled_back, past_durable>>
-vars     == <<durable, volatile, chan, env, ghost, recovery, rollback>>
+readvars == <<reads, read_pending, read_round>>
+vars     == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars>>
 
 ----------------------------------------------------------------------------
 (* Ballot (n, pid) is the integer n * PidBase + pid. Ballot::default is 0.   *)
@@ -184,6 +188,23 @@ RecoveryPrimaries(rs) ==
   IN {r \in rs : r.primary /\ r.promise = mp /\ BallotPid(mp) = r.from}
 RecoveryComplete(rs) == Cardinality(rs) >= Majority /\ RecoveryPrimaries(rs) # {}
 
+(* Read index, plan item 30, run (e). Omni-Paxos 532ff79 has no read. Names *)
+(* from Raft (Ongaro, dissertation 2014, section 6.4): readIndex, heartbeat. *)
+(* Owner decisions: in the cluster a read goes only through a read index:    *)
+(* one round to a majority, batched, with no clock, after FoundationDB      *)
+(* GetReadVersion. A follower asks the leader for the read index and         *)
+(* answers from its own log once it has decided up to that index. The read *)
+(* index is the accepted_idx of the leader when the round starts: the log   *)
+(* of a leader in Accept holds each entry decided at a ballot not higher     *)
+(* than its own (S2b), and the majority round shows that no higher ballot    *)
+(* had a majority before the round. A read with no round exists only in     *)
+(* single-node mode, which this model does not contain.                     *)
+(* reads[r].decided_at_start and reads[r].result are ghost values.          *)
+NoRead == [state |-> "none", node |-> 0, decided_at_start |-> <<>>,
+           read_index |-> 0, result |-> <<>>]
+NoRound == [n |-> DefaultBallot, id |-> 0, reads |-> {}, read_index |-> 0, acks |-> {}]
+ReadMessages == {"ReadIndex", "Heartbeat", "HeartbeatAck", "ReadIndexReply"}
+
 ----------------------------------------------------------------------------
 Init ==
   /\ promise = [i \in Nodes |-> DefaultBallot]
@@ -213,6 +234,10 @@ Init ==
   /\ recovery_responses = [i \in Nodes |-> {}]
   /\ rolled_back = {}
   /\ past_durable = [i \in Nodes |-> {}]
+  /\ client = [session |-> 0, request_number |-> 1, sends |-> 0]
+  /\ reads = [r \in 1..MaxRead |-> NoRead]
+  /\ read_pending = [i \in Nodes |-> {}]
+  /\ read_round = [i \in Nodes |-> NoRound]
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -527,6 +552,60 @@ HandleRecoveryResponse(i, j, m, c) ==
                /\ chan' = c
                /\ UNCHANGED <<durable, volatile, recovering, nonce>>
 
+\* Raft 6.4.1: a follower asks the leader for the read index of read r.
+\* The leader takes r into the next round. A node that is no leader drops it.
+HandleReadIndex(i, j, m, c) ==
+  /\ read_pending' = IF role[i] = "Leader"
+                     THEN [read_pending EXCEPT ![i] = @ \cup {m.read}]
+                     ELSE read_pending
+  /\ chan' = c
+  /\ UNCHANGED <<durable, volatile, reads, read_round>>
+
+\* Raft 6.4: a node acknowledges the heartbeat of the leader of the ballot
+\* it promised. A node that does not vote does not answer.
+HandleHeartbeat(i, j, m, c) ==
+  /\ chan' = Send(c, i, IF promise[i] = m.n
+                        THEN IfVotes(i, j, [type |-> "HeartbeatAck", n |-> m.n, id |-> m.id])
+                        ELSE NoOut)
+  /\ UNCHANGED <<durable, volatile, readvars>>
+
+\* Raft 6.4: with acknowledgements from a majority, the read index of the
+\* round holds for each read of the round. The leader sends one reply per
+\* node with the reads of that node.
+HandleHeartbeatAck(i, j, m, c) ==
+  LET rd   == read_round[i]
+      ok   == role[i] = "Leader" /\ phase[i] = "Accept" /\ rd.reads # {}
+              /\ rd.n = m.n /\ rd.id = m.id /\ leader_state[i].n_leader = m.n
+      acks == rd.acks \cup {j}
+      own  == {r \in rd.reads : reads[r].node = i}
+      dst  == {reads[r].node : r \in rd.reads} \ {i}
+  IN IF ~ok
+     THEN /\ chan' = c
+          /\ UNCHANGED <<durable, volatile, readvars>>
+     ELSE IF Cardinality(acks) < Majority
+     THEN /\ read_round' = [read_round EXCEPT ![i].acks = acks]
+          /\ chan' = c
+          /\ UNCHANGED <<durable, volatile, reads, read_pending>>
+     ELSE /\ reads' = [r \in DOMAIN reads |->
+                         IF r \in own
+                         THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = rd.read_index]
+                         ELSE reads[r]]
+          /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
+          /\ chan' = Send(c, i, [k \in dst |->
+                       <<[type |-> "ReadIndexReply",
+                          reads |-> {r \in rd.reads : reads[r].node = k},
+                          read_index |-> rd.read_index]>>])
+          /\ UNCHANGED <<durable, volatile, read_pending>>
+
+\* Raft 6.4.1: the follower keeps the read index for each of its reads.
+HandleReadIndexReply(i, j, m, c) ==
+  /\ reads' = [r \in DOMAIN reads |->
+                 IF r \in m.reads /\ reads[r].state = "pending" /\ reads[r].node = i
+                 THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = m.read_index]
+                 ELSE reads[r]]
+  /\ chan' = c
+  /\ UNCHANGED <<durable, volatile, read_pending, read_round>>
+
 ----------------------------------------------------------------------------
 (* Ghost: decided_history grows with every decided prefix of a node with a  *)
 (* vote; decided_ballot[k] is n_accepted of the node that first decided k.  *)
@@ -570,12 +649,20 @@ Receive(j, i) ==
   /\ chan[<<j, i>>] # <<>>
   /\ LET m == Head(chan[<<j, i>>])
          c == [chan EXCEPT ![<<j, i>>] = Tail(@)]
-     IN IF m.type = "RecoveryResponse" THEN HandleRecoveryResponse(i, j, m, c)
+     IN IF m.type = "RecoveryResponse"
+        THEN HandleRecoveryResponse(i, j, m, c) /\ UNCHANGED readvars
         ELSE IF recovering[i]
         THEN /\ chan' = c
-             /\ UNCHANGED <<durable, volatile, recovery>>
-        ELSE IF m.type = "Recovery" THEN HandleRecovery(i, j, m, c)
-        ELSE /\ CASE m.type = "PrepareReq"      -> HandlePrepareReq(i, j, m, c)
+             /\ UNCHANGED <<durable, volatile, recovery, readvars>>
+        ELSE IF m.type = "Recovery" THEN HandleRecovery(i, j, m, c) /\ UNCHANGED readvars
+        ELSE IF m.type \in ReadMessages
+        THEN /\ CASE m.type = "ReadIndex"      -> HandleReadIndex(i, j, m, c)
+                  [] m.type = "Heartbeat"      -> HandleHeartbeat(i, j, m, c)
+                  [] m.type = "HeartbeatAck"   -> HandleHeartbeatAck(i, j, m, c)
+                  [] m.type = "ReadIndexReply" -> HandleReadIndexReply(i, j, m, c)
+             /\ UNCHANGED recovery
+        ELSE /\ UNCHANGED readvars
+             /\ CASE m.type = "PrepareReq"      -> HandlePrepareReq(i, j, m, c)
                   [] m.type = "Prepare"         -> HandlePrepare(i, j, m, c)
                   [] m.type = "Promise"         -> HandlePromise(i, j, m, c)
                   [] m.type = "AcceptSync"      -> HandleAcceptSync(i, j, m, c)
@@ -585,7 +672,7 @@ Receive(j, i) ==
                   [] m.type = "NotAccepted"     -> HandleNotAccepted(i, j, m, c)
                   [] m.type = "ProposalForward" -> HandleProposalForward(i, j, m, c)
              /\ UNCHANGED recovery
-  /\ UNCHANGED <<env, proposed, rolled_back>>
+  /\ UNCHANGED <<env, proposed, rolled_back, client>>
   /\ GhostUpdate
 
 \* leader.rs:16-60 handle_leader, own pid only (no BLE).
@@ -613,12 +700,13 @@ HandleLeader(i, k) ==
      /\ UNCHANGED <<n_accepted, log, decided_idx, accepted_idx, current_seq_num,
                     cached_promise_message, buffered_proposals,
                     wiped, crashes, wipes, losses, duplicates, timeouts, proposed,
-                    recovery, rolled_back>>
+                    recovery, rolled_back, client, readvars>>
   /\ GhostUpdate
 
 \* mod.rs:298-305 append, mod.rs:359-365 propose_entry,
 \* leader.rs:111-121 accept_entry_leader
 Propose(i, v) ==
+  /\ ~ClientSessions
   /\ ~recovering[i]
   /\ v \notin proposed
   /\ proposed' = proposed \cup {v}
@@ -634,7 +722,7 @@ Propose(i, v) ==
      ELSE /\ ForwardProposals(i, <<v>>, chan)
           /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
                          cached_promise_message, leader_state>>
-  /\ UNCHANGED <<env, recovery, rolled_back>>
+  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars>>
   /\ GhostUpdate
 
 \* Restart of each node i in R with the durable state d[i], through
@@ -666,13 +754,17 @@ Restart(R, d) ==
           /\ nonce' = At(nonce, [k \in R |-> nonce[k] + 1])
           /\ recovery_responses' = At(recovery_responses, [k \in R |-> {}])
      ELSE UNCHANGED recovery
+  /\ read_pending' = At(read_pending, [k \in R |-> {}])
+  /\ read_round' = At(read_round, [k \in R |-> [read_round[k] EXCEPT !.reads = {}, !.acks = {}]])
+  /\ UNCHANGED reads
 
 \* F3: crash keeping durable state.
 Crash(i) ==
   /\ crashes < MaxCrash
   /\ crashes' = crashes + 1
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)])
-  /\ UNCHANGED <<wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back>>
+  /\ UNCHANGED <<wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back,
+                 client>>
   /\ GhostUpdate
 
 \* F6: rollback. Each node in R restarts with an earlier durable state of its
@@ -688,7 +780,8 @@ Rollback(R) ==
   /\ \E d \in [R -> UNION {past_durable[k] : k \in R}] :
        /\ \A k \in R : d[k] \in past_durable[k] /\ d[k] # DurableOf(k)
        /\ Restart(R, d)
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed>>
+  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+                 client>>
   /\ GhostUpdate
 
 \* F4: disk loss. The restart finds no promise: (Follower, Phase::None),
@@ -710,8 +803,11 @@ Wipe(i) ==
   /\ leader_state' = [leader_state EXCEPT ![i] = LeaderStateWith(DefaultBallot)]
   /\ recovering' = [recovering EXCEPT ![i] = FALSE]
   /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
+  /\ read_pending' = [read_pending EXCEPT ![i] = {}]
+  /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
+  /\ UNCHANGED reads
   /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
-                 nonce, rolled_back>>
+                 nonce, rolled_back, client>>
   /\ GhostUpdate
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
@@ -744,7 +840,7 @@ ResendMessageTimeout(i) ==
           /\ UNCHANGED <<durable, volatile>>
      ELSE UNCHANGED <<durable, volatile, chan>>
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, elections, proposed,
-                 recovery, rolled_back>>
+                 recovery, rolled_back, client, readvars>>
   /\ chan' # chan \/ phase' # phase
   /\ GhostUpdate
 
@@ -754,7 +850,7 @@ Lose(p, k) ==
   /\ losses' = losses + 1
   /\ chan' = [chan EXCEPT ![p] = SubSeq(@, 1, k - 1) \o SubSeq(@, k + 1, Len(@))]
   /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, duplicates, timeouts, elections, proposed,
-                 recovery, rolled_back>>
+                 recovery, rolled_back, client, readvars>>
   /\ GhostUpdate
 
 \* F1: duplication; the copy is appended at the end of the channel.
@@ -764,8 +860,195 @@ Duplicate(p, k) ==
   /\ Len(chan[p]) < Cap
   /\ chan' = [chan EXCEPT ![p] = Append(@, @[k])]
   /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, losses, timeouts, elections, proposed,
-                 recovery, rolled_back>>
+                 recovery, rolled_back, client, readvars>>
   /\ GhostUpdate
+
+
+----------------------------------------------------------------------------
+(* Client sessions, plan item 31, run (f). Omni-Paxos 532ff79 has no client *)
+(* session. Names from Raft (Ongaro, dissertation 2014, section 6.3):       *)
+(* RegisterClient, session, expire; and from VR Revisited (Liskov, Cowling, *)
+(* section 4.1): client-table, request-number. Owner decisions: the session *)
+(* ID is the log index of the RegisterClient entry; the client numbers each *)
+(* request; the replicated state keeps the last request-number and its      *)
+(* reply for each session; an entry in the log expires a session. A client *)
+(* sends to any node, and a follower forwards the entry to the leader. One  *)
+(* client. A reply is no message: the reply step reads the decided state of *)
+(* one node. A lost reply is a reply step that does not occur.              *)
+DecidedPrefix(i) == SubSeq(log[i], 1, Min(decided_idx[i], Len(log[i])))
+
+RegisterClientEntry == [type |-> "RegisterClient"]
+RequestEntry(s, n) == [type |-> "Request", session |-> s, request_number |-> n]
+ExpireSessionEntry(s) == [type |-> "ExpireSession", session |-> s]
+
+NoSession == [open |-> FALSE, request_number |-> 0, reply |-> 0]
+
+\* Apply one decided entry at log index k to the state machine. The state is
+\* the client-table and the sequence of executed (session, request_number).
+\* The reply of a request is its log index. A request of a session that is
+\* not open is not executed (Raft 6.3: SESSION_EXPIRED).
+ApplyEntry(st, k, e) ==
+  IF e.type = "RegisterClient"
+  THEN [st EXCEPT !.client_table[k] = [open |-> TRUE, request_number |-> 0, reply |-> 0]]
+  ELSE IF e.type = "ExpireSession"
+  THEN [st EXCEPT !.client_table[e.session].open = FALSE]
+  ELSE LET t == st.client_table[e.session] IN
+       IF t.open /\ (e.request_number > t.request_number
+                     \/ Mutation = "RequestNumberUnchecked")
+       THEN [st EXCEPT !.client_table[e.session] =
+                         [open |-> TRUE, request_number |-> e.request_number, reply |-> k],
+                       !.executed = Append(@, <<e.session, e.request_number>>)]
+       ELSE st
+
+RECURSIVE ApplyFrom(_, _, _)
+ApplyFrom(p, k, st) ==
+  IF k > Len(p) THEN st ELSE ApplyFrom(p, k + 1, ApplyEntry(st, k, p[k]))
+
+Apply(p) ==
+  ApplyFrom(p, 1, [client_table |-> [s \in 1..MaxLog |-> NoSession], executed |-> <<>>])
+
+\* The client sends entry e to node i: mod.rs:298-305 append, mod.rs:359-365
+\* propose_entry, as Propose. Each send counts, a resend too.
+ClientSend(i, e) ==
+  /\ ClientSessions
+  /\ ~recovering[i]
+  /\ client.sends < MaxClientSend
+  /\ client' = [client EXCEPT !.sends = @ + 1]
+  /\ proposed' = proposed \cup {e}
+  /\ IF role[i] = "Leader" /\ phase[i] = "Prepare"
+     THEN /\ buffered_proposals' = [buffered_proposals EXCEPT ![i] = Append(@, e)]
+          /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
+                         cached_promise_message, leader_state, chan>>
+     ELSE IF role[i] = "Leader" /\ phase[i] = "Accept"
+     THEN /\ AcceptEntriesLeader(i, <<e>>, chan)
+          /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
+                         cached_promise_message, buffered_proposals>>
+     ELSE /\ ForwardProposals(i, <<e>>, chan)
+          /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
+                         cached_promise_message, leader_state>>
+  /\ UNCHANGED <<env, recovery, rolled_back, readvars>>
+  /\ GhostUpdate
+
+\* Raft 6.3: the client registers while it has no session.
+ClientRegister(i) ==
+  /\ client.session = 0
+  /\ ClientSend(i, RegisterClientEntry)
+
+\* VR Revisited 4.1: the client sends its current request-number again
+\* until it has the reply.
+ClientRequest(i) ==
+  /\ client.session > 0
+  /\ client.request_number <= MaxRequest
+  /\ ClientSend(i, RequestEntry(client.session, client.request_number))
+
+\* Raft 6.3: the reply to RegisterClient carries the session ID s.
+ClientRegistered(j, s) ==
+  /\ ClientSessions
+  /\ Votes(j)
+  /\ client.session = 0
+  /\ s <= Len(DecidedPrefix(j))
+  /\ DecidedPrefix(j)[s] = RegisterClientEntry
+  /\ Apply(DecidedPrefix(j)).client_table[s].open
+  /\ client' = [client EXCEPT !.session = s, !.request_number = 1]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars>>
+
+\* VR Revisited 4.1: node j replies with the result of the request; the
+\* client takes the next request-number.
+ClientReplied(j) ==
+  /\ ClientSessions
+  /\ Votes(j)
+  /\ client.session > 0
+  /\ client.request_number <= MaxRequest
+  /\ LET t == Apply(DecidedPrefix(j)).client_table[client.session] IN
+       t.open /\ t.request_number >= client.request_number
+  /\ client' = [client EXCEPT !.request_number = @ + 1]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars>>
+
+\* Raft 6.3: node j replies SESSION_EXPIRED; the client registers again.
+ClientSessionExpired(j) ==
+  /\ ClientSessions
+  /\ Votes(j)
+  /\ client.session > 0
+  /\ client.session <= Len(DecidedPrefix(j))
+  /\ ~Apply(DecidedPrefix(j)).client_table[client.session].open
+  /\ client' = [client EXCEPT !.session = 0, !.request_number = 1]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars>>
+
+\* Raft 6.3: the leader appends an entry that expires session s. Owner
+\* decision: this follows a heartbeat timeout of the client. The timeout is
+\* a free choice here.
+ExpireSession(i, s) ==
+  /\ ClientSessions
+  /\ ~recovering[i]
+  /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  /\ s <= Len(DecidedPrefix(i))
+  /\ Apply(DecidedPrefix(i)).client_table[s].open
+  /\ \A k \in 1..Len(log[i]) : log[i][k] # ExpireSessionEntry(s)
+  /\ proposed' = proposed \cup {ExpireSessionEntry(s)}
+  /\ AcceptEntriesLeader(i, <<ExpireSessionEntry(s)>>, chan)
+  /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
+                 cached_promise_message, buffered_proposals>>
+  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars>>
+  /\ GhostUpdate
+
+----------------------------------------------------------------------------
+(* Read index actions, run (e). *)
+
+\* Read r starts at node i. A leader takes r into its next round. A follower
+\* asks the leader of its promised ballot (Raft 6.4.1). With the mutation
+\* LocalRead the node answers at once from its own log, with no round.
+ReadStart(r, i) ==
+  LET started == [NoRead EXCEPT !.state = "pending", !.node = i,
+                                !.decided_at_start = decided_history]
+      ld      == BallotPid(promise[i])
+  IN
+  /\ ReadIndex
+  /\ ~recovering[i]
+  /\ reads[r].state = "none"
+  /\ IF Mutation = "LocalRead"
+     THEN /\ reads' = [reads EXCEPT ![r] = [started EXCEPT !.state = "done",
+                                                           !.result = DecidedPrefix(i)]]
+          /\ UNCHANGED <<chan, read_pending>>
+     ELSE IF role[i] = "Leader"
+     THEN /\ reads' = [reads EXCEPT ![r] = started]
+          /\ read_pending' = [read_pending EXCEPT ![i] = @ \cup {r}]
+          /\ UNCHANGED chan
+     ELSE /\ ld > 0 /\ ld # i
+          /\ reads' = [reads EXCEPT ![r] = started]
+          /\ chan' = Send(chan, i, One(ld, [type |-> "ReadIndex", read |-> r]))
+          /\ UNCHANGED read_pending
+  /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, read_round>>
+
+\* Raft 6.4 and FoundationDB GetReadVersion: the leader takes all waiting
+\* reads into one round (a batch). The read index is its accepted_idx at the
+\* start of the round. The round sends a heartbeat to each peer.
+StartReadRound(i) ==
+  LET n  == leader_state[i].n_leader
+      id == read_round[i].id + 1
+  IN
+  /\ ReadIndex
+  /\ ~recovering[i]
+  /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  /\ read_pending[i] # {}
+  /\ read_round[i].reads = {} \/ read_round[i].n # n
+  /\ read_round' = [read_round EXCEPT ![i] =
+                      [n |-> n, id |-> id, reads |-> read_pending[i],
+                       read_index |-> accepted_idx[i],
+                       acks |-> IF Votes(i) THEN {i} ELSE {}]]
+  /\ read_pending' = [read_pending EXCEPT ![i] = {}]
+  /\ chan' = Send(chan, i, [k \in Peers(i) |-> <<[type |-> "Heartbeat", n |-> n, id |-> id]>>])
+  /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, reads>>
+
+\* Raft 6.4: the node answers read r from its own log once its decided index
+\* has reached the read index.
+ReadReply(r) ==
+  LET i == reads[r].node IN
+  /\ ReadIndex
+  /\ reads[r].state = "indexed"
+  /\ decided_idx[i] >= reads[r].read_index
+  /\ reads' = [reads EXCEPT ![r].state = "done", ![r].result = DecidedPrefix(i)]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client,
+                 read_pending, read_round>>
 
 ----------------------------------------------------------------------------
 Next ==
@@ -778,6 +1061,13 @@ Next ==
   \/ \E i \in Nodes : ResendMessageTimeout(i)
   \/ \E p \in Pairs, k \in 1..Cap : k <= Len(chan[p]) /\ Lose(p, k)
   \/ \E p \in Pairs, k \in 1..Cap : k <= Len(chan[p]) /\ Duplicate(p, k)
+  \/ \E i \in Nodes : ClientRegister(i) \/ ClientRequest(i)
+  \/ \E j \in Nodes, s \in 1..MaxLog : ClientRegistered(j, s)
+  \/ \E j \in Nodes : ClientReplied(j) \/ ClientSessionExpired(j)
+  \/ \E i \in Nodes, s \in 1..MaxLog : ExpireSession(i, s)
+  \/ \E r \in 1..MaxRead, i \in Nodes : ReadStart(r, i)
+  \/ \E i \in Nodes : StartReadRound(i)
+  \/ \E r \in 1..MaxRead : ReadReply(r)
 
 Spec == Init /\ [][Next]_vars
 
@@ -790,8 +1080,15 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* LeaderReplacesValue: a leader in Accept can append a value other than the
 \* proposed one (S3).
 \* SeqNumUnchecked: a follower takes each AcceptDecide and Decide as Expected (S5).
+\* RequestNumberUnchecked: the state machine executes a request of an open
+\* session without a check of its request-number (E1).
+\* LocalRead: a node in the cluster answers a read at once from its own log,
+\* with no round (R1).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
-                     "LeaderReplacesValue", "SeqNumUnchecked"}
+                     "LeaderReplacesValue", "SeqNumUnchecked",
+                     "RequestNumberUnchecked", "LocalRead"}
+ASSUME ClientSessions \in BOOLEAN
+ASSUME ReadIndex \in BOOLEAN
 
 ----------------------------------------------------------------------------
 (* Bounds of the model, used as a state constraint. *)
@@ -802,7 +1099,6 @@ Bounds ==
 
 ----------------------------------------------------------------------------
 (* Properties *)
-DecidedPrefix(i) == SubSeq(log[i], 1, Min(decided_idx[i], Len(log[i])))
 
 \* internal_storage.rs:302-311: the cached accepted_idx is the log length,
 \* follower.rs:140: decided index <= accepted index.
@@ -830,6 +1126,15 @@ S5 == \A i, j \in Nodes :
         n_accepted[i] = n_accepted[j] /\ n_accepted[i] # DefaultBallot
           => Compatible(log[i], log[j])
 
+\* E1, run (f): each (session, request_number) is executed at most once.
+NoRepeat(sq) == \A a, b \in 1..Len(sq) : a # b => sq[a] # sq[b]
+E1 == /\ NoRepeat(Apply(decided_history).executed)
+      /\ \A i \in Nodes : Votes(i) => NoRepeat(Apply(DecidedPrefix(i)).executed)
+
+\* R1, run (e): a read sees each entry that was decided before the read started.
+R1 == \A r \in DOMAIN reads :
+        reads[r].state = "done" => IsPrefix(reads[r].decided_at_start, reads[r].result)
+
 S7 == [][\A i \in Nodes : ~wiped'[i] => decided_idx'[i] >= decided_idx[i]]_vars
 
 ValueSymmetry == Permutations(Values)
@@ -850,5 +1155,5 @@ View ==
     chan, env, ghost,
     recovering, nonce,
     [i \in Nodes |-> IF recovering[i] THEN recovery_responses[i] ELSE {}],
-    rollback>>
+    rollback, client, readvars>>
 =============================================================================
