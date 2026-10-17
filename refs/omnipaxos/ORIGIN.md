@@ -1,14 +1,13 @@
 # Origin
 
+The models follow the Omni-Paxos source at one commit. The source is not
+copied into this repository. Each citation in the models and the results
+names a file and a line at this commit.
+
 - Upstream repository: https://github.com/haraldng/omnipaxos
 - Commit: 532ff79a586a60c1f9fa1cf58df1c829e5a6882f
-- License: Apache-2.0. The upstream repository has no NOTICE file.
+- Source tree at that commit: https://github.com/haraldng/omnipaxos/tree/532ff79a586a60c1f9fa1cf58df1c829e5a6882f/omnipaxos/src
+- License of the upstream source: Apache-2.0
 
-## Copied paths
-
-The files are verbatim copies of the upstream files at this commit.
-
-| Upstream path | Path here |
-|---|---|
-| `LICENSE` | `refs/omnipaxos/LICENSE` |
-| `omnipaxos/src/` | `refs/omnipaxos/omnipaxos/src/` |
+A citation such as `leader.rs:180` means
+`omnipaxos/src/sequence_paxos/leader.rs`, line 180, at this commit.

@@ -29,8 +29,8 @@ written.
   accepted_idx, n_accepted, promise, Role, Phase.
 - Rule for a lost disk: Paxos Made Live (Chandra et al. 2007), the
   section about disk corruption.
-- Not read: the EuroSys 2023 paper. The Rust source goes verbatim
-  into refs/ when the models go into a repository.
+- Not read: the EuroSys 2023 paper. The Rust source is not copied
+  into the repository; refs/omnipaxos/ORIGIN.md names the commit.
 
 ## 3. Two models
 

@@ -22,7 +22,7 @@ yet.
 | `model/plan.md` | The plan of the models: properties, faults, bounds and the decisions of the owner. |
 | `model/tla/` | The TLA+ model of Sequence Paxos and the TLC configuration files. |
 | `model/results/` | One file for each TLC run, with the bounds, the result and the trace of a violation. |
-| `refs/omnipaxos/` | A verbatim copy of the Omni-Paxos source that the models follow, with its license and origin. |
+| `refs/omnipaxos/` | The repository and the commit of the Omni-Paxos source that the models follow. |
 | `refs/papers.md` | References to the papers that the models use. |
 
 ## License
