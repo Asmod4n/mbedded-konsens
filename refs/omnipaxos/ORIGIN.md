@@ -11,3 +11,10 @@ names a file and a line at this commit.
 
 A citation such as `leader.rs:180` means
 `omnipaxos/src/sequence_paxos/leader.rs`, line 180, at this commit.
+
+## Reported upstream
+
+- S7: at this commit, the decided_idx of a follower can fall when a late
+  Promise makes the leader send AcceptSync. The fault was reported
+  upstream on 2026-10-17. The maintainer fixes it in a pull request of
+  his own.
