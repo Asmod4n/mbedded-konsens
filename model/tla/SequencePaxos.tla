@@ -6,22 +6,136 @@
 (* memory_storage.rs = omnipaxos_storage/src/.                                *)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
-CONSTANTS Nodes, Values, MaxBallot, MaxLog, MaxCounter, MaxSession,
-          Cap, MaxCrash, MaxWipe, MaxLoss, MaxDuplicate, MaxTimeout, MaxElection, RuleR,
-          DecidedIdxMonotone, MaxRollback, Recovery, Mutation,
-          ClientSessions, MaxClientSend, MaxRequest, ReadIndex, MaxRead
+CONSTANTS
+  \* @typeAlias: entry = {type: Str, session: Int, request_number: Int};
+  \* @typeAlias: seqNum = {session: Int, counter: Int};
+  \* @typeAlias: logSync = {suffix: Seq($entry), sync_idx: Int};
+  \* @typeAlias: msg = {type: Str, n: Int, decided_idx: Int, n_accepted: Int,
+  \*   accepted_idx: Int, log_sync: Seq($logSync), seq_num: $seqNum,
+  \*   entries: Seq($entry), nonce: Int, promise: Int, primary: Bool,
+  \*   log: Seq($entry), read: Int, id: Int, reads: Set(Int), read_index: Int};
+  \* @typeAlias: promiseMeta = {state: Str, n_accepted: Int, accepted_idx: Int, decided_idx: Int};
+  \* @typeAlias: maxMeta = {n_accepted: Int, accepted_idx: Int, decided_idx: Int, pid: Int};
+  \* @typeAlias: leaderState = {n_leader: Int, promises_meta: Int -> $promiseMeta,
+  \*   follower_seq_nums: Int -> $seqNum, accepted_indexes: Int -> Int,
+  \*   max_promise_meta: $maxMeta, max_promise_sync: Seq($logSync)};
+  \* @typeAlias: durable = {promise: Int, n_accepted: Int, log: Seq($entry), decided_idx: Int};
+  \* @typeAlias: response = {from: Int, promise: Int, primary: Bool, n_accepted: Int,
+  \*   log: Seq($entry), decided_idx: Int};
+  \* @typeAlias: read = {state: Str, node: Int, decided_at_start: Seq($entry),
+  \*   read_index: Int, result: Seq($entry)};
+  \* @typeAlias: round = {n: Int, id: Int, reads: Set(Int), read_index: Int, acks: Set(Int)};
+  \* @typeAlias: session = {open: Bool, request_number: Int, reply: Int};
+  \* @type: Set(Int);
+  Nodes,
+  \* @type: Set($entry);
+  Values,
+  \* @type: Int;
+  MaxBallot,
+  \* @type: Int;
+  MaxLog,
+  \* @type: Int;
+  MaxCounter,
+  \* @type: Int;
+  MaxSession,
+  \* @type: Int;
+  Cap,
+  \* @type: Int;
+  MaxCrash,
+  \* @type: Int;
+  MaxWipe,
+  \* @type: Int;
+  MaxLoss,
+  \* @type: Int;
+  MaxDuplicate,
+  \* @type: Int;
+  MaxTimeout,
+  \* @type: Int;
+  MaxElection,
+  \* @type: Bool;
+  RuleR,
+  \* @type: Bool;
+  DecidedIdxMonotone,
+  \* @type: Int;
+  MaxRollback,
+  \* @type: Bool;
+  Recovery,
+  \* @type: Str;
+  Mutation,
+  \* @type: Bool;
+  ClientSessions,
+  \* @type: Int;
+  MaxClientSend,
+  \* @type: Int;
+  MaxRequest,
+  \* @type: Bool;
+  ReadIndex,
+  \* @type: Int;
+  MaxRead
 
 VARIABLES
-  promise, n_accepted, log, decided_idx,
-  role, phase, accepted_idx, current_seq_num, cached_promise_message,
-  buffered_proposals, leader_state,
+  \* @type: Int -> Int;
+  promise,
+  \* @type: Int -> Int;
+  n_accepted,
+  \* @type: Int -> Seq($entry);
+  log,
+  \* @type: Int -> Int;
+  decided_idx,
+  \* @type: Int -> Str;
+  role,
+  \* @type: Int -> Str;
+  phase,
+  \* @type: Int -> Int;
+  accepted_idx,
+  \* @type: Int -> $seqNum;
+  current_seq_num,
+  \* @type: Int -> Seq($msg);
+  cached_promise_message,
+  \* @type: Int -> Seq($entry);
+  buffered_proposals,
+  \* @type: Int -> $leaderState;
+  leader_state,
+  \* @type: <<Int, Int>> -> Seq($msg);
   chan,
-  wiped, crashes, wipes, losses, duplicates, timeouts, elections,
-  proposed, decided_history, decided_ballot,
-  recovering, nonce, recovery_responses,
-  rolled_back, past_durable,
+  \* @type: Int -> Bool;
+  wiped,
+  \* @type: Int;
+  crashes,
+  \* @type: Int;
+  wipes,
+  \* @type: Int;
+  losses,
+  \* @type: Int;
+  duplicates,
+  \* @type: Int;
+  timeouts,
+  \* @type: Int;
+  elections,
+  \* @type: Set($entry);
+  proposed,
+  \* @type: Seq($entry);
+  decided_history,
+  \* @type: Int -> Int;
+  decided_ballot,
+  \* @type: Int -> Bool;
+  recovering,
+  \* @type: Int -> Int;
+  nonce,
+  \* @type: Int -> Set($response);
+  recovery_responses,
+  \* @type: Set(Int);
+  rolled_back,
+  \* @type: Int -> Set($durable);
+  past_durable,
+  \* @type: {session: Int, request_number: Int, sends: Int};
   client,
-  reads, read_pending, read_round
+  \* @type: Int -> $read;
+  reads,
+  \* @type: Int -> Set(Int);
+  read_pending,
+  \* @type: Int -> $round;
+  read_round
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -45,6 +159,7 @@ DefaultBallot == 0
 Min(a, b) == IF a < b THEN a ELSE b
 Max(a, b) == IF a > b THEN a ELSE b
 Peers(i) == Nodes \ {i}
+\* @type: Set(<<Int, Int>>);
 Pairs == {p \in Nodes \X Nodes : p[1] # p[2]}
 
 \* util.rs:445 Quorum::Majority(num_nodes / 2 + 1)
@@ -52,9 +167,11 @@ Majority == Cardinality(Nodes) \div 2 + 1
 
 \* util.rs:371-378 SequenceNumber, derived lexicographic order
 DefaultSeq == [session |-> 0, counter |-> 0]
+\* @type: ($seqNum, $seqNum) => Bool;
 SeqLeq(a, b) == a.session < b.session \/ (a.session = b.session /\ a.counter <= b.counter)
 
 \* util.rs:382-390 check_msg_status
+\* @type: ($seqNum, $seqNum) => Str;
 CheckMsgStatus(cur, msg) ==
   IF Mutation = "SeqNumUnchecked" THEN "Expected"
   ELSE IF msg.session = cur.session /\ msg.counter = cur.counter + 1 THEN "Expected"
@@ -62,19 +179,38 @@ CheckMsgStatus(cur, msg) ==
   ELSE "DroppedPreceding"
 
 \* Indices are 0-based as in the source. memory_storage.rs:102-107 get_suffix
+\* @type: (Seq($entry), Int) => Seq($entry);
 Suffix(l, k) == IF k >= Len(l) THEN <<>> ELSE SubSeq(l, k + 1, Len(l))
 \* memory_storage.rs:64-67 append_on_prefix, Vec::truncate keeps a shorter log
+\* @type: (Seq($entry), Int, Seq($entry)) => Seq($entry);
 AppendOnPrefix(l, k, s) == (IF k >= Len(l) THEN l ELSE SubSeq(l, 1, k)) \o s
 
+\* @type: (Seq($entry), Seq($entry)) => Bool;
 IsPrefix(a, b) == Len(a) <= Len(b) /\ SubSeq(b, 1, Len(a)) = a
+\* @type: (Seq($entry), Seq($entry)) => Bool;
 Compatible(a, b) == IsPrefix(a, b) \/ IsPrefix(b, a)
 
 \* util.rs:62-71 PromiseState, util.rs:27-34 PromiseMetaData
+\* @type: $promiseMeta;
 NotPromised == [state |-> "NotPromised", n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0]
+\* @type: $promiseMeta;
 PromisedHigher == [state |-> "PromisedHigher", n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0]
+\* @type: $maxMeta;
 DefaultMeta == [n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0, pid |-> 0]
 
+\* Each message has every field, so that all messages have one type. A field
+\* that a message type does not carry keeps its value of EmptyMessage. The
+\* log_sync of an AcceptSync is a sequence of one LogSync; the log_sync of a
+\* Promise is a sequence of at most one (Option<LogSync>).
+\* @type: $msg;
+EmptyMessage ==
+  [type |-> "", n |-> DefaultBallot, decided_idx |-> 0, n_accepted |-> DefaultBallot,
+   accepted_idx |-> 0, log_sync |-> <<>>, seq_num |-> DefaultSeq, entries |-> <<>>,
+   nonce |-> 0, promise |-> DefaultBallot, primary |-> FALSE, log |-> <<>>,
+   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0]
+
 \* util.rs:96-108 LeaderState::with
+\* @type: Int => $leaderState;
 LeaderStateWith(n) ==
   [n_leader          |-> n,
    promises_meta     |-> [k \in Nodes |-> NotPromised],
@@ -88,26 +224,31 @@ LeaderStateWith(n) ==
 Votes(i) == ~(RuleR /\ wiped[i])
 
 \* A send to a full channel is a loss.
-RECURSIVE Enqueue(_, _)
-Enqueue(q, ms) ==
-  IF ms = <<>> THEN q
-  ELSE Enqueue(IF Len(q) < Cap THEN Append(q, Head(ms)) ELSE q, Tail(ms))
+\* @type: (Seq($msg), Seq($msg)) => Seq($msg);
+Enqueue(q, ms) == q \o SubSeq(ms, 1, Min(Len(ms), Max(0, Cap - Len(q))))
 
 \* out is a function from destinations to the sequence of messages for each.
+\* @type: (<<Int, Int>> -> Seq($msg), Int, Int -> Seq($msg)) => <<Int, Int>> -> Seq($msg);
 Send(c, i, out) ==
   [p \in Pairs |-> IF p[1] = i /\ p[2] \in DOMAIN out
                    THEN Enqueue(c[p], out[p[2]]) ELSE c[p]]
 
+\* @type: Int -> Seq($msg);
 NoOut == [k \in {} |-> <<>>]
+\* @type: (Int, $msg) => Int -> Seq($msg);
 One(j, m) == [k \in {j} |-> <<m>>]
+\* @type: (Int, Int, $msg) => Int -> Seq($msg);
 IfVotes(i, j, m) == IF Votes(i) THEN One(j, m) ELSE NoOut
 
+\* @type: $leaderState => Set(Int);
 Promised(ls) == {k \in Nodes : ls.promises_meta[k].state = "Promised"}
 \* util.rs:197-208 get_promised_followers
+\* @type: $leaderState => Set(Int);
 PromisedFollowers(ls) == {k \in Promised(ls) : k # BallotPid(ls.n_leader)}
 
 \* util.rs:131-149 set_promise. A tie in (n_accepted, accepted_idx) with
 \* another pid is resolved by `replace`; the source keeps the first.
+\* @type: ($leaderState, $maxMeta, Seq($logSync), Int, Bool, Bool) => $leaderState;
 SetPromise(ls, meta, sync, from, check, replace) ==
   LET mm  == ls.max_promise_meta
       gt  == meta.n_accepted > mm.n_accepted
@@ -123,14 +264,17 @@ SetPromise(ls, meta, sync, from, check, replace) ==
                                          decided_idx |-> meta.decided_idx]]
 
 \* util.rs:252-259 is_chosen
+\* @type: ($leaderState, Int) => Bool;
 IsChosen(ls, idx) == Cardinality({k \in Nodes : ls.accepted_indexes[k] >= idx}) >= Majority
 
 \* util.rs:168-177 get_max_decided_idx
+\* @type: $leaderState => Int;
 MaxDecided(ls) ==
   LET ds == {ls.promises_meta[k].decided_idx : k \in Promised(ls)}
   IN IF ds = {} THEN 0 ELSE CHOOSE d \in ds : \A e \in ds : d >= e
 
 \* util.rs:121-125 next_seq_num, applied to a set of followers
+\* @type: ($leaderState, Set(Int)) => $leaderState;
 NextSeqNums(ls, fs) ==
   [ls EXCEPT !.follower_seq_nums =
      [k \in Nodes |-> IF k \in fs
@@ -138,29 +282,37 @@ NextSeqNums(ls, fs) ==
                       ELSE @[k]]]
 
 \* leader.rs:97-109 send_prepare
+\* @type: Int => $msg;
 PrepareMsg(i) ==
-  [type |-> "Prepare", n |-> leader_state[i].n_leader, decided_idx |-> decided_idx[i],
-   n_accepted |-> n_accepted[i], accepted_idx |-> accepted_idx[i]]
+  [EmptyMessage EXCEPT !.type = "Prepare", !.n = leader_state[i].n_leader,
+   !.decided_idx = decided_idx[i], !.n_accepted = n_accepted[i],
+   !.accepted_idx = accepted_idx[i]]
 
-PrepareReqMsg(b) == [type |-> "PrepareReq", n |-> b]
+\* @type: Int => $msg;
+PrepareReqMsg(b) == [EmptyMessage EXCEPT !.type = "PrepareReq", !.n = b]
 
 \* leader.rs:150-191 send_accsync with mod.rs:405-437 create_log_sync
 \* (no snapshots: suffix from common_prefix_idx, sync_idx = common_prefix_idx).
 \* The session is incremented first (util.rs:115-119), then next_seq_num.
+\* @type: ($leaderState, Int) => $seqNum;
 AccSyncSeq(ls, to) == [session |-> ls.follower_seq_nums[to].session + 1, counter |-> 1]
+\* @type: ($leaderState, Int, Seq($entry), Int) => $msg;
 AccSyncMsg(ls, to, lg, dec) ==
   LET mm    == ls.max_promise_meta
       fm    == ls.promises_meta[to]
       valid == IF fm.n_accepted = ls.n_leader THEN fm.accepted_idx
                ELSE IF fm.n_accepted = mm.n_accepted THEN Min(mm.accepted_idx, fm.accepted_idx)
                ELSE fm.decided_idx
-  IN [type |-> "AcceptSync", n |-> ls.n_leader, seq_num |-> AccSyncSeq(ls, to),
-      decided_idx |-> dec, log_sync |-> [suffix |-> Suffix(lg, valid), sync_idx |-> valid]]
+  IN [EmptyMessage EXCEPT !.type = "AcceptSync", !.n = ls.n_leader,
+      !.seq_num = AccSyncSeq(ls, to), !.decided_idx = dec,
+      !.log_sync = <<[suffix |-> Suffix(lg, valid), sync_idx |-> valid]>>]
+\* @type: ($leaderState, Set(Int)) => $leaderState;
 WithAccSyncSeqs(ls, fs) ==
   [ls EXCEPT !.follower_seq_nums =
      [k \in Nodes |-> IF k \in fs THEN AccSyncSeq(ls, k) ELSE @[k]]]
 
 \* F6: the durable state of node k as one record.
+\* @type: Int => $durable;
 DurableOf(k) ==
   [promise |-> promise[k], n_accepted |-> n_accepted[k], log |-> log[k],
    decided_idx |-> decided_idx[k]]
@@ -171,21 +323,25 @@ DurableOf(k) ==
 (* node in (Leader, Accept) is in status normal and is the primary of its   *)
 (* ballot. Only the primary sends its log, as in the paper. The log is sent *)
 (* whole: a suffix from index 0.                                            *)
-RecoveryMsg(x) == [type |-> "Recovery", nonce |-> x]
+\* @type: Int => $msg;
+RecoveryMsg(x) == [EmptyMessage EXCEPT !.type = "Recovery", !.nonce = x]
 
+\* @type: (Int, Int) => $msg;
 RecoveryResponseMsg(k, x) ==
   LET primary == role[k] = "Leader" /\ phase[k] = "Accept" IN
-  [type |-> "RecoveryResponse", nonce |-> x, promise |-> promise[k],
-   primary |-> primary,
-   n_accepted |-> IF primary THEN n_accepted[k] ELSE DefaultBallot,
-   log |-> IF primary THEN log[k] ELSE <<>>,
-   decided_idx |-> IF primary THEN decided_idx[k] ELSE 0]
+  [EmptyMessage EXCEPT !.type = "RecoveryResponse", !.nonce = x, !.promise = promise[k],
+   !.primary = primary,
+   !.n_accepted = IF primary THEN n_accepted[k] ELSE DefaultBallot,
+   !.log = IF primary THEN log[k] ELSE <<>>,
+   !.decided_idx = IF primary THEN decided_idx[k] ELSE 0]
 
 \* The answers are complete with f + 1 = Majority answers from other nodes,
 \* one of them from the primary of the highest ballot among the answers.
+\* @type: Set($response) => Set($response);
 RecoveryPrimaries(rs) ==
   LET mp == CHOOSE p \in {r.promise : r \in rs} : \A r \in rs : p >= r.promise
   IN {r \in rs : r.primary /\ r.promise = mp /\ BallotPid(mp) = r.from}
+\* @type: Set($response) => Bool;
 RecoveryComplete(rs) == Cardinality(rs) >= Majority /\ RecoveryPrimaries(rs) # {}
 
 (* Read index, plan item 30, run (e). Omni-Paxos 532ff79 has no read. Names *)
@@ -200,8 +356,10 @@ RecoveryComplete(rs) == Cardinality(rs) >= Majority /\ RecoveryPrimaries(rs) # {
 (* had a majority before the round. A read with no round exists only in     *)
 (* single-node mode, which this model does not contain.                     *)
 (* reads[r].decided_at_start and reads[r].result are ghost values.          *)
+\* @type: $read;
 NoRead == [state |-> "none", node |-> 0, decided_at_start |-> <<>>,
            read_index |-> 0, result |-> <<>>]
+\* @type: $round;
 NoRound == [n |-> DefaultBallot, id |-> 0, reads |-> {}, read_index |-> 0, acks |-> {}]
 ReadMessages == {"ReadIndex", "Heartbeat", "HeartbeatAck", "ReadIndexReply"}
 
@@ -228,7 +386,7 @@ Init ==
   /\ elections = 0
   /\ proposed = {}
   /\ decided_history = <<>>
-  /\ decided_ballot = <<>>
+  /\ decided_ballot = [k \in 1..MaxLog |-> DefaultBallot]
   /\ recovering = [i \in Nodes |-> FALSE]
   /\ nonce = [i \in Nodes |-> 0]
   /\ recovery_responses = [i \in Nodes |-> {}]
@@ -243,15 +401,18 @@ Init ==
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
 
 \* mod.rs:371-384 forward_proposals
+\* @type: (Int, Seq($entry), <<Int, Int>> -> Seq($msg)) => Bool;
 ForwardProposals(i, es, c) ==
   LET ld == BallotPid(promise[i]) IN
   IF ld > 0 /\ ld # i
-  THEN /\ chan' = Send(c, i, One(ld, [type |-> "ProposalForward", entries |-> es]))
+  THEN /\ chan' = Send(c, i, One(ld, [EmptyMessage EXCEPT !.type = "ProposalForward",
+                                                          !.entries = es]))
        /\ UNCHANGED buffered_proposals
   ELSE /\ buffered_proposals' = [buffered_proposals EXCEPT ![i] = @ \o es]
        /\ chan' = c
 
 \* leader.rs:123-133 accept_entries_leader, leader.rs:193-221 send_acceptdecide
+\* @type: (Int, Seq($entry), <<Int, Int>> -> Seq($msg)) => Bool;
 AcceptEntriesLeader(i, es, c) ==
   LET acc == accepted_idx[i] + Len(es)
       ls0 == [leader_state[i] EXCEPT !.accepted_indexes[i] = IF Votes(i) THEN acc ELSE @]
@@ -261,25 +422,30 @@ AcceptEntriesLeader(i, es, c) ==
      /\ accepted_idx' = [accepted_idx EXCEPT ![i] = acc]
      /\ leader_state' = [leader_state EXCEPT ![i] = ls1]
      /\ chan' = Send(c, i, [k \in fs |->
-                  <<[type |-> "AcceptDecide", n |-> ls1.n_leader,
-                     seq_num |-> ls1.follower_seq_nums[k],
-                     decided_idx |-> decided_idx[i], entries |-> es]>>])
+                  <<[EmptyMessage EXCEPT !.type = "AcceptDecide", !.n = ls1.n_leader,
+                     !.seq_num = ls1.follower_seq_nums[k],
+                     !.decided_idx = decided_idx[i], !.entries = es]>>])
 
 \* mod.rs:343-357 reconnected, returns [recover, out]
+\* @type: (Int, Int) => {valid: Bool, recover: Bool, out: Int -> Seq($msg)};
 Reconnect(i, pid) ==
-  [recover |-> pid = BallotPid(promise[i]),
+  [valid   |-> FALSE,
+   recover |-> pid = BallotPid(promise[i]),
    out     |-> One(pid, PrepareReqMsg(promise[i]))]
 
 \* follower.rs:196-227 check_valid_ballot, returns [valid, recover, out]
+\* @type: (Int, Int) => {valid: Bool, recover: Bool, out: Int -> Seq($msg)};
 CheckValidBallot(i, b) ==
   IF promise[i] = b THEN [valid |-> TRUE, recover |-> FALSE, out |-> NoOut]
   ELSE IF promise[i] > b
        THEN [valid |-> FALSE, recover |-> FALSE,
-             out |-> One(BallotPid(b), [type |-> "NotAccepted", n |-> promise[i]])]
+             out |-> One(BallotPid(b), [EmptyMessage EXCEPT !.type = "NotAccepted",
+                                                            !.n = promise[i]])]
        ELSE LET r == Reconnect(i, BallotPid(b))
             IN [valid |-> FALSE, recover |-> r.recover, out |-> r.out]
 
 \* Effect of an invalid ballot or of DroppedPreceding: Recover and PrepareReq.
+\* @type: (Int, {valid: Bool, recover: Bool, out: Int -> Seq($msg)}, <<Int, Int>> -> Seq($msg)) => Bool;
 ApplyRecover(i, r, c) ==
   /\ role' = IF r.recover THEN [role EXCEPT ![i] = "Follower"] ELSE role
   /\ phase' = IF r.recover THEN [phase EXCEPT ![i] = "Recover"] ELSE phase
@@ -292,6 +458,7 @@ ApplyRecover(i, r, c) ==
 (* removed. j is the sender.                                                *)
 
 \* leader.rs:66-74 handle_preparereq
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandlePrepareReq(i, j, m, c) ==
   IF role[i] = "Leader" /\ m.n <= leader_state[i].n_leader
   THEN /\ leader_state' = [leader_state EXCEPT ![i].promises_meta[j] = NotPromised]
@@ -302,6 +469,7 @@ HandlePrepareReq(i, j, m, c) ==
        /\ UNCHANGED <<durable, volatile>>
 
 \* follower.rs:13-51 handle_prepare
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandlePrepare(i, j, m, c) ==
   IF promise[i] < m.n \/ (promise[i] = m.n /\ phase[i] = "Recover")
   THEN LET na  == n_accepted[i]
@@ -312,11 +480,11 @@ HandlePrepare(i, j, m, c) ==
                   THEN <<[suffix |-> Suffix(log[i], m.accepted_idx), sync_idx |-> m.accepted_idx]>>
                   ELSE <<>>
            blind == Mutation = "PromiseWithoutAccepted"
-           pr  == [type |-> "Promise", n |-> m.n,
-                   n_accepted |-> IF blind THEN DefaultBallot ELSE na,
-                   decided_idx |-> decided_idx[i],
-                   accepted_idx |-> IF blind THEN 0 ELSE acc,
-                   log_sync |-> IF blind THEN <<>> ELSE ls]
+           pr  == [EmptyMessage EXCEPT !.type = "Promise", !.n = m.n,
+                   !.n_accepted = IF blind THEN DefaultBallot ELSE na,
+                   !.decided_idx = decided_idx[i],
+                   !.accepted_idx = IF blind THEN 0 ELSE acc,
+                   !.log_sync = IF blind THEN <<>> ELSE ls]
        IN /\ promise' = [promise EXCEPT ![i] = m.n]
           /\ role' = [role EXCEPT ![i] = "Follower"]
           /\ phase' = [phase EXCEPT ![i] = "Prepare"]
@@ -330,6 +498,7 @@ HandlePrepare(i, j, m, c) ==
 
 \* leader.rs:257-285 handle_majority_promises with
 \* internal_storage.rs:313-360 sync_log as one atomic write.
+\* @type: (Int, $leaderState, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleMajorityPromises(i, ls1, c) ==
   LET sync == ls1.max_promise_sync
       dec  == MaxDecided(ls1)
@@ -356,6 +525,7 @@ HandleMajorityPromises(i, ls1, c) ==
 
 \* mod.rs:267-271 dispatch, leader.rs:287-299 handle_promise_prepare,
 \* leader.rs:301-314 handle_promise_accept
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandlePromise(i, j, m, c) ==
   LET ls   == leader_state[i]
       meta == [n_accepted |-> m.n_accepted, accepted_idx |-> m.accepted_idx,
@@ -383,17 +553,21 @@ HandlePromise(i, j, m, c) ==
 \* forward_buffered_proposals. DecidedIdxMonotone = FALSE is the source:
 \* sync_log writes SetDecidedIndex as given (internal_storage.rs:319-323).
 \* TRUE is our variant: the follower keeps max(old, new).
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleAcceptSync(i, j, m, c) ==
   LET cv == CheckValidBallot(i, m.n) IN
   IF ~cv.valid THEN ApplyRecover(i, cv, c)
   ELSE IF role[i] = "Follower" /\ phase[i] = "Prepare"
-  THEN LET s   == m.log_sync
+  THEN LET s   == m.log_sync[1]
            bp  == buffered_proposals[i]
            ld  == BallotPid(promise[i])
            fwd == bp # <<>> /\ ld > 0 /\ ld # i
-           acc == [type |-> "Accepted", n |-> m.n, accepted_idx |-> s.sync_idx + Len(s.suffix)]
+           acc == [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
+                                       !.accepted_idx = s.sync_idx + Len(s.suffix)]
            out == [k \in (IF fwd THEN {ld} ELSE {}) \cup (IF Votes(i) THEN {j} ELSE {}) |->
-                     (IF fwd /\ k = ld THEN <<[type |-> "ProposalForward", entries |-> bp]>> ELSE <<>>)
+                     (IF fwd /\ k = ld
+                      THEN <<[EmptyMessage EXCEPT !.type = "ProposalForward", !.entries = bp]>>
+                      ELSE <<>>)
                      \o (IF Votes(i) /\ k = j THEN <<acc>> ELSE <<>>)]
        IN /\ n_accepted' = [n_accepted EXCEPT ![i] = m.n]
           /\ decided_idx' = [decided_idx EXCEPT ![i] =
@@ -412,6 +586,7 @@ HandleAcceptSync(i, j, m, c) ==
 
 \* follower.rs:142-158 update_decided_idx_and_get_accepted_idx without
 \* batching. Returns [dec, flushed]; flushed is TRUE where it returns Some.
+\* @type: (Int, Int, Int) => {dec: Int, flushed: Bool};
 UpdateDecided(dec, acc, new) ==
   IF new <= dec THEN [dec |-> dec, flushed |-> FALSE]
   ELSE IF new > acc THEN [dec |-> Min(new, acc), flushed |-> TRUE]
@@ -419,6 +594,7 @@ UpdateDecided(dec, acc, new) ==
 
 \* follower.rs:88-110 handle_acceptdecide, follower.rs:230-238
 \* handle_sequence_num, follower.rs:160-175 reply_accepted
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleAcceptDecide(i, j, m, c) ==
   LET cv == CheckValidBallot(i, m.n) IN
   IF ~cv.valid THEN ApplyRecover(i, cv, c)
@@ -435,7 +611,8 @@ HandleAcceptDecide(i, j, m, c) ==
                /\ decided_idx' = [decided_idx EXCEPT ![i] = ud.dec]
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IF rep THEN IfVotes(i, BallotPid(m.n),
-                              [type |-> "Accepted", n |-> m.n, accepted_idx |-> acc])
+                              [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
+                                                   !.accepted_idx = acc])
                                      ELSE NoOut)
                /\ UNCHANGED <<promise, n_accepted, role, phase,
                               cached_promise_message, buffered_proposals, leader_state>>
@@ -445,6 +622,7 @@ HandleAcceptDecide(i, j, m, c) ==
             /\ UNCHANGED <<durable, volatile>>
 
 \* follower.rs:128-138 handle_decide
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleDecide(i, j, m, c) ==
   LET cv == CheckValidBallot(i, m.n) IN
   IF ~cv.valid THEN ApplyRecover(i, cv, c)
@@ -457,7 +635,8 @@ HandleDecide(i, j, m, c) ==
             IN /\ decided_idx' = [decided_idx EXCEPT ![i] = ud.dec]
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IF ud.flushed THEN IfVotes(i, BallotPid(m.n),
-                              [type |-> "Accepted", n |-> m.n, accepted_idx |-> accepted_idx[i]])
+                              [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
+                                                   !.accepted_idx = accepted_idx[i]])
                                      ELSE NoOut)
                /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx,
                               cached_promise_message, buffered_proposals, leader_state>>
@@ -467,6 +646,7 @@ HandleDecide(i, j, m, c) ==
             /\ UNCHANGED <<durable, volatile>>
 
 \* leader.rs:316-345 handle_accepted, leader.rs:240-255 send_decide
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleAccepted(i, j, m, c) ==
   IF m.n = leader_state[i].n_leader /\ role[i] = "Leader" /\ phase[i] = "Accept"
   THEN LET ls1 == [leader_state[i] EXCEPT !.accepted_indexes[j] = m.accepted_idx] IN
@@ -476,9 +656,9 @@ HandleAccepted(i, j, m, c) ==
             IN /\ decided_idx' = [decided_idx EXCEPT ![i] = m.accepted_idx]
                /\ leader_state' = [leader_state EXCEPT ![i] = ls2]
                /\ chan' = Send(c, i, [k \in fs |->
-                            <<[type |-> "Decide", n |-> ls2.n_leader,
-                               seq_num |-> ls2.follower_seq_nums[k],
-                               decided_idx |-> m.accepted_idx]>>])
+                            <<[EmptyMessage EXCEPT !.type = "Decide", !.n = ls2.n_leader,
+                               !.seq_num = ls2.follower_seq_nums[k],
+                               !.decided_idx = m.accepted_idx]>>])
                /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx,
                               current_seq_num, cached_promise_message, buffered_proposals>>
        ELSE /\ leader_state' = [leader_state EXCEPT ![i] = ls1]
@@ -489,6 +669,7 @@ HandleAccepted(i, j, m, c) ==
        /\ UNCHANGED <<durable, volatile>>
 
 \* leader.rs:365-369 handle_notaccepted, util.rs:156-158 lost_promise
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleNotAccepted(i, j, m, c) ==
   IF role[i] = "Leader" /\ leader_state[i].n_leader < m.n
   THEN /\ leader_state' = [leader_state EXCEPT ![i].promises_meta[j] = PromisedHigher]
@@ -499,6 +680,7 @@ HandleNotAccepted(i, j, m, c) ==
        /\ UNCHANGED <<durable, volatile>>
 
 \* leader.rs:76-84 handle_forwarded_proposal
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleProposalForward(i, j, m, c) ==
   IF role[i] = "Leader" /\ phase[i] = "Prepare"
   THEN /\ buffered_proposals' = [buffered_proposals EXCEPT ![i] = @ \o m.entries]
@@ -515,6 +697,7 @@ HandleProposalForward(i, j, m, c) ==
 
 \* VR Revisited 4.3: a node in status normal answers Recovery. A node that
 \* does not vote does not answer.
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleRecovery(i, j, m, c) ==
   /\ chan' = Send(c, i, IfVotes(i, j, RecoveryResponseMsg(i, m.nonce)))
   /\ UNCHANGED <<durable, volatile, recovery>>
@@ -523,6 +706,7 @@ HandleRecovery(i, j, m, c) ==
 \* its own nonce. When the answers are complete, it takes the state of the
 \* primary, keeps the higher promise, and continues as a node that
 \* restarts with that durable state (Phase::Recover, PrepareReq).
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleRecoveryResponse(i, j, m, c) ==
   IF ~recovering[i] \/ m.nonce # nonce[i]
   THEN /\ chan' = c
@@ -554,6 +738,7 @@ HandleRecoveryResponse(i, j, m, c) ==
 
 \* Raft 6.4.1: a follower asks the leader for the read index of read r.
 \* The leader takes r into the next round. A node that is no leader drops it.
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleReadIndex(i, j, m, c) ==
   /\ read_pending' = IF role[i] = "Leader"
                      THEN [read_pending EXCEPT ![i] = @ \cup {m.read}]
@@ -563,15 +748,18 @@ HandleReadIndex(i, j, m, c) ==
 
 \* Raft 6.4: a node acknowledges the heartbeat of the leader of the ballot
 \* it promised. A node that does not vote does not answer.
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleHeartbeat(i, j, m, c) ==
   /\ chan' = Send(c, i, IF promise[i] = m.n
-                        THEN IfVotes(i, j, [type |-> "HeartbeatAck", n |-> m.n, id |-> m.id])
+                        THEN IfVotes(i, j, [EmptyMessage EXCEPT !.type = "HeartbeatAck",
+                                                                !.n = m.n, !.id = m.id])
                         ELSE NoOut)
   /\ UNCHANGED <<durable, volatile, readvars>>
 
 \* Raft 6.4: with acknowledgements from a majority, the read index of the
 \* round holds for each read of the round. The leader sends one reply per
 \* node with the reads of that node.
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleHeartbeatAck(i, j, m, c) ==
   LET rd   == read_round[i]
       ok   == role[i] = "Leader" /\ phase[i] = "Accept" /\ rd.reads # {}
@@ -592,12 +780,13 @@ HandleHeartbeatAck(i, j, m, c) ==
                          ELSE reads[r]]
           /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
           /\ chan' = Send(c, i, [k \in dst |->
-                       <<[type |-> "ReadIndexReply",
-                          reads |-> {r \in rd.reads : reads[r].node = k},
-                          read_index |-> rd.read_index]>>])
+                       <<[EmptyMessage EXCEPT !.type = "ReadIndexReply",
+                          !.reads = {r \in rd.reads : reads[r].node = k},
+                          !.read_index = rd.read_index]>>])
           /\ UNCHANGED <<durable, volatile, read_pending>>
 
 \* Raft 6.4.1: the follower keeps the read index for each of its reads.
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleReadIndexReply(i, j, m, c) ==
   /\ reads' = [r \in DOMAIN reads |->
                  IF r \in m.reads /\ reads[r].state = "pending" /\ reads[r].node = i
@@ -608,7 +797,9 @@ HandleReadIndexReply(i, j, m, c) ==
 
 ----------------------------------------------------------------------------
 (* Ghost: decided_history grows with every decided prefix of a node with a  *)
-(* vote; decided_ballot[k] is n_accepted of the node that first decided k.  *)
+(* vote; decided_ballot[k] is n_accepted of the node that first decided k,  *)
+(* and Ballot::default while k is not decided.                              *)
+\* @type: Int => Seq($entry);
 DecidedPrefixP(i) == SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i])))
 VotesP(i) == ~(RuleR /\ wiped'[i])
 
@@ -621,12 +812,14 @@ HistoryUpdate ==
      ELSE LET i == CHOOSE x \in longer : TRUE
               p == DecidedPrefixP(i)
           IN /\ decided_history' = p
-             /\ decided_ballot' = decided_ballot
-                  \o [k \in 1..(Len(p) - Len(decided_history)) |-> n_accepted'[i]]
+             /\ decided_ballot' = [k \in 1..MaxLog |->
+                                    IF k <= Len(decided_history) \/ k > Len(p) THEN decided_ballot[k]
+                                    ELSE n_accepted'[i]]
 
 \* F6: past_durable[k] holds each earlier durable state of k until the
 \* rollback has happened. Each step that changes the durable state of k
 \* adds the state before the step.
+\* @type: Int => $durable;
 DurableOfP(k) ==
   [promise |-> promise'[k], n_accepted |-> n_accepted'[k], log |-> log'[k],
    decided_idx |-> decided_idx'[k]]
@@ -695,8 +888,8 @@ HandleLeader(i, k) ==
      /\ role' = [role EXCEPT ![i] = "Leader"]
      /\ phase' = [phase EXCEPT ![i] = "Prepare"]
      /\ chan' = Send(chan, i, [p \in Peers(i) |->
-                  <<[type |-> "Prepare", n |-> n, decided_idx |-> dec,
-                     n_accepted |-> na, accepted_idx |-> acc]>>])
+                  <<[EmptyMessage EXCEPT !.type = "Prepare", !.n = n, !.decided_idx = dec,
+                     !.n_accepted = na, !.accepted_idx = acc]>>])
      /\ UNCHANGED <<n_accepted, log, decided_idx, accepted_idx, current_seq_num,
                     cached_promise_message, buffered_proposals,
                     wiped, crashes, wipes, losses, duplicates, timeouts, proposed,
@@ -733,8 +926,10 @@ Propose(i, v) ==
 \* With Recovery, the node first sends Recovery with a fresh nonce and
 \* takes part in nothing else until its answers are complete
 \* (owner decision: after each start a node votes only after f + 1 answers).
+\* @type: (Set(Int), Int -> $durable) => Bool;
 Restart(R, d) ==
-  LET At(f, g) == [k \in Nodes |-> IF k \in R THEN g[k] ELSE f[k]]
+  LET \* @type: (Int -> a, Int -> a) => Int -> a;
+      At(f, g) == [k \in Nodes |-> IF k \in R THEN g[k] ELSE f[k]]
       msg(k)   == IF Recovery THEN RecoveryMsg(nonce[k] + 1) ELSE PrepareReqMsg(d[k].promise)
   IN
   /\ promise' = At(promise, [k \in R |-> d[k].promise])
@@ -845,6 +1040,7 @@ ResendMessageTimeout(i) ==
   /\ GhostUpdate
 
 \* F1: loss of any message on a channel.
+\* @type: (<<Int, Int>>, Int) => Bool;
 Lose(p, k) ==
   /\ losses < MaxLoss
   /\ losses' = losses + 1
@@ -854,6 +1050,7 @@ Lose(p, k) ==
   /\ GhostUpdate
 
 \* F1: duplication; the copy is appended at the end of the channel.
+\* @type: (<<Int, Int>>, Int) => Bool;
 Duplicate(p, k) ==
   /\ duplicates < MaxDuplicate
   /\ duplicates' = duplicates + 1
@@ -875,40 +1072,57 @@ Duplicate(p, k) ==
 (* sends to any node, and a follower forwards the entry to the leader. One  *)
 (* client. A reply is no message: the reply step reads the decided state of *)
 (* one node. A lost reply is a reply step that does not occur.              *)
+\* @type: Int => Seq($entry);
 DecidedPrefix(i) == SubSeq(log[i], 1, Min(decided_idx[i], Len(log[i])))
 
-RegisterClientEntry == [type |-> "RegisterClient"]
+\* @type: $entry;
+RegisterClientEntry == [type |-> "RegisterClient", session |-> 0, request_number |-> 0]
+\* @type: (Int, Int) => $entry;
 RequestEntry(s, n) == [type |-> "Request", session |-> s, request_number |-> n]
-ExpireSessionEntry(s) == [type |-> "ExpireSession", session |-> s]
+\* @type: Int => $entry;
+ExpireSessionEntry(s) == [type |-> "ExpireSession", session |-> s, request_number |-> 0]
 
+\* @type: $session;
 NoSession == [open |-> FALSE, request_number |-> 0, reply |-> 0]
 
-\* Apply one decided entry at log index k to the state machine. The state is
-\* the client-table and the sequence of executed (session, request_number).
-\* The reply of a request is its log index. A request of a session that is
-\* not open is not executed (Raft 6.3: SESSION_EXPIRED).
-ApplyEntry(st, k, e) ==
-  IF e.type = "RegisterClient"
-  THEN [st EXCEPT !.client_table[k] = [open |-> TRUE, request_number |-> 0, reply |-> 0]]
-  ELSE IF e.type = "ExpireSession"
-  THEN [st EXCEPT !.client_table[e.session].open = FALSE]
-  ELSE LET t == st.client_table[e.session] IN
-       IF t.open /\ (e.request_number > t.request_number
-                     \/ Mutation = "RequestNumberUnchecked")
-       THEN [st EXCEPT !.client_table[e.session] =
-                         [open |-> TRUE, request_number |-> e.request_number, reply |-> k],
-                       !.executed = Append(@, <<e.session, e.request_number>>)]
-       ELSE st
+\* The state machine applies the decided entries in the order of the log. Its
+\* state is the client-table. The reply of a request is its log index. A
+\* request of a session that is not open is not executed (Raft 6.3:
+\* SESSION_EXPIRED). The RegisterClient entry at index s opens session s; an
+\* ExpireSession entry closes it. Executed(p, k) is TRUE where the request at
+\* index k of p is executed.
+\* @type: (Seq($entry), Int) => Bool;
+Opened(p, s) == s \in 1..MaxLog /\ s \in DOMAIN p /\ p[s] = RegisterClientEntry
 
-RECURSIVE ApplyFrom(_, _, _)
-ApplyFrom(p, k, st) ==
-  IF k > Len(p) THEN st ELSE ApplyFrom(p, k + 1, ApplyEntry(st, k, p[k]))
+\* @type: (Seq($entry), Int, Int) => Bool;
+ExpiredBefore(p, s, k) == \E j \in DOMAIN p : s < j /\ j < k /\ p[j] = ExpireSessionEntry(s)
 
-Apply(p) ==
-  ApplyFrom(p, 1, [client_table |-> [s \in 1..MaxLog |-> NoSession], executed |-> <<>>])
+\* @type: (Seq($entry), Int) => Bool;
+Executed(p, k) ==
+  LET e == p[k] IN
+  /\ e.type = "Request"
+  /\ e.session < k
+  /\ Opened(p, e.session)
+  /\ ~ExpiredBefore(p, e.session, k)
+  /\ \/ Mutation = "RequestNumberUnchecked"
+     \/ /\ e.request_number > 0
+        /\ \A j \in DOMAIN p :
+             (e.session < j /\ j < k /\ p[j].type = "Request" /\ p[j].session = e.session)
+               => p[j].request_number < e.request_number
+
+\* @type: Seq($entry) => Int -> $session;
+ClientTable(p) ==
+  [s \in 1..MaxLog |->
+     LET ex   == {k \in DOMAIN p : Executed(p, k) /\ p[k].session = s}
+         last == CHOOSE k \in ex : \A j \in ex : j <= k
+     IN IF ~Opened(p, s) THEN NoSession
+        ELSE [open |-> ~ExpiredBefore(p, s, Len(p) + 1),
+              request_number |-> IF ex = {} THEN 0 ELSE p[last].request_number,
+              reply |-> IF ex = {} THEN 0 ELSE last]]
 
 \* The client sends entry e to node i: mod.rs:298-305 append, mod.rs:359-365
 \* propose_entry, as Propose. Each send counts, a resend too.
+\* @type: (Int, $entry) => Bool;
 ClientSend(i, e) ==
   /\ ClientSessions
   /\ ~recovering[i]
@@ -948,7 +1162,7 @@ ClientRegistered(j, s) ==
   /\ client.session = 0
   /\ s <= Len(DecidedPrefix(j))
   /\ DecidedPrefix(j)[s] = RegisterClientEntry
-  /\ Apply(DecidedPrefix(j)).client_table[s].open
+  /\ ClientTable(DecidedPrefix(j))[s].open
   /\ client' = [client EXCEPT !.session = s, !.request_number = 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars>>
 
@@ -959,7 +1173,7 @@ ClientReplied(j) ==
   /\ Votes(j)
   /\ client.session > 0
   /\ client.request_number <= MaxRequest
-  /\ LET t == Apply(DecidedPrefix(j)).client_table[client.session] IN
+  /\ LET t == ClientTable(DecidedPrefix(j))[client.session] IN
        t.open /\ t.request_number >= client.request_number
   /\ client' = [client EXCEPT !.request_number = @ + 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars>>
@@ -970,7 +1184,7 @@ ClientSessionExpired(j) ==
   /\ Votes(j)
   /\ client.session > 0
   /\ client.session <= Len(DecidedPrefix(j))
-  /\ ~Apply(DecidedPrefix(j)).client_table[client.session].open
+  /\ ~ClientTable(DecidedPrefix(j))[client.session].open
   /\ client' = [client EXCEPT !.session = 0, !.request_number = 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars>>
 
@@ -982,7 +1196,7 @@ ExpireSession(i, s) ==
   /\ ~recovering[i]
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
   /\ s <= Len(DecidedPrefix(i))
-  /\ Apply(DecidedPrefix(i)).client_table[s].open
+  /\ ClientTable(DecidedPrefix(i))[s].open
   /\ \A k \in 1..Len(log[i]) : log[i][k] # ExpireSessionEntry(s)
   /\ proposed' = proposed \cup {ExpireSessionEntry(s)}
   /\ AcceptEntriesLeader(i, <<ExpireSessionEntry(s)>>, chan)
@@ -1015,7 +1229,8 @@ ReadStart(r, i) ==
           /\ UNCHANGED chan
      ELSE /\ ld > 0 /\ ld # i
           /\ reads' = [reads EXCEPT ![r] = started]
-          /\ chan' = Send(chan, i, One(ld, [type |-> "ReadIndex", read |-> r]))
+          /\ chan' = Send(chan, i, One(ld, [EmptyMessage EXCEPT !.type = "ReadIndex",
+                                                               !.read = r]))
           /\ UNCHANGED read_pending
   /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, read_round>>
 
@@ -1036,7 +1251,8 @@ StartReadRound(i) ==
                        read_index |-> accepted_idx[i],
                        acks |-> IF Votes(i) THEN {i} ELSE {}]]
   /\ read_pending' = [read_pending EXCEPT ![i] = {}]
-  /\ chan' = Send(chan, i, [k \in Peers(i) |-> <<[type |-> "Heartbeat", n |-> n, id |-> id]>>])
+  /\ chan' = Send(chan, i, [k \in Peers(i) |->
+                <<[EmptyMessage EXCEPT !.type = "Heartbeat", !.n = n, !.id = id]>>])
   /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, reads>>
 
 \* Raft 6.4: the node answers read r from its own log once its decided index
@@ -1127,9 +1343,10 @@ S5 == \A i, j \in Nodes :
           => Compatible(log[i], log[j])
 
 \* E1, run (f): each (session, request_number) is executed at most once.
-NoRepeat(sq) == \A a, b \in 1..Len(sq) : a # b => sq[a] # sq[b]
-E1 == /\ NoRepeat(Apply(decided_history).executed)
-      /\ \A i \in Nodes : Votes(i) => NoRepeat(Apply(DecidedPrefix(i)).executed)
+\* @type: Seq($entry) => Bool;
+ExecutedOnce(p) == \A a, b \in DOMAIN p : a # b /\ Executed(p, a) /\ Executed(p, b) => p[a] # p[b]
+E1 == /\ ExecutedOnce(decided_history)
+      /\ \A i \in Nodes : Votes(i) => ExecutedOnce(DecidedPrefix(i))
 
 \* R1, run (e): a read sees each entry that was decided before the read started.
 R1 == \A r \in DOMAIN reads :
