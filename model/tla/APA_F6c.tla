@@ -27,6 +27,11 @@ OVERRIDE_MaxClientSend == 0
 OVERRIDE_MaxRequest == 0
 OVERRIDE_ReadIndex == FALSE
 OVERRIDE_MaxRead == 0
+OVERRIDE_NextConfigNodes == {}
+OVERRIDE_MaxReconfigure == 0
+OVERRIDE_SingleNode == FALSE
+OVERRIDE_MaxForceSingle == 0
+OVERRIDE_MaxReadOnly == 0
 
 (* The disjuncts of Next that the constants above enable. Each other        *)
 (* disjunct of Next needs a crash, a wipe, a loss, a duplicate, a timeout, a *)
