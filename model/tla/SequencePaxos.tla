@@ -8,7 +8,7 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Values, MaxBallot, MaxLog, MaxCounter, MaxSession,
           Cap, MaxCrash, MaxWipe, MaxLoss, MaxDuplicate, MaxTimeout, MaxElection, RuleR,
-          DecidedIdxMonotone
+          DecidedIdxMonotone, MaxRollback, Recovery
 
 VARIABLES
   promise, n_accepted, log, decided_idx,
@@ -16,14 +16,18 @@ VARIABLES
   buffered_proposals, leader_state,
   chan,
   wiped, crashes, wipes, losses, duplicates, timeouts, elections,
-  proposed, decided_history, decided_ballot
+  proposed, decided_history, decided_ballot,
+  recovering, nonce, recovery_responses,
+  rolled_back, past_durable
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
               cached_promise_message, buffered_proposals, leader_state>>
 env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections>>
 ghost    == <<proposed, decided_history, decided_ballot>>
-vars     == <<durable, volatile, chan, env, ghost>>
+recovery == <<recovering, nonce, recovery_responses>>
+rollback == <<rolled_back, past_durable>>
+vars     == <<durable, volatile, chan, env, ghost, recovery, rollback>>
 
 ----------------------------------------------------------------------------
 (* Ballot (n, pid) is the integer n * PidBase + pid. Ballot::default is 0.   *)
@@ -151,6 +155,34 @@ WithAccSyncSeqs(ls, fs) ==
   [ls EXCEPT !.follower_seq_nums =
      [k \in Nodes |-> IF k \in fs THEN AccSyncSeq(ls, k) ELSE @[k]]]
 
+\* F6: the durable state of node k as one record.
+DurableOf(k) ==
+  [promise |-> promise[k], n_accepted |-> n_accepted[k], log |-> log[k],
+   decided_idx |-> decided_idx[k]]
+
+(* Recovery of Viewstamped Replication Revisited (Liskov, Cowling,         *)
+(* MIT-CSAIL-TR-2012-021, section 4.3), applied to Sequence Paxos (plan     *)
+(* item 26). Names from that paper: Recovery, RecoveryResponse, nonce. A    *)
+(* node in (Leader, Accept) is in status normal and is the primary of its   *)
+(* ballot. Only the primary sends its log, as in the paper. The log is sent *)
+(* whole: a suffix from index 0.                                            *)
+RecoveryMsg(x) == [type |-> "Recovery", nonce |-> x]
+
+RecoveryResponseMsg(k, x) ==
+  LET primary == role[k] = "Leader" /\ phase[k] = "Accept" IN
+  [type |-> "RecoveryResponse", nonce |-> x, promise |-> promise[k],
+   primary |-> primary,
+   n_accepted |-> IF primary THEN n_accepted[k] ELSE DefaultBallot,
+   log |-> IF primary THEN log[k] ELSE <<>>,
+   decided_idx |-> IF primary THEN decided_idx[k] ELSE 0]
+
+\* The answers are complete with f + 1 = Majority answers from other nodes,
+\* one of them from the primary of the highest ballot among the answers.
+RecoveryPrimaries(rs) ==
+  LET mp == CHOOSE p \in {r.promise : r \in rs} : \A r \in rs : p >= r.promise
+  IN {r \in rs : r.primary /\ r.promise = mp /\ BallotPid(mp) = r.from}
+RecoveryComplete(rs) == Cardinality(rs) >= Majority /\ RecoveryPrimaries(rs) # {}
+
 ----------------------------------------------------------------------------
 Init ==
   /\ promise = [i \in Nodes |-> DefaultBallot]
@@ -175,6 +207,11 @@ Init ==
   /\ proposed = {}
   /\ decided_history = <<>>
   /\ decided_ballot = <<>>
+  /\ recovering = [i \in Nodes |-> FALSE]
+  /\ nonce = [i \in Nodes |-> 0]
+  /\ recovery_responses = [i \in Nodes |-> {}]
+  /\ rolled_back = {}
+  /\ past_durable = [i \in Nodes |-> {}]
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -445,6 +482,45 @@ HandleProposalForward(i, j, m, c) ==
        /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
                       cached_promise_message, leader_state>>
 
+\* VR Revisited 4.3: a node in status normal answers Recovery. A node that
+\* does not vote does not answer.
+HandleRecovery(i, j, m, c) ==
+  /\ chan' = Send(c, i, IfVotes(i, j, RecoveryResponseMsg(i, m.nonce)))
+  /\ UNCHANGED <<durable, volatile, recovery>>
+
+\* VR Revisited 4.3: the recovering node keeps one answer per sender with
+\* its own nonce. When the answers are complete, it takes the state of the
+\* primary, keeps the higher promise, and continues as a node that
+\* restarts with that durable state (Phase::Recover, PrepareReq).
+HandleRecoveryResponse(i, j, m, c) ==
+  IF ~recovering[i] \/ m.nonce # nonce[i]
+  THEN /\ chan' = c
+       /\ UNCHANGED <<durable, volatile, recovery>>
+  ELSE LET r  == [from |-> j, promise |-> m.promise, primary |-> m.primary,
+                  n_accepted |-> m.n_accepted, log |-> m.log, decided_idx |-> m.decided_idx]
+           rs == {x \in recovery_responses[i] : x.from # j} \cup {r}
+       IN IF RecoveryComplete(rs)
+          THEN LET l  == CHOOSE x \in RecoveryPrimaries(rs) : TRUE
+                   pr == Max(promise[i], l.promise)
+               IN /\ promise' = [promise EXCEPT ![i] = pr]
+                  /\ n_accepted' = [n_accepted EXCEPT ![i] = l.n_accepted]
+                  /\ log' = [log EXCEPT ![i] = l.log]
+                  /\ decided_idx' = [decided_idx EXCEPT ![i] = l.decided_idx]
+                  /\ role' = [role EXCEPT ![i] = "Follower"]
+                  /\ phase' = [phase EXCEPT ![i] = "Recover"]
+                  /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(l.log)]
+                  /\ current_seq_num' = [current_seq_num EXCEPT ![i] = DefaultSeq]
+                  /\ cached_promise_message' = [cached_promise_message EXCEPT ![i] = <<>>]
+                  /\ buffered_proposals' = [buffered_proposals EXCEPT ![i] = <<>>]
+                  /\ leader_state' = [leader_state EXCEPT ![i] = LeaderStateWith(pr)]
+                  /\ recovering' = [recovering EXCEPT ![i] = FALSE]
+                  /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
+                  /\ chan' = Send(c, i, [k \in Peers(i) |-> <<PrepareReqMsg(pr)>>])
+                  /\ UNCHANGED nonce
+          ELSE /\ recovery_responses' = [recovery_responses EXCEPT ![i] = rs]
+               /\ chan' = c
+               /\ UNCHANGED <<durable, volatile, recovering, nonce>>
+
 ----------------------------------------------------------------------------
 (* Ghost: decided_history grows with every decided prefix of a node with a  *)
 (* vote; decided_ballot[k] is n_accepted of the node that first decided k.  *)
@@ -463,6 +539,23 @@ HistoryUpdate ==
              /\ decided_ballot' = decided_ballot
                   \o [k \in 1..(Len(p) - Len(decided_history)) |-> n_accepted'[i]]
 
+\* F6: past_durable[k] holds each earlier durable state of k until the
+\* rollback has happened. Each step that changes the durable state of k
+\* adds the state before the step.
+DurableOfP(k) ==
+  [promise |-> promise'[k], n_accepted |-> n_accepted'[k], log |-> log'[k],
+   decided_idx |-> decided_idx'[k]]
+
+PastUpdate ==
+  past_durable' =
+    [k \in Nodes |->
+       IF MaxRollback > 0 /\ rolled_back' = {}
+       THEN IF DurableOfP(k) # DurableOf(k) THEN past_durable[k] \cup {DurableOf(k)}
+            ELSE past_durable[k]
+       ELSE {}]
+
+GhostUpdate == HistoryUpdate /\ PastUpdate
+
 ----------------------------------------------------------------------------
 (* Actions *)
 
@@ -471,17 +564,23 @@ Receive(j, i) ==
   /\ chan[<<j, i>>] # <<>>
   /\ LET m == Head(chan[<<j, i>>])
          c == [chan EXCEPT ![<<j, i>>] = Tail(@)]
-     IN CASE m.type = "PrepareReq"      -> HandlePrepareReq(i, j, m, c)
-          [] m.type = "Prepare"         -> HandlePrepare(i, j, m, c)
-          [] m.type = "Promise"         -> HandlePromise(i, j, m, c)
-          [] m.type = "AcceptSync"      -> HandleAcceptSync(i, j, m, c)
-          [] m.type = "AcceptDecide"    -> HandleAcceptDecide(i, j, m, c)
-          [] m.type = "Decide"          -> HandleDecide(i, j, m, c)
-          [] m.type = "Accepted"        -> HandleAccepted(i, j, m, c)
-          [] m.type = "NotAccepted"     -> HandleNotAccepted(i, j, m, c)
-          [] m.type = "ProposalForward" -> HandleProposalForward(i, j, m, c)
-  /\ UNCHANGED <<env, proposed>>
-  /\ HistoryUpdate
+     IN IF m.type = "RecoveryResponse" THEN HandleRecoveryResponse(i, j, m, c)
+        ELSE IF recovering[i]
+        THEN /\ chan' = c
+             /\ UNCHANGED <<durable, volatile, recovery>>
+        ELSE IF m.type = "Recovery" THEN HandleRecovery(i, j, m, c)
+        ELSE /\ CASE m.type = "PrepareReq"      -> HandlePrepareReq(i, j, m, c)
+                  [] m.type = "Prepare"         -> HandlePrepare(i, j, m, c)
+                  [] m.type = "Promise"         -> HandlePromise(i, j, m, c)
+                  [] m.type = "AcceptSync"      -> HandleAcceptSync(i, j, m, c)
+                  [] m.type = "AcceptDecide"    -> HandleAcceptDecide(i, j, m, c)
+                  [] m.type = "Decide"          -> HandleDecide(i, j, m, c)
+                  [] m.type = "Accepted"        -> HandleAccepted(i, j, m, c)
+                  [] m.type = "NotAccepted"     -> HandleNotAccepted(i, j, m, c)
+                  [] m.type = "ProposalForward" -> HandleProposalForward(i, j, m, c)
+             /\ UNCHANGED recovery
+  /\ UNCHANGED <<env, proposed, rolled_back>>
+  /\ GhostUpdate
 
 \* leader.rs:16-60 handle_leader, own pid only (no BLE).
 HandleLeader(i, k) ==
@@ -491,7 +590,8 @@ HandleLeader(i, k) ==
       acc == accepted_idx[i]
       ls0 == LeaderStateWith(n)
       me  == [n_accepted |-> na, accepted_idx |-> acc, decided_idx |-> dec, pid |-> i]
-  IN /\ elections < MaxElection
+  IN /\ ~recovering[i]
+     /\ elections < MaxElection
      /\ elections' = elections + 1
      /\ n > leader_state[i].n_leader
      /\ n > promise[i]
@@ -506,12 +606,14 @@ HandleLeader(i, k) ==
                      n_accepted |-> na, accepted_idx |-> acc]>>])
      /\ UNCHANGED <<n_accepted, log, decided_idx, accepted_idx, current_seq_num,
                     cached_promise_message, buffered_proposals,
-                    wiped, crashes, wipes, losses, duplicates, timeouts, proposed>>
-  /\ HistoryUpdate
+                    wiped, crashes, wipes, losses, duplicates, timeouts, proposed,
+                    recovery, rolled_back>>
+  /\ GhostUpdate
 
 \* mod.rs:298-305 append, mod.rs:359-365 propose_entry,
 \* leader.rs:111-121 accept_entry_leader
 Propose(i, v) ==
+  /\ ~recovering[i]
   /\ v \notin proposed
   /\ proposed' = proposed \cup {v}
   /\ IF role[i] = "Leader" /\ phase[i] = "Prepare"
@@ -525,26 +627,62 @@ Propose(i, v) ==
      ELSE /\ ForwardProposals(i, <<v>>, chan)
           /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
                          cached_promise_message, leader_state>>
-  /\ UNCHANGED env
-  /\ HistoryUpdate
+  /\ UNCHANGED <<env, recovery, rolled_back>>
+  /\ GhostUpdate
 
-\* F3: crash keeping durable state, restart through mod.rs:53-128 `with`.
+\* Restart of each node i in R with the durable state d[i], through
+\* mod.rs:53-128 `with`.
 \* The promise is always set (bootstrap and `with` write it), so the node
 \* restarts in Phase::Recover and sends PrepareReq to every peer.
 \* internal_storage.rs:55-74 load_cache: accepted_idx = log length.
+\* With Recovery, the node first sends Recovery with a fresh nonce and
+\* takes part in nothing else until its answers are complete
+\* (owner decision: after each start a node votes only after f + 1 answers).
+Restart(R, d) ==
+  LET At(f, g) == [k \in Nodes |-> IF k \in R THEN g[k] ELSE f[k]]
+      msg(k)   == IF Recovery THEN RecoveryMsg(nonce[k] + 1) ELSE PrepareReqMsg(d[k].promise)
+  IN
+  /\ promise' = At(promise, [k \in R |-> d[k].promise])
+  /\ n_accepted' = At(n_accepted, [k \in R |-> d[k].n_accepted])
+  /\ log' = At(log, [k \in R |-> d[k].log])
+  /\ decided_idx' = At(decided_idx, [k \in R |-> d[k].decided_idx])
+  /\ role' = At(role, [k \in R |-> "Follower"])
+  /\ phase' = At(phase, [k \in R |-> "Recover"])
+  /\ accepted_idx' = At(accepted_idx, [k \in R |-> Len(d[k].log)])
+  /\ current_seq_num' = At(current_seq_num, [k \in R |-> DefaultSeq])
+  /\ cached_promise_message' = At(cached_promise_message, [k \in R |-> <<>>])
+  /\ buffered_proposals' = At(buffered_proposals, [k \in R |-> <<>>])
+  /\ leader_state' = At(leader_state, [k \in R |-> LeaderStateWith(d[k].promise)])
+  /\ chan' = [p \in Pairs |-> IF p[1] \in R THEN Enqueue(chan[p], <<msg(p[1])>>) ELSE chan[p]]
+  /\ IF Recovery
+     THEN /\ recovering' = At(recovering, [k \in R |-> TRUE])
+          /\ nonce' = At(nonce, [k \in R |-> nonce[k] + 1])
+          /\ recovery_responses' = At(recovery_responses, [k \in R |-> {}])
+     ELSE UNCHANGED recovery
+
+\* F3: crash keeping durable state.
 Crash(i) ==
   /\ crashes < MaxCrash
   /\ crashes' = crashes + 1
-  /\ role' = [role EXCEPT ![i] = "Follower"]
-  /\ phase' = [phase EXCEPT ![i] = "Recover"]
-  /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(log[i])]
-  /\ current_seq_num' = [current_seq_num EXCEPT ![i] = DefaultSeq]
-  /\ cached_promise_message' = [cached_promise_message EXCEPT ![i] = <<>>]
-  /\ buffered_proposals' = [buffered_proposals EXCEPT ![i] = <<>>]
-  /\ leader_state' = [leader_state EXCEPT ![i] = LeaderStateWith(promise[i])]
-  /\ chan' = Send(chan, i, [p \in Peers(i) |-> <<PrepareReqMsg(promise[i])>>])
-  /\ UNCHANGED <<durable, wiped, wipes, losses, duplicates, timeouts, elections, proposed>>
-  /\ HistoryUpdate
+  /\ Restart({i}, [k \in {i} |-> DurableOf(k)])
+  /\ UNCHANGED <<wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back>>
+  /\ GhostUpdate
+
+\* F6: rollback. Each node in R restarts with an earlier durable state of its
+\* own (lost fsync, backup), all of them in one step (plan item 26: at the
+\* same time). The states have valid checksums, so F5 does not see them.
+\* Exactly MaxRollback nodes roll back, once; a full cluster from a backup is
+\* no fault (plan item 27).
+Rollback(R) ==
+  /\ rolled_back = {}
+  /\ Cardinality(R) = MaxRollback
+  /\ R # {}
+  /\ rolled_back' = R
+  /\ \E d \in [R -> UNION {past_durable[k] : k \in R}] :
+       /\ \A k \in R : d[k] \in past_durable[k] /\ d[k] # DurableOf(k)
+       /\ Restart(R, d)
+  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed>>
+  /\ GhostUpdate
 
 \* F4: disk loss. The restart finds no promise: (Follower, Phase::None),
 \* Ballot::default, mod.rs:78, and writes the default promise, mod.rs:112-115.
@@ -563,8 +701,11 @@ Wipe(i) ==
   /\ cached_promise_message' = [cached_promise_message EXCEPT ![i] = <<>>]
   /\ buffered_proposals' = [buffered_proposals EXCEPT ![i] = <<>>]
   /\ leader_state' = [leader_state EXCEPT ![i] = LeaderStateWith(DefaultBallot)]
-  /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed>>
-  /\ HistoryUpdate
+  /\ recovering' = [recovering EXCEPT ![i] = FALSE]
+  /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
+  /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
+                 nonce, rolled_back>>
+  /\ GhostUpdate
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
 \* resend_messages_leader, follower.rs:240-282 resend_messages_follower.
@@ -572,7 +713,11 @@ Wipe(i) ==
 ResendMessageTimeout(i) ==
   /\ timeouts < MaxTimeout
   /\ timeouts' = timeouts + 1
-  /\ IF role[i] = "Leader"
+  /\ IF recovering[i]
+     THEN LET open == {k \in Peers(i) : \A r \in recovery_responses[i] : r.from # k}
+          IN /\ chan' = Send(chan, i, [k \in open |-> <<RecoveryMsg(nonce[i])>>])
+             /\ UNCHANGED <<durable, volatile>>
+     ELSE IF role[i] = "Leader"
      THEN IF phase[i] \in {"Prepare", "Accept"}
           THEN LET pp == {k \in Peers(i) : leader_state[i].promises_meta[k].state = "NotPromised"}
                IN /\ chan' = Send(chan, i, [k \in pp |-> <<PrepareMsg(i)>>])
@@ -591,17 +736,19 @@ ResendMessageTimeout(i) ==
      THEN /\ chan' = Send(chan, i, [k \in Peers(i) |-> <<PrepareReqMsg(promise[i])>>])
           /\ UNCHANGED <<durable, volatile>>
      ELSE UNCHANGED <<durable, volatile, chan>>
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, elections, proposed>>
+  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, elections, proposed,
+                 recovery, rolled_back>>
   /\ chan' # chan \/ phase' # phase
-  /\ HistoryUpdate
+  /\ GhostUpdate
 
 \* F1: loss of any message on a channel.
 Lose(p, k) ==
   /\ losses < MaxLoss
   /\ losses' = losses + 1
   /\ chan' = [chan EXCEPT ![p] = SubSeq(@, 1, k - 1) \o SubSeq(@, k + 1, Len(@))]
-  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, duplicates, timeouts, elections, proposed>>
-  /\ HistoryUpdate
+  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, duplicates, timeouts, elections, proposed,
+                 recovery, rolled_back>>
+  /\ GhostUpdate
 
 \* F1: duplication; the copy is appended at the end of the channel.
 Duplicate(p, k) ==
@@ -609,8 +756,9 @@ Duplicate(p, k) ==
   /\ duplicates' = duplicates + 1
   /\ Len(chan[p]) < Cap
   /\ chan' = [chan EXCEPT ![p] = Append(@, @[k])]
-  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, losses, timeouts, elections, proposed>>
-  /\ HistoryUpdate
+  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, losses, timeouts, elections, proposed,
+                 recovery, rolled_back>>
+  /\ GhostUpdate
 
 ----------------------------------------------------------------------------
 Next ==
@@ -619,11 +767,14 @@ Next ==
   \/ \E i \in Nodes, v \in Values : Propose(i, v)
   \/ \E i \in Nodes : Crash(i)
   \/ \E i \in Nodes : Wipe(i)
+  \/ \E R \in SUBSET Nodes : Rollback(R)
   \/ \E i \in Nodes : ResendMessageTimeout(i)
   \/ \E p \in Pairs, k \in 1..Cap : k <= Len(chan[p]) /\ Lose(p, k)
   \/ \E p \in Pairs, k \in 1..Cap : k <= Len(chan[p]) /\ Duplicate(p, k)
 
 Spec == Init /\ [][Next]_vars
+
+ASSUME MaxRollback < Cardinality(Nodes)
 
 ----------------------------------------------------------------------------
 (* Bounds of the model, used as a state constraint. *)
@@ -679,5 +830,8 @@ View ==
     buffered_proposals,
     [i \in Nodes |-> IF role[i] = "Leader" THEN leader_state[i]
                      ELSE LeaderStateWith(leader_state[i].n_leader)],
-    chan, env, ghost>>
+    chan, env, ghost,
+    recovering, nonce,
+    [i \in Nodes |-> IF recovering[i] THEN recovery_responses[i] ELSE {}],
+    rollback>>
 =============================================================================
