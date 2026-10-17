@@ -356,7 +356,7 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
       items 14 to 19, 21 and B1 to B3 are suspended. The window W
       stays only as an idea.
     - Names and forms from Rust are allowed (also the source
-      Omni-Paxos).
+      Omni-Paxos). etcd stays no model.
     - A client that crashed: its object is released through
       heartbeats. This belongs to the actor part, not to model S.
     - An entry counts as stored only after the synchronous commit of
