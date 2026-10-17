@@ -8,7 +8,7 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Values, MaxBallot, MaxLog, MaxCounter, MaxSession,
           Cap, MaxCrash, MaxWipe, MaxLoss, MaxDuplicate, MaxTimeout, MaxElection, RuleR,
-          DecidedIdxMonotone, MaxRollback, Recovery
+          DecidedIdxMonotone, MaxRollback, Recovery, Mutation
 
 VARIABLES
   promise, n_accepted, log, decided_idx,
@@ -52,7 +52,8 @@ SeqLeq(a, b) == a.session < b.session \/ (a.session = b.session /\ a.counter <= 
 
 \* util.rs:382-390 check_msg_status
 CheckMsgStatus(cur, msg) ==
-  IF msg.session = cur.session /\ msg.counter = cur.counter + 1 THEN "Expected"
+  IF Mutation = "SeqNumUnchecked" THEN "Expected"
+  ELSE IF msg.session = cur.session /\ msg.counter = cur.counter + 1 THEN "Expected"
   ELSE IF SeqLeq(msg, cur) THEN "Outdated"
   ELSE "DroppedPreceding"
 
@@ -285,8 +286,12 @@ HandlePrepare(i, j, m, c) ==
                   ELSE IF na = m.n_accepted /\ acc > m.accepted_idx
                   THEN <<[suffix |-> Suffix(log[i], m.accepted_idx), sync_idx |-> m.accepted_idx]>>
                   ELSE <<>>
-           pr  == [type |-> "Promise", n |-> m.n, n_accepted |-> na,
-                   decided_idx |-> decided_idx[i], accepted_idx |-> acc, log_sync |-> ls]
+           blind == Mutation = "PromiseWithoutAccepted"
+           pr  == [type |-> "Promise", n |-> m.n,
+                   n_accepted |-> IF blind THEN DefaultBallot ELSE na,
+                   decided_idx |-> decided_idx[i],
+                   accepted_idx |-> IF blind THEN 0 ELSE acc,
+                   log_sync |-> IF blind THEN <<>> ELSE ls]
        IN /\ promise' = [promise EXCEPT ![i] = m.n]
           /\ role' = [role EXCEPT ![i] = "Follower"]
           /\ phase' = [phase EXCEPT ![i] = "Prepare"]
@@ -303,9 +308,10 @@ HandlePrepare(i, j, m, c) ==
 HandleMajorityPromises(i, ls1, c) ==
   LET sync == ls1.max_promise_sync
       dec  == MaxDecided(ls1)
-      lg1  == IF sync = <<>> THEN log[i]
+      skip == sync = <<>> \/ Mutation = "SyncIgnored"
+      lg1  == IF skip THEN log[i]
               ELSE AppendOnPrefix(log[i], sync[1].sync_idx, sync[1].suffix)
-      acc1 == IF sync = <<>> THEN accepted_idx[i]
+      acc1 == IF skip THEN accepted_idx[i]
               ELSE sync[1].sync_idx + Len(sync[1].suffix)
       bp   == buffered_proposals[i]
       lg2  == lg1 \o bp
@@ -621,7 +627,8 @@ Propose(i, v) ==
           /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
                          cached_promise_message, leader_state, chan>>
      ELSE IF role[i] = "Leader" /\ phase[i] = "Accept"
-     THEN /\ AcceptEntriesLeader(i, <<v>>, chan)
+     THEN /\ \E w \in IF Mutation = "LeaderReplacesValue" THEN Values ELSE {v} :
+               AcceptEntriesLeader(i, <<w>>, chan)
           /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
                          cached_promise_message, buffered_proposals>>
      ELSE /\ ForwardProposals(i, <<v>>, chan)
@@ -775,6 +782,16 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 ASSUME MaxRollback < Cardinality(Nodes)
+
+\* Mutations for the checks of the checks, plan section 11. "none" is the
+\* model. Each other value puts one fault into the model:
+\* PromiseWithoutAccepted: a Promise reports no accepted state (target S1).
+\* SyncIgnored: a new leader does not apply the log_sync of the Promises (S2b).
+\* LeaderReplacesValue: a leader in Accept can append a value other than the
+\* proposed one (S3).
+\* SeqNumUnchecked: a follower takes each AcceptDecide and Decide as Expected (S5).
+ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
+                     "LeaderReplacesValue", "SeqNumUnchecked"}
 
 ----------------------------------------------------------------------------
 (* Bounds of the model, used as a state constraint. *)

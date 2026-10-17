@@ -410,8 +410,9 @@ bounds. Three means make the gaps smaller.
 1. Mutation. Each property has at least one counter-check: a model with
    a deliberate fault, on which the run must fail. Done so far: G (no
    rule R, S2 violated), F6a (no recovery, S2 violated),
-   DecidedIdxMonotone = FALSE (S7 violated). S1, S2b, S3, S5 and E1
-   still need one counter-check each.
+   DecidedIdxMonotone = FALSE (S7 violated), and the constant Mutation
+   with one fault each for S1, S2b, S3 and S5 (all four violated). E1
+   needs the model of run (f) first.
 2. Bounds. For cases with no bound: inductive invariants with Apalache
    or proofs with TLAPS (open question Q3).
 3. Code against model. Trace validation: the C++ code records each
