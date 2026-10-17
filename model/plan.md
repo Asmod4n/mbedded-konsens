@@ -401,3 +401,19 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
     applied at most once. A counter-check without the record of the
     number must violate E1.
     Repository: mbedded-konsens.
+
+## 11. Checks of the checks (owner, 2026-10-17)
+
+A run shows only that this model holds these properties within these
+bounds. Three means make the gaps smaller.
+
+1. Mutation. Each property has at least one counter-check: a model with
+   a deliberate fault, on which the run must fail. Done so far: G (no
+   rule R, S2 violated), F6a (no recovery, S2 violated),
+   DecidedIdxMonotone = FALSE (S7 violated). S1, S2b, S3, S5 and E1
+   still need one counter-check each.
+2. Bounds. For cases with no bound: inductive invariants with Apalache
+   or proofs with TLAPS (open question Q3).
+3. Code against model. Trace validation: the C++ code records each
+   step, and TLC checks that the trace is allowed by the model. Tests in
+   the manner of Jepsen come in addition.
