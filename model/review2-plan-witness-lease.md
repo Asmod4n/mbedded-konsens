@@ -314,3 +314,77 @@ and questions for the owner.
 - Reads: a round that starts under a lease and ends after node 6 has
   decided is linearizable at its start. StaleReadAfterForce takes its
   flag at ReadStart, so it gives no false violation for such a read.
+
+## Check of version 3
+
+Verdict: approve with changes
+
+Source: `model/plan-witness-lease.md` at commit 22e3317. TLC and java
+were not run. This check reads only the changed parts.
+
+| # | Change | Status |
+|---|---|---|
+| 1 | Guards TRUE without force and with `Witness` FALSE | Applied |
+| 2 | Complete regression runs, both arms, Apalache check | Applied. Note b |
+| 3 | `old_decided_after_forced` | Applied. Fault A touches it |
+| 4 | Historical maximum, one ghost update | Applied. Fault A |
+| 5 | LeaseGrant and LeaseReply split | Applied. Trace breaks LeasesDisjoint |
+| 6 | EpochFromConfiguration | Applied |
+| 7 | Form (b) and LeaderDecidesChosen | Applied. Fault B |
+| 8 | `lease_request` as `-1`, LeaseWithinGrant as action | Applied |
+| 9 | Full cfg of MC_w | Applied. Note c |
+
+The split of finding 5 is correct. A grant before the force sets
+`lease_request` at most `wait_remaining`, and Tick lowers both. So at
+the reply the lease is 0 when the wait is 0. With LeaseFromReply the
+trace LeaseRequest, LeaseGrant, ForceSingle, Tick, Tick, LeaseReply
+gives lease 2 with wait 0.
+
+### Faults
+
+A. **WaitHonoured and `forced_has_decided` fire without a force.**
+   Place: section 3, ghost updates; section 4, WaitHonoured.
+   Fault: neither formula requires that ForceSingle has happened.
+   BuildForServer (line 1553) sets `decided_idx[6]` to `Len(l)`, and
+   after a normal reconfiguration LeaderCountsOwnAccepted raises it,
+   with `wait_remaining = -1`. If `forced_decided_at_force` starts at
+   0, WaitHonoured breaks in the correct model, and
+   `forced_has_decided` becomes TRUE with no force. That happens in the
+   copy of MC_w with MaxReconfigure 1. In the ForceSingle step itself,
+   `decided_idx'[s]` rises to `Min(decided_idx[i], Len(l))`, and the
+   plan does not say whether "above `forced_decided_at_force`" reads the
+   primed or the unprimed value. With the unprimed value, the step
+   breaks WaitHonoured and sets `forced_has_decided`.
+   Change: both formulas start with `force_single.node # 0`, unprimed.
+   Then the ForceSingle step and each step before it are excluded:
+   `force_single.node # 0 /\ decided_idx'[s] > forced_decided_at_force => wait_remaining = 0`,
+   and the same condition in the update of `forced_has_decided`. The
+   plan gives the initial value of `forced_decided_at_force`.
+
+B. **LeaderDecidesChosen: its lease guard has no mutation, and the form
+   is open.**
+   Place: section 3, LeaderDecidesChosen; section 5.
+   Fault: each new guard gets a mutation. DecideWithoutLease removes
+   only the check in HandleAccepted. "In the form of
+   LeaderCountsOwnAccepted" can be read as a call of HandleAccepted
+   with an Accepted from `i` itself. That call writes the chosen index
+   into `accepted_indexes[i]` (line 818) and can lower the index of the
+   leader.
+   Change: DecideWithoutLease removes the lease check in both actions.
+   LeaderDecidesChosen sets `decided_idx[i]` and sends Decide to
+   `PromisedFollowers`, as the decide branch at lines 822-828 does, and
+   does not write `accepted_indexes`.
+
+### Notes
+
+a. The trace of ForcedWithoutWait in section 5 is correct with
+   `old_decided_after_forced`.
+b. The arm on 5ea2ff9 has no constants `Witness` and `LeaseLength`.
+   TLC does not take a cfg that assigns a constant the model does not
+   declare (not checked here), and `check_constants.py` reports them
+   as unknown. The regression needs one cfg for each arm, the same in
+   all other lines.
+c. MC_d2 lists NoTwoWriters, S1Force, S2Force and R1Force, and it has no
+   VIEW. "MC_w as MC_d2" must give its own INVARIANTS, PROPERTIES and
+   VIEW lines. Otherwise MC_w stops at the expected loss, and the new
+   variables are not in the view that is used.

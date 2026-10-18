@@ -4,7 +4,8 @@ Source: the decision of the owner of 2026-10-18 ("Lease, selten") and
 the state file of the project. This version applies the review
 `model/review-plan-witness-lease.md` (reject, 18 findings) and the
 changes 1 to 9 of `model/review2-plan-witness-lease.md` (approve with
-changes). Notes 10 to 16 of the second review are in sections 2, 7
+changes), and the faults A and B and both notes of its check of
+version 3. Notes 10 to 16 of the second review are in sections 2, 7
 and 8.
 
 Base: `model/tla/SequencePaxos.tla` at commit 5ea2ff9 (the model after
@@ -97,7 +98,10 @@ UNCHANGED.
 
 - `old_decided_max' = Max(old_decided_max, max of decided_idx'[k] for k \in Nodes)`:
   the highest value an old node ever held.
-- `forced_has_decided' = forced_has_decided \/ decided_idx'[s] > forced_decided_at_force`.
+- `forced_has_decided' = forced_has_decided \/ (force_single.node # 0 /\ decided_idx'[s] > forced_decided_at_force)`.
+  Both values are read in the state before the step, so the step of
+  ForceSingle itself does not count. The initial value of
+  `forced_decided_at_force` is 0.
 - `old_decided_after_forced' = old_decided_after_forced \/ (forced_has_decided /\ old_decided_max' > old_decided_max)`.
 
 Actions:
@@ -118,9 +122,11 @@ Actions:
   (form b of review 2, finding 7) gets
   `i \notin Nodes \/ ~Witness \/ lease_remaining[i] > 0`. Without it
   the leader records `accepted_indexes` and decides nothing.
-- New: `LeaderDecidesChosen(i)` for `i \in Nodes`, in the form of
-  LeaderCountsOwnAccepted: a leader in Accept with a valid lease
-  decides the highest chosen index above `decided_idx[i]`.
+- New: `LeaderDecidesChosen(i)` for `i \in Nodes`: a leader in Accept
+  with a valid lease decides the highest chosen index above
+  `decided_idx[i]`. It sets `decided_idx` and sends Decide as the
+  decide branch of HandleAccepted does. It does not call
+  HandleAccepted and does not write `accepted_indexes`.
 - Changed: LeaderCountsOwnPromise and LeaderCountsOwnAccepted get
   `wait_remaining <= 0`. ReadStart at a node of NextConfigNodes gets
   `wait_remaining <= 0`. StartReadRound for `i \in Nodes` gets
@@ -143,8 +149,10 @@ holds the ranges of the new variables.
 - LeaseHonoured (action): each step of HandleAccepted or
   LeaderDecidesChosen that raises `decided_idx[i]` at `i \in Nodes`
   starts with `lease_remaining[i] > 0`.
-- WaitHonoured (action): each step that raises `decided_idx[s]` above
-  `forced_decided_at_force` starts with `wait_remaining = 0`.
+- WaitHonoured (action): each step that starts with
+  `force_single.node # 0` and raises `decided_idx[s]` above
+  `forced_decided_at_force` starts with `wait_remaining = 0`. Values are
+  read in the state before the step.
 - GrantOnlyCurrentEpoch (action): a step that sets `lease_reply[i]` to
   1 starts with `node_epoch[i] = witness_epoch`.
 - EpochFromConfiguration (invariant): `\A i \in Nodes : node_epoch[i] = 0`.
@@ -175,7 +183,7 @@ The far property is a second check.
 
 | Mutation | Mutated place | Direct property | Far property |
 |---|---|---|---|
-| DecideWithoutLease | lease check in HandleAccepted | LeaseHonoured | NoConcurrentWriters |
+| DecideWithoutLease | lease check in HandleAccepted and in LeaderDecidesChosen | LeaseHonoured | NoConcurrentWriters |
 | ForcedWithoutWait | wait in LeaderCountsOwnPromise/Accepted | WaitHonoured | NoConcurrentWriters |
 | WitnessGrantsAnyEpoch | epoch check in LeaseGrant | GrantOnlyCurrentEpoch | NoConcurrentWriters |
 | ForceWithoutRaise | the raise in ForceSingle | ForceRaisesEpoch | NoConcurrentWriters |
@@ -193,13 +201,18 @@ Trace for ForcedWithoutWait: LeaseRequest, LeaseGrant, LeaseReply
 - Regression: MC_d1_reach (its violation and the length of its trace),
   and copies of MC_d1 and MC_d2 at MaxLog 1 that finish breadth-first.
   Each cfg runs on 5ea2ff9 and on the new model with `Witness = FALSE`,
-  one after the other. The distinct states must be equal.
+  one after the other. The distinct states must be equal. Each arm has
+  its own cfg: the arm on 5ea2ff9 has no `Witness` and no
+  `LeaseLength`, the other lines are the same.
   base_monotone, e and f stay as they are. The Apalache type check of
   APA_F6c runs, because the type aliases change.
 - MC_w: as MC_d2, with these changes: `Witness = TRUE`,
   `LeaseLength = 2`, MaxLog 1, MaxCrash 0, MaxWipe 0, MaxLoss 0,
   MaxRollback 0, MaxHalt 0, MaxElection 3, MaxReconfigure 0. Then a
-  copy with MaxCrash 1, and a copy with MaxReconfigure 1.
+  copy with MaxCrash 1, and a copy with MaxReconfigure 1. MC_w gives
+  its own INVARIANTS and PROPERTIES (the properties of section 4 and
+  the safety properties of d that hold under the loss of section 1)
+  and its own VIEW with the new variables.
   Breadth-first 1 h with `-deadlock -coverage 1`, then a simulation of
   15 min. Coverage must show the decide branch of HandleAccepted,
   LeaderDecidesChosen and the decisions of node 6 above zero. The
