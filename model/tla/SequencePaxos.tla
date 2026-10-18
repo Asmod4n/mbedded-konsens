@@ -4,7 +4,7 @@
 (* Files cited: mod.rs, leader.rs, follower.rs = omnipaxos/src/sequence_paxos/ *)
 (* internal_storage.rs = omnipaxos/src/storage/, util.rs = omnipaxos/src/,    *)
 (* memory_storage.rs = omnipaxos_storage/src/.                                *)
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
   \* @typeAlias: entry = {type: Str, session: Int, request_number: Int};
@@ -23,11 +23,12 @@ CONSTANTS
   \* @typeAlias: response = {from: Int, promise: Int, primary: Bool, n_accepted: Int,
   \*   log: Seq($entry), decided_idx: Int};
   \* @typeAlias: read = {state: Str, node: Int, decided_at_start: Seq($entry),
-  \*   read_index: Int, result: Seq($entry), stale: Bool};
+  \*   read_index: Int, result: Seq($entry), stale: Bool, contract_stale_ok: Bool};
   \* @typeAlias: round = {n: Int, id: Int, reads: Set(Int), read_index: Int, acks: Set(Int)};
   \* @typeAlias: session = {open: Bool, request_number: Int, reply: Int};
   \* @typeAlias: forceSingle = {node: Int, log: Seq($entry), decided: Seq($entry),
   \*   history: Seq($entry)};
+  \* @typeAlias: stage1Ghost = {down: Set(Int), node: Int, leave_decided: Int};
   \* @type: Set(Int);
   Nodes,
   \* @type: Set($entry);
@@ -83,7 +84,11 @@ CONSTANTS
   \* @type: Int;
   MaxForceSingle,
   \* @type: Int;
-  MaxReadOnly
+  MaxReadOnly,
+  \* @type: Int;
+  MaxHalt,
+  \* @type: Bool;
+  StaleReadNode
 
 VARIABLES
   \* @type: Int -> Int;
@@ -159,7 +164,15 @@ VARIABLES
   \* @type: $forceSingle;
   force_single,
   \* @type: Int -> Bool;
-  read_only
+  read_only,
+  \* @type: Int -> Bool;
+  deactivated,
+  \* @type: Int;
+  halts,
+  \* @type: Int;
+  read_only_entries,
+  \* @type: $stage1Ghost;
+  stage1_ghost
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -169,7 +182,8 @@ ghost    == <<proposed, decided_history, decided_ballot>>
 recovery == <<recovering, nonce, recovery_responses>>
 rollback == <<rolled_back, past_durable>>
 readvars == <<reads, read_pending, read_round>>
-reconfig == <<running, first_log, reconfigurations, force_single, read_only>>
+reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
+              halts, read_only_entries, stage1_ghost>>
 vars     == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
               buffered_stopsign, reconfig>>
 
@@ -194,6 +208,7 @@ ClusterNodes(i) == IF i \in NextConfigNodes THEN NextConfigNodes ELSE Nodes
 Peers(i) == ClusterNodes(i) \ {i}
 \* @type: Set(<<Int, Int>>);
 Pairs == {p \in Servers \X Servers : p[1] # p[2] /\ ConfigurationId(p[1]) = ConfigurationId(p[2])}
+         \cup (IF MaxForceSingle > 0 THEN NextConfigNodes \X Nodes ELSE {})
 
 \* util.rs:445 Quorum::Majority(num_nodes / 2 + 1)
 \* @type: Int => Int;
@@ -397,33 +412,27 @@ RecoveryComplete(rs, i) == Cardinality(rs) >= Majority(i) /\ RecoveryPrimaries(r
 (* index is the accepted_idx of the leader when the round starts: the log   *)
 (* of a leader in Accept holds each entry decided at a ballot not higher     *)
 (* than its own (S2b), and the majority round shows that no higher ballot    *)
-(* had a majority before the round. A read with no round exists only in     *)
-(* single-node mode (constant SingleNode): the leader in Accept of a         *)
-(* configuration with one node answers from its own log.                     *)
+(* had a majority before the round. A read with no round has the mark      *)
+(* stale, or the leader in Accept of a configuration with one node answers  *)
+(* it from its own log.                                                      *)
 (* reads[r].decided_at_start and reads[r].result are ghost values.          *)
 \* @type: $read;
 NoRead == [state |-> "none", node |-> 0, decided_at_start |-> <<>>,
-           read_index |-> 0, result |-> <<>>, stale |-> FALSE]
+           read_index |-> 0, result |-> <<>>, stale |-> FALSE, contract_stale_ok |-> FALSE]
 \* @type: $round;
 NoRound == [n |-> DefaultBallot, id |-> 0, reads |-> {}, read_index |-> 0, acks |-> {}]
 ReadMessages == {"ReadIndex", "Heartbeat", "HeartbeatAck", "ReadIndexReply"}
 
-(* Single-node mode, plan item 29, run (d). Omni-Paxos 532ff79 has no       *)
-(* configuration with one node (omni_paxos.rs:106 validate). Owner          *)
-(* decisions: case 1, a majority is alive: a StopSign reconfiguration to a  *)
-(* configuration with one node. Case 2, the majority is dead: the operator  *)
-(* command ForceSingle(i, s) starts the configuration with the one node s   *)
-(* from the log of the old node i. The old nodes take no further part.      *)
-(* force_single holds the ghost values of the command: the old node, its    *)
-(* log, its decided prefix and decided_history at the time of the command.  *)
 \* @type: $forceSingle;
 NoForceSingle == [node |-> 0, log |-> <<>>, decided |-> <<>>, history |-> <<>>]
-(* Owner decision 2026-10-17: with the majority dead there are two stages.  *)
-(* Stage 1 is the operator command EnterReadOnly(i): node i answers each    *)
-(* read at once from its decided prefix with the mark stale, it accepts no  *)
-(* write at itself and it starts no election. For the other nodes it stays *)
-(* a normal follower. LeaveReadOnly(i) ends stage 1. Stage 2 is ForceSingle *)
-(* and needs stage 1 at the old node. read_only[i] is the flag of stage 1. *)
+\* @type: $stage1Ghost;
+NoStage1Ghost == [down |-> {}, node |-> 0, leave_decided |-> -1]
+\* @type: Int => Bool;
+InStage2(k) == force_single.node # 0 /\ k \in NextConfigNodes
+\* @type: Int => Bool;
+SingleNodeMode(k) == read_only[k] \/ InStage2(k)
+\* @type: Int => Bool;
+Quiet(k) == SingleNodeMode(k) \/ deactivated[k]
 \* @type: Int => Bool;
 SingleNodeLeader(i) ==
   /\ SingleNode
@@ -474,6 +483,10 @@ Init ==
   /\ reconfigurations = 0
   /\ force_single = NoForceSingle
   /\ read_only = [i \in Servers |-> FALSE]
+  /\ deactivated = [i \in Servers |-> FALSE]
+  /\ halts = 0
+  /\ read_only_entries = 0
+  /\ stage1_ghost = NoStage1Ghost
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -987,41 +1000,64 @@ GhostUpdate == HistoryUpdate /\ PastUpdate
 ----------------------------------------------------------------------------
 (* Actions *)
 
+\* @type: (Int, <<Int, Int>> -> Seq($msg)) => Bool;
+HandleDeactivated(i, c) ==
+  /\ deactivated' = [deactivated EXCEPT ![i] = TRUE]
+  /\ role' = [role EXCEPT ![i] = "Follower"]
+  /\ phase' = [phase EXCEPT ![i] = "None"]
+  /\ chan' = c
+  /\ UNCHANGED <<durable, accepted_idx, current_seq_num, cached_promise_message,
+                 buffered_proposals, leader_state, recovery, readvars, buffered_stopsign>>
+
+\* mod.rs:263-282 handle
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
+Dispatch(i, j, m, c) ==
+  IF m.type = "RecoveryResponse"
+  THEN HandleRecoveryResponse(i, j, m, c) /\ UNCHANGED <<readvars, buffered_stopsign>>
+  ELSE IF recovering[i]
+  THEN /\ chan' = c
+       /\ UNCHANGED <<durable, volatile, recovery, readvars, buffered_stopsign>>
+  ELSE IF m.type = "Recovery"
+  THEN HandleRecovery(i, j, m, c) /\ UNCHANGED <<readvars, buffered_stopsign>>
+  ELSE IF m.type \in ReadMessages
+  THEN /\ CASE m.type = "ReadIndex"      -> HandleReadIndex(i, j, m, c)
+            [] m.type = "Heartbeat"      -> HandleHeartbeat(i, j, m, c)
+            [] m.type = "HeartbeatAck"   -> HandleHeartbeatAck(i, j, m, c)
+            [] m.type = "ReadIndexReply" -> HandleReadIndexReply(i, j, m, c)
+       /\ UNCHANGED <<recovery, buffered_stopsign>>
+  ELSE IF m.type = "Promise"
+  THEN HandlePromise(i, j, m, c) /\ UNCHANGED <<readvars, recovery>>
+  ELSE IF m.type = "ForwardStopSign"
+  THEN HandleForwardStopSign(i, j, m, c) /\ UNCHANGED <<readvars, recovery>>
+  ELSE /\ UNCHANGED <<readvars, buffered_stopsign>>
+       /\ CASE m.type = "PrepareReq"      -> HandlePrepareReq(i, j, m, c)
+            [] m.type = "Prepare"         -> HandlePrepare(i, j, m, c)
+            [] m.type = "AcceptSync"      -> HandleAcceptSync(i, j, m, c)
+            [] m.type = "AcceptDecide"    -> HandleAcceptDecide(i, j, m, c)
+            [] m.type = "Decide"          -> HandleDecide(i, j, m, c)
+            [] m.type = "Accepted"        -> HandleAccepted(i, j, m, c)
+            [] m.type = "NotAccepted"     -> HandleNotAccepted(i, j, m, c)
+            [] m.type = "ProposalForward" -> HandleProposalForward(i, j, m, c)
+            [] m.type = "AcceptStopSign"  -> HandleAcceptStopSign(i, j, m, c)
+       /\ UNCHANGED recovery
+
 \* mod.rs:263-282 handle: deliver the head of the channel from j to i.
 Receive(j, i) ==
   /\ i \in running
   /\ chan[<<j, i>>] # <<>>
   /\ LET m == Head(chan[<<j, i>>])
          c == [chan EXCEPT ![<<j, i>>] = Tail(@)]
-     IN IF m.type = "RecoveryResponse"
-        THEN HandleRecoveryResponse(i, j, m, c) /\ UNCHANGED <<readvars, buffered_stopsign>>
-        ELSE IF recovering[i]
-        THEN /\ chan' = c
-             /\ UNCHANGED <<durable, volatile, recovery, readvars, buffered_stopsign>>
-        ELSE IF m.type = "Recovery"
-        THEN HandleRecovery(i, j, m, c) /\ UNCHANGED <<readvars, buffered_stopsign>>
-        ELSE IF m.type \in ReadMessages
-        THEN /\ CASE m.type = "ReadIndex"      -> HandleReadIndex(i, j, m, c)
-                  [] m.type = "Heartbeat"      -> HandleHeartbeat(i, j, m, c)
-                  [] m.type = "HeartbeatAck"   -> HandleHeartbeatAck(i, j, m, c)
-                  [] m.type = "ReadIndexReply" -> HandleReadIndexReply(i, j, m, c)
-             /\ UNCHANGED <<recovery, buffered_stopsign>>
-        ELSE IF m.type = "Promise"
-        THEN HandlePromise(i, j, m, c) /\ UNCHANGED <<readvars, recovery>>
-        ELSE IF m.type = "ForwardStopSign"
-        THEN HandleForwardStopSign(i, j, m, c) /\ UNCHANGED <<readvars, recovery>>
-        ELSE /\ UNCHANGED <<readvars, buffered_stopsign>>
-             /\ CASE m.type = "PrepareReq"      -> HandlePrepareReq(i, j, m, c)
-                  [] m.type = "Prepare"         -> HandlePrepare(i, j, m, c)
-                  [] m.type = "AcceptSync"      -> HandleAcceptSync(i, j, m, c)
-                  [] m.type = "AcceptDecide"    -> HandleAcceptDecide(i, j, m, c)
-                  [] m.type = "Decide"          -> HandleDecide(i, j, m, c)
-                  [] m.type = "Accepted"        -> HandleAccepted(i, j, m, c)
-                  [] m.type = "NotAccepted"     -> HandleNotAccepted(i, j, m, c)
-                  [] m.type = "ProposalForward" -> HandleProposalForward(i, j, m, c)
-                  [] m.type = "AcceptStopSign"  -> HandleAcceptStopSign(i, j, m, c)
-             /\ UNCHANGED recovery
-  /\ UNCHANGED <<env, proposed, rolled_back, client, reconfig>>
+     IN /\ SingleNodeMode(i) => m.type = "Deactivated"
+        /\ IF m.type = "Deactivated"
+           THEN HandleDeactivated(i, c)
+           ELSE IF deactivated[i] /\ Mutation # "DeactivatedStillVotes"
+           THEN /\ chan' = c
+                /\ UNCHANGED <<durable, volatile, recovery, readvars, buffered_stopsign,
+                               deactivated>>
+           ELSE /\ UNCHANGED deactivated
+                /\ Dispatch(i, j, m, c)
+  /\ UNCHANGED <<env, proposed, rolled_back, client, running, first_log, reconfigurations,
+                 force_single, read_only, halts, read_only_entries, stage1_ghost>>
   /\ GhostUpdate
 
 \* leader.rs:16-60 handle_leader, own pid only (no BLE).
@@ -1034,6 +1070,7 @@ HandleLeader(i, k) ==
       me  == [n_accepted |-> na, accepted_idx |-> acc, decided_idx |-> dec, pid |-> i]
   IN /\ ~recovering[i]
      /\ ~read_only[i]
+     /\ ~deactivated[i]
      /\ elections < MaxElection
      /\ elections' = elections + 1
      /\ n > leader_state[i].n_leader
@@ -1060,6 +1097,7 @@ Propose(i, v) ==
   /\ ~recovering[i]
   /\ ~AcceptedReconfiguration(i) \/ Mutation = "AppendAfterStopSign"
   /\ ~read_only[i] \/ Mutation = "ReadOnlyProposes"
+  /\ ~deactivated[i]
   /\ v \notin proposed
   /\ proposed' = proposed \cup {v}
   /\ IF read_only[i]
@@ -1090,11 +1128,11 @@ Propose(i, v) ==
 \* With Recovery, the node first sends Recovery with a fresh nonce and
 \* takes part in nothing else until its answers are complete
 \* (owner decision: after each start a node votes only after f + 1 answers).
-\* @type: (Set(Int), Int -> $durable) => Bool;
-Restart(R, d) ==
+\* @type: (Set(Int), Int -> $durable, Set(Int), Bool) => Bool;
+Restart(R, d, Q, rec) ==
   LET \* @type: (Int -> a, Int -> a) => Int -> a;
       At(f, g) == [k \in Servers |-> IF k \in R THEN g[k] ELSE f[k]]
-      msg(k)   == IF Recovery THEN RecoveryMsg(nonce[k] + 1) ELSE PrepareReqMsg(d[k].promise)
+      msg(k)   == IF rec THEN RecoveryMsg(nonce[k] + 1) ELSE PrepareReqMsg(d[k].promise)
   IN
   /\ promise' = At(promise, [k \in R |-> d[k].promise])
   /\ n_accepted' = At(n_accepted, [k \in R |-> d[k].n_accepted])
@@ -1108,12 +1146,11 @@ Restart(R, d) ==
   /\ buffered_proposals' = At(buffered_proposals, [k \in R |-> <<>>])
   /\ buffered_stopsign' = At(buffered_stopsign, [k \in R |-> <<>>])
   /\ leader_state' = At(leader_state, [k \in R |-> LeaderStateWith(d[k].promise)])
-  /\ chan' = [p \in Pairs |-> IF p[1] \in R THEN Enqueue(chan[p], <<msg(p[1])>>) ELSE chan[p]]
-  /\ IF Recovery
-     THEN /\ recovering' = At(recovering, [k \in R |-> TRUE])
-          /\ nonce' = At(nonce, [k \in R |-> nonce[k] + 1])
-          /\ recovery_responses' = At(recovery_responses, [k \in R |-> {}])
-     ELSE UNCHANGED recovery
+  /\ chan' = [p \in Pairs |-> IF p[1] \in R \ Q /\ p[2] \in Peers(p[1])
+                             THEN Enqueue(chan[p], <<msg(p[1])>>) ELSE chan[p]]
+  /\ recovering' = At(recovering, [k \in R |-> rec /\ k \notin Q])
+  /\ nonce' = At(nonce, [k \in R |-> IF rec /\ k \notin Q THEN nonce[k] + 1 ELSE nonce[k]])
+  /\ recovery_responses' = At(recovery_responses, [k \in R |-> {}])
   /\ read_pending' = At(read_pending, [k \in R |-> {}])
   /\ read_round' = At(read_round, [k \in R |-> [read_round[k] EXCEPT !.reads = {}, !.acks = {}]])
   /\ UNCHANGED reads
@@ -1122,7 +1159,7 @@ Restart(R, d) ==
 Crash(i) ==
   /\ crashes < MaxCrash
   /\ crashes' = crashes + 1
-  /\ Restart({i}, [k \in {i} |-> DurableOf(k)])
+  /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : Quiet(k)}, Recovery)
   /\ UNCHANGED <<wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back,
                  client, reconfig>>
   /\ GhostUpdate
@@ -1139,7 +1176,7 @@ Rollback(R) ==
   /\ rolled_back' = R
   /\ \E d \in [R -> UNION {past_durable[k] : k \in R}] :
        /\ \A k \in R : d[k] \in past_durable[k] /\ d[k] # DurableOf(k)
-       /\ Restart(R, d)
+       /\ Restart(R, d, {k \in R : Quiet(k)}, Recovery)
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  client, reconfig>>
   /\ GhostUpdate
@@ -1166,15 +1203,18 @@ Wipe(i) ==
   /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
   /\ read_pending' = [read_pending EXCEPT ![i] = {}]
   /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
+  /\ deactivated' = [deactivated EXCEPT ![i] = FALSE]
   /\ UNCHANGED reads
   /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
-                 nonce, rolled_back, client, reconfig>>
+                 nonce, rolled_back, client, running, first_log, reconfigurations,
+                 force_single, read_only, halts, read_only_entries, stage1_ghost>>
   /\ GhostUpdate
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
 \* resend_messages_leader, follower.rs:240-282 resend_messages_follower.
 \* util.rs:211-222 get_preparable_peers.
 ResendMessageTimeout(i) ==
+  /\ ~read_only[i] /\ ~deactivated[i]
   /\ timeouts < MaxTimeout
   /\ timeouts' = timeouts + 1
   /\ IF recovering[i]
@@ -1305,6 +1345,7 @@ ClientSend(i, e) ==
   /\ ClientSessions
   /\ ~recovering[i]
   /\ ~read_only[i]
+  /\ ~deactivated[i]
   /\ ~AcceptedReconfiguration(i)
   /\ client.sends < MaxClientSend
   /\ client' = [client EXCEPT !.sends = @ + 1]
@@ -1393,35 +1434,35 @@ ExpireSession(i, s) ==
 ----------------------------------------------------------------------------
 (* Read index actions, run (e). *)
 
-\* Read r starts at node i. A leader takes r into its next round. A follower
-\* asks the leader of its promised ballot (Raft 6.4.1). In single-node mode
-\* the leader answers at once from its own log, with no round. With the
-\* mutation LocalRead each node does so. A node in stage 1 answers at once
-\* from its decided prefix, with the mark stale.
+\* Raft 6.4.1
 ReadStart(r, i) ==
-  LET started == [NoRead EXCEPT !.state = "pending", !.node = i,
-                                !.decided_at_start = decided_history]
-      ld      == BallotPid(promise[i])
+  LET \* @type: Bool => $read;
+      started(ok) == [NoRead EXCEPT !.state = "pending", !.node = i,
+                                    !.decided_at_start = decided_history,
+                                    !.contract_stale_ok = ok]
+      ld          == BallotPid(promise[i])
   IN
   /\ ReadIndex
   /\ ~recovering[i]
+  /\ read_only[i] \/ ~deactivated[i]
   /\ reads[r].state = "none"
   /\ SingleNode /\ ClusterNodes(i) = {i} => SingleNodeServes(i)
-  /\ IF read_only[i]
-     THEN /\ reads' = [reads EXCEPT ![r] = [started EXCEPT !.state = "done",
-                                                           !.result = DecidedPrefix(i),
-                                                           !.stale = TRUE]]
+  /\ \E ok \in IF StaleReadNode THEN BOOLEAN ELSE {FALSE} :
+     IF read_only[i] \/ (ok /\ ~InStage2(i))
+     THEN /\ reads' = [reads EXCEPT ![r] = [started(ok) EXCEPT !.state = "done",
+                                                               !.result = DecidedPrefix(i),
+                                                               !.stale = TRUE]]
           /\ UNCHANGED <<chan, read_pending>>
      ELSE IF Mutation = "LocalRead" \/ SingleNodeServes(i)
-     THEN /\ reads' = [reads EXCEPT ![r] = [started EXCEPT !.state = "done",
-                                                           !.result = DecidedPrefix(i)]]
+     THEN /\ reads' = [reads EXCEPT ![r] = [started(ok) EXCEPT !.state = "done",
+                                                               !.result = DecidedPrefix(i)]]
           /\ UNCHANGED <<chan, read_pending>>
      ELSE IF role[i] = "Leader"
-     THEN /\ reads' = [reads EXCEPT ![r] = started]
+     THEN /\ reads' = [reads EXCEPT ![r] = started(ok)]
           /\ read_pending' = [read_pending EXCEPT ![i] = @ \cup {r}]
           /\ UNCHANGED chan
      ELSE /\ ld > 0 /\ ld # i
-          /\ reads' = [reads EXCEPT ![r] = started]
+          /\ reads' = [reads EXCEPT ![r] = started(ok)]
           /\ chan' = Send(chan, i, One(ld, [EmptyMessage EXCEPT !.type = "ReadIndex",
                                                                !.read = r]))
           /\ UNCHANGED read_pending
@@ -1469,6 +1510,7 @@ Reconfigure(i) ==
   /\ reconfigurations' = reconfigurations + 1
   /\ ~recovering[i]
   /\ ~read_only[i]
+  /\ ~deactivated[i]
   /\ ~AcceptedReconfiguration(i)
   /\ proposed' = proposed \cup {StopSignEntry}
   /\ IF role[i] = "Leader" /\ phase[i] = "Prepare"
@@ -1481,7 +1523,7 @@ Reconfigure(i) ==
      ELSE /\ ForwardStopSign(i, chan)
           /\ UNCHANGED <<durable, volatile>>
   /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, running, first_log, force_single,
-                 read_only>>
+                 read_only, deactivated, halts, read_only_entries, stage1_ghost>>
   /\ GhostUpdate
 
 \* @type: (Int, Int) => Bool;
@@ -1490,6 +1532,7 @@ BuildForServer(i, j) ==
   /\ i \in NextConfigNodes \ running
   /\ j \in Nodes
   /\ Votes(j) /\ ~recovering[j]
+  /\ ~read_only[j] /\ ~deactivated[j]
   /\ IsReconfigured(j) \/ Mutation = "BuildBeforeStopSignDecided"
   /\ running' = running \cup {i}
   /\ log' = [log EXCEPT ![i] = l]
@@ -1499,7 +1542,7 @@ BuildForServer(i, j) ==
   /\ UNCHANGED <<promise, n_accepted, role, phase, current_seq_num, cached_promise_message,
                  buffered_proposals, leader_state, chan, env, proposed, recovery, rolled_back,
                  client, readvars, buffered_stopsign, reconfigurations, force_single,
-                 read_only>>
+                 read_only, deactivated, halts, read_only_entries, stage1_ghost>>
   /\ GhostUpdate
 
 ----------------------------------------------------------------------------
@@ -1543,51 +1586,85 @@ ForceSingle(i, s) ==
   /\ force_single.node = 0
   /\ i \in Nodes /\ s \in NextConfigNodes \ running
   /\ Votes(i) /\ ~recovering[i]
-  /\ MaxReadOnly > 0 => read_only[i]
+  /\ read_only[i]
+  /\ Cardinality(Nodes \ running) >= Majority(i) \/ Mutation = "OldNodeVotesAfterForce"
   /\ force_single' = [node |-> i, log |-> log[i], decided |-> DecidedPrefix(i),
                       history |-> decided_history]
-  /\ running' = IF Mutation = "OldNodeVotesAfterForce"
-                THEN (running \ {i}) \cup {s}
-                ELSE (running \ Nodes) \cup {s}
+  /\ running' = (running \ {i}) \cup {s}
   /\ log' = [log EXCEPT ![s] = l]
   /\ decided_idx' = [decided_idx EXCEPT ![s] = Min(decided_idx[i], Len(l))]
   /\ accepted_idx' = [accepted_idx EXCEPT ![s] = Len(l)]
   /\ first_log' = [first_log EXCEPT ![s] = l]
   /\ UNCHANGED <<promise, n_accepted, role, phase, current_seq_num, cached_promise_message,
                  buffered_proposals, leader_state, chan, env, proposed, recovery, rolled_back,
-                 client, readvars, buffered_stopsign, reconfigurations, read_only>>
+                 client, readvars, buffered_stopsign, reconfigurations, read_only, deactivated,
+                 halts, read_only_entries, stage1_ghost>>
   /\ GhostUpdate
 
-\* Stage 1. With the mutation ReadOnlyTruncates the node also cuts its log
-\* to its decided prefix.
+\* @type: (Int, Int) => Bool;
+SendDeactivated(s, k) ==
+  /\ InStage2(s)
+  /\ k \in Nodes \ {force_single.node}
+  /\ chan[<<s, k>>] = <<>>
+  /\ chan' = Send(chan, s, One(k, [EmptyMessage EXCEPT !.type = "Deactivated"]))
+  /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig>>
+
 \* @type: Int => Bool;
 EnterReadOnly(i) ==
-  LET l == DecidedPrefix(i) IN
-  /\ MaxReadOnly > 0
+  LET l == DecidedPrefix(i)
+      d == IF Mutation = "ReadOnlyTruncates"
+           THEN [promise |-> promise[i], n_accepted |-> n_accepted[i], log |-> l,
+                 decided_idx |-> Len(l)]
+           ELSE DurableOf(i)
+  IN
   /\ i \in Nodes
-  /\ Votes(i) /\ ~recovering[i]
-  /\ role[i] = "Follower"
+  /\ Votes(i)
   /\ ~read_only[i]
-  /\ Cardinality({k \in Servers : read_only[k]}) < MaxReadOnly
+  /\ read_only_entries < MaxReadOnly
+  /\ read_only_entries' = read_only_entries + 1
   /\ read_only' = [read_only EXCEPT ![i] = TRUE]
-  /\ IF Mutation = "ReadOnlyTruncates"
-     THEN /\ log' = [log EXCEPT ![i] = l]
-          /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(l)]
-          /\ decided_idx' = [decided_idx EXCEPT ![i] = Len(l)]
-     ELSE UNCHANGED <<log, accepted_idx, decided_idx>>
-  /\ UNCHANGED <<promise, n_accepted, role, phase, current_seq_num, cached_promise_message,
-                 buffered_proposals, leader_state, chan, env, proposed, recovery, rolled_back,
-                 client, readvars, buffered_stopsign, running, first_log, reconfigurations,
-                 force_single>>
+  /\ Restart({i}, [k \in {i} |-> d], {i}, Recovery)
+  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+                 rolled_back, client, running, first_log, reconfigurations, force_single,
+                 deactivated, halts, stage1_ghost>>
   /\ GhostUpdate
 
-\* The operator ends stage 1.
 \* @type: Int => Bool;
 LeaveReadOnly(i) ==
   /\ read_only[i]
   /\ read_only' = [read_only EXCEPT ![i] = FALSE]
+  /\ stage1_ghost' = [stage1_ghost EXCEPT !.node = i, !.leave_decided = Len(decided_history)]
+  /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : deactivated[k]}, Recovery)
+  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+                 rolled_back, client, running, first_log, reconfigurations, force_single,
+                 deactivated, halts, read_only_entries>>
+  /\ GhostUpdate
+
+\* @type: Int => Bool;
+Halt(i) ==
+  /\ i \in Nodes
+  /\ halts < MaxHalt
+  /\ halts' = halts + 1
+  /\ running' = running \ {i}
+  /\ stage1_ghost' = IF \E k \in Servers \ {i} : read_only[k]
+                     THEN [stage1_ghost EXCEPT !.down = @ \cup {i}]
+                     ELSE stage1_ghost
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
-                 buffered_stopsign, running, first_log, reconfigurations, force_single>>
+                 buffered_stopsign, first_log, reconfigurations, force_single, read_only,
+                 deactivated, read_only_entries>>
+
+\* @type: Int => Bool;
+Resume(i) ==
+  /\ i \in Nodes \ running
+  /\ i # force_single.node
+  /\ running' = running \cup {i}
+  /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : Quiet(k)},
+             Recovery /\ Mutation # "ResumeWithoutRecovery")
+  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+                 rolled_back, client, first_log, reconfigurations, force_single, read_only,
+                 deactivated, halts, read_only_entries, stage1_ghost>>
+  /\ GhostUpdate
 
 ----------------------------------------------------------------------------
 Next ==
@@ -1612,6 +1689,9 @@ Next ==
   \/ \E i \in running : LeaderCountsOwnPromise(i) \/ LeaderCountsOwnAccepted(i)
   \/ \E i \in running, s \in NextConfigNodes \ running : ForceSingle(i, s)
   \/ \E i \in running : EnterReadOnly(i) \/ LeaveReadOnly(i)
+  \/ \E s \in running, k \in Nodes : SendDeactivated(s, k)
+  \/ \E i \in running : Halt(i)
+  \/ \E i \in Nodes \ running : Resume(i)
 
 Spec == Init /\ [][Next]_vars
 
@@ -1632,24 +1712,30 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* (ForceKeepsDecided).
 \* ForceDecidedOnly: ForceSingle copies only the decided prefix of the old
 \* node (S2Force).
-\* OldNodeVotesAfterForce: after ForceSingle the other old nodes keep their
-\* state and their vote (S1Running).
+\* OldNodeVotesAfterForce: ForceSingle runs while a majority of the old
+\* configuration is up (S1Running).
 \* ReadOnlyProposes: a node in stage 1 appends a proposal to its own log
 \* (ReadOnlyWritesNothing).
 \* ReadOnlyTruncates: EnterReadOnly cuts the log of the node to its decided
 \* prefix (ReadOnlyLosesNothing).
+\* DeactivatedStillVotes: a node with deactivated handles each message as
+\* before (DeactivatedNodeIsSilent).
+\* ResumeWithoutRecovery: an old node that resumes skips Recovery (NoTwoWriters).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
                      "AppendAfterStopSign", "BuildBeforeStopSignDecided",
                      "ForceWithoutLog", "ForceDecidedOnly", "OldNodeVotesAfterForce",
-                     "ReadOnlyProposes", "ReadOnlyTruncates"}
+                     "ReadOnlyProposes", "ReadOnlyTruncates",
+                     "DeactivatedStillVotes", "ResumeWithoutRecovery"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
 ASSUME MaxForceSingle \in {0, 1}
 ASSUME MaxForceSingle > 0 => SingleNode /\ Cardinality(NextConfigNodes) = 1
 ASSUME MaxReadOnly \in Nat
+ASSUME MaxHalt \in Nat
+ASSUME StaleReadNode \in BOOLEAN
 ASSUME ClientSessions \in BOOLEAN
 ASSUME ReadIndex \in BOOLEAN
 ASSUME NextConfigNodes \cap Nodes = {}
@@ -1728,12 +1814,15 @@ S1Running == \A i, j \in running :
                Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i), DecidedPrefix(j))
 
 \* @type: Bool;
-ForceRetiresOldNodes == force_single.node # 0 => Nodes \cap running = {}
+ForceRetiresOldNodes == force_single.node \notin running
 
 \* @type: Bool;
 ForceKeepsDecided == force_single.node # 0 =>
                        \A s \in NextConfigNodes \cap running :
                          IsPrefix(force_single.decided, DecidedPrefix(s))
+
+\* @type: Bool;
+S1Force == NoForceLoss => S1Running
 
 \* @type: Bool;
 S2Force == NoForceLoss => S2
@@ -1752,22 +1841,37 @@ SingleNodeDecidesNothing == \A s \in NextConfigNodes : decided_idx[s] <= Len(fir
 ForceWarning == force_single.node # 0 /\ Len(force_single.history) <= Len(force_single.log)
                   => NoForceLoss
 
-\* Stage 1. The log of a node in stage 1 changes only in a step that takes
-\* a message of the protocol from a leader off the channel to the node. A
-\* wipe and a rollback are faults of the disk and are outside this property.
-LeaderLogMessages == {"AcceptSync", "AcceptDecide", "AcceptStopSign"}
-\* @type: (Int, Int) => Bool;
-TakesFromLeader(j, i) ==
-  /\ chan[<<j, i>>] # <<>>
-  /\ chan'[<<j, i>>] = Tail(chan[<<j, i>>])
-  /\ LET m == Head(chan[<<j, i>>]) IN
-       \/ m.type \in LeaderLogMessages /\ BallotPid(m.n) = j
-       \/ m.type = "RecoveryResponse"
+\* @type: Int => Bool;
+SendsNothing(i) ==
+  duplicates' = duplicates => \A p \in Pairs : p[1] = i => Len(chan'[p]) <= Len(chan[p])
 
 ReadOnlyWritesNothing ==
   [][\A i \in Servers :
-       read_only[i] /\ log'[i] # log[i] /\ wipes' = wipes /\ rolled_back' = rolled_back
-         => \E p \in Pairs : p[2] = i /\ TakesFromLeader(p[1], i)]_vars
+       read_only[i] /\ read_only'[i] /\ wipes' = wipes /\ rolled_back' = rolled_back
+         => DurableOfP(i) = DurableOf(i) /\ SendsNothing(i)]_vars
+
+DeactivatedNodeIsSilent ==
+  [][\A i \in Nodes :
+       /\ deactivated'[i] => role'[i] = "Follower"
+       /\ deactivated[i] => SendsNothing(i)]_vars
+
+\* @type: Bool;
+NoTwoWriters ==
+  force_single.node # 0 =>
+    ~ /\ \E s \in NextConfigNodes : decided_idx[s] > Len(first_log[s])
+      /\ \E k \in Nodes : Votes(k) /\ decided_idx[k] > Len(force_single.history)
+
+\* @type: Bool;
+ClusterDecidesNothingAfterStage1 ==
+  ~ /\ stage1_ghost.leave_decided >= 0
+    /\ Cardinality(stage1_ghost.down) >= Cardinality(Nodes) \div 2 + 1
+    /\ Nodes \subseteq running
+    /\ decided_idx[stage1_ghost.node] > stage1_ghost.leave_decided
+
+\* @type: Bool;
+EachReadSeesDecided == \A r \in DOMAIN reads :
+                         reads[r].state = "done"
+                           => IsPrefix(reads[r].decided_at_start, reads[r].result)
 
 \* Stage 1 is reversible: S2 holds while nodes crash and come back with
 \* their durable state and one node is in stage 1.

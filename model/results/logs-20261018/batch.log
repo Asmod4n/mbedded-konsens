@@ -1,0 +1,30 @@
+MC_mut_DeactivatedStillVotes 20261017T220025Z 20261017T220654Z Error: Action property DeactivatedNodeIsSilent is violated. exit 13 
+MC_mut_ResumeWithoutRecovery 20261017T220655Z 20261017T222748Z exit 143 
+MC_mut_E1 20261017T222751Z 20261017T222806Z Error: Invariant E1 is violated. exit 12 
+MC_mut_R1 20261017T222807Z 20261017T222811Z Error: Invariant R1 is violated. exit 12 
+MC_mut_S1 20261017T222811Z 20261017T222857Z Error: Invariant S1 is violated. exit 12 
+MC_mut_S2b 20261017T222857Z 20261017T222913Z Error: Invariant S2b is violated. exit 12 
+MC_mut_S3 20261017T222913Z 20261017T222921Z Error: Invariant S3 is violated. exit 12 
+MC_mut_S4 20261017T222922Z 20261017T222925Z Error: Invariant S4 is violated. exit 12 
+MC_mut_S5 20261017T222925Z 20261017T222932Z Error: Invariant S5 is violated. exit 12 
+MC_mut_S6 20261017T222932Z 20261017T222936Z Error: Invariant S6 is violated. exit 12 
+MC_mut_ForceWithoutLog 20261017T222936Z 20261017T223434Z Error: Invariant ForceKeepsDecided is violated. exit 12 
+MC_mut_ForceDecidedOnly 20261017T223434Z 20261017T225758Z exit 143 
+MC_mut_OldNodeVotesAfterForce 20261017T225806Z 20261017T230842Z exit 143 
+MC_mut_ReadOnlyProposes 20261017T230845Z 20261017T230847Z Error: Action property ReadOnlyWritesNothing is violated. exit 13 
+MC_mut_ReadOnlyTruncates 20261017T230848Z 20261017T232324Z Error: Invariant ReadOnlyLosesNothing is violated. exit 12 
+MC_stale_reach 20261017T232324Z 20261017T232326Z Error: Invariant NoStaleRead is violated. exit 12 
+MC_stale 20261017T232326Z 20261017T235157Z Model checking completed. No error has been found. exit 0 
+MC_stale_reach 20261017T235206Z 20261017T235210Z Error: Invariant EachReadSeesDecided is violated. exit 12 
+MC_mut_OldNodeVotesAfterForce 20261017T235210Z 20261017T235630Z Error: Invariant S1Running is violated. exit 12 
+sim_MC_mut_ResumeWithoutRecovery 20261018T001154Z 20261018T001636Z Error: Invariant NoTwoWriters is violated. exit 255 
+sim_MC_d2_norecovery 20261018T001636Z 20261018T001942Z Error: Invariant NoTwoWriters is violated. exit 12 
+MC_c 20261018T002318Z 20261018T005410Z exit 143 
+MC_c 20261018T005435Z 20261018T015257Z exit 124 
+MC_d0 20261018T015305Z 20261018T021400Z exit 143 
+MC_d1 20261018T021405Z 20261018T022448Z exit 143 
+MC_d2 20261018T022450Z 20261018T023400Z exit 143 
+MC_d0 20261018T024425Z 20261018T034246Z exit 124 
+MC_d1 20261018T034257Z 20261018T035352Z exit 143 
+MC_c 20261018T035354Z 20261018T045217Z exit 124 
+sim_MC_d2 20261018T045225Z 20261018T045226Z exit 150 
