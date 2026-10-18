@@ -173,7 +173,9 @@ VARIABLES
   \* @type: Int;
   read_only_entries,
   \* @type: Int -> $stage1Ghost;
-  stage1_ghost
+  stage1_ghost,
+  \* @type: Int -> Int;
+  build_source
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -184,7 +186,7 @@ recovery == <<recovering, nonce, recovery_responses>>
 rollback == <<rolled_back, past_durable>>
 readvars == <<reads, read_pending, read_round>>
 reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
-              halts, read_only_entries, stage1_ghost>>
+              halts, read_only_entries, stage1_ghost, build_source>>
 vars     == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
               buffered_stopsign, reconfig>>
 
@@ -490,6 +492,7 @@ Init ==
   /\ halts = 0
   /\ read_only_entries = 0
   /\ stage1_ghost = [i \in Nodes |-> NoStage1Ghost]
+  /\ build_source = [s \in NextConfigNodes |-> 0]
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -1064,7 +1067,7 @@ Receive(j, i) ==
            ELSE /\ UNCHANGED deactivated
                 /\ Dispatch(i, j, m, c)
   /\ UNCHANGED <<env, proposed, rolled_back, client, running, first_log, reconfigurations,
-                 force_single, read_only, halts, read_only_entries, stage1_ghost>>
+                 force_single, read_only, halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
 
 \* leader.rs:16-60 handle_leader, own pid only (no BLE).
@@ -1215,7 +1218,7 @@ Wipe(i) ==
   /\ UNCHANGED reads
   /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
                  nonce, rolled_back, client, running, first_log, reconfigurations,
-                 force_single, read_only, halts, read_only_entries, stage1_ghost>>
+                 force_single, read_only, halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
@@ -1461,7 +1464,7 @@ ReadStart(r, i) ==
   /\ ~recovering[i]
   /\ read_only[i] \/ ~deactivated[i]
   /\ reads[r].state = "none"
-  /\ SingleNode /\ ClusterNodes(i) = {i} => SingleNodeServes(i)
+  /\ SingleNode /\ ClusterNodes(i) = {i} => SingleNodeServes(i) \/ Mutation = "ReadStartBeforeServing"
   /\ \E ok \in IF StaleReadNode THEN BOOLEAN ELSE {FALSE} :
      IF read_only[i] \/ (ok /\ ~InStage2(i))
      THEN /\ reads' = [reads EXCEPT ![r] = [started(ok) EXCEPT !.state = "done",
@@ -1542,7 +1545,8 @@ Reconfigure(i) ==
      ELSE /\ ForwardStopSign(i, chan)
           /\ UNCHANGED <<durable, volatile>>
   /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, running, first_log, force_single,
-                 read_only, deactivated, halts, read_only_entries, stage1_ghost>>
+                 read_only, deactivated, halts, read_only_entries, stage1_ghost,
+                 build_source>>
   /\ GhostUpdate
 
 \* @type: (Int, Int) => Bool;
@@ -1559,6 +1563,7 @@ BuildForServer(i, j) ==
   /\ decided_idx' = [decided_idx EXCEPT ![i] = Len(l)]
   /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(l)]
   /\ first_log' = [first_log EXCEPT ![i] = l]
+  /\ build_source' = [build_source EXCEPT ![i] = j]
   /\ UNCHANGED <<promise, n_accepted, role, phase, current_seq_num, cached_promise_message,
                  buffered_proposals, leader_state, chan, env, proposed, recovery, rolled_back,
                  client, readvars, buffered_stopsign, reconfigurations, force_single,
@@ -1624,7 +1629,7 @@ ForceSingle(i, s) ==
   /\ UNCHANGED <<promise, n_accepted, role, phase, current_seq_num, cached_promise_message,
                  buffered_proposals, leader_state, chan, env, proposed, recovery, rolled_back,
                  client, readvars, buffered_stopsign, reconfigurations, read_only, deactivated,
-                 halts, read_only_entries, stage1_ghost>>
+                 halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
 
 \* @type: (Int, Int) => Bool;
@@ -1654,7 +1659,7 @@ EnterReadOnly(i) ==
   /\ Restart({i}, [k \in {i} |-> d], {i}, Recovery)
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
-                 deactivated, halts, stage1_ghost>>
+                 deactivated, halts, stage1_ghost, build_source>>
   /\ GhostUpdate
 
 \* @type: Int => Bool;
@@ -1666,7 +1671,7 @@ LeaveReadOnly(i) ==
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : deactivated[k]}, Recovery)
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
-                 deactivated, halts, read_only_entries>>
+                 deactivated, halts, read_only_entries, build_source>>
   /\ GhostUpdate
 
 \* @type: Int => Bool;
@@ -1680,7 +1685,7 @@ Halt(i) ==
                                        ELSE stage1_ghost[k]]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
                  buffered_stopsign, first_log, reconfigurations, force_single, read_only,
-                 deactivated, read_only_entries>>
+                 deactivated, read_only_entries, build_source>>
 
 \* @type: Int => Bool;
 Resume(i) ==
@@ -1691,7 +1696,7 @@ Resume(i) ==
              Recovery /\ Mutation # "ResumeWithoutRecovery")
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, first_log, reconfigurations, force_single, read_only,
-                 deactivated, halts, read_only_entries, stage1_ghost>>
+                 deactivated, halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
 
 ----------------------------------------------------------------------------
@@ -1758,6 +1763,8 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* ReadBeforeServing: ReadReply answers after a crash, a rollback or a new
 \* ballot since the index step (R1).
 \* StopSignLost: a wipe clears deactivated (DeactivatedStays).
+\* ReadStartBeforeServing: a leader of a configuration with one node starts
+\* a read before it serves (ReadStartOnlyWhenServing).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
@@ -1766,7 +1773,7 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "ReadOnlyProposes", "ReadOnlyTruncates",
                      "DeactivatedStillVotes", "ResumeWithoutRecovery",
                      "BuildFromRecovering", "ForceWithoutStage1", "ForceAtTwoNodes",
-                     "ReadBeforeServing", "StopSignLost"}
+                     "ReadBeforeServing", "StopSignLost", "ReadStartBeforeServing"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -1911,6 +1918,36 @@ DeactivatedNodeIsSilent ==
        /\ deactivated'[i] => role'[i] = "Follower"
        /\ deactivated[i] => SendsNothing(i)]_vars
 
+ForceOnlyFromStage1 ==
+  [][force_single.node = 0 /\ force_single'.node # 0 => read_only[force_single'.node]]_vars
+
+ReadOnlyEndsBeforeForce ==
+  [][\A i \in Nodes : read_only[i] /\ ~read_only'[i] => force_single.node = 0]_vars
+
+DeactivatedKeepsDurable ==
+  [][\A i \in Nodes :
+       deactivated[i] /\ wipes' = wipes /\ rolled_back' = rolled_back
+         => DurableOfP(i) = DurableOf(i)]_vars
+
+BuildOnlyFromRunning ==
+  [][\A s \in NextConfigNodes :
+       build_source'[s] # build_source[s] =>
+         LET j == build_source'[s] IN j \in running /\ ~recovering[j]]_vars
+
+ReplyOnlyIfUnchanged ==
+  [][\A r \in DOMAIN reads :
+       reads[r].state = "indexed" /\ reads'[r].state = "done" =>
+         LET i == reads[r].node IN
+         /\ reads[r].crashes = crashes
+         /\ reads[r].rolled_back = rolled_back
+         /\ reads[r].ballot = promise[i]]_vars
+
+ReadStartOnlyWhenServing ==
+  [][\A r \in DOMAIN reads :
+       reads[r].state = "none" /\ reads'[r].state # "none" =>
+         LET i == reads'[r].node IN
+         SingleNode /\ ClusterNodes(i) = {i} => SingleNodeServes(i)]_vars
+
 DeactivatedStays == [][\A i \in Servers : deactivated[i] => deactivated'[i]]_vars
 
 \* @type: Bool;
@@ -1929,8 +1966,14 @@ ClusterDecidesNothingAfterStage1 ==
 
 \* @type: Bool;
 EachReadSeesDecided == \A r \in DOMAIN reads :
-                         reads[r].state = "done"
+                         reads[r].state = "done" /\ ~reads[r].stale
                            => IsPrefix(reads[r].decided_at_start, reads[r].result)
+
+\* @type: Bool;
+StaleReadIsMarked == \A r \in DOMAIN reads :
+                       reads[r].state = "done"
+                       /\ ~IsPrefix(reads[r].decided_at_start, reads[r].result)
+                         => reads[r].stale
 
 \* Stage 1 is reversible: S2 holds while nodes crash and come back with
 \* their durable state and one node is in stage 1.
