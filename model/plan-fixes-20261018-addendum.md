@@ -14,24 +14,37 @@ checks a far consequence, such as NoTwoWriters, stays as a second check.
 
 ## 2. Direct properties
 
-| Mutation | Guard | Direct property |
-|---|---|---|
-| ForceWithoutStage1 | `read_only[i]` in ForceSingle | ForceOnlyFromStage1: a step that sets `force_single.node` to i starts with `read_only[i]`. |
-| ForceAtTwoNodes | `force_single.node = 0` | ForceAtOneNode: `force_single.node` changes at most once from 0. |
-| DeactivatedStillVotes | `~deactivated[i]` in the voting actions | DeactivatedNodeIsSilent, with MaxBallot 2 so that a ballot can start after stage 2. |
-| BuildFromRecovering | `Votes(j) /\ ~recovering[j]` in BuildForServer | BuildOnlyFromVoter: a step that builds node s from j starts with `Votes(j) /\ ~recovering[j]`. |
-| ReadBeforeServing | `SingleNodeServes` in ReadStart | ReadOnlyWhenServing: a step that starts a read at the single node starts with `SingleNodeServes(i)`. |
-| StopSignLost | resend of a buffered StopSign | StopSignReachesNewConfig: liveness is too slow here. In its place, a ghost counter of StopSigns lost without a later resend, with an invariant that it is 0 when a new configuration decides. |
+This version applies the review `model/review-plan-fixes-20261018-addendum.md`
+(approve with changes). The mutations as built differ from the names of
+the main plan in three places; the table follows the built mutations.
 
-Each direct property needs a ghost field that records which action ran
-and with which arguments, when the action cannot be read from the
-changed variables.
+| Mutation | Mutated place | Direct property |
+|---|---|---|
+| ForceWithoutStage1 | `read_only[i]` in ForceSingle | ForceOnlyFromStage1 == `[][force_single.node = 0 /\ force_single'.node # 0 => read_only[force_single'.node]]_vars` |
+| ForceAtTwoNodes | LeaveReadOnly after stage 2 | ReadOnlyEndsBeforeForce == `[][\A i \in Nodes : read_only[i] /\ ~read_only'[i] => force_single.node = 0]_vars`, with MaxReadOnly 2 |
+| DeactivatedStillVotes | `~deactivated[i]` at Receive and voting | DeactivatedNodeIsSilent and DeactivatedKeepsDurable (durable state of a deactivated node changes only by wipe or rollback), with MaxCrash 1 and MaxBallot 1 |
+| BuildFromRecovering | `j \in running /\ ~recovering[j]` in BuildForServer | BuildOnlyFromRunning, over a new ghost `build_source`, which only BuildForServer sets |
+| ReadBeforeServing | the unchanged-check of ReadReply | ReplyOnlyIfUnchanged: a read that goes from indexed to done has the crash count, rollback count and ballot of its index step, with MaxCrash 1 |
+| StopSignLost | `deactivated` cleared on wipe | DeactivatedStays (already in place). The item on a lost StopSign is dropped: one state cannot record a future resend. |
+
+Only BuildOnlyFromRunning needs a ghost field. The ghost goes into
+`reconfig`, `vars`, the view and every explicit UNCHANGED list.
+
+The guard `SingleNodeServes` in ReadStart has no mutation yet. It gets
+one: ReadStartBeforeServing, with SingleNode TRUE.
+
+A direct property that restates its guard shows that the step without
+the guard is reachable. It does not show that the guard is needed.
+ForceWithoutStage1 also runs against every safety property of the d
+cfgs. If none breaks, the owner decides if the guard stays.
+
+Each new property also enters the unmutated d cfgs.
 
 ## 3. Runs
 
-- Each mutation: simulation, `-deadlock -depth 60`, 15 min.
+- Each mutation: `-simulate -deadlock -depth 60`, 15 min.
 - The unmutated model: the same simulation with all direct properties,
-  then a coverage run that shows each guarded action fires.
+  then a `-coverage 1` run that shows each guarded action fires.
 
 ## 4. What this addendum does not do
 
