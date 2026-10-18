@@ -34,6 +34,8 @@ OVERRIDE_MaxForceSingle == 0
 OVERRIDE_MaxReadOnly == 0
 OVERRIDE_MaxHalt == 0
 OVERRIDE_StaleReadNode == FALSE
+OVERRIDE_MaxHalt == 0
+OVERRIDE_StaleReadNode == FALSE
 
 (* The disjuncts of Next that the constants above enable. Each other        *)
 (* disjunct of Next needs a crash, a wipe, a loss, a duplicate, a timeout, a *)

@@ -23,12 +23,13 @@ CONSTANTS
   \* @typeAlias: response = {from: Int, promise: Int, primary: Bool, n_accepted: Int,
   \*   log: Seq($entry), decided_idx: Int};
   \* @typeAlias: read = {state: Str, node: Int, decided_at_start: Seq($entry),
-  \*   read_index: Int, result: Seq($entry), stale: Bool, contract_stale_ok: Bool};
+  \*   read_index: Int, result: Seq($entry), stale: Bool, contract_stale_ok: Bool,
+  \*   crashes: Int, rolled_back: Set(Int), ballot: Int, decided_new_at_start: Seq($entry)};
   \* @typeAlias: round = {n: Int, id: Int, reads: Set(Int), read_index: Int, acks: Set(Int)};
   \* @typeAlias: session = {open: Bool, request_number: Int, reply: Int};
   \* @typeAlias: forceSingle = {node: Int, log: Seq($entry), decided: Seq($entry),
   \*   history: Seq($entry)};
-  \* @typeAlias: stage1Ghost = {down: Set(Int), node: Int, leave_decided: Int};
+  \* @typeAlias: stage1Ghost = {down: Set(Int), leave_decided: Int};
   \* @type: Set(Int);
   Nodes,
   \* @type: Set($entry);
@@ -171,7 +172,7 @@ VARIABLES
   halts,
   \* @type: Int;
   read_only_entries,
-  \* @type: $stage1Ghost;
+  \* @type: Int -> $stage1Ghost;
   stage1_ghost
 
 durable  == <<promise, n_accepted, log, decided_idx>>
@@ -418,7 +419,9 @@ RecoveryComplete(rs, i) == Cardinality(rs) >= Majority(i) /\ RecoveryPrimaries(r
 (* reads[r].decided_at_start and reads[r].result are ghost values.          *)
 \* @type: $read;
 NoRead == [state |-> "none", node |-> 0, decided_at_start |-> <<>>,
-           read_index |-> 0, result |-> <<>>, stale |-> FALSE, contract_stale_ok |-> FALSE]
+           read_index |-> 0, result |-> <<>>, stale |-> FALSE, contract_stale_ok |-> FALSE,
+           crashes |-> 0, rolled_back |-> {}, ballot |-> DefaultBallot,
+           decided_new_at_start |-> <<>>]
 \* @type: $round;
 NoRound == [n |-> DefaultBallot, id |-> 0, reads |-> {}, read_index |-> 0, acks |-> {}]
 ReadMessages == {"ReadIndex", "Heartbeat", "HeartbeatAck", "ReadIndexReply"}
@@ -426,7 +429,7 @@ ReadMessages == {"ReadIndex", "Heartbeat", "HeartbeatAck", "ReadIndexReply"}
 \* @type: $forceSingle;
 NoForceSingle == [node |-> 0, log |-> <<>>, decided |-> <<>>, history |-> <<>>]
 \* @type: $stage1Ghost;
-NoStage1Ghost == [down |-> {}, node |-> 0, leave_decided |-> -1]
+NoStage1Ghost == [down |-> {}, leave_decided |-> -1]
 \* @type: Int => Bool;
 InStage2(k) == force_single.node # 0 /\ k \in NextConfigNodes
 \* @type: Int => Bool;
@@ -486,7 +489,7 @@ Init ==
   /\ deactivated = [i \in Servers |-> FALSE]
   /\ halts = 0
   /\ read_only_entries = 0
-  /\ stage1_ghost = NoStage1Ghost
+  /\ stage1_ghost = [i \in Nodes |-> NoStage1Ghost]
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -939,7 +942,9 @@ HandleHeartbeatAck(i, j, m, c) ==
           /\ UNCHANGED <<durable, volatile, reads, read_pending>>
      ELSE /\ reads' = [r \in DOMAIN reads |->
                          IF r \in own
-                         THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = rd.read_index]
+                         THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = rd.read_index,
+                                               !.crashes = crashes, !.rolled_back = rolled_back,
+                                               !.ballot = promise[i]]
                          ELSE reads[r]]
           /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
           /\ chan' = Send(c, i, [k \in dst |->
@@ -953,7 +958,9 @@ HandleHeartbeatAck(i, j, m, c) ==
 HandleReadIndexReply(i, j, m, c) ==
   /\ reads' = [r \in DOMAIN reads |->
                  IF r \in m.reads /\ reads[r].state = "pending" /\ reads[r].node = i
-                 THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = m.read_index]
+                 THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = m.read_index,
+                                       !.crashes = crashes, !.rolled_back = rolled_back,
+                                       !.ballot = promise[i]]
                  ELSE reads[r]]
   /\ chan' = c
   /\ UNCHANGED <<durable, volatile, read_pending, read_round>>
@@ -1203,7 +1210,8 @@ Wipe(i) ==
   /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
   /\ read_pending' = [read_pending EXCEPT ![i] = {}]
   /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
-  /\ deactivated' = [deactivated EXCEPT ![i] = FALSE]
+  /\ deactivated' = IF Mutation = "StopSignLost" THEN [deactivated EXCEPT ![i] = FALSE]
+                    ELSE deactivated
   /\ UNCHANGED reads
   /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
                  nonce, rolled_back, client, running, first_log, reconfigurations,
@@ -1434,11 +1442,18 @@ ExpireSession(i, s) ==
 ----------------------------------------------------------------------------
 (* Read index actions, run (e). *)
 
+\* @type: Seq($entry);
+DecidedNew ==
+  LET ns == {DecidedPrefix(s) : s \in NextConfigNodes \cap running}
+  IN IF force_single.node = 0 \/ ns = {} THEN <<>>
+     ELSE CHOOSE l \in ns : \A x \in ns : Len(x) <= Len(l)
+
 \* Raft 6.4.1
 ReadStart(r, i) ==
   LET \* @type: Bool => $read;
       started(ok) == [NoRead EXCEPT !.state = "pending", !.node = i,
                                     !.decided_at_start = decided_history,
+                                    !.decided_new_at_start = DecidedNew,
                                     !.contract_stale_ok = ok]
       ld          == BallotPid(promise[i])
   IN
@@ -1498,6 +1513,10 @@ ReadReply(r) ==
   /\ ReadIndex
   /\ reads[r].state = "indexed"
   /\ decided_idx[i] >= reads[r].read_index
+  /\ \/ Mutation = "ReadBeforeServing"
+     \/ /\ reads[r].crashes = crashes
+        /\ reads[r].rolled_back = rolled_back
+        /\ reads[r].ballot = promise[i]
   /\ reads' = [reads EXCEPT ![r].state = "done", ![r].result = DecidedPrefix(i)]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client,
                  read_pending, read_round, buffered_stopsign, reconfig>>
@@ -1531,7 +1550,8 @@ BuildForServer(i, j) ==
   LET l == DecidedPrefix(j) IN
   /\ i \in NextConfigNodes \ running
   /\ j \in Nodes
-  /\ Votes(j) /\ ~recovering[j]
+  /\ (j \in running /\ ~recovering[j]) \/ Mutation = "BuildFromRecovering"
+  /\ Votes(j)
   /\ ~read_only[j] /\ ~deactivated[j]
   /\ IsReconfigured(j) \/ Mutation = "BuildBeforeStopSignDecided"
   /\ running' = running \cup {i}
@@ -1552,6 +1572,9 @@ BuildForServer(i, j) ==
 \* @type: Int => Bool;
 LeaderCountsOwnPromise(i) ==
   /\ SingleNode
+  /\ ClusterNodes(i) = {i}
+  /\ ~deactivated[i] \/ Mutation = "DeactivatedStillVotes"
+  /\ ~read_only[i]
   /\ ~recovering[i]
   /\ role[i] = "Leader" /\ phase[i] = "Prepare"
   /\ Cardinality(Promised(leader_state[i])) >= Majority(i)
@@ -1564,6 +1587,9 @@ LeaderCountsOwnPromise(i) ==
 LeaderCountsOwnAccepted(i) ==
   LET own == leader_state[i].accepted_indexes[i] IN
   /\ SingleNode
+  /\ ClusterNodes(i) = {i}
+  /\ ~deactivated[i] \/ Mutation = "DeactivatedStillVotes"
+  /\ ~read_only[i]
   /\ ~recovering[i]
   /\ Votes(i)
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
@@ -1586,7 +1612,7 @@ ForceSingle(i, s) ==
   /\ force_single.node = 0
   /\ i \in Nodes /\ s \in NextConfigNodes \ running
   /\ Votes(i) /\ ~recovering[i]
-  /\ read_only[i]
+  /\ read_only[i] \/ Mutation = "ForceWithoutStage1"
   /\ Cardinality(Nodes \ running) >= Majority(i) \/ Mutation = "OldNodeVotesAfterForce"
   /\ force_single' = [node |-> i, log |-> log[i], decided |-> DecidedPrefix(i),
                       history |-> decided_history]
@@ -1618,6 +1644,7 @@ EnterReadOnly(i) ==
                  decided_idx |-> Len(l)]
            ELSE DurableOf(i)
   IN
+  /\ SingleNode
   /\ i \in Nodes
   /\ Votes(i)
   /\ ~read_only[i]
@@ -1633,8 +1660,9 @@ EnterReadOnly(i) ==
 \* @type: Int => Bool;
 LeaveReadOnly(i) ==
   /\ read_only[i]
+  /\ force_single.node = 0 \/ Mutation = "ForceAtTwoNodes"
   /\ read_only' = [read_only EXCEPT ![i] = FALSE]
-  /\ stage1_ghost' = [stage1_ghost EXCEPT !.node = i, !.leave_decided = Len(decided_history)]
+  /\ stage1_ghost' = [stage1_ghost EXCEPT ![i].leave_decided = Len(decided_history)]
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : deactivated[k]}, Recovery)
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
@@ -1647,9 +1675,9 @@ Halt(i) ==
   /\ halts < MaxHalt
   /\ halts' = halts + 1
   /\ running' = running \ {i}
-  /\ stage1_ghost' = IF \E k \in Servers \ {i} : read_only[k]
-                     THEN [stage1_ghost EXCEPT !.down = @ \cup {i}]
-                     ELSE stage1_ghost
+  /\ stage1_ghost' = [k \in Nodes |-> IF k # i /\ read_only[k]
+                                       THEN [stage1_ghost[k] EXCEPT !.down = @ \cup {i}]
+                                       ELSE stage1_ghost[k]]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
                  buffered_stopsign, first_log, reconfigurations, force_single, read_only,
                  deactivated, read_only_entries>>
@@ -1721,13 +1749,24 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* DeactivatedStillVotes: a node with deactivated handles each message as
 \* before (DeactivatedNodeIsSilent).
 \* ResumeWithoutRecovery: an old node that resumes skips Recovery (NoTwoWriters).
+\* BuildFromRecovering: BuildForServer takes a source that is halted or
+\* recovering (S6).
+\* ForceWithoutStage1: ForceSingle runs at a node that is not in stage 1
+\* (NoTwoWriters).
+\* ForceAtTwoNodes: a node leaves stage 1 after stage 2 at another node
+\* (NoTwoWriters).
+\* ReadBeforeServing: ReadReply answers after a crash, a rollback or a new
+\* ballot since the index step (R1).
+\* StopSignLost: a wipe clears deactivated (DeactivatedStays).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
                      "AppendAfterStopSign", "BuildBeforeStopSignDecided",
                      "ForceWithoutLog", "ForceDecidedOnly", "OldNodeVotesAfterForce",
                      "ReadOnlyProposes", "ReadOnlyTruncates",
-                     "DeactivatedStillVotes", "ResumeWithoutRecovery"}
+                     "DeactivatedStillVotes", "ResumeWithoutRecovery",
+                     "BuildFromRecovering", "ForceWithoutStage1", "ForceAtTwoNodes",
+                     "ReadBeforeServing", "StopSignLost"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -1813,6 +1852,23 @@ NoForceLoss == force_single.node = 0 \/ IsPrefix(force_single.history, force_sin
 S1Running == \A i, j \in running :
                Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i), DecidedPrefix(j))
 
+\* Run (d), case 2 with a loss. Among the new configuration, S1, S2 and R1
+\* hold after stage 2: decided prefixes agree, each starts with the log of
+\* the forced node, and a read sees each entry decided in the new
+\* configuration before it started.
+\* @type: Bool;
+S1New == \A i, j \in NextConfigNodes \cap running :
+           force_single.node # 0 => Compatible(DecidedPrefix(i), DecidedPrefix(j))
+
+\* @type: Bool;
+S2New == \A s \in NextConfigNodes \cap running :
+           force_single.node # 0 => Compatible(first_log[s], DecidedPrefix(s))
+
+\* @type: Bool;
+R1New == \A r \in DOMAIN reads :
+           reads[r].state = "done" /\ ~reads[r].stale /\ reads[r].node \in NextConfigNodes
+             => IsPrefix(reads[r].decided_new_at_start, reads[r].result)
+
 \* @type: Bool;
 ForceRetiresOldNodes == force_single.node \notin running
 
@@ -1855,6 +1911,8 @@ DeactivatedNodeIsSilent ==
        /\ deactivated'[i] => role'[i] = "Follower"
        /\ deactivated[i] => SendsNothing(i)]_vars
 
+DeactivatedStays == [][\A i \in Servers : deactivated[i] => deactivated'[i]]_vars
+
 \* @type: Bool;
 NoTwoWriters ==
   force_single.node # 0 =>
@@ -1863,10 +1921,11 @@ NoTwoWriters ==
 
 \* @type: Bool;
 ClusterDecidesNothingAfterStage1 ==
-  ~ /\ stage1_ghost.leave_decided >= 0
-    /\ Cardinality(stage1_ghost.down) >= Cardinality(Nodes) \div 2 + 1
-    /\ Nodes \subseteq running
-    /\ decided_idx[stage1_ghost.node] > stage1_ghost.leave_decided
+  \A k \in Nodes :
+    ~ /\ stage1_ghost[k].leave_decided >= 0
+      /\ Cardinality(stage1_ghost[k].down) >= Cardinality(Nodes) \div 2 + 1
+      /\ Nodes \subseteq running
+      /\ decided_idx[k] > stage1_ghost[k].leave_decided
 
 \* @type: Bool;
 EachReadSeesDecided == \A r \in DOMAIN reads :
