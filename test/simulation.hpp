@@ -237,8 +237,11 @@ struct world {
         const auto e = entry_of(next_value);
         note([&] { return std::string("append " + std::to_string(i + 1) + " value " + std::to_string(next_value)); });
         next_value += 1;
-        proposed.insert(next_value - 1);
-        REQUIRE(nodes[i].append(e));
+        const auto r = nodes[i].append(e);
+        REQUIRE((r || r.error() == konsens::client_errc::recovering));
+        if (r) {
+            proposed.insert(next_value - 1);
+        }
         collect(i);
     }
 

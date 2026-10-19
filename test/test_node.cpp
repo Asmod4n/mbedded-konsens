@@ -136,3 +136,51 @@ TEST_CASE("each client error has its own message") {
     CHECK(std::ranges::adjacent_find(messages) == messages.end());
     CHECK(std::ranges::find(messages, "Unknown client error") == messages.end());
 }
+
+// F4 of plan v0.1 at the node: a recovering node drops every message
+// except RecoveryResponse, BLE heartbeats included, and refuses each call
+// with recovering. Simulation seed 134 shows why the heartbeats count: the
+// leader 3 restarted, still answered heartbeats, so nodes 1 and 2 kept it
+// as leader, no node was a primary, and recovery waited forever. When the
+// restarted leader answers no heartbeat, nodes 1 and 2 elect a new leader,
+// whose answer completes the recovery.
+TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        nodes.push_back(*node_t::with(config_of(p), memory_storage{}, echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    REQUIRE(nodes[0].append(make_entry(1)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    REQUIRE(nodes[2].get_sequence_paxos().get_state() ==
+            std::pair{konsens::role::leader, konsens::phase::accept});
+    const memory_storage kept = nodes[2].get_sequence_paxos().get_internal_storage();
+    nodes[2] = *node_t::with(config_of(3), kept, echo{}, 1);
+    REQUIRE(nodes[2].get_sequence_paxos().recovering());
+    static_cast<void>(nodes[2].take_outgoing_messages());
+    REQUIRE(nodes[2].handle(konsens::ble_message{1, 3, konsens::heartbeat_request{1}}));
+    CHECK(nodes[2].take_outgoing_messages().empty());
+    const auto refused = [](const node_t::result& r) { return !r && r.error() == konsens::client_errc::recovering; };
+    CHECK(refused(nodes[2].append(make_entry(2))));
+    CHECK(refused(nodes[2].register_client(1)));
+    CHECK(refused(nodes[2].client_request(1, 1, 1, {std::byte{1}})));
+    CHECK(refused(nodes[2].client_query(1, {std::byte{1}})));
+    CHECK(refused(nodes[2].expire_session(1, 1)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(!nodes[2].get_sequence_paxos().recovering());
+    CHECK(nodes[0].get_sequence_paxos().get_promise().pid != 3);
+    REQUIRE(nodes[2].append(make_entry(2)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    for (const auto& n : nodes) {
+        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    }
+}

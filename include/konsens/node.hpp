@@ -54,13 +54,13 @@ public:
             config.resend_message_tick_timeout == 0) [[unlikely]] {
             throw std::logic_error("konsens: configuration_id and each tick timeout must not be 0");
         }
-        auto sp = sequence_paxos<S>::with({config.pid, config.peers}, std::move(internal_storage));
+        auto sp = sequence_paxos<S>::with({config.pid, config.peers}, std::move(internal_storage), nonce);
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
         }
         auto ble = ballot_leader_election::with(
             {config.configuration_id, config.pid, config.peers, config.leader_priority}, sp->get_promise());
-        return node(config, std::move(*sp), std::move(ble), std::move(machine), nonce);
+        return node(config, std::move(*sp), std::move(ble), std::move(machine));
     }
 
     result tick()
@@ -83,6 +83,9 @@ public:
         if (auto* p = std::get_if<paxos_message>(&m)) {
             return seq_paxos_.handle(std::move(*p));
         }
+        if (seq_paxos_.recovering()) {
+            return {};
+        }
         ble_.handle(std::get<ble_message>(m));
         return {};
     }
@@ -91,6 +94,9 @@ public:
 
     result register_client([[maybe_unused]] const std::uint64_t client_id)
     {
+        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            return r;
+        }
         return std::unexpected(make_error_code(client_errc::retry));
     }
 
@@ -98,17 +104,26 @@ public:
                           [[maybe_unused]] const std::uint64_t request_number,
                           [[maybe_unused]] std::vector<std::byte> payload)
     {
+        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            return r;
+        }
         return std::unexpected(make_error_code(client_errc::retry));
     }
 
     result client_query([[maybe_unused]] const std::uint64_t client_id,
                         [[maybe_unused]] std::vector<std::byte> payload)
     {
+        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            return r;
+        }
         return std::unexpected(make_error_code(client_errc::retry));
     }
 
     result expire_session([[maybe_unused]] const std::uint64_t client_id, [[maybe_unused]] const std::uint64_t session)
     {
+        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            return r;
+        }
         return std::unexpected(make_error_code(client_errc::retry));
     }
 
@@ -139,10 +154,9 @@ public:
     const M& get_state_machine() const { return machine_; }
 
 private:
-    node(const node_config& config, sequence_paxos<S> seq_paxos, ballot_leader_election ble, M machine,
-         const std::uint64_t nonce)
+    node(const node_config& config, sequence_paxos<S> seq_paxos, ballot_leader_election ble, M machine)
         : seq_paxos_(std::move(seq_paxos)), ble_(std::move(ble)), election_clock_{0, config.election_tick_timeout},
-          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce)
+          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine))
     {
     }
 
@@ -151,7 +165,6 @@ private:
     logical_clock election_clock_;
     logical_clock resend_message_clock_;
     M machine_;
-    std::uint64_t nonce_;
     std::vector<client_reply> client_replies_;
 };
 

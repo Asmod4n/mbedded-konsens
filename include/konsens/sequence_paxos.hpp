@@ -15,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include "konsens/client.hpp"
 #include "konsens/message.hpp"
 #include "konsens/storage.hpp"
 
@@ -182,7 +183,7 @@ public:
     using result = std::expected<void, std::error_code>;
 
     static std::expected<sequence_paxos, std::error_code> with(const sequence_paxos_config& config,
-                                                               S internal_storage)
+                                                               S internal_storage, const std::uint64_t nonce)
     {
         validate_cluster(config.pid, config.peers);
         const auto p = internal_storage.get_promise();
@@ -207,9 +208,11 @@ public:
         sp.decided_idx_ = *dec;
         sp.accepted_idx_ = *len;
         sp.leader_state_ = leader_state::with(*p, sp.nodes_);
+        sp.nonce_ = nonce;
         if (*p != ballot{}) {
             sp.state_ = {role::follower, phase::recover};
-            sp.send_preparereq_to_all_peers();
+            sp.recovering_ = true;
+            sp.send_recovery_to_all_peers();
         }
         return sp;
     }
@@ -220,6 +223,9 @@ public:
             return std::unexpected(*error_);
         }
         if (m.from == pid_ || !std::ranges::contains(peers_, m.from)) [[unlikely]] {
+            return {};
+        }
+        if (recovering_ && !std::holds_alternative<recovery_response>(m.msg)) {
             return {};
         }
         const node_id from = m.from;
@@ -244,8 +250,10 @@ public:
                 } else if constexpr (std::is_same_v<T, not_accepted>) {
                     handle_notaccepted(msg, from);
                     return {};
-                } else if constexpr (std::is_same_v<T, recovery> || std::is_same_v<T, recovery_response>) {
-                    return {};
+                } else if constexpr (std::is_same_v<T, recovery>) {
+                    return handle_recovery(msg, from);
+                } else if constexpr (std::is_same_v<T, recovery_response>) {
+                    return handle_recovery_response(std::move(msg), from);
                 } else if constexpr (std::is_same_v<T, read_index_request> || std::is_same_v<T, heartbeat> ||
                                      std::is_same_v<T, heartbeat_ack> || std::is_same_v<T, read_index_reply>) {
                     return {};
@@ -262,7 +270,7 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (n <= leader_state_.n_leader || n <= promise_) {
+        if (recovering_ || n <= leader_state_.n_leader || n <= promise_) {
             return {};
         }
         if (n.pid != pid_) {
@@ -288,6 +296,9 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
+        if (auto r = refuse_if_recovering(); !r) [[unlikely]] {
+            return r;
+        }
         if (state_ == std::pair{role::leader, phase::prepare}) {
             buffered_proposals_.push_back(std::move(e));
             return {};
@@ -305,6 +316,10 @@ public:
     {
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
+        }
+        if (recovering_) {
+            send_recovery_to_all_peers();
+            return {};
         }
         if (state_.first == role::leader) {
             if (state_.second == phase::prepare || state_.second == phase::accept) {
@@ -327,6 +342,14 @@ public:
         return {};
     }
 
+    result refuse_if_recovering() const
+    {
+        if (recovering_) [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::recovering));
+        }
+        return {};
+    }
+
     std::vector<paxos_message> take_outgoing_messages() { return std::exchange(outgoing_, {}); }
 
     std::expected<std::vector<entry>, std::error_code> read_decided_suffix(std::uint64_t from_idx) const
@@ -344,6 +367,7 @@ public:
     const S& get_internal_storage() const { return internal_storage_; }
     node_id get_pid() const { return pid_; }
     bool votes() const { return !error_; }
+    bool recovering() const { return recovering_; }
     std::optional<std::error_code> get_error() const { return error_; }
 
 private:
@@ -374,6 +398,13 @@ private:
     {
         for (const auto peer : peers_) {
             outgoing_.push_back({pid_, peer, prepare_req{promise_}});
+        }
+    }
+
+    void send_recovery_to_all_peers()
+    {
+        for (const auto peer : peers_) {
+            outgoing_.push_back({pid_, peer, recovery{nonce_}});
         }
     }
 
@@ -650,6 +681,63 @@ private:
         return {};
     }
 
+    result handle_recovery(const recovery& rec, node_id from)
+    {
+        const bool primary = state_ == std::pair{role::leader, phase::accept};
+        std::vector<entry> log;
+        if (primary) {
+            auto l = internal_storage_.get_entries(0, accepted_idx_);
+            if (!l) [[unlikely]] {
+                return stop_voting(l.error());
+            }
+            log = std::move(*l);
+        }
+        outgoing_.push_back({pid_, from,
+                             recovery_response{rec.nonce, promise_, primary, primary ? accepted_round_ : ballot{},
+                                               std::move(log), primary ? decided_idx_ : 0}});
+        return {};
+    }
+
+    result handle_recovery_response(recovery_response resp, node_id from)
+    {
+        if (!recovering_ || resp.nonce != nonce_) {
+            return {};
+        }
+        std::erase_if(recovery_responses_, [from](const auto& r) { return r.first == from; });
+        recovery_responses_.emplace_back(from, std::move(resp));
+        const auto highest = std::ranges::max(recovery_responses_ | std::views::values |
+                                              std::views::transform(&recovery_response::promise));
+        const auto l = std::ranges::find_if(recovery_responses_, [highest](const auto& r) {
+            return r.second.primary && r.second.promise == highest && highest.pid == r.first;
+        });
+        if (recovery_responses_.size() < leader_state_.majority() || l == recovery_responses_.end()) {
+            return {};
+        }
+        const auto pr = std::max(promise_, l->second.promise);
+        const auto n_accepted = l->second.n_accepted;
+        const auto decided_idx = std::max(decided_idx_, l->second.decided_idx);
+        const auto accepted_idx = l->second.log.size();
+        const std::array<storage_op, 4> ops{append_on_prefix{0, std::move(l->second.log)},
+                                            set_accepted_round{n_accepted}, set_decided_index{decided_idx},
+                                            set_promise{pr}};
+        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
+            return stop_voting(w.error());
+        }
+        promise_ = pr;
+        accepted_round_ = n_accepted;
+        decided_idx_ = decided_idx;
+        accepted_idx_ = accepted_idx;
+        state_ = {role::follower, phase::recover};
+        current_seq_num_ = {};
+        cached_promise_message_.reset();
+        buffered_proposals_.clear();
+        leader_state_ = leader_state::with(pr, nodes_);
+        recovering_ = false;
+        recovery_responses_.clear();
+        send_preparereq_to_all_peers();
+        return {};
+    }
+
     void handle_notaccepted(const not_accepted& not_acc, node_id from)
     {
         if (state_.first == role::leader && leader_state_.n_leader < not_acc.n) {
@@ -690,6 +778,9 @@ private:
     std::vector<entry> buffered_proposals_;
     std::vector<paxos_message> outgoing_;
     std::optional<std::error_code> error_;
+    bool recovering_{};
+    std::uint64_t nonce_{};
+    std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
 };
 
 }
