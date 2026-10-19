@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "konsens/node.hpp"
+#include "echo.hpp"
 
 // The simulation runs on each storage. A Cluster gives the storage type,
 // start(i, kept) gives the storage of node i, and stop(node) gives what a
@@ -42,7 +43,7 @@ constexpr std::size_t trace_tail = 400;
 enum class delivery { fifo, reorder };
 
 template <typename Cluster>
-using node_of = konsens::node<typename Cluster::storage_type>;
+using node_of = konsens::node<typename Cluster::storage_type, echo>;
 
 konsens::node_config config_of(node_id pid)
 {
@@ -80,9 +81,10 @@ node_id to_of(const message& m) { return std::visit([](const auto& x) { return x
 
 std::string name_of(const message& m)
 {
-    static constexpr std::array<const char*, 9> paxos{"prepare_req",   "prepare",  "promise",
-                                                      "accept_sync",   "accept_decide", "accepted",
-                                                      "decide",        "not_accepted",  "proposal_forward"};
+    static constexpr std::array<const char*, 15> paxos{
+        "prepare_req", "prepare",           "promise",            "accept_sync", "accept_decide",
+        "accepted",    "decide",            "not_accepted",       "proposal_forward", "recovery",
+        "recovery_response", "read_index_request", "heartbeat", "heartbeat_ack", "read_index_reply"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());
@@ -177,6 +179,7 @@ struct world {
     std::vector<std::string> trace;
     bool detailed = false;
     std::uint64_t next_value = 1;
+    std::uint64_t nonce = 0;
 
     template <typename F>
     void note(F make)
@@ -247,7 +250,8 @@ struct world {
             const node_t stopped = std::move(nodes[i]);
             return cluster.stop(stopped);
         }();
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)));
+        nonce += 1;
+        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), echo{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(decided_before, views[i].decided_prefix());
     }
@@ -340,7 +344,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed)
     world<Cluster> w;
     w.detailed = detailed;
     for (std::size_t i = 0; i < node_count; ++i) {
-        w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {})));
+        w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}), echo{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);

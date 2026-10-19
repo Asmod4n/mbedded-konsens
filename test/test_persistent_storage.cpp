@@ -211,3 +211,59 @@ TEST_CASE("a moved-from storage throws logic_error") {
     CHECK(moved.get_log_len() == 0u);
     CHECK_THROWS_AS((void)storage.get_log_len(), std::logic_error);
 }
+
+namespace {
+
+// One entry of each kind, each with every field that its kind carries set
+// to a value that is not zero, so that a field the encoding drops or moves
+// shows in the comparison.
+std::vector<konsens::entry> entries_of_each_kind() {
+    return {normal_entry("normal"),
+            {konsens::entry_kind::stop_sign, {}},
+            {.kind = konsens::entry_kind::register_client, .client_id = 0x0102030405060708, .pid = 3},
+            {konsens::entry_kind::client_request, bytes_of("request"), 1, 0x1112131415161718},
+            {konsens::entry_kind::client_request, {}, 2, 1},
+            {.kind = konsens::entry_kind::expire_session, .session = 0x2122232425262728}};
+}
+
+}
+
+// The client entries carry a session, a request number, a client id and a
+// pid beside the payload. Each kind must come back from the disk with the
+// same fields after a close and a reopen, and the CRC must cover them.
+TEST_CASE("an entry of each kind survives a close and a reopen") {
+    const temporary_directory dir;
+    const auto written = entries_of_each_kind();
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}};
+        REQUIRE(storage.write_atomically(ops).has_value());
+    }
+    const auto storage = open_storage(dir.path());
+    CHECK(storage.get_log_len() == written.size());
+    CHECK(storage.get_entries(0, written.size()) == written);
+    CHECK(storage.get_entries(2, 4) == std::vector<konsens::entry>{written[2], written[3]});
+}
+
+// A field that the kind of an entry does not carry is not stored. Such an
+// entry would come back different from the disk, so the write is a wrong
+// use and writes nothing.
+TEST_CASE("an entry with a field of another kind is a wrong use") {
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector<konsens::entry> wrong{
+        {konsens::entry_kind::normal, {}, 1},
+        {konsens::entry_kind::stop_sign, {}, 0, 0, 1},
+        {.kind = konsens::entry_kind::register_client, .session = 1, .client_id = 1, .pid = 1},
+        {.kind = konsens::entry_kind::client_request, .session = 1, .request_number = 1, .pid = 1},
+        {.kind = konsens::entry_kind::expire_session, .session = 1, .request_number = 1},
+        {static_cast<konsens::entry_kind>(0xff), {}},
+    };
+    for (const auto& e : wrong) {
+        const std::vector<konsens::storage_op> ops{konsens::append_entries{{e}}};
+        CHECK_THROWS_AS((void)storage.write_atomically(ops), std::logic_error);
+        const std::vector<konsens::storage_op> on_prefix{konsens::append_on_prefix{0, {e}}};
+        CHECK_THROWS_AS((void)storage.write_atomically(on_prefix), std::logic_error);
+    }
+    CHECK(storage.get_log_len() == 0u);
+}

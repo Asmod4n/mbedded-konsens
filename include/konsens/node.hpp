@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <stdexcept>
@@ -9,8 +10,10 @@
 #include <vector>
 
 #include "konsens/ballot_leader_election.hpp"
+#include "konsens/client.hpp"
 #include "konsens/message.hpp"
 #include "konsens/sequence_paxos.hpp"
+#include "konsens/state_machine.hpp"
 #include "konsens/storage.hpp"
 
 namespace konsens {
@@ -39,12 +42,13 @@ struct logical_clock {
     }
 };
 
-template <storage S>
+template <storage S, state_machine M>
 class node {
 public:
     using result = std::expected<void, std::error_code>;
 
-    static std::expected<node, std::error_code> with(const node_config& config, S internal_storage)
+    static std::expected<node, std::error_code> with(const node_config& config, S internal_storage, M machine,
+                                                     const std::uint64_t nonce)
     {
         if (config.configuration_id == 0 || config.election_tick_timeout == 0 ||
             config.resend_message_tick_timeout == 0) [[unlikely]] {
@@ -56,7 +60,7 @@ public:
         }
         auto ble = ballot_leader_election::with(
             {config.configuration_id, config.pid, config.peers, config.leader_priority}, sp->get_promise());
-        return node(config, std::move(*sp), std::move(ble));
+        return node(config, std::move(*sp), std::move(ble), std::move(machine), nonce);
     }
 
     result tick()
@@ -85,6 +89,31 @@ public:
 
     result append(entry e) { return seq_paxos_.append(std::move(e)); }
 
+    result register_client([[maybe_unused]] const std::uint64_t client_id)
+    {
+        return std::unexpected(make_error_code(client_errc::retry));
+    }
+
+    result client_request([[maybe_unused]] const std::uint64_t client_id, [[maybe_unused]] const std::uint64_t session,
+                          [[maybe_unused]] const std::uint64_t request_number,
+                          [[maybe_unused]] std::vector<std::byte> payload)
+    {
+        return std::unexpected(make_error_code(client_errc::retry));
+    }
+
+    result client_query([[maybe_unused]] const std::uint64_t client_id,
+                        [[maybe_unused]] std::vector<std::byte> payload)
+    {
+        return std::unexpected(make_error_code(client_errc::retry));
+    }
+
+    result expire_session([[maybe_unused]] const std::uint64_t client_id, [[maybe_unused]] const std::uint64_t session)
+    {
+        return std::unexpected(make_error_code(client_errc::retry));
+    }
+
+    std::vector<client_reply> take_client_replies() { return std::exchange(client_replies_, {}); }
+
     std::vector<message> take_outgoing_messages()
     {
         auto paxos = seq_paxos_.take_outgoing_messages();
@@ -107,11 +136,13 @@ public:
 
     const sequence_paxos<S>& get_sequence_paxos() const { return seq_paxos_; }
     const ballot_leader_election& get_ballot_leader_election() const { return ble_; }
+    const M& get_state_machine() const { return machine_; }
 
 private:
-    node(const node_config& config, sequence_paxos<S> seq_paxos, ballot_leader_election ble)
+    node(const node_config& config, sequence_paxos<S> seq_paxos, ballot_leader_election ble, M machine,
+         const std::uint64_t nonce)
         : seq_paxos_(std::move(seq_paxos)), ble_(std::move(ble)), election_clock_{0, config.election_tick_timeout},
-          resend_message_clock_{0, config.resend_message_tick_timeout}
+          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce)
     {
     }
 
@@ -119,6 +150,9 @@ private:
     ballot_leader_election ble_;
     logical_clock election_clock_;
     logical_clock resend_message_clock_;
+    M machine_;
+    std::uint64_t nonce_;
+    std::vector<client_reply> client_replies_;
 };
 
 }

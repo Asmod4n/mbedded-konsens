@@ -28,7 +28,16 @@
 
 namespace {
 
-using node_t = konsens::node<konsens::persistent_storage>;
+struct echo {
+    std::vector<std::byte> apply(const std::span<const std::byte> payload) { return {payload.begin(), payload.end()}; }
+
+    std::vector<std::byte> query(const std::span<const std::byte> payload) const
+    {
+        return {payload.begin(), payload.end()};
+    }
+};
+
+using node_t = konsens::node<konsens::persistent_storage, echo>;
 
 constexpr std::size_t node_count = 3;
 constexpr std::size_t stopped_node = 2;
@@ -109,6 +118,7 @@ struct cluster {
     uid_t effective_user_id;
     std::array<std::optional<node_t>, node_count> nodes;
     std::deque<konsens::message> network;
+    std::uint64_t nonce{};
 
     std::expected<void, std::error_code> start(const std::size_t i)
     {
@@ -116,7 +126,8 @@ struct cluster {
         if (!storage) [[unlikely]] {
             return std::unexpected(storage.error());
         }
-        auto n = node_t::with(config_of(i + 1), std::move(*storage));
+        nonce += 1;
+        auto n = node_t::with(config_of(i + 1), std::move(*storage), echo{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }

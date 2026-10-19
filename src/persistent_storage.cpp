@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <format>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
@@ -35,6 +36,10 @@ constexpr std::string_view accepted_round_key = "accepted_round";
 constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
 constexpr std::size_t crc_size = sizeof(std::uint32_t);
+constexpr std::size_t field_size = sizeof(std::uint64_t);
+constexpr std::size_t max_field_count = 2;
+
+using entry_fields = std::array<std::uint64_t, max_field_count>;
 
 constexpr std::size_t config_id_offset = 0;
 constexpr std::size_t n_offset = config_id_offset + sizeof(ballot::config_id);
@@ -155,10 +160,70 @@ std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const
     return crc32c::extend(crc32c::extend(0, to_little_endian(index)), kind_and_payload);
 }
 
+std::optional<std::size_t> field_count_of(const entry_kind kind) noexcept {
+    switch (kind) {
+    case entry_kind::normal:
+    case entry_kind::stop_sign:
+        return 0;
+    case entry_kind::register_client:
+    case entry_kind::client_request:
+        return 2;
+    case entry_kind::expire_session:
+        return 1;
+    }
+    return std::nullopt;
+}
+
+entry_fields fields_of(const entry& e) noexcept {
+    switch (e.kind) {
+    case entry_kind::register_client:
+        return {e.client_id, e.pid};
+    case entry_kind::client_request:
+        return {e.session, e.request_number};
+    case entry_kind::expire_session:
+        return {e.session, 0};
+    case entry_kind::normal:
+    case entry_kind::stop_sign:
+        break;
+    }
+    return {};
+}
+
+entry entry_of(const entry_kind kind, const entry_fields& fields, const std::span<const std::byte> payload) {
+    entry e{kind, std::vector<std::byte>(payload.begin(), payload.end())};
+    switch (kind) {
+    case entry_kind::register_client:
+        e.client_id = fields[0];
+        e.pid = fields[1];
+        break;
+    case entry_kind::client_request:
+        e.session = fields[0];
+        e.request_number = fields[1];
+        break;
+    case entry_kind::expire_session:
+        e.session = fields[0];
+        break;
+    case entry_kind::normal:
+    case entry_kind::stop_sign:
+        break;
+    }
+    return e;
+}
+
+std::size_t encoded_size_of(const entry& e) {
+    throw_if_entry_has_a_field_of_another_kind(e);
+    return kind_size + field_size * field_count_of(e.kind).value() + e.payload.size() + crc_size;
+}
+
 void encode_entry(const std::uint64_t index, const entry& e, const std::span<std::byte> out) noexcept {
     out.front() = std::byte{std::to_underlying(e.kind)};
-    std::ranges::copy(e.payload, out.subspan(kind_size).begin());
-    const auto crc = compute_entry_crc(index, out.first(kind_size + e.payload.size()));
+    auto next = std::next(out.begin(), kind_size);
+    const auto fields = fields_of(e);
+    for (const auto field : std::span(fields).first(field_count_of(e.kind).value_or(0))) {
+        next = std::ranges::copy(to_little_endian(field), next).out;
+    }
+    std::ranges::copy(e.payload, next);
+    const auto crc = compute_entry_crc(index, out.first(out.size() - crc_size));
     std::ranges::copy(to_little_endian(crc), out.last(crc_size).begin());
 }
 
@@ -172,13 +237,18 @@ std::expected<entry, read_failure> decode_entry(const std::uint64_t index, const
     if (stored != computed) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::crc_mismatch, index, stored, computed});
     }
-    const auto kind = std::to_integer<std::uint8_t>(kind_and_payload.front());
-    if (kind != std::to_underlying(entry_kind::normal) && kind != std::to_underlying(entry_kind::stop_sign))
-        [[unlikely]] {
+    const auto kind = static_cast<entry_kind>(std::to_integer<std::uint8_t>(kind_and_payload.front()));
+    const auto field_count = field_count_of(kind);
+    if (!field_count || kind_and_payload.size() < kind_size + field_size * *field_count) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::malformed_record, index, stored, computed});
     }
-    const auto payload = kind_and_payload.subspan(kind_size);
-    return entry{static_cast<entry_kind>(kind), std::vector<std::byte>(payload.begin(), payload.end())};
+    entry_fields fields{};
+    auto rest = kind_and_payload.subspan(kind_size);
+    for (auto& field : std::span(fields).first(*field_count)) {
+        field = from_little_endian<std::uint64_t>(rest.first<field_size>());
+        rest = rest.subspan(field_size);
+    }
+    return entry_of(kind, fields, rest);
 }
 
 std::array<std::byte, ballot_size> encode_ballot(const ballot& b) noexcept {
@@ -217,7 +287,7 @@ std::expected<std::uint64_t, std::error_code> read_log_len(MDB_txn* txn, const M
 std::expected<void, std::error_code> put_entry(const write_target& target, const std::uint64_t index, const entry& e) {
     const auto key_bytes = to_big_endian(index);
     MDB_val key = value_of(key_bytes);
-    MDB_val data{kind_size + e.payload.size() + crc_size, nullptr};
+    MDB_val data{encoded_size_of(e), nullptr};
     const int status = mdb_put(target.txn, target.log_dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));

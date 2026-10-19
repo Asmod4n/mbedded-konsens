@@ -244,6 +244,11 @@ public:
                 } else if constexpr (std::is_same_v<T, not_accepted>) {
                     handle_notaccepted(msg, from);
                     return {};
+                } else if constexpr (std::is_same_v<T, recovery> || std::is_same_v<T, recovery_response>) {
+                    return {};
+                } else if constexpr (std::is_same_v<T, read_index_request> || std::is_same_v<T, heartbeat> ||
+                                     std::is_same_v<T, heartbeat_ack> || std::is_same_v<T, read_index_reply>) {
+                    return {};
                 } else {
                     static_assert(std::is_same_v<T, proposal_forward>);
                     return handle_forwarded_proposal(std::move(msg.entries));

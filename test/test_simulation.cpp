@@ -17,7 +17,7 @@ constexpr std::uint64_t seed_count = 2000;
 struct memory_cluster {
     using storage_type = konsens::memory_storage;
 
-    konsens::memory_storage stop(const konsens::node<konsens::memory_storage>& stopped) const
+    konsens::memory_storage stop(const konsens::node<konsens::memory_storage, echo>& stopped) const
     {
         return stopped.get_sequence_paxos().get_internal_storage();
     }

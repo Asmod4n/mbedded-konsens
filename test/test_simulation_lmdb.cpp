@@ -33,7 +33,7 @@ struct lmdb_cluster {
 
     std::array<temporary_directory, simulation::node_count> directories;
 
-    std::monostate stop(const konsens::node<konsens::persistent_storage>&) const { return {}; }
+    std::monostate stop(const konsens::node<konsens::persistent_storage, echo>&) const { return {}; }
 
     konsens::persistent_storage start(const std::size_t i, std::monostate) const
     {

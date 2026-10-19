@@ -84,3 +84,33 @@ TEST_CASE("get_entries returns the stored part of the range") {
     CHECK(*s.get_entries(3, 5) == std::vector<konsens::entry>{});
     CHECK_THROWS_AS((void)s.get_entries(1, 0), std::logic_error);
 }
+
+// memory_storage keeps each field of an entry. The same entries of each
+// kind must come back from it as from persistent_storage, so that the
+// simulation on each storage sees one log.
+TEST_CASE("an entry of each kind comes back with its fields") {
+    konsens::memory_storage s;
+    const std::vector<konsens::entry> written{
+        make_entry(std::byte{1}),
+        {konsens::entry_kind::stop_sign, {}},
+        {.kind = konsens::entry_kind::register_client, .client_id = 7, .pid = 3},
+        {konsens::entry_kind::client_request, {std::byte{2}}, 1, 1},
+        {.kind = konsens::entry_kind::expire_session, .session = 1}};
+    const std::array<konsens::storage_op, 1> ops{konsens::append_entries{written}};
+    REQUIRE(s.write_atomically(ops));
+    CHECK(*s.get_entries(0, written.size()) == written);
+}
+
+// persistent_storage stores only the fields of the kind of an entry. A
+// memory_storage that took more would accept a log that LMDB refuses, so
+// both refuse the same wrong use.
+TEST_CASE("an entry with a field of another kind is a wrong use") {
+    konsens::memory_storage s;
+    const std::array<konsens::storage_op, 1> ops{
+        konsens::append_entries{{{konsens::entry_kind::normal, {}, 1}}}};
+    CHECK_THROWS_AS((void)s.write_atomically(ops), std::logic_error);
+    const std::array<konsens::storage_op, 1> on_prefix{
+        konsens::append_on_prefix{0, {{.kind = konsens::entry_kind::expire_session, .client_id = 1}}}};
+    CHECK_THROWS_AS((void)s.write_atomically(on_prefix), std::logic_error);
+    CHECK(*s.get_log_len() == 0);
+}

@@ -40,10 +40,15 @@ public:
     std::expected<ballot, std::error_code> get_accepted_round() const { return accepted_round_; }
 
 private:
-    void apply(const append_entries& o) { log_.insert(log_.end(), o.entries.begin(), o.entries.end()); }
+    void apply(const append_entries& o)
+    {
+        std::ranges::for_each(o.entries, throw_if_entry_has_a_field_of_another_kind);
+        log_.insert(log_.end(), o.entries.begin(), o.entries.end());
+    }
 
     void apply(const append_on_prefix& o)
     {
+        std::ranges::for_each(o.entries, throw_if_entry_has_a_field_of_another_kind);
         if (o.from_idx < log_.size()) {
             log_.resize(o.from_idx);
         }

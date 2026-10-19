@@ -1,22 +1,27 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "echo.hpp"
 
 namespace {
 
 using konsens::memory_storage;
 using konsens::node_id;
-using node_t = konsens::node<memory_storage>;
+using node_t = konsens::node<memory_storage, echo>;
 
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
@@ -67,7 +72,7 @@ void step(std::vector<node_t>& nodes, const std::array<bool, 3>& alive)
 TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), memory_storage{}));
+        nodes.push_back(*node_t::with(config_of(p), memory_storage{}, echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -100,5 +105,34 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
 TEST_CASE("a tick timeout of 0 is a wrong use") {
     auto c = config_of(1);
     c.election_tick_timeout = 0;
-    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, memory_storage{})), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, memory_storage{}, echo{}, 0)), std::logic_error);
+}
+
+// Step 0 of plan v0.1 gives the client calls their declarations only.
+// Until sessions and the read index are built, each call refuses with the
+// provisional error retry, so that no caller waits for a reply that never
+// comes, and no reply is queued.
+TEST_CASE("the client calls give retry until sessions are built") {
+    auto n = *node_t::with(config_of(1), memory_storage{}, echo{}, 0);
+    CHECK(n.register_client(1).error() == konsens::client_errc::retry);
+    CHECK(n.client_request(1, 1, 1, {std::byte{1}}).error() == konsens::client_errc::retry);
+    CHECK(n.client_query(1, {std::byte{1}}).error() == konsens::client_errc::retry);
+    CHECK(n.expire_session(1, 1).error() == konsens::client_errc::retry);
+    CHECK(n.take_client_replies().empty());
+}
+
+// Each error value has a message of its own, because a log or a client
+// reads the message and not the number.
+TEST_CASE("each client error has its own message") {
+    const std::array codes{konsens::client_errc::recovering, konsens::client_errc::session_expired,
+                           konsens::client_errc::stale_request, konsens::client_errc::retry};
+    std::vector<std::string> messages;
+    for (const auto c : codes) {
+        const std::error_code e = c;
+        CHECK(e.category().name() == std::string_view{"konsens.client"});
+        messages.push_back(e.message());
+    }
+    std::ranges::sort(messages);
+    CHECK(std::ranges::adjacent_find(messages) == messages.end());
+    CHECK(std::ranges::find(messages, "Unknown client error") == messages.end());
 }

@@ -105,8 +105,41 @@ struct proposal_forward {
     std::vector<entry> entries;
 };
 
+struct recovery {
+    std::uint64_t nonce;
+};
+
+struct recovery_response {
+    std::uint64_t nonce;
+    ballot promise;
+    bool primary;
+    ballot n_accepted;
+    std::vector<entry> log;
+    std::uint64_t decided_idx;
+};
+
+struct read_index_request {
+    std::uint64_t read;
+};
+
+struct heartbeat {
+    ballot n;
+    std::uint64_t id;
+};
+
+struct heartbeat_ack {
+    ballot n;
+    std::uint64_t id;
+};
+
+struct read_index_reply {
+    std::vector<std::uint64_t> reads;
+    std::uint64_t read_index;
+};
+
 using paxos_msg = std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted,
-                               decide, not_accepted, proposal_forward>;
+                               decide, not_accepted, proposal_forward, recovery, recovery_response,
+                               read_index_request, heartbeat, heartbeat_ack, read_index_reply>;
 
 struct paxos_message {
     node_id from;
