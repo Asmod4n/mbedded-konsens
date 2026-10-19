@@ -554,8 +554,12 @@ private:
         if (!check_valid_ballot(accsync.n) || state_ != std::pair{role::follower, phase::prepare}) {
             return {};
         }
-        const auto decided_idx = std::max(decided_idx_, accsync.decided_idx);
         const auto sync_idx = accsync.log_sync.sync_idx;
+        if (sync_idx > accepted_idx_ ||
+            (accsync.n == applied_sync_.n && accsync.seq_num.session <= applied_sync_.session)) [[unlikely]] {
+            return {};
+        }
+        const auto decided_idx = std::max(decided_idx_, accsync.decided_idx);
         const auto accepted_idx = std::min(sync_idx, accepted_idx_) + accsync.log_sync.suffix.size();
         const std::array<storage_op, 3> ops{append_on_prefix{sync_idx, std::move(accsync.log_sync.suffix)},
                                             set_accepted_round{accsync.n}, set_decided_index{decided_idx}};
@@ -571,6 +575,7 @@ private:
         }
         state_ = {role::follower, phase::accept};
         current_seq_num_ = accsync.seq_num;
+        applied_sync_ = {accsync.n, accsync.seq_num.session};
         outgoing_.push_back({pid_, from, accepted{accsync.n, accepted_idx_}});
         return {};
     }
@@ -672,6 +677,10 @@ private:
     std::uint64_t accepted_idx_{};
     leader_state leader_state_{};
     sequence_number current_seq_num_{};
+    struct applied_sync {
+        ballot n;
+        std::uint64_t session;
+    } applied_sync_{};
     std::optional<konsens::promise> cached_promise_message_;
     std::vector<entry> buffered_proposals_;
     std::vector<paxos_message> outgoing_;

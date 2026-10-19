@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -7,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "konsens/entry_range.hpp"
 #include "konsens/storage.hpp"
 
 namespace konsens {
@@ -24,10 +26,11 @@ public:
     std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from,
                                                                    std::uint64_t to) const
     {
-        if (from > to || to > log_.size()) [[unlikely]] {
-            return std::unexpected(std::make_error_code(std::errc::invalid_argument));
+        throw_if_from_after_to(from, to);
+        if (from >= log_.size()) {
+            return std::vector<entry>{};
         }
-        const auto part = std::span(log_).subspan(from, to - from);
+        const auto part = std::span(log_).subspan(from, std::min<std::uint64_t>(to, log_.size()) - from);
         return std::vector<entry>(part.begin(), part.end());
     }
 

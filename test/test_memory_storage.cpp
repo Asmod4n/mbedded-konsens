@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <stdexcept>
 #include <system_error>
 #include <vector>
 
@@ -66,11 +67,20 @@ TEST_CASE("scalar ops set their values") {
     CHECK(*s.get_accepted_round() == b);
 }
 
-// A read outside the log is a wrong use. It gives an error value and
-// reads no memory outside the vector.
-TEST_CASE("get_entries outside the log is an error") {
+// The two storages follow one rule for get_entries, so that Sequence
+// Paxos reads the same entries from each. A range that reaches past the
+// log gives the stored part of it. A start at or past the end gives no
+// entries. A start after the end of the range is a wrong use.
+TEST_CASE("get_entries returns the stored part of the range") {
     konsens::memory_storage s;
-    CHECK(s.get_entries(0, 0));
-    CHECK(s.get_entries(0, 1).error() == std::make_error_code(std::errc::invalid_argument));
-    CHECK(s.get_entries(1, 0).error() == std::make_error_code(std::errc::invalid_argument));
+    const std::array<konsens::storage_op, 1> ops{
+        konsens::append_entries{{make_entry(std::byte{1}), make_entry(std::byte{2})}}};
+    REQUIRE(s.write_atomically(ops));
+    CHECK(*s.get_entries(0, 0) == std::vector<konsens::entry>{});
+    CHECK(*s.get_entries(0, 1) == std::vector{make_entry(std::byte{1})});
+    CHECK(*s.get_entries(1, 5) == std::vector{make_entry(std::byte{2})});
+    CHECK(*s.get_entries(0, 5) == std::vector{make_entry(std::byte{1}), make_entry(std::byte{2})});
+    CHECK(*s.get_entries(2, 5) == std::vector<konsens::entry>{});
+    CHECK(*s.get_entries(3, 5) == std::vector<konsens::entry>{});
+    CHECK_THROWS_AS((void)s.get_entries(1, 0), std::logic_error);
 }

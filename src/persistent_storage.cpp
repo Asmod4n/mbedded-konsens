@@ -17,6 +17,7 @@
 #include <lmdb.h>
 
 #include "konsens/crc32c.hpp"
+#include "konsens/entry_range.hpp"
 
 namespace konsens {
 
@@ -440,6 +441,7 @@ std::expected<void, std::error_code> persistent_storage::write_atomically(const 
 std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries(const std::uint64_t from,
                                                                                  const std::uint64_t to) const {
     throw_if_moved_from();
+    throw_if_from_after_to(from, to);
     const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
         return std::unexpected(read_failure{txn.error(), from, 0, 0});

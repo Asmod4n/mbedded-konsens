@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "konsens/persistent_storage.hpp"
+#include "temporary_directory.hpp"
 
 static_assert(konsens::storage<konsens::persistent_storage>);
 
@@ -29,25 +30,6 @@ constexpr uid_t non_root_user_id = 1000;
 constexpr uid_t root_user_id = 0;
 constexpr std::size_t map_size = std::size_t{16} << 20;
 constexpr std::size_t tiny_map_size = std::size_t{64} << 10;
-
-class temporary_directory {
-public:
-    temporary_directory() {
-        std::string name = (std::filesystem::temp_directory_path() / "konsens-test-XXXXXX").string();
-        if (mkdtemp(name.data()) == nullptr) {
-            throw std::system_error(errno, std::generic_category(), "mkdtemp");
-        }
-        path_ = name;
-    }
-    temporary_directory(const temporary_directory&) = delete;
-    temporary_directory& operator=(const temporary_directory&) = delete;
-    ~temporary_directory() { std::filesystem::remove_all(path_); }
-
-    const std::filesystem::path& path() const { return path_; }
-
-private:
-    std::filesystem::path path_;
-};
 
 std::vector<std::byte> bytes_of(const std::string_view text) {
     std::vector<std::byte> result;
@@ -119,6 +101,25 @@ TEST_CASE("append_on_prefix truncates the log and appends") {
                                                                     normal_entry("x"), normal_entry("y"),
                                                                     normal_entry("z")});
     CHECK(storage.get_entries(1, 3) == std::vector<konsens::entry>{normal_entry("b"), normal_entry("x")});
+}
+
+// The two storages follow one rule for get_entries, so that Sequence
+// Paxos reads the same entries from each. A range that reaches past the
+// log gives the stored part of it. A start at or past the end gives no
+// entries. A start after the end of the range is a wrong use.
+TEST_CASE("get_entries returns the stored part of the range") {
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector<konsens::storage_op> ops{konsens::append_entries{{normal_entry("a"), normal_entry("b")}}};
+    REQUIRE(storage.write_atomically(ops).has_value());
+    CHECK(storage.get_entries(0, 0) == std::vector<konsens::entry>{});
+    CHECK(storage.get_entries(0, 1) == std::vector{normal_entry("a")});
+    CHECK(storage.get_entries(1, 5) == std::vector{normal_entry("b")});
+    CHECK(storage.get_entries(0, 5) == std::vector{normal_entry("a"), normal_entry("b")});
+    CHECK(storage.get_entries(2, 5) == std::vector<konsens::entry>{});
+    CHECK(storage.get_entries(3, 5) == std::vector<konsens::entry>{});
+    CHECK_THROWS_AS((void)storage.get_entries(1, 0), std::logic_error);
+    CHECK_THROWS_AS((void)storage.read_entries(1, 0), std::logic_error);
 }
 
 // A byte that changes on the disk must not reach the protocol as a valid
