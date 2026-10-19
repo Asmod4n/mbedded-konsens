@@ -15,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include "konsens/client.hpp"
 #include "konsens/message.hpp"
 #include "konsens/storage.hpp"
 
@@ -154,6 +155,25 @@ struct leader_state {
     }
 };
 
+struct pending_read {
+    node_id node;
+    std::uint64_t read;
+};
+
+struct read_round {
+    ballot n;
+    std::uint64_t id;
+    std::vector<pending_read> reads;
+    std::uint64_t read_index;
+    std::vector<node_id> acks;
+};
+
+struct indexed_read {
+    std::uint64_t read;
+    std::uint64_t read_index;
+    konsens::ballot ballot;
+};
+
 struct sequence_paxos_config {
     node_id pid;
     std::vector<node_id> peers;
@@ -246,8 +266,17 @@ public:
                     return {};
                 } else if constexpr (std::is_same_v<T, recovery> || std::is_same_v<T, recovery_response>) {
                     return {};
-                } else if constexpr (std::is_same_v<T, read_index_request> || std::is_same_v<T, heartbeat> ||
-                                     std::is_same_v<T, heartbeat_ack> || std::is_same_v<T, read_index_reply>) {
+                } else if constexpr (std::is_same_v<T, read_index_request>) {
+                    handle_read_index_request(msg, from);
+                    return {};
+                } else if constexpr (std::is_same_v<T, heartbeat>) {
+                    handle_heartbeat(msg, from);
+                    return {};
+                } else if constexpr (std::is_same_v<T, heartbeat_ack>) {
+                    handle_heartbeat_ack(msg, from);
+                    return {};
+                } else if constexpr (std::is_same_v<T, read_index_reply>) {
+                    handle_read_index_reply(msg);
                     return {};
                 } else {
                     static_assert(std::is_same_v<T, proposal_forward>);
@@ -329,6 +358,39 @@ public:
 
     std::vector<paxos_message> take_outgoing_messages() { return std::exchange(outgoing_, {}); }
 
+    result start_read(const std::uint64_t read)
+    {
+        if (error_) [[unlikely]] {
+            return std::unexpected(*error_);
+        }
+        if (state_.first == role::leader) {
+            read_pending_.push_back({pid_, read});
+            start_read_round();
+            return {};
+        }
+        const node_id leader = promise_.pid;
+        if (leader == 0 || leader == pid_) [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::retry));
+        }
+        outgoing_.push_back({pid_, leader, read_index_request{read}});
+        return {};
+    }
+
+    void resend_heartbeats()
+    {
+        if (error_ || state_ != std::pair{role::leader, phase::accept} || read_round_.reads.empty() ||
+            read_round_.n != leader_state_.n_leader) {
+            return;
+        }
+        for (const auto peer : peers_) {
+            if (!std::ranges::contains(read_round_.acks, peer)) {
+                outgoing_.push_back({pid_, peer, heartbeat{read_round_.n, read_round_.id}});
+            }
+        }
+    }
+
+    std::vector<indexed_read> take_indexed_reads() { return std::exchange(indexed_reads_, {}); }
+
     std::expected<std::vector<entry>, std::error_code> read_decided_suffix(std::uint64_t from_idx) const
     {
         const auto decided = std::min(decided_idx_, accepted_idx_);
@@ -341,6 +403,7 @@ public:
     std::uint64_t get_decided_idx() const { return decided_idx_; }
     std::uint64_t get_accepted_idx() const { return accepted_idx_; }
     const leader_state& get_leader_state() const { return leader_state_; }
+    const konsens::read_round& get_read_round() const { return read_round_; }
     const S& get_internal_storage() const { return internal_storage_; }
     node_id get_pid() const { return pid_; }
     bool votes() const { return !error_; }
@@ -533,6 +596,7 @@ private:
                 return r;
             }
         }
+        start_read_round();
         return {};
     }
 
@@ -671,6 +735,76 @@ private:
         return {};
     }
 
+    void start_read_round()
+    {
+        if (state_ != std::pair{role::leader, phase::accept} || read_pending_.empty() ||
+            (!read_round_.reads.empty() && read_round_.n == leader_state_.n_leader)) {
+            return;
+        }
+        read_round_ = {leader_state_.n_leader, read_round_.id + 1, std::exchange(read_pending_, {}), accepted_idx_,
+                       {pid_}};
+        for (const auto peer : peers_) {
+            outgoing_.push_back({pid_, peer, heartbeat{read_round_.n, read_round_.id}});
+        }
+    }
+
+    void handle_read_index_request(const read_index_request& req, const node_id from)
+    {
+        if (state_.first != role::leader) {
+            return;
+        }
+        read_pending_.push_back({from, req.read});
+        start_read_round();
+    }
+
+    void handle_heartbeat(const heartbeat& hb, const node_id from)
+    {
+        if (promise_ == hb.n) {
+            outgoing_.push_back({pid_, from, heartbeat_ack{hb.n, hb.id}});
+        }
+    }
+
+    void handle_heartbeat_ack(const heartbeat_ack& ack, const node_id from)
+    {
+        auto& rd = read_round_;
+        if (state_ != std::pair{role::leader, phase::accept} || rd.reads.empty() || rd.n != ack.n ||
+            rd.id != ack.id || leader_state_.n_leader != ack.n) {
+            return;
+        }
+        if (!std::ranges::contains(rd.acks, from)) {
+            rd.acks.push_back(from);
+        }
+        if (rd.acks.size() < leader_state_.majority()) {
+            return;
+        }
+        for (const auto& r : rd.reads) {
+            if (r.node == pid_) {
+                indexed_reads_.push_back({r.read, rd.read_index, promise_});
+            }
+        }
+        for (const auto peer : peers_) {
+            std::vector<std::uint64_t> reads;
+            for (const auto& r : rd.reads) {
+                if (r.node == peer) {
+                    reads.push_back(r.read);
+                }
+            }
+            if (!reads.empty()) {
+                outgoing_.push_back({pid_, peer, read_index_reply{std::move(reads), rd.read_index}});
+            }
+        }
+        rd.reads.clear();
+        rd.acks.clear();
+        start_read_round();
+    }
+
+    void handle_read_index_reply(const read_index_reply& reply)
+    {
+        for (const auto r : reply.reads) {
+            indexed_reads_.push_back({r, reply.read_index, promise_});
+        }
+    }
+
     node_id pid_;
     std::vector<node_id> peers_;
     std::vector<node_id> nodes_;
@@ -690,6 +824,9 @@ private:
     std::vector<entry> buffered_proposals_;
     std::vector<paxos_message> outgoing_;
     std::optional<std::error_code> error_;
+    std::vector<pending_read> read_pending_;
+    konsens::read_round read_round_{};
+    std::vector<indexed_read> indexed_reads_;
 };
 
 }

@@ -108,19 +108,6 @@ TEST_CASE("a tick timeout of 0 is a wrong use") {
     CHECK_THROWS_AS(static_cast<void>(node_t::with(c, memory_storage{}, echo{}, 0)), std::logic_error);
 }
 
-// Step 0 of plan v0.1 gives the client calls their declarations only.
-// Until sessions and the read index are built, each call refuses with the
-// provisional error retry, so that no caller waits for a reply that never
-// comes, and no reply is queued.
-TEST_CASE("the client calls give retry until sessions are built") {
-    auto n = *node_t::with(config_of(1), memory_storage{}, echo{}, 0);
-    CHECK(n.register_client(1).error() == konsens::client_errc::retry);
-    CHECK(n.client_request(1, 1, 1, {std::byte{1}}).error() == konsens::client_errc::retry);
-    CHECK(n.client_query(1, {std::byte{1}}).error() == konsens::client_errc::retry);
-    CHECK(n.expire_session(1, 1).error() == konsens::client_errc::retry);
-    CHECK(n.take_client_replies().empty());
-}
-
 // Each error value has a message of its own, because a log or a client
 // reads the message and not the number.
 TEST_CASE("each client error has its own message") {
