@@ -199,6 +199,18 @@ At the end, `three_nodes` runs a client. The client registers at a
 follower and writes one value there. It then reads the value at the
 other follower through the read index.
 
+`counter` runs three nodes in memory with a state machine that counts.
+A client registers once and sends five increments, each at another
+node. A follower forwards its increment to the leader. The fifth
+increment is sent again; the counter does not change, because the
+session keeps the reply of each request number. The client then reads
+the counter at each node through the read index. The example stops the
+leader, waits for a new leader and increments once more.
+
+```
+./build/counter
+```
+
 ## Layout
 
 | Path | Content |
