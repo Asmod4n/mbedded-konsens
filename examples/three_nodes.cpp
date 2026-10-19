@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstddef>
@@ -28,16 +29,19 @@
 
 namespace {
 
-struct echo {
-    std::vector<std::byte> apply(const std::span<const std::byte> payload) { return {payload.begin(), payload.end()}; }
+struct concatenation {
+    std::vector<std::byte> value;
 
-    std::vector<std::byte> query(const std::span<const std::byte> payload) const
+    std::vector<std::byte> apply(const std::span<const std::byte> payload)
     {
-        return {payload.begin(), payload.end()};
+        value.insert(value.end(), payload.begin(), payload.end());
+        return value;
     }
+
+    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const { return value; }
 };
 
-using node_t = konsens::node<konsens::persistent_storage, echo>;
+using node_t = konsens::node<konsens::persistent_storage, concatenation>;
 
 constexpr std::size_t node_count = 3;
 constexpr std::size_t stopped_node = 2;
@@ -47,6 +51,10 @@ constexpr std::uint64_t resend_ticks = 3;
 constexpr int round_limit = 200;
 constexpr int first_entry_count = 3;
 constexpr int second_entry_count = 2;
+constexpr std::uint64_t register_call = 1;
+constexpr std::uint64_t request_call = 2;
+constexpr std::uint64_t query_call = 3;
+constexpr std::uint64_t first_request_number = 1;
 constexpr uid_t root_user_id = 0;
 constexpr uid_t test_user_id = 65534;
 constexpr int exit_refused_root = 2;
@@ -90,22 +98,40 @@ konsens::node_config config_of(const konsens::node_id pid)
     return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
-konsens::entry entry_of(const std::string_view text)
+std::vector<std::byte> bytes_of(const std::string_view text)
 {
-    std::vector<std::byte> payload;
+    std::vector<std::byte> bytes;
     for (const char c : text) {
-        payload.push_back(static_cast<std::byte>(c));
+        bytes.push_back(static_cast<std::byte>(c));
     }
-    return {konsens::entry_kind::normal, payload};
+    return bytes;
+}
+
+konsens::entry entry_of(const std::string_view text) { return {konsens::entry_kind::normal, bytes_of(text)}; }
+
+std::string text_of(const std::span<const std::byte> bytes)
+{
+    std::string text;
+    for (const auto b : bytes) {
+        text.push_back(static_cast<char>(b));
+    }
+    return text;
 }
 
 std::string text_of(const konsens::entry& e)
 {
-    std::string text;
-    for (const auto b : e.payload) {
-        text.push_back(static_cast<char>(b));
+    switch (e.kind) {
+    case konsens::entry_kind::register_client:
+        return std::format("RegisterClient of call {}", e.client_id);
+    case konsens::entry_kind::client_request:
+        return std::format("request {} of session {}: {}", e.request_number, e.session, text_of(e.payload));
+    case konsens::entry_kind::expire_session:
+        return std::format("ExpireSession of session {}", e.session);
+    case konsens::entry_kind::normal:
+    case konsens::entry_kind::stop_sign:
+        break;
     }
-    return text;
+    return text_of(e.payload);
 }
 
 konsens::node_id to_of(const konsens::message& m)
@@ -119,6 +145,7 @@ struct cluster {
     std::array<std::optional<node_t>, node_count> nodes;
     std::deque<konsens::message> network;
     std::uint64_t nonce{};
+    std::vector<konsens::client_reply> replies{};
 
     std::expected<void, std::error_code> start(const std::size_t i)
     {
@@ -127,7 +154,7 @@ struct cluster {
             return std::unexpected(storage.error());
         }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(*storage), echo{}, nonce);
+        auto n = node_t::with(config_of(i + 1), std::move(*storage), concatenation{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
@@ -144,8 +171,22 @@ struct cluster {
                 for (auto& m : n->take_outgoing_messages()) {
                     network.push_back(std::move(m));
                 }
+                for (auto& r : n->take_client_replies()) {
+                    replies.push_back(std::move(r));
+                }
             }
         }
+    }
+
+    std::optional<konsens::client_reply> take_reply(const std::uint64_t call)
+    {
+        const auto it = std::ranges::find(replies, call, &konsens::client_reply::client_id);
+        if (it == replies.end()) {
+            return std::nullopt;
+        }
+        auto reply = std::move(*it);
+        replies.erase(it);
+        return reply;
     }
 
     std::expected<void, std::error_code> run_round()
@@ -253,6 +294,65 @@ std::expected<void, std::error_code> append_at_leader(cluster& c, const int firs
     return {};
 }
 
+std::expected<konsens::client_reply, std::error_code> call_and_wait(cluster& c, const std::uint64_t call,
+                                                                   const auto give)
+{
+    if (auto r = give(); !r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    std::optional<konsens::client_reply> reply;
+    if (auto r = run_until(c, [&c, &reply, call] {
+            reply = c.take_reply(call);
+            return reply.has_value();
+        });
+        !r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    if (!reply->response) [[unlikely]] {
+        return std::unexpected(reply->response.error());
+    }
+    return std::move(*reply);
+}
+
+std::expected<void, std::error_code> run_client(cluster& c)
+{
+    const auto l = c.leader();
+    if (!l) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::resource_unavailable_try_again));
+    }
+    const auto writer = (*l + 1) % node_count;
+    const auto reader = (*l + 2) % node_count;
+    auto& w = *c.nodes.at(writer);
+    const auto registered = call_and_wait(c, register_call, [&w] { return w.register_client(register_call); });
+    if (!registered) [[unlikely]] {
+        return std::unexpected(registered.error());
+    }
+    const auto session = registered->session;
+    std::cout << std::format("A client registers at node {}. Its session is {}.", writer + 1, session) << '\n';
+    const std::string_view text = "client text";
+    const auto written = call_and_wait(c, request_call, [&w, session, text] {
+        return w.client_request(request_call, session, first_request_number, bytes_of(text));
+    });
+    if (!written) [[unlikely]] {
+        return std::unexpected(written.error());
+    }
+    std::cout << std::format("The client writes \"{}\" at node {} with request number {}. The reply is \"{}\".", text,
+                             writer + 1, first_request_number, text_of(*written->response))
+              << '\n';
+    auto& r = *c.nodes.at(reader);
+    const auto read = call_and_wait(c, query_call, [&r] { return r.client_query(query_call, {}); });
+    if (!read) [[unlikely]] {
+        return std::unexpected(read.error());
+    }
+    std::cout << std::format("The client reads at node {} through the read index. The value is \"{}\".", reader + 1,
+                             text_of(*read->response))
+              << '\n';
+    if (*read->response != bytes_of(text)) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::state_not_recoverable));
+    }
+    return {};
+}
+
 int fail(const std::string_view step, const std::error_code& code)
 {
     std::cerr << std::format("The step \"{}\" failed: {}.", step, code.message()) << '\n';
@@ -345,6 +445,9 @@ int run(const std::span<const std::string_view> args)
         return fail("compare the decided entries", std::make_error_code(std::errc::state_not_recoverable));
     }
     std::cout << std::format("All three nodes have the same {} decided entries.", second_target) << '\n';
+    if (auto r = run_client(c); !r) [[unlikely]] {
+        return fail("register, write and read as a client", r.error());
+    }
     return EXIT_SUCCESS;
 }
 

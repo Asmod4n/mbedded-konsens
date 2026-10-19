@@ -28,7 +28,7 @@ library keeps its state in an internal store.
 
 ## Current state
 
-The repository holds formal models in TLA+ and library v0 in C++.
+The repository holds formal models in TLA+ and library v0.1 in C++.
 
 - TLC checks safety under message loss, duplicate messages, a crash
   and a disk rollback, at lowered bounds.
@@ -108,6 +108,96 @@ code is 0 when all steps succeed.
 The library refuses the root user. As root, the example stops with
 exit code 2. The flag `--allow-root-for-test` gives the library a user
 id that is not root. This flag is for the test machine only.
+
+## Library v0.1
+
+Library v0.1 adds recovery after each start, client sessions and the
+read index to library v0.
+
+### What the node API offers
+
+- `konsens::node<S, M>` takes a storage `S` and a state machine `M`.
+  `M` is a template parameter, so no call to it is indirect.
+- The concept `konsens::state_machine` states what `M` must do.
+  `apply(payload)` executes a request and returns its reply.
+  `query(payload)` reads the state and changes nothing. The node keeps
+  the client table. The state machine gets only the payloads.
+- `node::with(config, storage, machine, nonce)` starts a node. The
+  caller gives a new nonce at each start. The node applies the decided
+  log from index 0 at each start.
+- `register_client(id)` appends a RegisterClient entry. The session id
+  is the log index of that entry.
+- `client_request(id, session, request_number, payload)` appends a
+  request. The first request number is 1. The state machine executes
+  each request number of a session once. When the same request number
+  comes again, the node gives the reply that it keeps.
+- `client_query(id, payload)` reads through the read index. The leader
+  takes its accepted index and confirms its leadership with one round
+  of heartbeats to a majority. A follower asks the leader for this
+  index. The node answers when its applied state reaches the index.
+- `expire_session(id, session)` appends an ExpireSession entry. Only
+  the leader takes this call. The caller decides when a session
+  expires.
+- `take_client_replies()` gives the replies. Each reply carries the
+  `id` of its call. The caller gives this id, and the caller can drop
+  a call that has no reply.
+
+### Error values
+
+Each call returns `std::expected`. A reply can also hold an error.
+These error values are provisional. The owner decides them later.
+
+| Error value | Case |
+|---|---|
+| `recovering` | The node recovers and takes no call. |
+| `session_expired` | The session has expired. Register again. |
+| `stale_request` | The request number is below the last request number of the session. |
+| `retry` | The node knows no leader, or its promise changed. Send the call again. |
+
+### Recovery after each start
+
+After each start with a stored promise, a node does not vote. It sends
+Recovery with the nonce to all peers. It waits for f+1 answers, and
+one answer must come from the primary. It then takes the durable
+state of the primary and votes again. This is the recovery of
+Viewstamped Replication Revisited.
+
+When more than f nodes restart at the same time, no primary answers.
+The recovery then waits. The operator must act. This rule is
+provisional.
+
+### What it does not contain
+
+- No CBOR encoding of messages.
+- No reconfiguration. StopSign is a kind of entry only.
+- No compaction of the log.
+- No single-node mode and no witness.
+- The channels between nodes must be FIFO.
+
+### Tests of v0.1
+
+`test_simulation` runs three cases of 2000 seeds each on
+`memory_storage`. The case with clients has two clients. They
+register, send requests with request numbers, send a call again after
+a timeout, read and expire sessions. One message is lost, one message
+is duplicated, one node crashes and one node restarts from an earlier
+copy of its storage. After each step, the test checks S1, S2, S2b, S3,
+S5, S7, E1 and R1 of the TLA+ model:
+
+- E1: each pair of session and request number is executed at most
+  once. The test also compares the state of each node with the
+  requests that the model executes.
+- R1: the answer to a read contains each request that was decided
+  before the read started.
+
+`test_simulation_lmdb` runs the same clients for 50 seeds on
+`persistent_storage`.
+
+### The example
+
+At the end, `three_nodes` runs a client. The client registers at a
+follower and writes one value there. It then reads the value at the
+other follower through the read index.
 
 ## Layout
 
