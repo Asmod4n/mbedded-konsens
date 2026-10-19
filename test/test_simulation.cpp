@@ -17,7 +17,7 @@ constexpr std::uint64_t seed_count = 2000;
 struct memory_cluster {
     using storage_type = konsens::memory_storage;
 
-    konsens::memory_storage stop(const konsens::node<konsens::memory_storage, echo>& stopped) const
+    konsens::memory_storage stop(const konsens::node<konsens::memory_storage, simulation::concatenation>& stopped) const
     {
         return stopped.get_sequence_paxos().get_internal_storage();
     }
@@ -45,6 +45,23 @@ TEST_CASE("simulation with FIFO channels keeps the safety properties") {
 // misses accepted entries, and a new leader can decide over them.
 TEST_CASE("simulation with one rollback keeps the safety properties") {
     simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count, simulation::rollback::one);
+}
+
+// Plan v0.1 section 3 and F16: the run of all parts. Two clients register,
+// send requests, send a call again after a timeout and read, while a
+// message is lost, a message is duplicated, one node crashes and one node
+// rolls back. Each state also keeps E1 and R1 of the model. The counts show
+// that the run took each client path: a lost call, a call sent again and a
+// read across a change of leader.
+TEST_CASE("simulation with two clients and one rollback keeps the safety properties") {
+    const auto c = simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count,
+                                                         simulation::rollback::one, simulation::clients::two);
+    CHECK(c.sessions > 0);
+    CHECK(c.replies > 0);
+    CHECK(c.resends > 0);
+    CHECK(c.reads > 0);
+    CHECK(c.reads_across_leader_change > 0);
+    CHECK(c.expired > 0);
 }
 
 // The same run, but each delivery takes any message in flight. The model

@@ -33,7 +33,7 @@ struct lmdb_cluster {
 
     std::array<temporary_directory, simulation::node_count> directories;
 
-    std::monostate stop(const konsens::node<konsens::persistent_storage, echo>&) const { return {}; }
+    std::monostate stop(const konsens::node<konsens::persistent_storage, simulation::concatenation>&) const { return {}; }
 
     konsens::persistent_storage start(const std::size_t i, std::monostate) const
     {
@@ -45,10 +45,13 @@ struct lmdb_cluster {
 
 }
 
-// The simulation of test_simulation.cpp on persistent_storage. It checks
-// that the protocol keeps S1, S2, S2b, S3, S5 and S7 when each state goes
-// through LMDB, and that the decided entries of a node are there after the
-// node is closed and its environment is opened again.
-TEST_CASE("simulation on LMDB with FIFO channels keeps the safety properties") {
-    simulation::run_seeds<lmdb_cluster>(simulation::delivery::fifo, seed_count);
+// The simulation of test_simulation.cpp on persistent_storage, with the two
+// clients. It checks that the protocol keeps S1, S2, S2b, S3, S5, S7, E1
+// and R1 when each state goes through LMDB, and that the decided entries of
+// a node are there after the node is closed and its environment is opened
+// again. The entries of the clients go through the LMDB encoding of each
+// entry kind. LMDB storage cannot be copied, so this run has no rollback.
+TEST_CASE("simulation on LMDB with FIFO channels and two clients keeps the safety properties") {
+    simulation::run_seeds<lmdb_cluster>(simulation::delivery::fifo, seed_count, simulation::rollback::none,
+                                        simulation::clients::two);
 }
