@@ -100,5 +100,5 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
 TEST_CASE("a tick timeout of 0 is a wrong use") {
     auto c = config_of(1);
     c.election_tick_timeout = 0;
-    CHECK_THROWS_AS(node_t::with(c, memory_storage{}), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, memory_storage{})), std::logic_error);
 }

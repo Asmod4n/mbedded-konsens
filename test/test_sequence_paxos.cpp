@@ -261,9 +261,9 @@ TEST_CASE("a storage error stops the node") {
 // A pid of 0 means "no leader" in mod.rs:371-384, so a node with pid 0 is
 // a wrong use and must fail loudly.
 TEST_CASE("a pid of 0 is a wrong use") {
-    CHECK_THROWS_AS(sp_t::with({0, {1, 2}}, {}), std::logic_error);
-    CHECK_THROWS_AS(sp_t::with({1, {1, 2}}, {}), std::logic_error);
-    CHECK_THROWS_AS(sp_t::with({1, {2, 2}}, {}), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({0, {1, 2}}, {})), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {1, 2}}, {})), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {2, 2}}, {})), std::logic_error);
 }
 
 // A message from a pid outside the cluster is dropped. The leader state
