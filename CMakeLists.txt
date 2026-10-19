@@ -1,0 +1,36 @@
+cmake_minimum_required(VERSION 3.25)
+project(mbedded-konsens VERSION 0.0.1 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LMDB REQUIRED IMPORTED_TARGET lmdb)
+find_package(doctest REQUIRED)
+
+set(KONSENS_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror)
+
+file(GLOB KONSENS_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.cpp)
+add_library(konsens ${KONSENS_SOURCES})
+target_include_directories(konsens PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(konsens PUBLIC PkgConfig::LMDB)
+target_compile_options(konsens PRIVATE ${KONSENS_WARNINGS})
+
+enable_testing()
+file(GLOB KONSENS_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/*.cpp)
+foreach(test_source ${KONSENS_TESTS})
+    get_filename_component(test_name ${test_source} NAME_WE)
+    add_executable(${test_name} ${test_source})
+    target_link_libraries(${test_name} PRIVATE konsens doctest::doctest)
+    target_compile_options(${test_name} PRIVATE ${KONSENS_WARNINGS})
+    add_test(NAME ${test_name} COMMAND ${test_name})
+endforeach()
+
+file(GLOB KONSENS_EXAMPLES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/examples/*.cpp)
+foreach(example_source ${KONSENS_EXAMPLES})
+    get_filename_component(example_name ${example_source} NAME_WE)
+    add_executable(${example_name} ${example_source})
+    target_link_libraries(${example_name} PRIVATE konsens)
+    target_compile_options(${example_name} PRIVATE ${KONSENS_WARNINGS})
+endforeach()
