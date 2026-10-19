@@ -1346,9 +1346,19 @@ ResendMessageTimeout(i) ==
                      THEN [EmptyMessage EXCEPT !.type = "Decide", !.n = ls.n_leader,
                            !.seq_num = ls.follower_seq_nums[k], !.decided_idx = decided_idx[i]]
                      ELSE AcceptStopSignMsg(ls.n_leader, ls.follower_seq_nums[k])
-               IN /\ chan' = Send(chan, i, [k \in pp \cup ss |->
-                                    IF k \in pp THEN <<PrepareMsg(i)>> ELSE <<resend(k)>>])
-                  /\ UNCHANGED <<durable, volatile>>
+                   df == IF phase[i] = "Accept" /\ Mutation # "NoDecideOnResend"
+                         THEN PromisedFollowers(ls) \ ss ELSE {}
+                   ls1 == IF Mutation = "DecideOnResendOldSeq" THEN ls ELSE NextSeqNums(ls, df)
+                   \* @type: Int => $msg;
+                   decide(k) == [EmptyMessage EXCEPT !.type = "Decide", !.n = ls.n_leader,
+                                 !.seq_num = ls1.follower_seq_nums[k], !.decided_idx = decided_idx[i]]
+               IN /\ chan' = Send(chan, i, [k \in pp \cup ss \cup df |->
+                                    IF k \in pp THEN <<PrepareMsg(i)>>
+                                    ELSE IF k \in ss THEN <<resend(k)>>
+                                    ELSE <<decide(k)>>])
+                  /\ leader_state' = [leader_state EXCEPT ![i] = ls1]
+                  /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
+                                 cached_promise_message, buffered_proposals>>
           ELSE UNCHANGED <<durable, volatile, chan>>
      ELSE IF phase[i] = "Prepare"
      THEN IF cached_promise_message[i] # <<>>
@@ -2012,6 +2022,11 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* (EpochFromConfiguration, NoConcurrentWriters).
 \* ReadWithoutLease: a leader starts a read round with no valid lease
 \* (ReadRoundHonoursLease, StaleReadAfterForce).
+\* NoDecideOnResend: the leader sends no Decide at a resend timeout, the form
+\* before doc/plan-decide-on-resend.md (no property; the old arm).
+\* DecideOnResendOldSeq: the Decide at a resend timeout carries the sequence
+\* number of the last message and does not raise it, as leader.rs:371-403
+\* with resend = true (S5).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
@@ -2023,7 +2038,8 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "ReadBeforeServing", "StopSignLost", "ReadStartBeforeServing",
                      "DecideWithoutLease", "ForcedWithoutWait", "WitnessGrantsAnyEpoch",
                      "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
-                     "AdoptEpochFromRefusal", "ReadWithoutLease"}
+                     "AdoptEpochFromRefusal", "ReadWithoutLease",
+                     "NoDecideOnResend", "DecideOnResendOldSeq"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -2357,4 +2373,11 @@ View ==
     recovering, nonce,
     [i \in Servers |-> IF recovering[i] THEN recovery_responses[i] ELSE {}],
     rollback, client, readvars, buffered_stopsign, reconfig, leasevars, leaseghost>>
+\* Cover of doc/plan-decide-on-resend.md: a follower in Recover at sequence
+\* number {1, 2} with decided index 0 while a leader in Accept has decided
+\* index 1. A run must violate it.
+NoSeed4 == ~\E k, l \in Nodes : role[k] = "Follower" /\ phase[k] = "Recover"
+             /\ current_seq_num[k] = [session |-> 1, counter |-> 2] /\ decided_idx[k] = 0
+             /\ role[l] = "Leader" /\ phase[l] = "Accept" /\ decided_idx[l] = 1
+
 =============================================================================
