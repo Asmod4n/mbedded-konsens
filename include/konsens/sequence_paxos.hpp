@@ -355,6 +355,11 @@ public:
                     send_prepare(peer);
                 }
             }
+            if (state_.second == phase::accept) {
+                for (const auto f : leader_state_.get_promised_followers()) {
+                    send_decide(f, decided_idx_);
+                }
+            }
             return {};
         }
         if (state_.second == phase::prepare) {
@@ -485,6 +490,11 @@ private:
     {
         outgoing_.push_back(
             {pid_, to, prepare{leader_state_.n_leader, decided_idx_, accepted_round_, accepted_idx_}});
+    }
+
+    void send_decide(const node_id to, const std::uint64_t decided_idx)
+    {
+        outgoing_.push_back({pid_, to, decide{leader_state_.n_leader, leader_state_.next_seq_num(to), decided_idx}});
     }
 
     bool check_valid_ballot(ballot message_ballot)
@@ -738,8 +748,7 @@ private:
         }
         decided_idx_ = acc.accepted_idx;
         for (const auto f : leader_state_.get_promised_followers()) {
-            outgoing_.push_back(
-                {pid_, f, decide{leader_state_.n_leader, leader_state_.next_seq_num(f), decided_idx_}});
+            send_decide(f, decided_idx_);
         }
         return {};
     }

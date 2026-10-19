@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -172,12 +173,69 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
     }
 }
 
-// Seed 4 of counter_stress: the last Decide to a follower is lost, and no
-// later message shows the gap, so the follower stays one entry behind.
-// The caller reports the dropped connection with reconnected, as
-// OmniPaxos::reconnected in omni_paxos.rs:394-398, and the follower
-// catches up through PrepareReq and AcceptSync.
-TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
+namespace {
+
+constexpr node_id behind = 1;
+constexpr node_id elected = 3;
+
+template <typename Lost>
+bool deliver_losing(std::vector<node_t>& nodes, const Lost lost)
+{
+    bool any = false;
+    for (bool more = true; more;) {
+        more = false;
+        for (auto& n : nodes) {
+            for (auto& m : n.take_outgoing_messages()) {
+                more = true;
+                const auto* p = std::get_if<konsens::paxos_message>(&m);
+                if (p != nullptr && lost(*p)) {
+                    any = true;
+                    continue;
+                }
+                const auto to = std::visit([](const auto& x) { return x.to; }, m);
+                REQUIRE(nodes[to - 1].handle(std::move(m)));
+            }
+        }
+    }
+    return any;
+}
+
+void deliver_all(std::vector<node_t>& nodes)
+{
+    static_cast<void>(deliver_losing(nodes, [](const konsens::paxos_message&) { return false; }));
+}
+
+std::vector<konsens::paxos_message> step_recording(std::vector<node_t>& nodes, const node_id watched)
+{
+    std::vector<konsens::paxos_message> seen;
+    for (bool more = true; more;) {
+        more = false;
+        for (auto& n : nodes) {
+            for (auto& m : n.take_outgoing_messages()) {
+                more = true;
+                if (const auto* p = std::get_if<konsens::paxos_message>(&m);
+                    p != nullptr && (p->to == watched || p->from == watched)) {
+                    seen.push_back(*p);
+                }
+                const auto to = std::visit([](const auto& x) { return x.to; }, m);
+                REQUIRE(nodes[to - 1].handle(std::move(m)));
+            }
+        }
+    }
+    for (auto& n : nodes) {
+        REQUIRE(n.tick());
+    }
+    return seen;
+}
+
+template <typename T>
+bool holds_any(const std::vector<konsens::paxos_message>& seen)
+{
+    return std::ranges::any_of(seen, [](const auto& p) { return std::holds_alternative<T>(p.msg); });
+}
+
+std::vector<node_t> elect_three()
+{
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
         nodes.push_back(*node_t::with(config_of(p), memory_storage{}, echo{}, 0));
@@ -186,34 +244,98 @@ TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    const auto leader = nodes[0].get_sequence_paxos().get_promise().pid;
-    REQUIRE(leader == 3);
-    REQUIRE(nodes[leader - 1].append(make_entry(1)));
-    bool lost = false;
-    for (bool more = true; more;) {
-        more = false;
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            for (auto& m : nodes[i].take_outgoing_messages()) {
-                more = true;
-                const auto* p = std::get_if<konsens::paxos_message>(&m);
-                if (p != nullptr && p->to == 1 && std::holds_alternative<konsens::decide>(p->msg)) {
-                    lost = true;
-                    continue;
-                }
-                const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                REQUIRE(nodes[to - 1].handle(std::move(m)));
-            }
-        }
-    }
+    REQUIRE(nodes[behind - 1].get_sequence_paxos().get_promise().pid == elected);
+    return nodes;
+}
+
+std::vector<node_t> lose_the_last_decide()
+{
+    auto nodes = elect_three();
+    deliver_all(nodes);
+    REQUIRE(nodes[elected - 1].append(make_entry(1)));
+    const bool lost = deliver_losing(nodes, [](const konsens::paxos_message& p) {
+        return p.to == behind && std::holds_alternative<konsens::decide>(p.msg);
+    });
     REQUIRE(lost);
-    REQUIRE(nodes[leader - 1].get_sequence_paxos().get_decided_idx() == 1);
+    REQUIRE(nodes[elected - 1].get_sequence_paxos().get_decided_idx() == 1);
+    REQUIRE(nodes[behind - 1].get_sequence_paxos().get_decided_idx() == 0);
+    return nodes;
+}
+
+void check_caught_up(const std::vector<node_t>& nodes)
+{
+    const auto& f = nodes[behind - 1].get_sequence_paxos();
+    const auto& l = nodes[elected - 1].get_sequence_paxos();
+    CHECK(f.get_decided_idx() == l.get_decided_idx());
+    CHECK(*nodes[behind - 1].read_decided_suffix(0) == *nodes[elected - 1].read_decided_suffix(0));
+    CHECK(f.get_internal_storage().get_entries(0, f.get_accepted_idx()) ==
+          l.get_internal_storage().get_entries(0, l.get_accepted_idx()));
+}
+
+void check_resynced(const std::vector<konsens::paxos_message>& seen)
+{
+    CHECK(holds_any<konsens::decide>(seen));
+    CHECK(holds_any<konsens::prepare_req>(seen));
+    CHECK(holds_any<konsens::prepare>(seen));
+    CHECK(holds_any<konsens::promise>(seen));
+    CHECK(holds_any<konsens::accept_sync>(seen));
+}
+
+}
+
+// Seed 4 of counter_stress: the last Decide to a follower is lost. The
+// caller reports the dropped connection with reconnected, as
+// OmniPaxos::reconnected in omni_paxos.rs:394-398, and the follower
+// catches up through PrepareReq and AcceptSync.
+TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
+    auto nodes = lose_the_last_decide();
+    nodes[behind - 1].reconnected(elected);
+    const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    CHECK(nodes[0].get_sequence_paxos().get_decided_idx() == 0);
-    nodes[0].reconnected(leader);
+    CHECK(*nodes[behind - 1].read_decided_suffix(0) == std::vector{make_entry(1)});
+    check_caught_up(nodes);
+}
+
+// The same loss with no call to reconnected. The leader sends a Decide
+// with the next sequence number at each resend timeout
+// (doc/plan-decide-on-resend.md). The follower sees DroppedPreceding,
+// goes to Recover and catches up through PrepareReq, Prepare, Promise and
+// AcceptSync. Without the Decide at the resend timeout, no later message
+// shows the gap and the follower stays one entry behind.
+TEST_CASE("a follower that lost the last Decide catches up after a resend timeout") {
+    auto nodes = lose_the_last_decide();
+    std::vector<konsens::paxos_message> seen;
     for (int i = 0; i < rounds; ++i) {
-        step(nodes, all);
+        std::ranges::move(step_recording(nodes, behind), std::back_inserter(seen));
     }
-    CHECK(*nodes[0].read_decided_suffix(0) == std::vector{make_entry(1)});
+    check_resynced(seen);
+    CHECK(*nodes[behind - 1].read_decided_suffix(0) == std::vector{make_entry(1)});
+    check_caught_up(nodes);
+}
+
+// The lost messages carry an entry: the AcceptDecide with entry 2 and the
+// Decide after it. The follower lacks the entry itself, not only the
+// decided index, so the AcceptSync must carry the entry.
+TEST_CASE("a follower that lost an AcceptDecide with an entry catches up after a resend timeout") {
+    auto nodes = elect_three();
+    REQUIRE(nodes[elected - 1].append(make_entry(1)));
+    deliver_all(nodes);
+    REQUIRE(nodes[behind - 1].get_sequence_paxos().get_decided_idx() == 1);
+    REQUIRE(nodes[elected - 1].append(make_entry(2)));
+    const bool lost = deliver_losing(nodes, [](const konsens::paxos_message& p) {
+        return p.to == behind &&
+               (std::holds_alternative<konsens::accept_decide>(p.msg) || std::holds_alternative<konsens::decide>(p.msg));
+    });
+    REQUIRE(lost);
+    REQUIRE(nodes[elected - 1].get_sequence_paxos().get_decided_idx() == 2);
+    REQUIRE(nodes[behind - 1].get_sequence_paxos().get_accepted_idx() == 1);
+    std::vector<konsens::paxos_message> seen;
+    for (int i = 0; i < rounds; ++i) {
+        std::ranges::move(step_recording(nodes, behind), std::back_inserter(seen));
+    }
+    check_resynced(seen);
+    CHECK(*nodes[behind - 1].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    check_caught_up(nodes);
 }

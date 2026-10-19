@@ -175,8 +175,9 @@ provisional.
 - The channels between nodes must be FIFO.
 - When a connection to a peer drops and comes back, the caller calls
   `reconnected(pid)` on the node, as in Omni-Paxos. The node then
-  syncs with that peer again. Without the call, a node that lost the
-  last message of a peer stays behind until the next write.
+  syncs with that peer again. At each resend timeout, a leader in the
+  accept phase sends a Decide with its decided index to each follower;
+  a follower that lost the last message sees the gap and syncs again.
 
 ### Tests of v0.1
 
@@ -221,12 +222,12 @@ leader, waits for a new leader and increments once more.
 Many clients increment the counter. The network loses messages and
 sends messages twice. Each channel stays FIFO. A lost message counts
 as a dropped connection: the program calls `reconnected` at both ends
-of the channel. Nodes restart from a
+of the channel, unless `--no-reconnected` is given. Nodes restart from a
 copy of their storage. A restart starts only while no node recovers.
 After each tenth increment, a client reads the counter.
 
 ```
-./build/counter_stress [--clients C] [--increments N] [--seed S] [--loss P] [--duplicate P] [--restart R]
+./build/counter_stress [--clients C] [--increments N] [--seed S] [--loss P] [--duplicate P] [--restart R] [--no-reconnected]
 ```
 
 | Flag | Meaning | Default |
@@ -237,6 +238,7 @@ After each tenth increment, a client reads the counter.
 | `--loss` | The chance in permille that a message is lost. | 10 |
 | `--duplicate` | The chance in permille that a message arrives twice. | 10 |
 | `--restart` | The chance in permille in each round that one node restarts. | 5 |
+| `--no-reconnected` | A lost message does not call `reconnected`. The flag takes no value. | off |
 
 The program checks four properties. Checks 1 and 4 run at each reply.
 When all clients are done, the faults stop. Checks 1, 2 and 3 then run

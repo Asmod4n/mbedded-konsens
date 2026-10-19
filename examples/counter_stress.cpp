@@ -80,6 +80,7 @@ struct options {
     std::uint64_t loss{default_loss};
     std::uint64_t duplicate{default_duplicate};
     std::uint64_t restart{default_restart};
+    bool calls_reconnected{true};
 };
 
 struct flag {
@@ -93,8 +94,10 @@ constexpr std::array flags{
     flag{"--duplicate", &options::duplicate}, flag{"--restart", &options::restart},
 };
 
+constexpr std::string_view no_reconnected_flag = "--no-reconnected";
+
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
-                                   "[--duplicate P] [--restart R]";
+                                   "[--duplicate P] [--restart R] [--no-reconnected]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
@@ -110,20 +113,26 @@ std::optional<std::uint64_t> number_of(const std::string_view text)
 std::expected<options, std::string_view> options_of(const std::span<char* const> args)
 {
     options o{};
-    for (const auto pair : args | std::views::drop(1) | std::views::chunk(words_of_a_flag)) {
-        const std::string_view name = *std::ranges::begin(pair);
+    for (auto rest = args.subspan(std::min(args.size(), std::size_t{1})); !rest.empty();) {
+        const std::string_view name = rest.front();
+        if (name == no_reconnected_flag) {
+            o.calls_reconnected = false;
+            rest = rest.subspan(1);
+            continue;
+        }
         const auto it = std::ranges::find(flags, name, &flag::name);
         if (it == flags.end()) [[unlikely]] {
             return std::unexpected("A flag is not known");
         }
-        if (std::ranges::size(pair) != words_of_a_flag) [[unlikely]] {
+        if (rest.size() < words_of_a_flag) [[unlikely]] {
             return std::unexpected("A flag has no value");
         }
-        const auto value = number_of(*std::ranges::next(std::ranges::begin(pair)));
+        const auto value = number_of(rest.subspan(1).front());
         if (!value) [[unlikely]] {
             return std::unexpected("A value is not a number");
         }
         o.*(it->member) = *value;
+        rest = rest.subspan(words_of_a_flag);
     }
     if (o.loss > permille || o.duplicate > permille || o.restart > permille) [[unlikely]] {
         return std::unexpected("A chance is above 1000 permille");
@@ -140,7 +149,7 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
 bool takes_defaults_apart_from_the_seed(const options& o)
 {
     return o.clients == default_clients && o.increments == default_increments && o.loss == default_loss &&
-           o.duplicate == default_duplicate && o.restart == default_restart;
+           o.duplicate == default_duplicate && o.restart == default_restart && o.calls_reconnected;
 }
 
 std::uint64_t value_of(const std::span<const std::byte> bytes)
@@ -203,6 +212,7 @@ struct cluster {
     std::optional<std::size_t> last_leader;
     tally counts;
     std::vector<std::pair<konsens::node_id, konsens::node_id>> disconnected;
+    bool calls_reconnected;
 
     node_t& at(const std::size_t i) { return nodes.at(i).value(); }
     const node_t& at(const std::size_t i) const { return nodes.at(i).value(); }
@@ -219,7 +229,9 @@ struct cluster {
         counts.messages += 1;
         if (happens(loss)) {
             counts.lost += 1;
-            std::visit([this](const auto& x) { disconnected.emplace_back(x.from, x.to); }, m);
+            if (calls_reconnected) {
+                std::visit([this](const auto& x) { disconnected.emplace_back(x.from, x.to); }, m);
+            }
             return;
         }
         auto& channel = channels.at(channel_of(m));
@@ -612,7 +624,8 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
 
 int run(const options& given)
 {
-    stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {}},
+    stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {},
+                         given.calls_reconnected},
              {}, {}, {}, 0, 0, 1, 0, 0};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
