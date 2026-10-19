@@ -68,3 +68,33 @@ the heartbeat of the leader carries leaderCommit (Raft dissertation
 
 One Decide per follower at each resend timeout of the leader. No
 figure is given before a measurement.
+
+## 6. Changes after the review
+
+The review `doc/review-plan-decide-on-resend.md` (approve with
+changes) found no fault of safety and 16 faults of the plan. Each is
+applied as its fix says, with these choices:
+
+- F3, F4: the counter-check is the old sequence number (the form of
+  the origin, `resend = true`), and it must break S5 at MaxLog 2. The
+  `decided_idx + 1` check is removed.
+- F5, F6, F7: Q1b stays as the check that nothing changes without a
+  timeout. Q2 runs with MaxCounter 4 and a cover invariant for the
+  case of seed 4 that must be violated. Q7 runs with MaxCounter raised
+  by one, and Q9 runs on MC_c. Each is a simulation of 15 min first;
+  breadth-first only where it can finish, and a run cut by its limit
+  is a partial result with its depth (F14).
+- F8: a follower in the set `ss` gets the old-number message first and
+  no new Decide in the same timeout.
+- F10, F15: the old form is a value of `Mutation` with its `MC_mut_*`
+  files, so no new switch name is made. The flag of `counter_stress`
+  is `--no-reconnected` (provisional; the owner decides the name).
+- F12: the C++ test delivers PrepareReq, Prepare, Promise and
+  AcceptSync, and has a second case with a lost AcceptDecide that
+  carries entries.
+- F13: the cost is one Decide per follower at each resend timeout, and
+  a full resync after a lost last message.
+- F16: one result file per run under model/results, the branch
+  `claude/project-thread-4xjeai`, and the state file after the push.
+- The code goes in only after the simulations of the model show no
+  violation. The breadth-first runs may still run after that.
