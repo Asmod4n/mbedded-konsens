@@ -24,7 +24,8 @@ CONSTANTS
   \*   log: Seq($entry), decided_idx: Int};
   \* @typeAlias: read = {state: Str, node: Int, decided_at_start: Seq($entry),
   \*   read_index: Int, result: Seq($entry), stale: Bool, contract_stale_ok: Bool,
-  \*   crashes: Int, rolled_back: Set(Int), ballot: Int, decided_new_at_start: Seq($entry)};
+  \*   crashes: Int, rolled_back: Set(Int), ballot: Int, decided_new_at_start: Seq($entry),
+  \*   forced_decided: Bool};
   \* @typeAlias: round = {n: Int, id: Int, reads: Set(Int), read_index: Int, acks: Set(Int)};
   \* @typeAlias: session = {open: Bool, request_number: Int, reply: Int};
   \* @typeAlias: forceSingle = {node: Int, log: Seq($entry), decided: Seq($entry),
@@ -89,7 +90,11 @@ CONSTANTS
   \* @type: Int;
   MaxHalt,
   \* @type: Bool;
-  StaleReadNode
+  StaleReadNode,
+  \* @type: Bool;
+  Witness,
+  \* @type: Int;
+  LeaseLength
 
 VARIABLES
   \* @type: Int -> Int;
@@ -175,7 +180,27 @@ VARIABLES
   \* @type: Int -> $stage1Ghost;
   stage1_ghost,
   \* @type: Int -> Int;
-  build_source
+  build_source,
+  \* @type: Int;
+  witness_epoch,
+  \* @type: Int -> Int;
+  node_epoch,
+  \* @type: Int -> Int;
+  lease_request,
+  \* @type: Int -> Int;
+  lease_reply,
+  \* @type: Int -> Int;
+  lease_remaining,
+  \* @type: Int;
+  wait_remaining,
+  \* @type: Int;
+  forced_decided_at_force,
+  \* @type: Bool;
+  forced_has_decided,
+  \* @type: Int;
+  old_decided_max,
+  \* @type: Bool;
+  old_decided_after_forced
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -187,8 +212,12 @@ rollback == <<rolled_back, past_durable>>
 readvars == <<reads, read_pending, read_round>>
 reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
               halts, read_only_entries, stage1_ghost, build_source>>
+leasevars  == <<witness_epoch, node_epoch, lease_request, lease_reply, lease_remaining,
+                wait_remaining>>
+leaseghost == <<forced_decided_at_force, forced_has_decided, old_decided_max,
+                old_decided_after_forced>>
 vars     == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
-              buffered_stopsign, reconfig>>
+              buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 ----------------------------------------------------------------------------
 (* Ballot (n, pid) is the integer n * PidBase + pid. Ballot::default is 0.   *)
@@ -423,7 +452,7 @@ RecoveryComplete(rs, i) == Cardinality(rs) >= Majority(i) /\ RecoveryPrimaries(r
 NoRead == [state |-> "none", node |-> 0, decided_at_start |-> <<>>,
            read_index |-> 0, result |-> <<>>, stale |-> FALSE, contract_stale_ok |-> FALSE,
            crashes |-> 0, rolled_back |-> {}, ballot |-> DefaultBallot,
-           decided_new_at_start |-> <<>>]
+           decided_new_at_start |-> <<>>, forced_decided |-> FALSE]
 \* @type: $round;
 NoRound == [n |-> DefaultBallot, id |-> 0, reads |-> {}, read_index |-> 0, acks |-> {}]
 ReadMessages == {"ReadIndex", "Heartbeat", "HeartbeatAck", "ReadIndexReply"}
@@ -448,6 +477,21 @@ SingleNodeLeader(i) ==
 \* an entry of its own term. Here: after it has decided the log it started with.
 \* @type: Int => Bool;
 SingleNodeServes(i) == SingleNodeLeader(i) /\ decided_idx[i] >= Len(first_log[i])
+
+(* The lease at the witness, model/plan-witness-lease.md. Names: lease       *)
+(* (Gray and Cheriton, SOSP 1989), epoch (Chubby, ZooKeeper), witness       *)
+(* (Paris, 1986). The witness holds one durable value, witness_epoch, and   *)
+(* changes it only in ForceSingle. The epoch of a node comes from its       *)
+(* configuration. Time is kept as remaining durations: Tick lowers each     *)
+(* positive duration by one. lease_request[i] is the time that remains of   *)
+(* a lease measured from the request, -1 with no request. lease_reply[i] is *)
+(* -1 with no reply, 0 for a refusal, 1 for a grant. lease_remaining[i] is  *)
+(* the volatile lease of a node of the old cluster. wait_remaining is -1    *)
+(* before ForceSingle, then the time that the forced node still waits. With *)
+(* Witness FALSE each new action is disabled, each new variable keeps its   *)
+(* initial value, and each changed guard is TRUE.                           *)
+\* @type: Int => Bool;
+LeaseValid(i) == i \notin Nodes \/ ~Witness \/ lease_remaining[i] > 0
 
 ----------------------------------------------------------------------------
 Init ==
@@ -493,6 +537,16 @@ Init ==
   /\ read_only_entries = 0
   /\ stage1_ghost = [i \in Nodes |-> NoStage1Ghost]
   /\ build_source = [s \in NextConfigNodes |-> 0]
+  /\ witness_epoch = 0
+  /\ node_epoch = [i \in Servers |-> 0]
+  /\ lease_request = [i \in Nodes |-> -1]
+  /\ lease_reply = [i \in Nodes |-> -1]
+  /\ lease_remaining = [i \in Nodes |-> 0]
+  /\ wait_remaining = -1
+  /\ forced_decided_at_force = 0
+  /\ forced_has_decided = FALSE
+  /\ old_decided_max = 0
+  /\ old_decided_after_forced = FALSE
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -816,7 +870,9 @@ HandleForwardStopSign(i, j, m, c) ==
 HandleAccepted(i, j, m, c) ==
   IF m.n = leader_state[i].n_leader /\ role[i] = "Leader" /\ phase[i] = "Accept"
   THEN LET ls1 == [leader_state[i] EXCEPT !.accepted_indexes[j] = m.accepted_idx] IN
-       IF m.accepted_idx > decided_idx[i] /\ IsChosen(ls1, m.accepted_idx)
+       IF /\ m.accepted_idx > decided_idx[i]
+          /\ IsChosen(ls1, m.accepted_idx)
+          /\ LeaseValid(i) \/ Mutation = "DecideWithoutLease"
        THEN LET fs  == PromisedFollowers(ls1)
                 ls2 == NextSeqNums(ls1, fs)
             IN /\ decided_idx' = [decided_idx EXCEPT ![i] = m.accepted_idx]
@@ -1005,7 +1061,33 @@ PastUpdate ==
             ELSE past_durable[k]
        ELSE {}]
 
-GhostUpdate == HistoryUpdate /\ PastUpdate
+(* The ghosts of the lease. old_decided_max is the highest decided_idx that *)
+(* a node of the old cluster ever held. forced_decided_at_force is the      *)
+(* decided_idx of the forced node after the step of ForceSingle.            *)
+(* forced_has_decided is set when the forced node decides above that value  *)
+(* after ForceSingle. old_decided_after_forced is set when old_decided_max  *)
+(* rises in a state where forced_has_decided is TRUE. Each condition reads  *)
+(* force_single and forced_decided_at_force in the state before the step,   *)
+(* so the step of ForceSingle itself does not count.                        *)
+LeaseGhostUpdate ==
+  IF ~Witness
+  THEN UNCHANGED leaseghost
+  ELSE LET \* @type: Set(Int);
+           ds  == {old_decided_max} \cup {decided_idx'[k] : k \in Nodes}
+           odm == CHOOSE d \in ds : \A e \in ds : d >= e
+       IN /\ old_decided_max' = odm
+          /\ forced_has_decided' =
+               \/ forced_has_decided
+               \/ /\ force_single.node # 0
+                  /\ \E s \in NextConfigNodes : decided_idx'[s] > forced_decided_at_force
+          /\ old_decided_after_forced' =
+               old_decided_after_forced \/ (forced_has_decided /\ odm > old_decided_max)
+          /\ forced_decided_at_force' =
+               IF force_single.node = 0 /\ force_single'.node # 0
+               THEN decided_idx'[CHOOSE s \in NextConfigNodes : s \in running']
+               ELSE forced_decided_at_force
+
+GhostUpdate == HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate
 
 ----------------------------------------------------------------------------
 (* Actions *)
@@ -1067,7 +1149,8 @@ Receive(j, i) ==
            ELSE /\ UNCHANGED deactivated
                 /\ Dispatch(i, j, m, c)
   /\ UNCHANGED <<env, proposed, rolled_back, client, running, first_log, reconfigurations,
-                 force_single, read_only, halts, read_only_entries, stage1_ghost, build_source>>
+                 force_single, read_only, halts, read_only_entries, stage1_ghost, build_source,
+                 leasevars>>
   /\ GhostUpdate
 
 \* leader.rs:16-60 handle_leader, own pid only (no BLE).
@@ -1097,7 +1180,8 @@ HandleLeader(i, k) ==
      /\ UNCHANGED <<n_accepted, log, decided_idx, accepted_idx, current_seq_num,
                     cached_promise_message, buffered_proposals,
                     wiped, crashes, wipes, losses, duplicates, timeouts, proposed,
-                    recovery, rolled_back, client, readvars, buffered_stopsign, reconfig>>
+                    recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                    leasevars>>
   /\ GhostUpdate
 
 \* mod.rs:298-305 append, mod.rs:359-365 propose_entry,
@@ -1127,7 +1211,8 @@ Propose(i, v) ==
      ELSE /\ ForwardProposals(i, <<v>>, chan)
           /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
                          cached_promise_message, leader_state>>
-  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, buffered_stopsign, reconfig>>
+  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                 leasevars>>
   /\ GhostUpdate
 
 \* Restart of each node i in R with the durable state d[i], through
@@ -1164,6 +1249,12 @@ Restart(R, d, Q, rec) ==
   /\ read_pending' = At(read_pending, [k \in R |-> {}])
   /\ read_round' = At(read_round, [k \in R |-> [read_round[k] EXCEPT !.reads = {}, !.acks = {}]])
   /\ UNCHANGED reads
+  /\ lease_request' = [k \in Nodes |-> IF k \in R THEN -1 ELSE lease_request[k]]
+  /\ lease_reply' = [k \in Nodes |-> IF k \in R THEN -1 ELSE lease_reply[k]]
+  /\ lease_remaining' = [k \in Nodes |-> IF k \in R THEN 0 ELSE lease_remaining[k]]
+  /\ wait_remaining' = IF R \cap NextConfigNodes # {} /\ wait_remaining > 0
+                       THEN LeaseLength ELSE wait_remaining
+  /\ UNCHANGED <<witness_epoch, node_epoch>>
 
 \* F3: crash keeping durable state.
 Crash(i) ==
@@ -1216,6 +1307,15 @@ Wipe(i) ==
   /\ deactivated' = IF Mutation = "StopSignLost" THEN [deactivated EXCEPT ![i] = FALSE]
                     ELSE deactivated
   /\ UNCHANGED reads
+  \* Provisional: a wipe drops the volatile lease and starts the wait again,
+  \* as Restart does. The epoch of the node comes from its configuration
+  \* and stays.
+  /\ lease_request' = [k \in Nodes |-> IF k = i THEN -1 ELSE lease_request[k]]
+  /\ lease_reply' = [k \in Nodes |-> IF k = i THEN -1 ELSE lease_reply[k]]
+  /\ lease_remaining' = [k \in Nodes |-> IF k = i THEN 0 ELSE lease_remaining[k]]
+  /\ wait_remaining' = IF i \in NextConfigNodes /\ wait_remaining > 0
+                       THEN LeaseLength ELSE wait_remaining
+  /\ UNCHANGED <<witness_epoch, node_epoch>>
   /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
                  nonce, rolled_back, client, running, first_log, reconfigurations,
                  force_single, read_only, halts, read_only_entries, stage1_ghost, build_source>>
@@ -1264,7 +1364,8 @@ ResendMessageTimeout(i) ==
           /\ UNCHANGED <<durable, volatile>>
      ELSE UNCHANGED <<durable, volatile, chan>>
   /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, elections, proposed,
-                 recovery, rolled_back, client, readvars, buffered_stopsign, reconfig>>
+                 recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                 leasevars>>
   /\ chan' # chan \/ phase' # phase
   /\ GhostUpdate
 
@@ -1275,7 +1376,8 @@ Lose(p, k) ==
   /\ losses' = losses + 1
   /\ chan' = [chan EXCEPT ![p] = SubSeq(@, 1, k - 1) \o SubSeq(@, k + 1, Len(@))]
   /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, duplicates, timeouts, elections, proposed,
-                 recovery, rolled_back, client, readvars, buffered_stopsign, reconfig>>
+                 recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                 leasevars>>
   /\ GhostUpdate
 
 \* F1: duplication; the copy is appended at the end of the channel.
@@ -1286,7 +1388,8 @@ Duplicate(p, k) ==
   /\ Len(chan[p]) < Cap
   /\ chan' = [chan EXCEPT ![p] = Append(@, @[k])]
   /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, losses, timeouts, elections, proposed,
-                 recovery, rolled_back, client, readvars, buffered_stopsign, reconfig>>
+                 recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                 leasevars>>
   /\ GhostUpdate
 
 
@@ -1372,7 +1475,8 @@ ClientSend(i, e) ==
      ELSE /\ ForwardProposals(i, <<e>>, chan)
           /\ UNCHANGED <<durable, role, phase, accepted_idx, current_seq_num,
                          cached_promise_message, leader_state>>
-  /\ UNCHANGED <<env, recovery, rolled_back, readvars, buffered_stopsign, reconfig>>
+  /\ UNCHANGED <<env, recovery, rolled_back, readvars, buffered_stopsign, reconfig,
+                 leasevars>>
   /\ GhostUpdate
 
 \* Raft 6.3: the client registers while it has no session.
@@ -1397,7 +1501,7 @@ ClientRegistered(j, s) ==
   /\ ClientTable(DecidedPrefix(j))[s].open
   /\ client' = [client EXCEPT !.session = s, !.request_number = 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 \* VR Revisited 4.1: node j replies with the result of the request; the
 \* client takes the next request-number.
@@ -1410,7 +1514,7 @@ ClientReplied(j) ==
        t.open /\ t.request_number >= client.request_number
   /\ client' = [client EXCEPT !.request_number = @ + 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 \* Raft 6.3: node j replies SESSION_EXPIRED; the client registers again.
 ClientSessionExpired(j) ==
@@ -1421,7 +1525,7 @@ ClientSessionExpired(j) ==
   /\ ~ClientTable(DecidedPrefix(j))[client.session].open
   /\ client' = [client EXCEPT !.session = 0, !.request_number = 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 \* Raft 6.3: the leader appends an entry that expires session s. Owner
 \* decision: this follows a heartbeat timeout of the client. The timeout is
@@ -1439,7 +1543,8 @@ ExpireSession(i, s) ==
   /\ AcceptEntriesLeader(i, <<ExpireSessionEntry(s)>>, chan)
   /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
                  cached_promise_message, buffered_proposals>>
-  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, buffered_stopsign, reconfig>>
+  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                 leasevars>>
   /\ GhostUpdate
 
 ----------------------------------------------------------------------------
@@ -1457,7 +1562,8 @@ ReadStart(r, i) ==
       started(ok) == [NoRead EXCEPT !.state = "pending", !.node = i,
                                     !.decided_at_start = decided_history,
                                     !.decided_new_at_start = DecidedNew,
-                                    !.contract_stale_ok = ok]
+                                    !.contract_stale_ok = ok,
+                                    !.forced_decided = forced_has_decided]
       ld          == BallotPid(promise[i])
   IN
   /\ ReadIndex
@@ -1465,6 +1571,7 @@ ReadStart(r, i) ==
   /\ read_only[i] \/ ~deactivated[i]
   /\ reads[r].state = "none"
   /\ SingleNode /\ ClusterNodes(i) = {i} => SingleNodeServes(i) \/ Mutation = "ReadStartBeforeServing"
+  /\ i \in NextConfigNodes => wait_remaining <= 0
   /\ \E ok \in IF StaleReadNode THEN BOOLEAN ELSE {FALSE} :
      IF read_only[i] \/ (ok /\ ~InStage2(i))
      THEN /\ reads' = [reads EXCEPT ![r] = [started(ok) EXCEPT !.state = "done",
@@ -1485,7 +1592,7 @@ ReadStart(r, i) ==
                                                                !.read = r]))
           /\ UNCHANGED read_pending
   /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, read_round,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 \* Raft 6.4 and FoundationDB GetReadVersion: the leader takes all waiting
 \* reads into one round (a batch). The read index is its accepted_idx at the
@@ -1499,6 +1606,7 @@ StartReadRound(i) ==
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
   /\ read_pending[i] # {}
   /\ read_round[i].reads = {} \/ read_round[i].n # n
+  /\ LeaseValid(i) \/ Mutation = "ReadWithoutLease"
   /\ read_round' = [read_round EXCEPT ![i] =
                       [n |-> n, id |-> id, reads |-> read_pending[i],
                        read_index |-> accepted_idx[i],
@@ -1507,7 +1615,7 @@ StartReadRound(i) ==
   /\ chan' = Send(chan, i, [k \in Peers(i) |->
                 <<[EmptyMessage EXCEPT !.type = "Heartbeat", !.n = n, !.id = id]>>])
   /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, reads,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 \* Raft 6.4: the node answers read r from its own log once its decided index
 \* has reached the read index.
@@ -1522,7 +1630,7 @@ ReadReply(r) ==
         /\ reads[r].ballot = promise[i]
   /\ reads' = [reads EXCEPT ![r].state = "done", ![r].result = DecidedPrefix(i)]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client,
-                 read_pending, read_round, buffered_stopsign, reconfig>>
+                 read_pending, read_round, buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 ----------------------------------------------------------------------------
 \* @type: Int => Bool;
@@ -1546,7 +1654,7 @@ Reconfigure(i) ==
           /\ UNCHANGED <<durable, volatile>>
   /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, running, first_log, force_single,
                  read_only, deactivated, halts, read_only_entries, stage1_ghost,
-                 build_source>>
+                 build_source, leasevars>>
   /\ GhostUpdate
 
 \* @type: (Int, Int) => Bool;
@@ -1567,7 +1675,7 @@ BuildForServer(i, j) ==
   /\ UNCHANGED <<promise, n_accepted, role, phase, current_seq_num, cached_promise_message,
                  buffered_proposals, leader_state, chan, env, proposed, recovery, rolled_back,
                  client, readvars, buffered_stopsign, reconfigurations, force_single,
-                 read_only, deactivated, halts, read_only_entries, stage1_ghost>>
+                 read_only, deactivated, halts, read_only_entries, stage1_ghost, leasevars>>
   /\ GhostUpdate
 
 ----------------------------------------------------------------------------
@@ -1583,8 +1691,9 @@ LeaderCountsOwnPromise(i) ==
   /\ ~recovering[i]
   /\ role[i] = "Leader" /\ phase[i] = "Prepare"
   /\ Cardinality(Promised(leader_state[i])) >= Majority(i)
+  /\ wait_remaining <= 0 \/ Mutation = "ForcedWithoutWait"
   /\ HandleMajorityPromises(i, leader_state[i], chan)
-  /\ UNCHANGED <<env, proposed, recovery, rolled_back, client, readvars, reconfig>>
+  /\ UNCHANGED <<env, proposed, recovery, rolled_back, client, readvars, reconfig, leasevars>>
   /\ GhostUpdate
 
 \* leader.rs:316-345 handle_accepted
@@ -1600,10 +1709,11 @@ LeaderCountsOwnAccepted(i) ==
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
   /\ own > decided_idx[i]
   /\ IsChosen(leader_state[i], own)
+  /\ wait_remaining <= 0 \/ Mutation = "ForcedWithoutWait"
   /\ HandleAccepted(i, i, [EmptyMessage EXCEPT !.type = "Accepted",
                            !.n = leader_state[i].n_leader, !.accepted_idx = own], chan)
   /\ UNCHANGED <<env, proposed, recovery, rolled_back, client, readvars,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars>>
   /\ GhostUpdate
 
 \* @type: (Int, Int) => Bool;
@@ -1618,7 +1728,14 @@ ForceSingle(i, s) ==
   /\ i \in Nodes /\ s \in NextConfigNodes \ running
   /\ Votes(i) /\ ~recovering[i]
   /\ read_only[i] \/ Mutation = "ForceWithoutStage1"
-  /\ Cardinality(Nodes \ running) >= Majority(i) \/ Mutation = "OldNodeVotesAfterForce"
+  /\ Witness \/ Cardinality(Nodes \ running) >= Majority(i) \/ Mutation = "OldNodeVotesAfterForce"
+  /\ IF Witness
+     THEN /\ witness_epoch' = IF Mutation = "ForceWithoutRaise" THEN witness_epoch
+                              ELSE witness_epoch + 1
+          /\ node_epoch' = [node_epoch EXCEPT ![s] = witness_epoch + 1]
+          /\ wait_remaining' = LeaseLength
+     ELSE UNCHANGED <<witness_epoch, node_epoch, wait_remaining>>
+  /\ UNCHANGED <<lease_request, lease_reply, lease_remaining>>
   /\ force_single' = [node |-> i, log |-> log[i], decided |-> DecidedPrefix(i),
                       history |-> decided_history]
   /\ running' = (running \ {i}) \cup {s}
@@ -1639,7 +1756,7 @@ SendDeactivated(s, k) ==
   /\ chan[<<s, k>>] = <<>>
   /\ chan' = Send(chan, s, One(k, [EmptyMessage EXCEPT !.type = "Deactivated"]))
   /\ UNCHANGED <<durable, volatile, env, ghost, recovery, rollback, client, readvars,
-                 buffered_stopsign, reconfig>>
+                 buffered_stopsign, reconfig, leasevars, leaseghost>>
 
 \* @type: Int => Bool;
 EnterReadOnly(i) ==
@@ -1685,7 +1802,7 @@ Halt(i) ==
                                        ELSE stage1_ghost[k]]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
                  buffered_stopsign, first_log, reconfigurations, force_single, read_only,
-                 deactivated, read_only_entries, build_source>>
+                 deactivated, read_only_entries, build_source, leasevars, leaseghost>>
 
 \* @type: Int => Bool;
 Resume(i) ==
@@ -1698,6 +1815,114 @@ Resume(i) ==
                  rolled_back, client, first_log, reconfigurations, force_single, read_only,
                  deactivated, halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
+
+----------------------------------------------------------------------------
+(* Actions of the lease at the witness. Names for the owner, no source:     *)
+(* Tick, LeaseRequest, LeaseGrant, LeaseReply, LeaderDecidesChosen,         *)
+(* WitnessRestart.                                                          *)
+
+\* Each positive duration falls by one.
+Tick ==
+  /\ Witness
+  /\ \/ \E i \in Nodes : lease_request[i] > 0 \/ lease_remaining[i] > 0
+     \/ wait_remaining > 0
+  /\ lease_request' = [k \in Nodes |-> IF lease_request[k] > 0 THEN lease_request[k] - 1
+                                       ELSE lease_request[k]]
+  /\ lease_remaining' = [k \in Nodes |-> IF lease_remaining[k] > 0 THEN lease_remaining[k] - 1
+                                         ELSE lease_remaining[k]]
+  /\ wait_remaining' = IF wait_remaining > 0 THEN wait_remaining - 1 ELSE wait_remaining
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig, witness_epoch, node_epoch, lease_reply,
+                 leaseghost>>
+
+\* A leader of the old cluster reads its clock and sends a request with its
+\* epoch. The model keeps one request for each node.
+\* @type: Int => Bool;
+LeaseRequest(i) ==
+  /\ Witness
+  /\ i \in Nodes
+  /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  /\ lease_request[i] = -1
+  /\ lease_request' = [lease_request EXCEPT ![i] = LeaseLength]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig, witness_epoch, node_epoch, lease_reply,
+                 lease_remaining, wait_remaining, leaseghost>>
+
+\* The witness grants the request only if the epoch of the request is its
+\* own epoch.
+\* @type: Int => Bool;
+LeaseGrant(i) ==
+  /\ Witness
+  /\ lease_request[i] >= 0
+  /\ lease_reply[i] = -1
+  /\ lease_reply' = [lease_reply EXCEPT ![i] =
+                       IF node_epoch[i] = witness_epoch \/ Mutation = "WitnessGrantsAnyEpoch"
+                       THEN 1 ELSE 0]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig, witness_epoch, node_epoch, lease_request,
+                 lease_remaining, wait_remaining, leaseghost>>
+
+\* The node takes the reply. A grant sets the lease from the time of the
+\* request, which Tick has lowered since. A refusal drops the lease at once.
+\* Provisional: the mutation AdoptEpochFromRefusal acts here, at the node
+\* that takes the refusal, and not in LeaseGrant.
+\* @type: Int => Bool;
+LeaseReply(i) ==
+  /\ Witness
+  /\ i \in Nodes
+  /\ lease_reply[i] >= 0
+  /\ lease_remaining' = [lease_remaining EXCEPT ![i] =
+                           IF lease_reply[i] = 1
+                           THEN IF Mutation = "LeaseFromReply" THEN LeaseLength
+                                ELSE lease_request[i]
+                           ELSE 0]
+  /\ node_epoch' = IF lease_reply[i] = 0 /\ Mutation = "AdoptEpochFromRefusal"
+                   THEN [node_epoch EXCEPT ![i] = witness_epoch]
+                   ELSE node_epoch
+  /\ lease_request' = [lease_request EXCEPT ![i] = -1]
+  /\ lease_reply' = [lease_reply EXCEPT ![i] = -1]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig, witness_epoch, wait_remaining, leaseghost>>
+
+\* leader.rs:316-345 handle_accepted, leader.rs:240-255 send_decide: a leader
+\* of the old cluster with a valid lease decides the highest chosen index
+\* above its decided_idx, as the decide branch of HandleAccepted does. It
+\* does not write accepted_indexes.
+\* @type: Int => Bool;
+LeaderDecidesChosen(i) ==
+  LET ls == leader_state[i]
+      \* @type: Set(Int);
+      cs == {k \in (decided_idx[i] + 1)..accepted_idx[i] : IsChosen(ls, k)}
+      d  == CHOOSE k \in cs : \A x \in cs : x <= k
+      fs == PromisedFollowers(ls)
+      ls2 == NextSeqNums(ls, fs)
+  IN
+  /\ Witness
+  /\ i \in Nodes
+  /\ ~recovering[i]
+  /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  /\ LeaseValid(i) \/ Mutation = "DecideWithoutLease"
+  /\ cs # {}
+  /\ decided_idx' = [decided_idx EXCEPT ![i] = d]
+  /\ leader_state' = [leader_state EXCEPT ![i] = ls2]
+  /\ chan' = Send(chan, i, [k \in fs |->
+               <<[EmptyMessage EXCEPT !.type = "Decide", !.n = ls2.n_leader,
+                  !.seq_num = ls2.follower_seq_nums[k], !.decided_idx = d]>>])
+  /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx, current_seq_num,
+                 cached_promise_message, buffered_proposals, env, proposed, recovery,
+                 rolled_back, client, readvars, buffered_stopsign, reconfig, leasevars>>
+  /\ GhostUpdate
+
+\* Only with the mutation WitnessForgetsEpoch: the witness restarts with
+\* epoch 0. Without the mutation the witness keeps only durable state.
+WitnessRestart ==
+  /\ Witness
+  /\ Mutation = "WitnessForgetsEpoch"
+  /\ witness_epoch # 0
+  /\ witness_epoch' = 0
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig, node_epoch, lease_request, lease_reply,
+                 lease_remaining, wait_remaining, leaseghost>>
 
 ----------------------------------------------------------------------------
 Next ==
@@ -1725,6 +1950,10 @@ Next ==
   \/ \E s \in running, k \in Nodes : SendDeactivated(s, k)
   \/ \E i \in running : Halt(i)
   \/ \E i \in Nodes \ running : Resume(i)
+  \/ Tick
+  \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
+  \/ \E i \in Nodes : LeaseGrant(i)
+  \/ WitnessRestart
 
 Spec == Init /\ [][Next]_vars
 
@@ -1765,6 +1994,24 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* StopSignLost: a wipe clears deactivated (DeactivatedStays).
 \* ReadStartBeforeServing: a leader of a configuration with one node starts
 \* a read before it serves (ReadStartOnlyWhenServing).
+\* The mutations of the lease, model/plan-witness-lease.md section 5, with the
+\* direct property and then the far property:
+\* DecideWithoutLease: a leader decides with no valid lease, in HandleAccepted
+\* and in LeaderDecidesChosen (LeaseHonoured, NoConcurrentWriters).
+\* ForcedWithoutWait: the forced node decides during the wait
+\* (WaitHonoured, NoConcurrentWriters).
+\* WitnessGrantsAnyEpoch: the witness grants a request of each epoch
+\* (GrantOnlyCurrentEpoch, NoConcurrentWriters).
+\* ForceWithoutRaise: ForceSingle does not raise the epoch at the witness
+\* (ForceRaisesEpoch, NoConcurrentWriters).
+\* WitnessForgetsEpoch: the witness restarts with epoch 0
+\* (WitnessEpochGrows, NoConcurrentWriters).
+\* LeaseFromReply: a grant sets the lease to LeaseLength from the reply
+\* (LeaseWithinGrant, LeasesDisjoint).
+\* AdoptEpochFromRefusal: a refusal writes witness_epoch into node_epoch
+\* (EpochFromConfiguration, NoConcurrentWriters).
+\* ReadWithoutLease: a leader starts a read round with no valid lease
+\* (ReadRoundHonoursLease, StaleReadAfterForce).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
@@ -1773,7 +2020,10 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "ReadOnlyProposes", "ReadOnlyTruncates",
                      "DeactivatedStillVotes", "ResumeWithoutRecovery",
                      "BuildFromRecovering", "ForceWithoutStage1", "ForceAtTwoNodes",
-                     "ReadBeforeServing", "StopSignLost", "ReadStartBeforeServing"}
+                     "ReadBeforeServing", "StopSignLost", "ReadStartBeforeServing",
+                     "DecideWithoutLease", "ForcedWithoutWait", "WitnessGrantsAnyEpoch",
+                     "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
+                     "AdoptEpochFromRefusal", "ReadWithoutLease"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -1787,6 +2037,8 @@ ASSUME ReadIndex \in BOOLEAN
 ASSUME NextConfigNodes \cap Nodes = {}
 ASSUME \A i \in Servers : 0 < i /\ i < PidBase
 ASSUME MaxReconfigure \in Nat
+ASSUME Witness \in BOOLEAN
+ASSUME LeaseLength \in Nat
 
 ----------------------------------------------------------------------------
 (* Bounds of the model, used as a state constraint. *)
@@ -1982,6 +2234,110 @@ ReadOnlyLosesNothing == S1 /\ S2
 
 S7 == [][\A i \in Servers : ~wiped'[i] => decided_idx'[i] >= decided_idx[i]]_vars
 
+----------------------------------------------------------------------------
+(* Properties of the lease at the witness, model/plan-witness-lease.md      *)
+(* section 4. They hold with Witness TRUE. Names for the owner, no source.  *)
+
+\* The new variables stay in their ranges.
+\* @type: Bool;
+LeaseTypeInvariant ==
+  /\ witness_epoch \in Nat
+  /\ node_epoch \in [Servers -> Nat]
+  /\ lease_request \in [Nodes -> -1..LeaseLength]
+  /\ lease_reply \in [Nodes -> {-1, 0, 1}]
+  /\ lease_remaining \in [Nodes -> 0..LeaseLength]
+  /\ wait_remaining \in -1..LeaseLength
+  /\ forced_decided_at_force \in Nat
+  /\ forced_has_decided \in BOOLEAN
+  /\ old_decided_max \in Nat
+  /\ old_decided_after_forced \in BOOLEAN
+  /\ \A r \in DOMAIN reads : reads[r].forced_decided \in BOOLEAN
+
+\* A leader of the old cluster that stays in (Leader, Accept) and raises its
+\* decided_idx starts the step with a valid lease. Only the decide branch of
+\* HandleAccepted and LeaderDecidesChosen raise decided_idx at a node that is
+\* in (Leader, Accept) before and after the step.
+LeaseHonoured ==
+  [][\A i \in Nodes :
+       (/\ role[i] = "Leader" /\ phase[i] = "Accept"
+        /\ role'[i] = "Leader" /\ phase'[i] = "Accept"
+        /\ decided_idx'[i] > decided_idx[i])
+         => lease_remaining[i] > 0]_vars
+
+\* After ForceSingle, a step that raises decided_idx of the forced node above
+\* its value at ForceSingle starts after the wait.
+WaitHonoured ==
+  [][\A s \in NextConfigNodes :
+       (/\ force_single.node # 0
+        /\ decided_idx'[s] > decided_idx[s]
+        /\ decided_idx'[s] > forced_decided_at_force)
+         => wait_remaining = 0]_vars
+
+GrantOnlyCurrentEpoch ==
+  [][\A i \in Nodes : lease_reply[i] # 1 /\ lease_reply'[i] = 1 => node_epoch[i] = witness_epoch]_vars
+
+\* @type: Bool;
+EpochFromConfiguration == \A i \in Nodes : node_epoch[i] = 0
+
+\* The action part of EpochFromConfiguration.
+EpochFromConfigurationAction ==
+  [][\A s \in NextConfigNodes :
+       node_epoch'[s] # node_epoch[s] => force_single.node = 0 /\ force_single'.node # 0]_vars
+
+ForceRaisesEpoch ==
+  [][force_single.node = 0 /\ force_single'.node # 0 => witness_epoch' > witness_epoch]_vars
+
+WitnessEpochGrows == [][witness_epoch' >= witness_epoch]_vars
+
+\* The step that sets the lease from a grant gives at most the time that
+\* remains of the request.
+LeaseWithinGrant ==
+  [][\A i \in Nodes :
+       lease_reply[i] = 1 /\ lease_reply'[i] = -1 => lease_remaining'[i] <= lease_request[i]]_vars
+
+\* Only StartReadRound changes read_round[i].id.
+ReadRoundHonoursLease ==
+  [][\A i \in Nodes : read_round'[i].id # read_round[i].id => lease_remaining[i] > 0]_vars
+
+\* @type: Bool;
+LeasesDisjoint ==
+  force_single.node # 0 /\ wait_remaining = 0 => \A i \in Nodes : lease_remaining[i] = 0
+
+\* It checks the claim that a follower needs no lease.
+OldDecidedFrozen == [][wait_remaining = 0 => old_decided_max' = old_decided_max]_vars
+
+\* @type: Bool;
+NoConcurrentWriters == ~old_decided_after_forced
+
+\* @type: Bool;
+StaleReadAfterForce ==
+  \A r \in DOMAIN reads :
+    ~ /\ reads[r].state = "done"
+      /\ reads[r].node \in Nodes
+      /\ reads[r].forced_decided
+      /\ ~reads[r].stale
+
+(* Run MC_w_reach. A check of the checks: each invariant must break, so    *)
+(* that the case is in the state space. Provisional: the plan asks for      *)
+(* ghost counters; these invariants read the existing ghosts instead.       *)
+(* Names for the owner, no source.                                          *)
+
+\* An old node decides during the wait.
+\* @type: Bool;
+OldDecidesNothingDuringWait ==
+  ~ (wait_remaining > 0 /\ old_decided_max > Len(force_single.history))
+
+\* The forced node decides after the wait an entry that differs from an
+\* entry that an old node decided.
+\* @type: Bool;
+ForcedAgreesWithOld ==
+  forced_has_decided =>
+    \A s \in NextConfigNodes, k \in Nodes : Compatible(DecidedPrefix(s), DecidedPrefix(k))
+
+\* The witness refuses a request after ForceSingle.
+\* @type: Bool;
+NoRefusalAfterForce == ~ (force_single.node # 0 /\ \E i \in Nodes : lease_reply[i] = 0)
+
 ValueSymmetry == Permutations(Values)
 
 (* State view for TLC. It drops values that no action reads in the current  *)
@@ -2000,5 +2356,5 @@ View ==
     chan, env, ghost,
     recovering, nonce,
     [i \in Servers |-> IF recovering[i] THEN recovery_responses[i] ELSE {}],
-    rollback, client, readvars, buffered_stopsign, reconfig>>
+    rollback, client, readvars, buffered_stopsign, reconfig, leasevars, leaseghost>>
 =============================================================================

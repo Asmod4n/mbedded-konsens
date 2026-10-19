@@ -3,9 +3,15 @@ import re
 import sys
 
 tree = pathlib.Path(sys.argv[1])
-model = (tree / "SequencePaxos.tla").read_text()
-block = model[model.index("\nCONSTANTS") : model.index("\nVARIABLES")]
-expected = set(re.findall(r"^  ([A-Za-z]\w*),?$", block, re.M))
+
+
+def constants(module):
+    model = (tree / module).read_text()
+    block = model[model.index("\nCONSTANTS") : model.index("\nVARIABLES")]
+    return set(re.findall(r"^  ([A-Za-z]\w*),?$", block, re.M))
+
+
+expected = constants("SequencePaxos.tla")
 
 
 def declared(cfg):
@@ -20,8 +26,11 @@ def declared(cfg):
 failed = False
 for cfg in sorted(tree.glob("*.cfg")):
     names = declared(cfg)
-    missing = sorted(expected - names)
-    unknown = sorted(names - expected)
+    model = expected
+    if cfg.name.endswith(".base.cfg"):
+        model = constants("SequencePaxos.base.tla")
+    missing = sorted(model - names)
+    unknown = sorted(names - model)
     if missing or unknown:
         failed = True
         print(f"{cfg.name}: missing {missing} unknown {unknown}")
