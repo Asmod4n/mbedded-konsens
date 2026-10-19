@@ -82,3 +82,19 @@ measurement of the library over a network.
 ## 7. Not in this plan
 
 No network, no LMDB, no change to the library.
+
+## 8. Changes after the review
+
+The review `doc/review-plan-counter-stress.md` (approve with changes)
+holds 23 findings. Each one is applied as its fix says, with these
+choices:
+
+- F16: a ctest entry runs the program with small values
+  (`--clients 2 --increments 50`) and the defaults of the faults.
+- F19: branch `claude/project-thread-4xjeai`; one commit for the
+  program, its ctest entry and the README; the state file in
+  Claude-state after the push.
+- F20: the program prints no speed figure. A speed number needs a
+  measurement after the rules, and that is not part of this plan.
+- F9: check 2 is named "final read". Reads while the faults run check
+  that a read started after m confirmed increments returns at least m.
