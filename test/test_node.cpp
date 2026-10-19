@@ -1,0 +1,104 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "konsens/memory_storage.hpp"
+#include "konsens/node.hpp"
+
+namespace {
+
+using konsens::memory_storage;
+using konsens::node_id;
+using node_t = konsens::node<memory_storage>;
+
+constexpr std::uint64_t election_ticks = 3;
+constexpr std::uint64_t resend_ticks = 2;
+constexpr int rounds = 40;
+
+konsens::node_config config_of(node_id pid)
+{
+    std::vector<node_id> peers;
+    for (node_id p = 1; p <= 3; ++p) {
+        if (p != pid) {
+            peers.push_back(p);
+        }
+    }
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
+}
+
+konsens::entry make_entry(std::uint8_t v) { return {konsens::entry_kind::normal, {std::byte{v}}}; }
+
+void step(std::vector<node_t>& nodes, const std::array<bool, 3>& alive)
+{
+    for (bool more = true; more;) {
+        more = false;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            for (auto& m : nodes[i].take_outgoing_messages()) {
+                more = true;
+                const auto to = std::visit([](const auto& x) { return x.to; }, m);
+                if (alive[i] && alive[to - 1]) {
+                    REQUIRE(nodes[to - 1].handle(std::move(m)));
+                }
+            }
+        }
+    }
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (alive[i]) {
+            REQUIRE(nodes[i].tick());
+        }
+    }
+}
+
+}
+
+// The test of the owner in one process: three nodes elect a leader through
+// BLE, a follower appends, and every node reads the decided entry. Then
+// the leader stops, the others elect a new leader, and a new entry is
+// decided by the two nodes that remain. The entry is appended after the
+// new election: an entry forwarded to a stopped leader is lost, as in
+// mod.rs:371-384 forward_proposals.
+TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        nodes.push_back(*node_t::with(config_of(p), memory_storage{}));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    REQUIRE(nodes[0].append(make_entry(1)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    for (const auto& n : nodes) {
+        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1)});
+    }
+    const auto leader = nodes[0].get_sequence_paxos().get_promise().pid;
+    REQUIRE(leader == 3);
+    std::array<bool, 3> without_leader = all;
+    without_leader[leader - 1] = false;
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, without_leader);
+    }
+    REQUIRE(nodes[0].append(make_entry(2)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, without_leader);
+    }
+    CHECK(*nodes[0].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    CHECK(*nodes[1].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+}
+
+// Each tick timeout of 0 would never fire: a wrong use that fails loudly,
+// as ServerConfig::validate in omni_paxos.rs:189-200.
+TEST_CASE("a tick timeout of 0 is a wrong use") {
+    auto c = config_of(1);
+    c.election_tick_timeout = 0;
+    CHECK_THROWS_AS(node_t::with(c, memory_storage{}), std::logic_error);
+}
