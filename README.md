@@ -211,6 +211,44 @@ leader, waits for a new leader and increments once more.
 ./build/counter
 ```
 
+### The stress form of the counter
+
+`counter_stress` runs three nodes in memory with the same counter.
+Many clients increment the counter. The network loses messages and
+sends messages twice. Each channel stays FIFO. Nodes restart from a
+copy of their storage. A restart starts only while no node recovers.
+After each tenth increment, a client reads the counter.
+
+```
+./build/counter_stress [--clients C] [--increments N] [--seed S] [--loss P] [--duplicate P] [--restart R]
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--clients` | The number of clients. | 4 |
+| `--increments` | The increments of each client. | 1000 |
+| `--seed` | The seed of the random choices. With the same C++ library, the same seed gives the same run. | 1 |
+| `--loss` | The chance in permille that a message is lost. | 10 |
+| `--duplicate` | The chance in permille that a message arrives twice. | 10 |
+| `--restart` | The chance in permille in each round that one node restarts. | 5 |
+
+The program checks four properties. Checks 1 and 4 run at each reply.
+When all clients are done, the faults stop. Checks 1, 2 and 3 then run
+on the end state.
+
+1. The replies of the increments are the numbers 1 to C*N, each once.
+2. A read through the read index at each node gives C*N.
+3. The decided logs of the three nodes are equal.
+4. Each read during the faults gives at least the count of increments
+   that were confirmed before the read started.
+
+The program prints how many requests the decided log holds more than
+once. When each flag other than `--seed` has its default, this count
+must be above 0. The exit code is 0 when all checks pass, 1 when a
+check fails or a phase reaches its round limit, and 2 for a wrong
+flag. A failure prints the seed.
+`ctest` runs the program with `--clients 2 --increments 50`.
+
 ## Layout
 
 | Path | Content |

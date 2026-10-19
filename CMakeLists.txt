@@ -34,3 +34,5 @@ foreach(example_source ${KONSENS_EXAMPLES})
     target_link_libraries(${example_name} PRIVATE konsens)
     target_compile_options(${example_name} PRIVATE ${KONSENS_WARNINGS})
 endforeach()
+
+add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50)

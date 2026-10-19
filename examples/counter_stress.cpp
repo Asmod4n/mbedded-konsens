@@ -1,0 +1,701 @@
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <deque>
+#include <exception>
+#include <expected>
+#include <format>
+#include <iostream>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <memory>
+#include <optional>
+#include <random>
+#include <ranges>
+#include <span>
+#include <stdexcept>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "konsens/memory_storage.hpp"
+#include "konsens/node.hpp"
+
+namespace {
+
+struct counter {
+    std::uint64_t value;
+
+    static std::vector<std::byte> bytes_of(const std::uint64_t v)
+    {
+        const auto b = std::bit_cast<std::array<std::byte, sizeof v>>(v);
+        return {b.begin(), b.end()};
+    }
+
+    std::vector<std::byte> apply([[maybe_unused]] const std::span<const std::byte> payload)
+    {
+        value += 1;
+        return bytes_of(value);
+    }
+
+    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const
+    {
+        return bytes_of(value);
+    }
+};
+
+using node_t = konsens::node<konsens::memory_storage, counter>;
+
+constexpr std::size_t node_count = 3;
+constexpr std::size_t channel_count = node_count * node_count;
+constexpr std::uint64_t election_ticks = 5;
+constexpr std::uint64_t resend_ticks = 3;
+constexpr std::uint64_t permille = 1000;
+constexpr std::uint64_t call_timeout_rounds = 10;
+constexpr std::uint64_t increments_between_reads = 10;
+constexpr std::uint64_t rounds_without_progress_limit = 1000;
+constexpr std::uint64_t agreement_round_limit = 1000;
+constexpr std::uint64_t final_read_round_limit = 1000;
+constexpr int usage_exit_code = 2;
+constexpr std::size_t words_of_a_flag = 2;
+
+constexpr std::uint64_t default_clients = 4;
+constexpr std::uint64_t default_increments = 1000;
+constexpr std::uint64_t default_seed = 1;
+constexpr std::uint64_t default_loss = 10;
+constexpr std::uint64_t default_duplicate = 10;
+constexpr std::uint64_t default_restart = 5;
+
+struct options {
+    std::uint64_t clients{default_clients};
+    std::uint64_t increments{default_increments};
+    std::uint64_t seed{default_seed};
+    std::uint64_t loss{default_loss};
+    std::uint64_t duplicate{default_duplicate};
+    std::uint64_t restart{default_restart};
+};
+
+struct flag {
+    std::string_view name;
+    std::uint64_t options::* member;
+};
+
+constexpr std::array flags{
+    flag{"--clients", &options::clients},   flag{"--increments", &options::increments},
+    flag{"--seed", &options::seed},         flag{"--loss", &options::loss},
+    flag{"--duplicate", &options::duplicate}, flag{"--restart", &options::restart},
+};
+
+constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
+                                   "[--duplicate P] [--restart R]";
+
+std::optional<std::uint64_t> number_of(const std::string_view text)
+{
+    std::uint64_t v{};
+    const auto last = std::to_address(text.end());
+    const auto [end, code] = std::from_chars(std::to_address(text.begin()), last, v);
+    if (code != std::errc{} || end != last) [[unlikely]] {
+        return std::nullopt;
+    }
+    return v;
+}
+
+std::expected<options, std::string_view> options_of(const std::span<char* const> args)
+{
+    options o{};
+    for (const auto pair : args | std::views::drop(1) | std::views::chunk(words_of_a_flag)) {
+        const std::string_view name = *std::ranges::begin(pair);
+        const auto it = std::ranges::find(flags, name, &flag::name);
+        if (it == flags.end()) [[unlikely]] {
+            return std::unexpected("A flag is not known");
+        }
+        if (std::ranges::size(pair) != words_of_a_flag) [[unlikely]] {
+            return std::unexpected("A flag has no value");
+        }
+        const auto value = number_of(*std::ranges::next(std::ranges::begin(pair)));
+        if (!value) [[unlikely]] {
+            return std::unexpected("A value is not a number");
+        }
+        o.*(it->member) = *value;
+    }
+    if (o.loss > permille || o.duplicate > permille || o.restart > permille) [[unlikely]] {
+        return std::unexpected("A chance is above 1000 permille");
+    }
+    if (o.clients == 0 || o.increments == 0) [[unlikely]] {
+        return std::unexpected("The values of --clients and --increments must not be 0");
+    }
+    if (o.increments > std::numeric_limits<std::uint64_t>::max() / o.clients) [[unlikely]] {
+        return std::unexpected("The product of --clients and --increments is too large");
+    }
+    return o;
+}
+
+bool takes_defaults_apart_from_the_seed(const options& o)
+{
+    return o.clients == default_clients && o.increments == default_increments && o.loss == default_loss &&
+           o.duplicate == default_duplicate && o.restart == default_restart;
+}
+
+std::uint64_t value_of(const std::span<const std::byte> bytes)
+{
+    std::array<std::byte, sizeof(std::uint64_t)> b{};
+    if (bytes.size() != b.size()) [[unlikely]] {
+        throw std::logic_error("a counter reply has 8 bytes");
+    }
+    std::ranges::copy(bytes, b.begin());
+    return std::bit_cast<std::uint64_t>(b);
+}
+
+konsens::node_config config_of(const konsens::node_id pid)
+{
+    std::vector<konsens::node_id> peers;
+    for (konsens::node_id p = 1; p <= node_count; ++p) {
+        if (p != pid) {
+            peers.push_back(p);
+        }
+    }
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
+}
+
+bool is_transient(const std::error_code& code)
+{
+    return code == konsens::client_errc::recovering || code == konsens::client_errc::retry;
+}
+
+struct failure {
+    std::string_view what;
+    std::optional<std::error_code> code;
+};
+
+using outcome = std::expected<void, failure>;
+
+struct tally {
+    std::uint64_t rounds;
+    std::uint64_t messages;
+    std::uint64_t lost;
+    std::uint64_t duplicates;
+    std::uint64_t restarts;
+    std::uint64_t leader_changes;
+};
+
+std::size_t channel_of(const konsens::message& m)
+{
+    const auto from = std::visit([](const auto& x) { return x.from; }, m);
+    const auto to = std::visit([](const auto& x) { return x.to; }, m);
+    return static_cast<std::size_t>((from - 1) * node_count + (to - 1));
+}
+
+struct cluster {
+    std::array<std::optional<node_t>, node_count> nodes;
+    std::array<std::deque<konsens::message>, channel_count> channels;
+    std::vector<konsens::client_reply> replies;
+    std::mt19937_64 random;
+    std::uint64_t loss;
+    std::uint64_t duplicate;
+    std::uint64_t nonce;
+    std::optional<std::size_t> last_leader;
+    tally counts;
+
+    node_t& at(const std::size_t i) { return nodes.at(i).value(); }
+    const node_t& at(const std::size_t i) const { return nodes.at(i).value(); }
+
+    bool happens(const std::uint64_t chance)
+    {
+        return std::uniform_int_distribution<std::uint64_t>{0, permille - 1}(random) < chance;
+    }
+
+    std::size_t pick_node() { return std::uniform_int_distribution<std::size_t>{0, node_count - 1}(random); }
+
+    void send(konsens::message m)
+    {
+        counts.messages += 1;
+        if (happens(loss)) {
+            counts.lost += 1;
+            return;
+        }
+        auto& channel = channels.at(channel_of(m));
+        if (happens(duplicate)) {
+            counts.duplicates += 1;
+            channel.push_back(m);
+        }
+        channel.push_back(std::move(m));
+    }
+
+    void collect()
+    {
+        for (auto& n : nodes) {
+            for (auto& m : n.value().take_outgoing_messages()) {
+                send(std::move(m));
+            }
+            for (auto& r : n.value().take_client_replies()) {
+                replies.push_back(std::move(r));
+            }
+        }
+    }
+
+    std::expected<void, std::error_code> start(const std::size_t i)
+    {
+        nonce += 1;
+        auto n = node_t::with(config_of(i + 1), konsens::memory_storage{}, counter{}, nonce);
+        if (!n) [[unlikely]] {
+            return std::unexpected(n.error());
+        }
+        nodes.at(i).emplace(std::move(*n));
+        return {};
+    }
+
+    std::expected<void, std::error_code> restart(const std::size_t i)
+    {
+        auto kept = at(i).get_sequence_paxos().get_internal_storage();
+        nonce += 1;
+        auto n = node_t::with(config_of(i + 1), std::move(kept), counter{}, nonce);
+        if (!n) [[unlikely]] {
+            return std::unexpected(n.error());
+        }
+        nodes.at(i) = std::move(*n);
+        counts.restarts += 1;
+        collect();
+        return {};
+    }
+
+    bool recovers() const
+    {
+        return std::ranges::any_of(nodes,
+                                   [](const auto& n) { return n.value().get_sequence_paxos().recovering(); });
+    }
+
+    std::optional<std::size_t> leader() const
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            if (at(i).get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept}) {
+                return i;
+            }
+        }
+        return std::nullopt;
+    }
+
+    void count_leader_change()
+    {
+        const auto now = leader();
+        if (!now || now == last_leader) {
+            return;
+        }
+        if (last_leader) {
+            counts.leader_changes += 1;
+        }
+        last_leader = now;
+    }
+
+    std::expected<void, std::error_code> run_round()
+    {
+        counts.rounds += 1;
+        for (auto& n : nodes) {
+            if (auto r = n.value().tick(); !r) [[unlikely]] {
+                return r;
+            }
+        }
+        collect();
+        std::array<std::size_t, channel_count> busy{};
+        for (;;) {
+            const auto last = std::ranges::copy_if(std::views::iota(std::size_t{0}, channel_count), busy.begin(),
+                                                   [this](const std::size_t i) { return !channels.at(i).empty(); })
+                                  .out;
+            const auto waiting = static_cast<std::size_t>(std::ranges::distance(busy.begin(), last));
+            if (waiting == 0) {
+                break;
+            }
+            auto& channel = channels.at(busy.at(std::uniform_int_distribution<std::size_t>{0, waiting - 1}(random)));
+            auto m = std::move(channel.front());
+            channel.pop_front();
+            const auto to = std::visit([](const auto& x) { return x.to; }, m);
+            if (auto r = at(static_cast<std::size_t>(to - 1)).handle(std::move(m)); !r) [[unlikely]] {
+                return r;
+            }
+            collect();
+        }
+        count_leader_change();
+        return {};
+    }
+
+    bool agrees() const
+    {
+        const auto applied = at(0).get_applied_idx();
+        return std::ranges::all_of(nodes, [applied](const auto& o) {
+            const auto& n = o.value();
+            const auto& sp = n.get_sequence_paxos();
+            return !sp.recovering() && n.get_applied_idx() == applied && sp.get_decided_idx() == applied &&
+                   sp.get_accepted_idx() == applied;
+        });
+    }
+};
+
+enum class step : std::uint8_t { registering, incrementing, reading, done };
+
+struct client {
+    step at;
+    std::uint64_t session;
+    std::uint64_t request_number;
+    std::uint64_t read_floor;
+    std::uint64_t latest_call;
+    std::uint64_t sent_round;
+    bool waiting;
+
+    void advance_after_increment(const std::uint64_t increments, const std::uint64_t confirmed)
+    {
+        waiting = false;
+        request_number += 1;
+        if ((request_number - 1) % increments_between_reads == 0) {
+            at = step::reading;
+            read_floor = confirmed;
+            return;
+        }
+        if (request_number > increments) {
+            at = step::done;
+        }
+    }
+};
+
+struct call {
+    std::size_t client;
+    step kind;
+    std::uint64_t request_number;
+    std::uint64_t read_floor;
+};
+
+struct stress {
+    options given;
+    cluster net;
+    std::vector<client> clients;
+    std::map<std::uint64_t, call> calls;
+    std::map<std::pair<std::size_t, std::uint64_t>, std::uint64_t> first_replies;
+    std::uint64_t confirmed;
+    std::uint64_t reads_checked;
+    std::uint64_t next_call;
+    std::uint64_t round;
+    std::uint64_t last_progress_round;
+
+    outcome send_due_calls()
+    {
+        for (std::size_t i = 0; i < clients.size(); ++i) {
+            auto& c = clients.at(i);
+            if (c.at == step::done || (c.waiting && round - c.sent_round < call_timeout_rounds)) {
+                continue;
+            }
+            const auto id = next_call++;
+            calls.emplace(id, call{i, c.at, c.request_number, c.read_floor});
+            c.latest_call = id;
+            c.sent_round = round;
+            c.waiting = true;
+            auto& n = net.at(net.pick_node());
+            const auto sent = [&n, &c, id] {
+                if (c.at == step::registering) {
+                    return n.register_client(id);
+                }
+                if (c.at == step::incrementing) {
+                    return n.client_request(id, c.session, c.request_number, {});
+                }
+                return n.client_query(id, {});
+            }();
+            if (!sent) [[unlikely]] {
+                if (!is_transient(sent.error())) [[unlikely]] {
+                    return std::unexpected(failure{"a node refused a call", sent.error()});
+                }
+                c.waiting = false;
+            }
+        }
+        return {};
+    }
+
+    outcome take_reply(const konsens::client_reply& r)
+    {
+        const auto& k = calls.at(r.client_id);
+        auto& c = clients.at(k.client);
+        const bool current = c.at == k.kind && c.request_number == k.request_number;
+        if (!r.response) [[unlikely]] {
+            const auto e = r.response.error();
+            if (e == konsens::client_errc::session_expired) [[unlikely]] {
+                return std::unexpected(failure{"a call got the reply session_expired", e});
+            }
+            if (e == konsens::client_errc::stale_request) {
+                if (current && k.kind == step::incrementing) [[unlikely]] {
+                    return std::unexpected(failure{"the current request got the reply stale_request", e});
+                }
+                return {};
+            }
+            if (!is_transient(e)) [[unlikely]] {
+                return std::unexpected(failure{"a reply holds an error", e});
+            }
+            if (current && r.client_id == c.latest_call) {
+                c.waiting = false;
+            }
+            return {};
+        }
+        if (k.kind == step::registering) {
+            if (current) {
+                c.session = r.session;
+                c.at = step::incrementing;
+                c.waiting = false;
+            }
+            return {};
+        }
+        const auto v = value_of(*r.response);
+        if (k.kind == step::reading) {
+            if (v < k.read_floor) [[unlikely]] {
+                return std::unexpected(failure{"check 4: a read during the faults misses a confirmed increment", {}});
+            }
+            reads_checked += 1;
+            if (current) {
+                last_progress_round = round;
+                c.waiting = false;
+                c.at = c.request_number > given.increments ? step::done : step::incrementing;
+            }
+            return {};
+        }
+        const auto [it, first] = first_replies.try_emplace({k.client, k.request_number}, v);
+        if (!first) {
+            if (it->second != v) [[unlikely]] {
+                return std::unexpected(failure{"check 1: one increment got two different replies", {}});
+            }
+            return {};
+        }
+        if (!current) [[unlikely]] {
+            return std::unexpected(failure{"check 1: a reply came for a request that is not current", {}});
+        }
+        confirmed += 1;
+        last_progress_round = round;
+        c.advance_after_increment(given.increments, confirmed);
+        return {};
+    }
+
+    outcome take_replies()
+    {
+        for (const auto& r : std::exchange(net.replies, {})) {
+            if (auto t = take_reply(r); !t) [[unlikely]] {
+                return t;
+            }
+        }
+        return {};
+    }
+
+    outcome run_round()
+    {
+        if (auto r = net.run_round(); !r) [[unlikely]] {
+            return std::unexpected(failure{"run a round", r.error()});
+        }
+        round += 1;
+        return take_replies();
+    }
+
+    bool clients_are_done() const
+    {
+        return std::ranges::all_of(clients, [](const client& c) { return c.at == step::done; });
+    }
+
+    outcome run_increments()
+    {
+        while (!clients_are_done()) {
+            if (round - last_progress_round > rounds_without_progress_limit) [[unlikely]] {
+                return std::unexpected(failure{"the phase \"increments\" reached its round limit", {}});
+            }
+            if (!net.recovers() && net.happens(given.restart)) {
+                if (auto r = net.restart(net.pick_node()); !r) [[unlikely]] {
+                    return std::unexpected(failure{"restart a node", r.error()});
+                }
+            }
+            if (auto s = send_due_calls(); !s) [[unlikely]] {
+                return s;
+            }
+            if (auto r = run_round(); !r) [[unlikely]] {
+                return r;
+            }
+        }
+        return {};
+    }
+
+    outcome run_agreement()
+    {
+        net.loss = 0;
+        net.duplicate = 0;
+        for (std::uint64_t r = 0; r < agreement_round_limit; ++r) {
+            if (net.agrees()) {
+                return {};
+            }
+            if (auto ran = run_round(); !ran) [[unlikely]] {
+                return ran;
+            }
+        }
+        return std::unexpected(failure{"the phase \"agreement\" reached its round limit", {}});
+    }
+
+    std::expected<std::uint64_t, failure> final_read(const std::size_t i)
+    {
+        std::optional<std::uint64_t> pending;
+        std::uint64_t sent_round = 0;
+        for (std::uint64_t r = 0; r < final_read_round_limit; ++r) {
+            if (!pending || r - sent_round >= call_timeout_rounds) {
+                const auto id = next_call++;
+                pending.reset();
+                if (auto s = net.at(i).client_query(id, {}); !s) [[unlikely]] {
+                    if (!is_transient(s.error())) [[unlikely]] {
+                        return std::unexpected(failure{"a node refused the final read", s.error()});
+                    }
+                } else {
+                    pending = id;
+                    sent_round = r;
+                }
+            }
+            if (auto ran = net.run_round(); !ran) [[unlikely]] {
+                return std::unexpected(failure{"run a round", ran.error()});
+            }
+            round += 1;
+            std::optional<std::uint64_t> value;
+            for (const auto& reply : std::exchange(net.replies, {})) {
+                if (calls.contains(reply.client_id)) {
+                    if (auto t = take_reply(reply); !t) [[unlikely]] {
+                        return std::unexpected(t.error());
+                    }
+                    continue;
+                }
+                if (reply.client_id != pending) {
+                    continue;
+                }
+                if (!reply.response) [[unlikely]] {
+                    if (!is_transient(reply.response.error())) [[unlikely]] {
+                        return std::unexpected(failure{"the final read got an error", reply.response.error()});
+                    }
+                    pending.reset();
+                    continue;
+                }
+                value = value_of(*reply.response);
+            }
+            if (value) {
+                return *value;
+            }
+        }
+        return std::unexpected(failure{"the phase \"final read\" reached its round limit", {}});
+    }
+};
+
+int fail(const std::uint64_t seed, const failure& f)
+{
+    if (f.code) {
+        std::cerr << std::format("Seed {}: {}: {}.", seed, f.what, f.code->message()) << '\n';
+    } else {
+        std::cerr << std::format("Seed {}: {}.", seed, f.what) << '\n';
+    }
+    return EXIT_FAILURE;
+}
+
+std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry> log)
+{
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t> copies;
+    for (const auto& e : log) {
+        if (e.kind == konsens::entry_kind::client_request) {
+            copies[{e.session, e.request_number}] += 1;
+        }
+    }
+    return static_cast<std::uint64_t>(std::ranges::count_if(copies, [](const auto& c) { return c.second > 1; }));
+}
+
+int run(const options& given)
+{
+    stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}},
+             {}, {}, {}, 0, 0, 1, 0, 0};
+    for (std::size_t i = 0; i < node_count; ++i) {
+        if (auto r = s.net.start(i); !r) [[unlikely]] {
+            return fail(given.seed, {"start the nodes", r.error()});
+        }
+    }
+    for (std::uint64_t i = 0; i < given.clients; ++i) {
+        s.clients.push_back({step::registering, 0, 1, 0, 0, 0, false});
+    }
+    if (auto r = s.run_increments(); !r) [[unlikely]] {
+        return fail(given.seed, r.error());
+    }
+    const auto load_rounds = s.round;
+    if (auto r = s.run_agreement(); !r) [[unlikely]] {
+        return fail(given.seed, r.error());
+    }
+
+    const auto total = given.clients * given.increments;
+    std::vector<std::uint64_t> replies;
+    for (const auto& [pair, v] : s.first_replies) {
+        replies.push_back(v);
+    }
+    std::ranges::sort(replies);
+    if (!std::ranges::equal(replies, std::views::iota(std::uint64_t{1}, total + 1))) [[unlikely]] {
+        return fail(given.seed, {"check 1: the replies are not the numbers 1 to C*N, each once", {}});
+    }
+    std::cout << std::format("Check 1 (each increment executed once): passed. The replies are the numbers 1 to {}.",
+                             total)
+              << '\n';
+
+    for (std::size_t i = 0; i < node_count; ++i) {
+        const auto v = s.final_read(i);
+        if (!v) [[unlikely]] {
+            return fail(given.seed, v.error());
+        }
+        if (*v != total) [[unlikely]] {
+            return fail(given.seed, {"check 2: a final read does not give C*N", {}});
+        }
+    }
+    std::cout << std::format("Check 2 (final read): passed. The read at each node gives {}.", total) << '\n';
+
+    const auto log = s.net.at(0).read_decided_suffix(0);
+    if (!log) [[unlikely]] {
+        return fail(given.seed, {"read the decided log", log.error()});
+    }
+    for (std::size_t i = 1; i < node_count; ++i) {
+        const auto other = s.net.at(i).read_decided_suffix(0);
+        if (!other) [[unlikely]] {
+            return fail(given.seed, {"read the decided log", other.error()});
+        }
+        if (*other != *log) [[unlikely]] {
+            return fail(given.seed, {"check 3: the decided logs are not equal", {}});
+        }
+    }
+    std::cout << std::format("Check 3 (equal decided logs): passed. Each log holds {} entries.", log->size()) << '\n';
+
+    std::cout << std::format("Check 4 (reads during the faults): passed. {} reads gave at least the count of "
+                             "increments that were confirmed before the read started.",
+                             s.reads_checked)
+              << '\n';
+
+    const auto twice = count_requests_decided_twice(*log);
+    std::cout << std::format("Requests that the decided log holds more than once: {}.", twice) << '\n';
+    if (twice == 0 && takes_defaults_apart_from_the_seed(given)) [[unlikely]] {
+        return fail(given.seed, {"no request was decided twice, so check 1 showed nothing", {}});
+    }
+
+    const auto& t = s.net.counts;
+    std::cout << std::format("Seed {}: {} rounds ({} with faults), {} messages, {} lost, {} duplicates, {} restarts, "
+                             "{} changes of leader.",
+                             given.seed, t.rounds, load_rounds, t.messages, t.lost, t.duplicates, t.restarts,
+                             t.leader_changes)
+              << '\n';
+    return EXIT_SUCCESS;
+}
+
+}
+
+int main(const int argc, char** const argv)
+{
+    try {
+        const auto given = options_of(std::span<char* const>(argv, static_cast<std::size_t>(argc)));
+        if (!given) [[unlikely]] {
+            std::cerr << std::format("{}.\n{}", given.error(), usage) << '\n';
+            return usage_exit_code;
+        }
+        return run(*given);
+    } catch (const std::exception& e) {
+        std::cerr << std::format("The program ended with an exception: {}", e.what()) << '\n';
+        return EXIT_FAILURE;
+    }
+}
