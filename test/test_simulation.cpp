@@ -39,6 +39,14 @@ TEST_CASE("simulation with FIFO channels keeps the safety properties") {
     simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count);
 }
 
+// Plan v0.1 F15: the same run with one rollback in addition. A crash
+// keeps the durable state, so only a rollback shows that recovery is
+// needed: without recovery, the rolled back node promises with a log that
+// misses accepted entries, and a new leader can decide over them.
+TEST_CASE("simulation with one rollback keeps the safety properties") {
+    simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count, simulation::rollback::one);
+}
+
 // The same run, but each delivery takes any message in flight. The model
 // and Omni-Paxos assume FIFO channels, and TCP gives FIFO only inside one
 // connection. The owner decided (2026-10-19) that FIFO stays the

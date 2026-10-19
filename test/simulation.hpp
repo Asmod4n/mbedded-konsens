@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -24,6 +25,14 @@
 // start(i, kept) gives the storage of node i, and stop(node) gives what a
 // crash keeps. A crash destroys the node before start, so that a storage
 // that holds a file, as LMDB does, is closed before it is opened again.
+// With rollback::one and a storage that can be copied, one node restarts
+// from an earlier copy of its storage (a lost fsync or a backup), as
+// Rollback in SequencePaxos.tla, run F6b. Only recovery repairs that node.
+// A crash or a rollback starts only while no node recovers: two nodes that
+// recover at once leave one voting node of three, no primary, and a
+// recovery that waits (plan v0.1 section 7). VR Revisited 4.3 also allows
+// at most f nodes to fail at once. A recovering node refuses an append, so
+// the markers of the quiet end wait until no node recovers.
 namespace simulation {
 
 
@@ -41,6 +50,7 @@ constexpr int marker_round = 10;
 constexpr std::size_t trace_tail = 400;
 
 enum class delivery { fifo, reorder };
+enum class rollback { none, one };
 
 template <typename Cluster>
 using node_of = konsens::node<typename Cluster::storage_type, echo>;
@@ -193,6 +203,8 @@ struct world {
     bool duplicated = false;
     bool crashed = false;
     bool survived_crash = true;
+    std::optional<std::pair<std::size_t, typename Cluster::storage_type>> earlier;
+    bool rolled_back = false;
 
     void collect(std::size_t i)
     {
@@ -257,6 +269,28 @@ struct world {
         nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), echo{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(decided_before, views[i].decided_prefix());
+    }
+
+    bool recovers() const
+    {
+        return std::ranges::any_of(nodes, [](const node_t& n) { return n.get_sequence_paxos().recovering(); });
+    }
+
+    void keep_earlier(std::size_t i)
+    {
+        note([&] { return std::string("keep earlier storage of " + std::to_string(i + 1)); });
+        earlier.emplace(i, nodes[i].get_sequence_paxos().get_internal_storage());
+    }
+
+    void roll_back()
+    {
+        const auto i = earlier->first;
+        note([&] { return std::string("roll back " + std::to_string(i + 1)); });
+        nonce += 1;
+        nodes[i] = *node_t::with(config_of(i + 1), earlier->second, echo{}, nonce);
+        last_decided[i] = nodes[i].get_sequence_paxos().get_decided_idx();
+        collect(i);
+        rolled_back = true;
     }
 
     std::optional<std::string> check()
@@ -340,7 +374,7 @@ struct outcome {
 };
 
 template <typename Cluster>
-outcome run(std::uint64_t seed, delivery mode, bool detailed)
+outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = rollback::none)
 {
     std::mt19937_64 rng(seed);
     const auto pick = [&rng](std::size_t n) { return std::uniform_int_distribution<std::size_t>(0, n - 1)(rng); };
@@ -377,9 +411,18 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed)
             w.note([&] { return std::string("duplicate " + name_of(w.network[k])); });
             w.network.push_back(w.network[k]);
             w.duplicated = true;
-        } else if (action == 98 && !w.crashed) {
+        } else if (action == 98 && !w.crashed && !w.recovers()) {
             w.crash(pick(node_count));
             w.crashed = true;
+        } else if constexpr (std::copyable<typename Cluster::storage_type>) {
+            if (faults == rollback::one && action == 95 && !w.earlier) {
+                const auto i = pick(node_count);
+                if (w.nodes[i].get_sequence_paxos().get_promise() != ballot{}) {
+                    w.keep_earlier(i);
+                }
+            } else if (faults == rollback::one && action == 99 && w.earlier && !w.rolled_back && !w.recovers()) {
+                w.roll_back();
+            }
         }
         if (auto v = w.check()) {
             return failed(std::move(*v));
@@ -387,7 +430,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed)
     }
     std::vector<std::vector<std::byte>> markers;
     for (int r = 0; r < quiet_rounds; ++r) {
-        if (r == marker_round) {
+        if (markers.empty() && r >= marker_round && !w.recovers()) {
             for (std::size_t i = 0; i < node_count; ++i) {
                 markers.push_back(entry_of(w.next_value).payload);
                 w.append(i);
@@ -424,13 +467,13 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed)
 }
 
 template <typename Cluster>
-void run_seeds(delivery mode, std::uint64_t seed_count)
+void run_seeds(delivery mode, std::uint64_t seed_count, rollback faults = rollback::none)
 {
     std::uint64_t lagging = 0;
     for (std::uint64_t seed = 1; seed <= seed_count; ++seed) {
-        const auto o = run<Cluster>(seed, mode, false);
+        const auto o = run<Cluster>(seed, mode, false, faults);
         if (o.violation) {
-            const auto d = run<Cluster>(seed, mode, true);
+            const auto d = run<Cluster>(seed, mode, true, faults);
             std::string tail;
             const auto start = d.trace.size() > trace_tail ? d.trace.size() - trace_tail : 0;
             for (std::size_t i = start; i < d.trace.size(); ++i) {
