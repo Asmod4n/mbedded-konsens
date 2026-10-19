@@ -173,6 +173,10 @@ provisional.
 - No compaction of the log.
 - No single-node mode and no witness.
 - The channels between nodes must be FIFO.
+- When a connection to a peer drops and comes back, the caller calls
+  `reconnected(pid)` on the node, as in Omni-Paxos. The node then
+  syncs with that peer again. Without the call, a node that lost the
+  last message of a peer stays behind until the next write.
 
 ### Tests of v0.1
 
@@ -215,7 +219,9 @@ leader, waits for a new leader and increments once more.
 
 `counter_stress` runs three nodes in memory with the same counter.
 Many clients increment the counter. The network loses messages and
-sends messages twice. Each channel stays FIFO. Nodes restart from a
+sends messages twice. Each channel stays FIFO. A lost message counts
+as a dropped connection: the program calls `reconnected` at both ends
+of the channel. Nodes restart from a
 copy of their storage. A restart starts only while no node recovers.
 After each tenth increment, a client reads the counter.
 

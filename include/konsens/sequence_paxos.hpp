@@ -432,6 +432,17 @@ public:
     bool recovering() const { return recovering_; }
     std::optional<std::error_code> get_error() const { return error_; }
 
+    void reconnected(const node_id pid)
+    {
+        if (pid == pid_ || recovering_) {
+            return;
+        }
+        if (pid == promise_.pid) {
+            state_ = {role::follower, phase::recover};
+        }
+        outgoing_.push_back({pid_, pid, prepare_req{promise_}});
+    }
+
 private:
     sequence_paxos(const sequence_paxos_config& config, S internal_storage)
         : pid_(config.pid), peers_(config.peers), internal_storage_(std::move(internal_storage))
@@ -474,17 +485,6 @@ private:
     {
         outgoing_.push_back(
             {pid_, to, prepare{leader_state_.n_leader, decided_idx_, accepted_round_, accepted_idx_}});
-    }
-
-    void reconnected(node_id pid)
-    {
-        if (pid == pid_) {
-            return;
-        }
-        if (pid == promise_.pid) {
-            state_ = {role::follower, phase::recover};
-        }
-        outgoing_.push_back({pid_, pid, prepare_req{promise_}});
     }
 
     bool check_valid_ballot(ballot message_ballot)

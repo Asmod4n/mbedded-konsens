@@ -215,6 +215,8 @@ public:
     const ballot_leader_election& get_ballot_leader_election() const { return ble_; }
     const M& get_state_machine() const { return machine_; }
     std::uint64_t get_applied_idx() const { return applied_idx_; }
+
+    void reconnected(const node_id pid) { seq_paxos_.reconnected(pid); }
     const std::map<std::uint64_t, client_session>& get_client_table() const { return client_table_; }
 
 private:

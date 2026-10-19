@@ -202,6 +202,7 @@ struct cluster {
     std::uint64_t nonce;
     std::optional<std::size_t> last_leader;
     tally counts;
+    std::vector<std::pair<konsens::node_id, konsens::node_id>> disconnected;
 
     node_t& at(const std::size_t i) { return nodes.at(i).value(); }
     const node_t& at(const std::size_t i) const { return nodes.at(i).value(); }
@@ -218,6 +219,7 @@ struct cluster {
         counts.messages += 1;
         if (happens(loss)) {
             counts.lost += 1;
+            std::visit([this](const auto& x) { disconnected.emplace_back(x.from, x.to); }, m);
             return;
         }
         auto& channel = channels.at(channel_of(m));
@@ -230,6 +232,10 @@ struct cluster {
 
     void collect()
     {
+        for (const auto& [from, to] : std::exchange(disconnected, {})) {
+            at(from - 1).reconnected(to);
+            at(to - 1).reconnected(from);
+        }
         for (auto& n : nodes) {
             for (auto& m : n.value().take_outgoing_messages()) {
                 send(std::move(m));
@@ -606,7 +612,7 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
 
 int run(const options& given)
 {
-    stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}},
+    stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {}},
              {}, {}, {}, 0, 0, 1, 0, 0};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {

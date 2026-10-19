@@ -171,3 +171,49 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
         CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
 }
+
+// Seed 4 of counter_stress: the last Decide to a follower is lost, and no
+// later message shows the gap, so the follower stays one entry behind.
+// The caller reports the dropped connection with reconnected, as
+// OmniPaxos::reconnected in omni_paxos.rs:394-398, and the follower
+// catches up through PrepareReq and AcceptSync.
+TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        nodes.push_back(*node_t::with(config_of(p), memory_storage{}, echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    const auto leader = nodes[0].get_sequence_paxos().get_promise().pid;
+    REQUIRE(leader == 3);
+    REQUIRE(nodes[leader - 1].append(make_entry(1)));
+    bool lost = false;
+    for (bool more = true; more;) {
+        more = false;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            for (auto& m : nodes[i].take_outgoing_messages()) {
+                more = true;
+                const auto* p = std::get_if<konsens::paxos_message>(&m);
+                if (p != nullptr && p->to == 1 && std::holds_alternative<konsens::decide>(p->msg)) {
+                    lost = true;
+                    continue;
+                }
+                const auto to = std::visit([](const auto& x) { return x.to; }, m);
+                REQUIRE(nodes[to - 1].handle(std::move(m)));
+            }
+        }
+    }
+    REQUIRE(lost);
+    REQUIRE(nodes[leader - 1].get_sequence_paxos().get_decided_idx() == 1);
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes[0].get_sequence_paxos().get_decided_idx() == 0);
+    nodes[0].reconnected(leader);
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(*nodes[0].read_decided_suffix(0) == std::vector{make_entry(1)});
+}
