@@ -5,9 +5,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <ranges>
 #include <span>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -78,6 +80,14 @@ bool holds(const message& m)
 {
     const auto* p = std::get_if<paxos_message>(&m);
     return p != nullptr && std::holds_alternative<T>(p->msg);
+}
+
+// An error check reads the error only when there is one, so that a result
+// with a value fails the check and is not undefined behaviour.
+template <typename T>
+bool failed_with(const std::expected<T, std::error_code>& r, const konsens::client_errc e)
+{
+    return !r.has_value() && r.error() == e;
 }
 
 std::size_t once([[maybe_unused]] const message& m) { return 1; }
@@ -257,7 +267,7 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
     replies = c.at(1).take_client_replies();
     REQUIRE(replies.size() == 2);
     CHECK(replies[0].response == bytes_of("abc"));
-    CHECK(replies[1].response.error() == client_errc::stale_request);
+    CHECK(failed_with(replies[1].response, client_errc::stale_request));
 
     for (const auto& n : c.nodes) {
         CHECK(n.get_state_machine().value == bytes_of("abc"));
@@ -271,7 +281,7 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
 TEST_CASE("expire_session closes a session at the leader once") {
     auto c = elected();
     const auto s = registered(c, 2, client_b);
-    CHECK(c.at(1).expire_session(client_b, s).error() == client_errc::retry);
+    CHECK(failed_with(c.at(1).expire_session(client_b, s), client_errc::retry));
     c.deliver(once);
     CHECK(c.at(3).get_sequence_paxos().get_accepted_idx() == 1);
 
@@ -286,12 +296,12 @@ TEST_CASE("expire_session closes a session at the leader once") {
     CHECK(replies[0].session == s);
     CHECK(replies[0].response);
 
-    CHECK(c.at(3).expire_session(client_b, s).error() == client_errc::session_expired);
+    CHECK(failed_with(c.at(3).expire_session(client_b, s), client_errc::session_expired));
     REQUIRE(c.at(2).client_request(client_b, s, 1, bytes_of("b")));
     c.deliver(once);
     replies = c.at(2).take_client_replies();
     REQUIRE(replies.size() == 1);
-    CHECK(replies[0].response.error() == client_errc::session_expired);
+    CHECK(failed_with(replies[0].response, client_errc::session_expired));
     for (const auto& n : c.nodes) {
         CHECK(n.get_state_machine().value.empty());
     }
@@ -363,7 +373,7 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
     const auto replies = c.at(1).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].client_id == client_b);
-    CHECK(replies[0].response.error() == client_errc::retry);
+    CHECK(failed_with(replies[0].response, client_errc::retry));
 }
 
 // A lost ReadIndex request would leave the read open for good. The resend

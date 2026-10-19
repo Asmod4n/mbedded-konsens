@@ -3,7 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -56,6 +58,14 @@ std::vector<std::pair<node_id, T>> messages_of(const std::vector<paxos_message>&
     return r;
 }
 
+// An error check reads the error only when there is one, so that a result
+// with a value fails the check and is not undefined behaviour.
+template <typename T>
+bool failed_with(const std::expected<T, std::error_code>& r, const konsens::client_errc e)
+{
+    return !r.has_value() && r.error() == e;
+}
+
 konsens::promise empty_promise(const ballot n) { return {n, ballot{}, 0, 0, std::nullopt}; }
 
 // Node 3 leads ballot (1, 3) in phase Accept with one accepted and not yet
@@ -104,7 +114,7 @@ TEST_CASE("a read at a leader in accept starts a round at the accepted index") {
 // caller tries again (provisional error retry, plan section 7).
 TEST_CASE("a read at a follower goes to the leader of its promise") {
     auto sp = make(1);
-    CHECK(sp.start_read(4).error() == konsens::client_errc::retry);
+    CHECK(failed_with(sp.start_read(4), konsens::client_errc::retry));
     CHECK(sp.take_outgoing_messages().empty());
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     sp.take_outgoing_messages();
