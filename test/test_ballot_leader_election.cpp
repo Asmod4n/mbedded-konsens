@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "konsens/ballot_leader_election.hpp"
@@ -119,4 +120,65 @@ TEST_CASE("hb_timeout follows a higher paxos promise") {
     const ballot higher{config_id, 7, 0, 2};
     CHECK(!b.hb_timeout(higher));
     CHECK(b.get_leader() == higher);
+}
+
+namespace {
+
+ballot_leader_election make_of_five(node_id pid, std::uint32_t priority)
+{
+    std::vector<node_id> peers;
+    for (node_id p = 1; p <= 5; ++p) {
+        if (p != pid) {
+            peers.push_back(p);
+        }
+    }
+    return ballot_leader_election::with({config_id, pid, peers, priority}, {});
+}
+
+std::vector<konsens::ble_message> replies_to(ballot_leader_election& b, node_id to)
+{
+    std::vector<konsens::ble_message> r;
+    for (const auto& m : b.take_outgoing_messages()) {
+        if (m.to == to && std::holds_alternative<konsens::heartbeat_reply>(m.msg)) {
+            r.push_back(m);
+        }
+    }
+    return r;
+}
+
+}
+
+// A heartbeat is for the node that `to` names, and from one of its peers.
+// Another node, or a pid outside the cluster, gets no reply, so that a
+// message that reached the wrong node changes no state there.
+TEST_CASE("a heartbeat to another node or from an unknown pid is dropped") {
+    auto b = make(1, 0);
+    static_cast<void>(b.take_outgoing_messages());
+    b.handle({2, 3, konsens::heartbeat_request{1}});
+    b.handle({9, 1, konsens::heartbeat_request{1}});
+    b.handle({1, 1, konsens::heartbeat_request{1}});
+    CHECK(b.take_outgoing_messages().empty());
+    b.handle({2, 1, konsens::heartbeat_request{1}});
+    CHECK(replies_to(b, 2).size() == 1);
+}
+
+// The quorum of a round counts nodes, not messages. A reply that arrives
+// twice from the same peer is counted once; otherwise one peer of five
+// would give the leader a quorum of three.
+TEST_CASE("a reply that arrives twice counts once") {
+    for (const bool second_peer : {false, true}) {
+        CAPTURE(second_peer);
+        auto b = make_of_five(1, 5);
+        static_cast<void>(b.take_outgoing_messages());
+        const ballot own = b.get_current_ballot();
+        const konsens::heartbeat_reply rep{1, ballot{config_id, own.n, 0, 2}, own, true};
+        b.handle({2, 1, rep});
+        b.handle({second_peer ? node_id{3} : node_id{2}, 1, rep});
+        static_cast<void>(b.hb_timeout(ballot{}));
+        static_cast<void>(b.take_outgoing_messages());
+        b.handle({4, 1, konsens::heartbeat_request{2}});
+        const auto r = replies_to(b, 4);
+        REQUIRE(r.size() == 1);
+        CHECK(std::get<konsens::heartbeat_reply>(r[0].msg).happy == second_peer);
+    }
 }

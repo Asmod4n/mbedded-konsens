@@ -241,7 +241,7 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (m.from == pid_ || !std::ranges::contains(peers_, m.from)) [[unlikely]] {
+        if (m.to != pid_ || m.from == pid_ || !std::ranges::contains(peers_, m.from)) [[unlikely]] {
             return {};
         }
         if (recovering_ && !std::holds_alternative<recovery_response>(m.msg)) {

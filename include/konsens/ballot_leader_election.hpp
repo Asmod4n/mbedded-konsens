@@ -45,10 +45,13 @@ public:
 
     void handle(const ble_message& m)
     {
+        if (m.to != pid_ || !std::ranges::contains(peers_, m.from)) [[unlikely]] {
+            return;
+        }
         if (const auto* req = std::get_if<heartbeat_request>(&m.msg)) {
             handle_request(m.from, *req);
         } else {
-            handle_reply(std::get<heartbeat_reply>(m.msg));
+            handle_reply(m.from, std::get<heartbeat_reply>(m.msg));
         }
     }
 
@@ -85,6 +88,7 @@ private:
     void new_hb_round()
     {
         heartbeat_replies_.clear();
+        repliers_.clear();
         hb_round_ += 1;
         for (const auto peer : peers_) {
             outgoing_.push_back({pid_, peer, heartbeat_request{hb_round_}});
@@ -137,9 +141,11 @@ private:
         outgoing_.push_back({pid_, from, heartbeat_reply{req.round, current_ballot_, leader_, happy_}});
     }
 
-    void handle_reply(const heartbeat_reply& rep)
+    void handle_reply(node_id from, const heartbeat_reply& rep)
     {
-        if (rep.round == hb_round_ && rep.ballot.config_id == configuration_id_) {
+        if (rep.round == hb_round_ && rep.ballot.config_id == configuration_id_ &&
+            !std::ranges::contains(repliers_, from)) {
+            repliers_.push_back(from);
             heartbeat_replies_.push_back(rep);
         }
     }
@@ -150,6 +156,7 @@ private:
     std::size_t majority_{};
     std::uint32_t hb_round_{};
     std::vector<heartbeat_reply> heartbeat_replies_;
+    std::vector<node_id> repliers_;
     ballot current_ballot_{};
     ballot leader_{};
     bool happy_{true};

@@ -325,6 +325,15 @@ TEST_CASE("a message from an unknown pid is dropped") {
     CHECK(sp.take_outgoing_messages().empty());
 }
 
+// A message whose `to` names another node is dropped, so that a message that
+// reached the wrong node changes no state there.
+TEST_CASE("a message to another node is dropped") {
+    auto sp = make(1);
+    REQUIRE(sp.handle({2, 3, konsens::prepare{ballot_of(1, 2), 0, ballot{}, 0}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::none});
+    CHECK(sp.take_outgoing_messages().empty());
+}
+
 // F5 of plan v0.1: a first start finds the default promise and does not
 // recover. If it did, a new cluster would wait for a primary that does not
 // exist, because each node starts with no promise.
