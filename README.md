@@ -69,8 +69,8 @@ The repository holds formal models in TLA+ and library v0.1 in C++.
 
 ### Build
 
-The build needs g++ 15, g++ 16 or clang 22 in C++23 mode. mbedded-cbor
-does not support g++ 14 or older. Where the distribution has no such
+The build needs g++ 16 or later. mbedded-cbor also builds with g++ 15
+and clang 22, but mbedded-konsens does not support them. Where the distribution has no such
 compiler, the build runs in a container, for example Ubuntu 26.10 in
 podman. Install the packages (Ubuntu 26.10):
 
