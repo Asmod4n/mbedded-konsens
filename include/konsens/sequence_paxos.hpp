@@ -8,6 +8,7 @@
 #include <iterator>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <system_error>
 #include <type_traits>
@@ -83,7 +84,7 @@ struct leader_state {
         return s;
     }
 
-    bool set_promise(const promise_meta_data& meta, std::optional<konsens::log_sync> sync,
+    bool set_promise(const promise_meta_data& meta, const std::optional<konsens::log_sync>& sync,
                      bool check_max_prom)
     {
         const auto& mm = max_promise_meta;
@@ -91,7 +92,7 @@ struct leader_state {
                              (meta.n_accepted == mm.n_accepted && meta.accepted_idx > mm.accepted_idx);
         if (check_max_prom && greater) {
             max_promise_meta = meta;
-            max_promise_sync = std::move(sync);
+            max_promise_sync = sync;
         }
         promises_meta[pid_to_idx(meta.pid)] = meta;
         const auto promised = std::ranges::count_if(promises_meta, [](const promise_state& p) {
@@ -236,61 +237,62 @@ public:
         return sp;
     }
 
-    result handle(paxos_message m)
+    result handle(const paxos_message& m)
+    {
+        return std::visit([this, &m](const auto& msg) -> result { return this->handle(m.from, m.to, msg); }, m.msg);
+    }
+
+    template <typename T>
+        requires requires(const T& msg) { paxos_msg{std::in_place_type<T>, msg}; }
+    result handle(node_id from, node_id to, const T& msg)
     {
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (m.to != pid_ || m.from == pid_ || !std::ranges::contains(peers_, m.from)) [[unlikely]] {
+        if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) [[unlikely]] {
             return {};
         }
-        if (recovering_ && !std::holds_alternative<recovery_response>(m.msg)) {
+        if (recovering_ && !std::is_same_v<T, recovery_response>) {
             return {};
         }
-        const node_id from = m.from;
-        return std::visit(
-            [this, from](auto&& msg) -> result {
-                using T = std::decay_t<decltype(msg)>;
-                if constexpr (std::is_same_v<T, prepare_req>) {
-                    handle_preparereq(msg, from);
-                    return {};
-                } else if constexpr (std::is_same_v<T, prepare>) {
-                    return handle_prepare(msg, from);
-                } else if constexpr (std::is_same_v<T, konsens::promise>) {
-                    return handle_promise(std::move(msg), from);
-                } else if constexpr (std::is_same_v<T, accept_sync>) {
-                    return handle_acceptsync(std::move(msg), from);
-                } else if constexpr (std::is_same_v<T, accept_decide>) {
-                    return handle_acceptdecide(std::move(msg));
-                } else if constexpr (std::is_same_v<T, accepted>) {
-                    return handle_accepted(msg, from);
-                } else if constexpr (std::is_same_v<T, decide>) {
-                    return handle_decide(msg);
-                } else if constexpr (std::is_same_v<T, not_accepted>) {
-                    handle_notaccepted(msg, from);
-                    return {};
-                } else if constexpr (std::is_same_v<T, recovery>) {
-                    return handle_recovery(msg, from);
-                } else if constexpr (std::is_same_v<T, recovery_response>) {
-                    return handle_recovery_response(std::move(msg), from);
-                } else if constexpr (std::is_same_v<T, read_index_request>) {
-                    handle_read_index_request(msg, from);
-                    return {};
-                } else if constexpr (std::is_same_v<T, heartbeat>) {
-                    handle_heartbeat(msg, from);
-                    return {};
-                } else if constexpr (std::is_same_v<T, heartbeat_ack>) {
-                    handle_heartbeat_ack(msg, from);
-                    return {};
-                } else if constexpr (std::is_same_v<T, read_index_reply>) {
-                    handle_read_index_reply(msg);
-                    return {};
-                } else {
-                    static_assert(std::is_same_v<T, proposal_forward>);
-                    return handle_forwarded_proposal(std::move(msg.entries));
-                }
-            },
-            std::move(m.msg));
+        if constexpr (std::is_same_v<T, prepare_req>) {
+            handle_preparereq(msg, from);
+            return {};
+        } else if constexpr (std::is_same_v<T, prepare>) {
+            return handle_prepare(msg, from);
+        } else if constexpr (std::is_same_v<T, konsens::promise>) {
+            return handle_promise(msg, from);
+        } else if constexpr (std::is_same_v<T, accept_sync>) {
+            return handle_acceptsync(msg, from);
+        } else if constexpr (std::is_same_v<T, accept_decide>) {
+            return handle_acceptdecide(msg);
+        } else if constexpr (std::is_same_v<T, accepted>) {
+            return handle_accepted(msg, from);
+        } else if constexpr (std::is_same_v<T, decide>) {
+            return handle_decide(msg);
+        } else if constexpr (std::is_same_v<T, not_accepted>) {
+            handle_notaccepted(msg, from);
+            return {};
+        } else if constexpr (std::is_same_v<T, recovery>) {
+            return handle_recovery(msg, from);
+        } else if constexpr (std::is_same_v<T, recovery_response>) {
+            return handle_recovery_response(msg, from);
+        } else if constexpr (std::is_same_v<T, read_index_request>) {
+            handle_read_index_request(msg, from);
+            return {};
+        } else if constexpr (std::is_same_v<T, heartbeat>) {
+            handle_heartbeat(msg, from);
+            return {};
+        } else if constexpr (std::is_same_v<T, heartbeat_ack>) {
+            handle_heartbeat_ack(msg, from);
+            return {};
+        } else if constexpr (std::is_same_v<T, read_index_reply>) {
+            handle_read_index_reply(msg);
+            return {};
+        } else {
+            static_assert(std::is_same_v<T, proposal_forward>);
+            return handle_forwarded_proposal(msg.entries);
+        }
     }
 
     result handle_leader(ballot n)
@@ -334,7 +336,7 @@ public:
         std::vector<entry> entries;
         entries.push_back(std::move(e));
         if (state_ == std::pair{role::leader, phase::accept}) {
-            return accept_entries_leader(std::move(entries));
+            return accept_entries_leader(entries);
         }
         forward_proposals(std::move(entries));
         return {};
@@ -532,7 +534,7 @@ private:
         }
     }
 
-    result accept_entries_leader(std::vector<entry> entries)
+    result accept_entries_leader(std::span<const entry> entries)
     {
         if (entries.empty()) {
             return {};
@@ -547,7 +549,7 @@ private:
         for (const auto f : leader_state_.get_promised_followers()) {
             outgoing_.push_back({pid_, f,
                                  accept_decide{leader_state_.n_leader, leader_state_.next_seq_num(f),
-                                               decided_idx_, entries}});
+                                               decided_idx_, {entries.begin(), entries.end()}}});
         }
         return {};
     }
@@ -592,14 +594,14 @@ private:
         return {};
     }
 
-    result handle_promise(konsens::promise prom, node_id from)
+    result handle_promise(const konsens::promise& prom, node_id from)
     {
         if (state_.first != role::leader || prom.n != leader_state_.n_leader) {
             return {};
         }
         const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from};
         if (state_.second == phase::prepare) {
-            if (leader_state_.set_promise(meta, std::move(prom.log_sync), true)) {
+            if (leader_state_.set_promise(meta, prom.log_sync, true)) {
                 return handle_majority_promises();
             }
             return {};
@@ -619,8 +621,8 @@ private:
         auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
         auto proposals = std::exchange(buffered_proposals_, {});
         const auto accepted_idx = std::min(sync_idx, accepted_idx_) + suffix.size() + proposals.size();
-        const std::array<storage_op, 4> ops{append_on_prefix{sync_idx, std::move(suffix)},
-                                            append_entries{std::move(proposals)},
+        const std::array<storage_op, 4> ops{append_on_prefix{sync_idx, suffix},
+                                            append_entries{proposals},
                                             set_accepted_round{leader_state_.n_leader},
                                             set_decided_index{decided_idx}};
         if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
@@ -658,7 +660,7 @@ private:
         return {};
     }
 
-    result handle_acceptsync(accept_sync accsync, node_id from)
+    result handle_acceptsync(const accept_sync& accsync, node_id from)
     {
         if (!check_valid_ballot(accsync.n) || state_ != std::pair{role::follower, phase::prepare}) {
             return {};
@@ -670,7 +672,7 @@ private:
         }
         const auto decided_idx = std::max(decided_idx_, accsync.decided_idx);
         const auto accepted_idx = std::min(sync_idx, accepted_idx_) + accsync.log_sync.suffix.size();
-        const std::array<storage_op, 3> ops{append_on_prefix{sync_idx, std::move(accsync.log_sync.suffix)},
+        const std::array<storage_op, 3> ops{append_on_prefix{sync_idx, accsync.log_sync.suffix},
                                             set_accepted_round{accsync.n}, set_decided_index{decided_idx}};
         if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
             return stop_voting(w.error());
@@ -689,7 +691,7 @@ private:
         return {};
     }
 
-    result handle_acceptdecide(accept_decide acc_dec)
+    result handle_acceptdecide(const accept_decide& acc_dec)
     {
         if (!check_valid_ballot(acc_dec.n) || state_ != std::pair{role::follower, phase::accept} ||
             handle_sequence_num(acc_dec.seq_num, acc_dec.n.pid) != message_status::expected) {
@@ -699,7 +701,7 @@ private:
         const auto accepted_idx = accepted_idx_ + count;
         const auto u = update_decided(decided_idx_, accepted_idx, acc_dec.decided_idx);
         if (count > 0 || u.decided_idx != decided_idx_) {
-            const std::array<storage_op, 2> ops{append_entries{std::move(acc_dec.entries)},
+            const std::array<storage_op, 2> ops{append_entries{acc_dec.entries},
                                                 set_decided_index{u.decided_idx}};
             if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
                 return stop_voting(w.error());
@@ -770,13 +772,13 @@ private:
         return {};
     }
 
-    result handle_recovery_response(recovery_response resp, node_id from)
+    result handle_recovery_response(const recovery_response& resp, node_id from)
     {
         if (!recovering_ || resp.nonce != nonce_) {
             return {};
         }
         std::erase_if(recovery_responses_, [from](const auto& r) { return r.first == from; });
-        recovery_responses_.emplace_back(from, std::move(resp));
+        recovery_responses_.emplace_back(from, resp);
         const auto highest = std::ranges::max(recovery_responses_ | std::views::values |
                                               std::views::transform(&recovery_response::promise));
         const auto l = std::ranges::find_if(recovery_responses_, [highest](const auto& r) {
@@ -789,7 +791,7 @@ private:
         const auto n_accepted = l->second.n_accepted;
         const auto decided_idx = std::max(decided_idx_, l->second.decided_idx);
         const auto accepted_idx = l->second.log.size();
-        const std::array<storage_op, 4> ops{append_on_prefix{0, std::move(l->second.log)},
+        const std::array<storage_op, 4> ops{append_on_prefix{0, l->second.log},
                                             set_accepted_round{n_accepted}, set_decided_index{decided_idx},
                                             set_promise{pr}};
         if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
@@ -817,17 +819,16 @@ private:
         }
     }
 
-    result handle_forwarded_proposal(std::vector<entry> entries)
+    result handle_forwarded_proposal(std::span<const entry> entries)
     {
         if (state_ == std::pair{role::leader, phase::prepare}) {
-            buffered_proposals_.insert(buffered_proposals_.end(), std::make_move_iterator(entries.begin()),
-                                       std::make_move_iterator(entries.end()));
+            buffered_proposals_.insert(buffered_proposals_.end(), entries.begin(), entries.end());
             return {};
         }
         if (state_ == std::pair{role::leader, phase::accept}) {
-            return accept_entries_leader(std::move(entries));
+            return accept_entries_leader(entries);
         }
-        forward_proposals(std::move(entries));
+        forward_proposals({entries.begin(), entries.end()});
         return {};
     }
 

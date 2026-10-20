@@ -10,6 +10,7 @@
 #include <iterator>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -283,7 +284,7 @@ std::expected<void, std::error_code> put_entry(const write_target& target, const
 }
 
 std::expected<std::uint64_t, std::error_code> put_entries(const write_target& target, const std::uint64_t log_len,
-                                                          const std::vector<entry>& entries) {
+                                                          const std::span<const entry> entries) {
     for (const auto& [offset, e] : std::views::enumerate(entries)) {
         const auto put = put_entry(target, log_len + static_cast<std::uint64_t>(offset), e);
         if (!put) [[unlikely]] {

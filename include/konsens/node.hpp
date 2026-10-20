@@ -103,33 +103,19 @@ public:
         return serve_clients();
     }
 
-    result handle(message m)
+    result handle(const message& m)
     {
-        if (auto* p = std::get_if<paxos_message>(&m)) {
-            if (auto r = seq_paxos_.handle(std::move(*p)); !r) [[unlikely]] {
-                return r;
-            }
-            return serve_clients();
-        }
-        if (seq_paxos_.recovering()) {
-            return {};
-        }
-        ble_.handle(std::get<ble_message>(m));
-        return {};
+        return std::visit(
+            [this](const auto& outer) -> result {
+                return std::visit(
+                    [this, &outer](const auto& msg) { return this->handle(outer.from, outer.to, msg); }, outer.msg);
+            },
+            m);
     }
 
     result handle(const received& r)
     {
-        return std::visit(
-            [this, &r](const auto& body) -> result {
-                using T = std::remove_cvref_t<decltype(*body)>;
-                if constexpr (requires { paxos_msg{std::in_place_type<T>, *body}; }) {
-                    return handle(message{paxos_message{r.from, r.to, paxos_msg{std::in_place_type<T>, *body}}});
-                } else {
-                    return handle(message{ble_message{r.from, r.to, heartbeat_msg{std::in_place_type<T>, *body}}});
-                }
-            },
-            r.msg);
+        return std::visit([this, &r](const auto& body) { return this->handle(r.from, r.to, *body); }, r.msg);
     }
 
     result append(entry e) { return seq_paxos_.append(std::move(e)); }
@@ -235,6 +221,23 @@ public:
     const std::map<std::uint64_t, client_session>& get_client_table() const { return client_table_; }
 
 private:
+    template <typename T>
+    result handle(node_id from, node_id to, const T& msg)
+    {
+        if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
+            if (auto r = seq_paxos_.handle(from, to, msg); !r) [[unlikely]] {
+                return r;
+            }
+            return serve_clients();
+        } else {
+            if (seq_paxos_.recovering()) {
+                return {};
+            }
+            ble_.handle(ble_message{from, to, heartbeat_msg{std::in_place_type<T>, msg}});
+            return {};
+        }
+    }
+
     node(const node_config& config, sequence_paxos<S> seq_paxos, ballot_leader_election ble, M machine)
         : seq_paxos_(std::move(seq_paxos)), ble_(std::move(ble)), election_clock_{0, config.election_tick_timeout},
           resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine))

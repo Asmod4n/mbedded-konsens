@@ -475,7 +475,8 @@ TEST_CASE("handle_recovery_response: only the primary of the highest ballot coun
 // sends PrepareReq with that promise to each peer (F4).
 TEST_CASE("handle_recovery_response: the node takes the state of the primary") {
     memory_storage s = storage_with_promise(ballot_of(3, 1));
-    const std::array<konsens::storage_op, 2> ops{konsens::append_entries{{make_entry(9), make_entry(9)}},
+    const std::vector nines{make_entry(9), make_entry(9)};
+    const std::array<konsens::storage_op, 2> ops{konsens::append_entries{nines},
                                                  konsens::set_accepted_round{ballot_of(1, 1)}};
     REQUIRE(s.write_atomically(ops));
     auto sp = make(1, s, 7);
@@ -525,7 +526,8 @@ TEST_CASE("handle_recovery_response: the node takes a higher promise of the prim
 // stays within the log.
 TEST_CASE("handle_recovery_response: the decided index does not fall") {
     memory_storage s = storage_with_promise(ballot_of(1, 3));
-    const std::array<konsens::storage_op, 3> ops{konsens::append_entries{{make_entry(1), make_entry(2)}},
+    const std::vector written{make_entry(1), make_entry(2)};
+    const std::array<konsens::storage_op, 3> ops{konsens::append_entries{written},
                                                  konsens::set_accepted_round{ballot_of(1, 3)},
                                                  konsens::set_decided_index{2}};
     REQUIRE(s.write_atomically(ops));

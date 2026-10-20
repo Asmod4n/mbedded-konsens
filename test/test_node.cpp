@@ -5,7 +5,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <iterator>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -338,4 +340,88 @@ TEST_CASE("a follower that lost an AcceptDecide with an entry catches up after a
     check_resynced(seen);
     CHECK(*nodes[behind - 1].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     check_caught_up(nodes);
+}
+
+namespace {
+
+struct recording_storage {
+    memory_storage inner;
+    std::vector<const konsens::entry*>* appended;
+
+    std::expected<void, std::error_code> write_atomically(std::span<const konsens::storage_op> ops)
+    {
+        for (const auto& op : ops) {
+            if (const auto* a = std::get_if<konsens::append_entries>(&op)) {
+                appended->push_back(a->entries.data());
+            }
+        }
+        return inner.write_atomically(ops);
+    }
+    auto get_entries(std::uint64_t from, std::uint64_t to) const { return inner.get_entries(from, to); }
+    auto get_log_len() const { return inner.get_log_len(); }
+    auto get_promise() const { return inner.get_promise(); }
+    auto get_decided_idx() const { return inner.get_decided_idx(); }
+    auto get_accepted_round() const { return inner.get_accepted_round(); }
+};
+
+}
+
+// The rule "Nothing is copied to pass it": the entries of a decoded
+// AcceptDecide reach the storage of the follower where cbor::ref holds
+// them. The test compares the address of the first entry, not an address
+// in the wire bytes, because decode copies each payload into its entry.
+// The follower must be in (Follower, Accept) with the next sequence
+// number, or the handler writes nothing.
+TEST_CASE("a decoded AcceptDecide reaches the storage with no copy") {
+    using recording_node = konsens::node<recording_storage, echo>;
+    std::array<std::vector<const konsens::entry*>, 3> appended;
+    std::vector<recording_node> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        nodes.push_back(*recording_node::with(config_of(p), recording_storage{{}, &appended.at(p - 1)}, echo{}, 0));
+    }
+    const auto deliver = [&nodes] {
+        for (bool more = true; more;) {
+            more = false;
+            for (auto& n : nodes) {
+                for (const auto& m : n.take_outgoing_messages()) {
+                    more = true;
+                    const auto to = std::visit([](const auto& x) { return x.to; }, m);
+                    REQUIRE(nodes.at(to - 1).handle(m));
+                }
+            }
+        }
+    };
+    for (int i = 0; i < rounds; ++i) {
+        deliver();
+        for (auto& n : nodes) {
+            REQUIRE(n.tick());
+        }
+    }
+    deliver();
+    const node_id leader = nodes.front().get_sequence_paxos().get_promise().pid;
+    REQUIRE(leader != 0);
+    const node_id follower = leader == 1 ? 2 : 1;
+    REQUIRE(nodes.at(leader - 1).append(make_entry(7)));
+    bool checked = false;
+    for (const auto& m : nodes.at(leader - 1).take_outgoing_messages()) {
+        const auto to = std::visit([](const auto& x) { return x.to; }, m);
+        if (to != follower) {
+            continue;
+        }
+        auto bytes = konsens::encode(m);
+        REQUIRE(bytes);
+        const auto r = konsens::decode(std::move(*bytes));
+        REQUIRE(r);
+        const auto* acc = std::get_if<cbor::ref<konsens::accept_decide>>(&r->msg);
+        if (acc == nullptr) {
+            continue;
+        }
+        auto& seen = appended.at(follower - 1);
+        seen.clear();
+        REQUIRE(nodes.at(follower - 1).handle(*r));
+        REQUIRE(seen.size() == 1);
+        CHECK(seen.front() == (*acc)->entries.data());
+        checked = true;
+    }
+    CHECK(checked);
 }

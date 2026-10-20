@@ -90,11 +90,11 @@ TEST_CASE("a new storage has an empty log and zero meta values") {
 TEST_CASE("append_on_prefix truncates the log and appends") {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
-    const std::vector<konsens::storage_op> first{
-        konsens::append_entries{{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")}}};
+    const std::vector four{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")};
+    const std::vector<konsens::storage_op> first{konsens::append_entries{four}};
     REQUIRE(storage.write_atomically(first).has_value());
-    const std::vector<konsens::storage_op> second{
-        konsens::append_on_prefix{2, {normal_entry("x"), normal_entry("y"), normal_entry("z")}}};
+    const std::vector three{normal_entry("x"), normal_entry("y"), normal_entry("z")};
+    const std::vector<konsens::storage_op> second{konsens::append_on_prefix{2, three}};
     REQUIRE(storage.write_atomically(second).has_value());
     CHECK(storage.get_log_len() == 5u);
     CHECK(storage.get_entries(0, 5) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b"),
@@ -110,7 +110,8 @@ TEST_CASE("append_on_prefix truncates the log and appends") {
 TEST_CASE("get_entries returns the stored part of the range") {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
-    const std::vector<konsens::storage_op> ops{konsens::append_entries{{normal_entry("a"), normal_entry("b")}}};
+    const std::vector written{normal_entry("a"), normal_entry("b")};
+    const std::vector<konsens::storage_op> ops{konsens::append_entries{written}};
     REQUIRE(storage.write_atomically(ops).has_value());
     CHECK(storage.get_entries(0, 0) == std::vector<konsens::entry>{});
     CHECK(storage.get_entries(0, 1) == std::vector{normal_entry("a")});
@@ -129,8 +130,8 @@ TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index") {
     constexpr std::string_view marked = "konsens-marked-payload";
     {
         auto storage = open_storage(dir.path());
-        const std::vector<konsens::storage_op> ops{
-            konsens::append_entries{{normal_entry("zero"), normal_entry(marked), normal_entry("two")}}};
+        const std::vector written{normal_entry("zero"), normal_entry(marked), normal_entry("two")};
+        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}};
         REQUIRE(storage.write_atomically(ops).has_value());
     }
     const auto data_file = dir.path() / "data.mdb";
@@ -180,7 +181,8 @@ TEST_CASE("a full map gives no_space_on_device and writes nothing") {
     REQUIRE_FALSE(written.has_value());
     CHECK(written.error() == std::errc::no_space_on_device);
     CHECK(storage.get_log_len() == 0u);
-    const std::vector<konsens::storage_op> small{konsens::append_entries{{normal_entry("fits")}}};
+    const std::vector fits{normal_entry("fits")};
+    const std::vector<konsens::storage_op> small{konsens::append_entries{fits}};
     CHECK(storage.write_atomically(small).has_value());
     CHECK(storage.get_log_len() == 1u);
 }
@@ -260,9 +262,10 @@ TEST_CASE("an entry with a field of another kind is a wrong use") {
         {static_cast<konsens::entry_kind>(0xff), {}},
     };
     for (const auto& e : wrong) {
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{{e}}};
+        const std::span<const konsens::entry> one{&e, 1};
+        const std::vector<konsens::storage_op> ops{konsens::append_entries{one}};
         CHECK_THROWS_AS((void)storage.write_atomically(ops), std::logic_error);
-        const std::vector<konsens::storage_op> on_prefix{konsens::append_on_prefix{0, {e}}};
+        const std::vector<konsens::storage_op> on_prefix{konsens::append_on_prefix{0, one}};
         CHECK_THROWS_AS((void)storage.write_atomically(on_prefix), std::logic_error);
     }
     CHECK(storage.get_log_len() == 0u);

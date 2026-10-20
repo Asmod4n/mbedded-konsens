@@ -47,7 +47,10 @@ The repository holds formal models in TLA+ and library v0.1 in C++.
   It does no IO. The caller calls `tick()`, gives each message to
   `handle()`, sends what `take_outgoing_messages()` returns, and reads
   `read_decided_suffix()`.
-- The concept `konsens::storage` states what a store must do.
+- The concept `konsens::storage` states what a store must do. The
+  entries of `append_entries` and `append_on_prefix` are a
+  `std::span`. It is valid only during `write_atomically`; a store that
+  keeps the entries copies them.
 - `memory_storage` keeps the state in memory. The tests use it.
 - `persistent_storage` keeps the state in LMDB. Each write is one
   transaction with a synchronous commit. Each log entry carries a
@@ -315,10 +318,12 @@ and so have `prepare_req` and `not_accepted`.
   `std::variant` with one `cbor::ref<T>` for each kind, in the order of
   the kinds. Each `cbor::ref` holds the body that mbedded-cbor decoded,
   and decode copies no body.
-- `node::handle(const received&)` gives the body to the node. It
-  copies the body into a `message`, because the handling of Sequence
-  Paxos takes a message by value. `handle(message)` stays for callers in
-  one process.
+- `node::handle(const received&)` gives the body to the node and
+  copies no body. The entries of the body go to the store as a view.
+  The node copies only what it keeps after the call: the log of a
+  Promise or a RecoveryResponse that it stores, and the entries of a
+  forwarded proposal that it buffers or forwards. `handle(const
+  message&)` stays for callers in one process.
 - `kind_of` gives the kind of a `message` or of a `received`.
 
 ### Errors

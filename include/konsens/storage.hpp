@@ -78,12 +78,12 @@ inline void throw_if_entry_has_a_field_of_another_kind(const entry& e)
 }
 
 struct append_entries {
-    std::vector<entry> entries;
+    std::span<const entry> entries;
 };
 
 struct append_on_prefix {
     std::uint64_t from_idx;
-    std::vector<entry> entries;
+    std::span<const entry> entries;
 };
 
 struct set_promise {

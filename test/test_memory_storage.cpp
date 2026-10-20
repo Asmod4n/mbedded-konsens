@@ -34,11 +34,11 @@ TEST_CASE("a new memory_storage is empty") {
 // diverges after k.
 TEST_CASE("append_on_prefix truncates and appends") {
     konsens::memory_storage s;
-    const std::array<konsens::storage_op, 1> first{konsens::append_entries{
-        {make_entry(std::byte{1}), make_entry(std::byte{2}), make_entry(std::byte{3})}}};
+    const std::vector three{make_entry(std::byte{1}), make_entry(std::byte{2}), make_entry(std::byte{3})};
+    const std::array<konsens::storage_op, 1> first{konsens::append_entries{three}};
     REQUIRE(s.write_atomically(first));
-    const std::array<konsens::storage_op, 1> second{
-        konsens::append_on_prefix{1, {make_entry(std::byte{9})}}};
+    const std::vector nine{make_entry(std::byte{9})};
+    const std::array<konsens::storage_op, 1> second{konsens::append_on_prefix{1, nine}};
     REQUIRE(s.write_atomically(second));
     const auto all = s.get_entries(0, 2);
     REQUIRE(all);
@@ -49,9 +49,9 @@ TEST_CASE("append_on_prefix truncates and appends") {
 // as Vec::truncate does.
 TEST_CASE("append_on_prefix beyond the log keeps the log") {
     konsens::memory_storage s;
-    const std::array<konsens::storage_op, 2> ops{
-        konsens::append_entries{{make_entry(std::byte{1})}},
-        konsens::append_on_prefix{5, {make_entry(std::byte{2})}}};
+    const std::vector one{make_entry(std::byte{1})};
+    const std::vector two{make_entry(std::byte{2})};
+    const std::array<konsens::storage_op, 2> ops{konsens::append_entries{one}, konsens::append_on_prefix{5, two}};
     REQUIRE(s.write_atomically(ops));
     CHECK(*s.get_log_len() == 2);
 }
@@ -73,8 +73,8 @@ TEST_CASE("scalar ops set their values") {
 // entries. A start after the end of the range is a wrong use.
 TEST_CASE("get_entries returns the stored part of the range") {
     konsens::memory_storage s;
-    const std::array<konsens::storage_op, 1> ops{
-        konsens::append_entries{{make_entry(std::byte{1}), make_entry(std::byte{2})}}};
+    const std::vector written{make_entry(std::byte{1}), make_entry(std::byte{2})};
+    const std::array<konsens::storage_op, 1> ops{konsens::append_entries{written}};
     REQUIRE(s.write_atomically(ops));
     CHECK(*s.get_entries(0, 0) == std::vector<konsens::entry>{});
     CHECK(*s.get_entries(0, 1) == std::vector{make_entry(std::byte{1})});
@@ -106,11 +106,11 @@ TEST_CASE("an entry of each kind comes back with its fields") {
 // both refuse the same wrong use.
 TEST_CASE("an entry with a field of another kind is a wrong use") {
     konsens::memory_storage s;
-    const std::array<konsens::storage_op, 1> ops{
-        konsens::append_entries{{{konsens::entry_kind::normal, {}, 1}}}};
+    const std::vector<konsens::entry> normal_with_client{{konsens::entry_kind::normal, {}, 1}};
+    const std::array<konsens::storage_op, 1> ops{konsens::append_entries{normal_with_client}};
     CHECK_THROWS_AS((void)s.write_atomically(ops), std::logic_error);
-    const std::array<konsens::storage_op, 1> on_prefix{
-        konsens::append_on_prefix{0, {{.kind = konsens::entry_kind::expire_session, .client_id = 1}}}};
+    const std::vector<konsens::entry> expire{{.kind = konsens::entry_kind::expire_session, .client_id = 1}};
+    const std::array<konsens::storage_op, 1> on_prefix{konsens::append_on_prefix{0, expire}};
     CHECK_THROWS_AS((void)s.write_atomically(on_prefix), std::logic_error);
     CHECK(*s.get_log_len() == 0);
 }
