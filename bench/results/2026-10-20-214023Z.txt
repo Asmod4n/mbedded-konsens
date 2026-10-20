@@ -1,0 +1,498 @@
+# Bench: node::handle(const received&) with and without the copy of the body
+
+This run replaces 2026-10-20-212437Z.txt, which ran as root against the
+rules.
+
+What: decode of one message and node::handle(const received&) at a
+follower in (Follower, Accept), over a store that only counts the
+payload bytes. Two cases: an AcceptDecide with 64 entries of 1 KiB
+(large), and a Decide (decide). Each message has the next sequence
+number and is encoded outside the timed part. A sample is 25 messages
+(large) or 4000 messages (decide); the time per message is the sample
+divided by its count. Each process takes 31 samples and prints their
+median.
+
+Arms:
+- before: 281439d. node copies the body into a message.
+- after: f68f139. node passes the body that cbor::ref holds by const
+  reference.
+Each arm is its own binary. The arms run alternately, 7 rounds, and the
+order swaps each round. The table compares the medians of the 7 process
+medians.
+
+Run length: the A/A pair is the after arm and the same bench.cpp
+compiled a second time against the same library (after2). Max |A/A| of
+the 6 cells: 31 samples 1.9 %, 101 samples 1.1 %. The run takes 31
+samples. Noise floor: 1.9 %.
+
+Build: Release, -std=c++23 -O2 -DNDEBUG, no -march (x86-64 baseline);
+libkonsens.a built by its CMake with the same compiler, mbedded-cbor at
+55418aa. Compilers: g++-15 (Ubuntu 15.3.0-4ubuntu1), g++-16 (Ubuntu
+16.2.0-3ubuntu1), clang++-22 (Ubuntu clang 22.1.8-1ubuntu1). At run
+time all use the libstdc++ of GCC 16 (the g++-15 binary needs
+GLIBCXX_3.4.32, the others 3.4.36) and glibc (symbols up to GLIBC_2.38).
+Machine: Firecracker VM, kernel 6.18.44-fc-v140, EEVDF scheduler (no
+sched_ext), 4 cpus, Intel(R) Xeon(R) Processor, cpu flags sha256
+733bd6f8a6de28df. Container: podman 4.9.3, Ubuntu 26.10 (development
+branch), image localhost/cxx-matrix.
+User and priority: each bench process runs as the user bench (uid
+1001, not root), started by setpriv, at nice 0. The column
+other_processes_of_user counts the other processes of that user before
+each run: 0 in every row, so the run had priority over everything else
+the user owns. Not pinned. Threads: 1. Three cpus stayed free. Steal
+ticks per process are in the raw lines.
+
+## Result, ns per message, medians
+
+| build | case | before | after | after vs before |
+|---|---|---|---|---|
+| g++-15 | large | 42256 (spread 40877-44166) | 38580 (spread 37620-40333) | -8.7 % |
+| g++-15 | decide | 283 (spread 282-285) | 268 (spread 267-275) | -5.3 % |
+| g++-16 | large | 41812 (spread 40767-50189) | 37800 (spread 36919-38623) | -9.6 % |
+| g++-16 | decide | 312 (spread 309-348) | 289 (spread 280-307) | -7.4 % |
+| clang++-22 | large | 40531 (spread 40040-42797) | 37046 (spread 36057-52551) | -8.6 % |
+| clang++-22 | decide | 277 (spread 271-282) | 269 (spread 266-273) | -2.9 % |
+
+## Raw lines aa-31
+
+# run uid 1001 user bench nice 0
+aa g++-15 large round=1 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38932 min=36486 max=47162 payload_bytes=50790401
+aa g++-15 large round=1 arm=after2 per=25 samples=31 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=72621 min=47895 max=85887 payload_bytes=50790401
+aa g++-15 large round=2 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38842 min=36783 max=42514 payload_bytes=50790401
+aa g++-15 large round=2 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38376 min=36938 max=44827 payload_bytes=50790401
+aa g++-15 large round=3 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38657 min=36766 max=75105 payload_bytes=50790401
+aa g++-15 large round=3 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39333 min=37316 max=50898 payload_bytes=50790401
+aa g++-15 large round=4 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38260 min=36658 max=41544 payload_bytes=50790401
+aa g++-15 large round=4 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38282 min=36497 max=40993 payload_bytes=50790401
+aa g++-15 large round=5 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=41423 min=37457 max=85647 payload_bytes=50790401
+aa g++-15 large round=5 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39037 min=36434 max=44201 payload_bytes=50790401
+aa g++-15 large round=6 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39239 min=36750 max=47123 payload_bytes=50790401
+aa g++-15 large round=6 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38983 min=36879 max=42474 payload_bytes=50790401
+aa g++-15 large round=7 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39477 min=37003 max=62500 payload_bytes=50790401
+aa g++-15 large round=7 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=56822 min=37623 max=69587 payload_bytes=50790401
+aa g++-15 decide round=1 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=262 max=282 payload_bytes=1
+aa g++-15 decide round=1 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=281 min=265 max=408 payload_bytes=1
+aa g++-15 decide round=2 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=276 min=267 max=304 payload_bytes=1
+aa g++-15 decide round=2 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=299 min=272 max=426 payload_bytes=1
+aa g++-15 decide round=3 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=257 max=986 payload_bytes=1
+aa g++-15 decide round=3 arm=after2 per=4000 samples=31 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=274 min=262 max=1246 payload_bytes=1
+aa g++-15 decide round=4 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=267 min=247 max=423 payload_bytes=1
+aa g++-15 decide round=4 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=265 min=262 max=300 payload_bytes=1
+aa g++-15 decide round=5 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=262 max=282 payload_bytes=1
+aa g++-15 decide round=5 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=270 min=261 max=316 payload_bytes=1
+aa g++-15 decide round=6 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=262 max=361 payload_bytes=1
+aa g++-15 decide round=6 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=262 max=582 payload_bytes=1
+aa g++-15 decide round=7 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=261 max=296 payload_bytes=1
+aa g++-15 decide round=7 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=259 max=293 payload_bytes=1
+aa g++-16 large round=1 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38529 min=35882 max=44511 payload_bytes=50790401
+aa g++-16 large round=1 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37791 min=35749 max=67380 payload_bytes=50790401
+aa g++-16 large round=2 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37036 min=35595 max=40521 payload_bytes=50790401
+aa g++-16 large round=2 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38883 min=35810 max=69042 payload_bytes=50790401
+aa g++-16 large round=3 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37423 min=35334 max=51402 payload_bytes=50790401
+aa g++-16 large round=3 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37696 min=35319 max=54905 payload_bytes=50790401
+aa g++-16 large round=4 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37937 min=35306 max=47789 payload_bytes=50790401
+aa g++-16 large round=4 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37948 min=36006 max=65598 payload_bytes=50790401
+aa g++-16 large round=5 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38812 min=35792 max=45024 payload_bytes=50790401
+aa g++-16 large round=5 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36889 min=35534 max=40302 payload_bytes=50790401
+aa g++-16 large round=6 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37370 min=35579 max=42152 payload_bytes=50790401
+aa g++-16 large round=6 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37076 min=35686 max=39792 payload_bytes=50790401
+aa g++-16 large round=7 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37690 min=35696 max=43473 payload_bytes=50790401
+aa g++-16 large round=7 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37179 min=35650 max=41488 payload_bytes=50790401
+aa g++-16 decide round=1 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=274 max=371 payload_bytes=1
+aa g++-16 decide round=1 arm=after2 per=4000 samples=31 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=291 min=272 max=458 payload_bytes=1
+aa g++-16 decide round=2 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=288 min=273 max=386 payload_bytes=1
+aa g++-16 decide round=2 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=294 min=278 max=322 payload_bytes=1
+aa g++-16 decide round=3 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=298 min=275 max=464 payload_bytes=1
+aa g++-16 decide round=3 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=299 min=281 max=317 payload_bytes=1
+aa g++-16 decide round=4 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=296 min=277 max=325 payload_bytes=1
+aa g++-16 decide round=4 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=273 max=306 payload_bytes=1
+aa g++-16 decide round=5 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=291 min=273 max=354 payload_bytes=1
+aa g++-16 decide round=5 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=290 min=269 max=453 payload_bytes=1
+aa g++-16 decide round=6 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=300 min=273 max=364 payload_bytes=1
+aa g++-16 decide round=6 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=275 max=376 payload_bytes=1
+aa g++-16 decide round=7 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=314 min=277 max=598 payload_bytes=1
+aa g++-16 decide round=7 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=293 min=277 max=474 payload_bytes=1
+aa clang++-22 large round=1 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37707 min=35775 max=57615 payload_bytes=50790401
+aa clang++-22 large round=1 arm=after2 per=25 samples=31 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=38798 min=35115 max=254705 payload_bytes=50790401
+aa clang++-22 large round=2 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=67580 min=61980 max=74963 payload_bytes=50790401
+aa clang++-22 large round=2 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37231 min=34690 max=42525 payload_bytes=50790401
+aa clang++-22 large round=3 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37393 min=34807 max=46150 payload_bytes=50790401
+aa clang++-22 large round=3 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37449 min=35409 max=46522 payload_bytes=50790401
+aa clang++-22 large round=4 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38432 min=35290 max=45492 payload_bytes=50790401
+aa clang++-22 large round=4 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38414 min=35870 max=46121 payload_bytes=50790401
+aa clang++-22 large round=5 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38902 min=35304 max=55859 payload_bytes=50790401
+aa clang++-22 large round=5 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39210 min=34825 max=48305 payload_bytes=50790401
+aa clang++-22 large round=6 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38244 min=35136 max=45701 payload_bytes=50790401
+aa clang++-22 large round=6 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37337 min=34875 max=45053 payload_bytes=50790401
+aa clang++-22 large round=7 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38424 min=34933 max=54278 payload_bytes=50790401
+aa clang++-22 large round=7 arm=after2 per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37691 min=35630 max=42794 payload_bytes=50790401
+aa clang++-22 decide round=1 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=274 min=259 max=319 payload_bytes=1
+aa clang++-22 decide round=1 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=282 min=262 max=416 payload_bytes=1
+aa clang++-22 decide round=2 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=259 max=289 payload_bytes=1
+aa clang++-22 decide round=2 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=260 max=297 payload_bytes=1
+aa clang++-22 decide round=3 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=282 min=262 max=318 payload_bytes=1
+aa clang++-22 decide round=3 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=272 min=260 max=307 payload_bytes=1
+aa clang++-22 decide round=4 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=277 min=262 max=306 payload_bytes=1
+aa clang++-22 decide round=4 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=270 min=260 max=303 payload_bytes=1
+aa clang++-22 decide round=5 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=259 max=305 payload_bytes=1
+aa clang++-22 decide round=5 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=279 min=262 max=304 payload_bytes=1
+aa clang++-22 decide round=6 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=274 min=257 max=289 payload_bytes=1
+aa clang++-22 decide round=6 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=272 min=259 max=319 payload_bytes=1
+aa clang++-22 decide round=7 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=275 min=259 max=306 payload_bytes=1
+aa clang++-22 decide round=7 arm=after2 per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=275 min=263 max=304 payload_bytes=1
+
+## Raw lines aa-101
+
+# run uid 1001 user bench nice 0
+aa g++-15 large round=1 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38528 min=36452 max=51151 payload_bytes=165478401
+aa g++-15 large round=1 arm=after2 per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=38924 min=36671 max=47288 payload_bytes=165478401
+aa g++-15 large round=2 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38584 min=36666 max=44859 payload_bytes=165478401
+aa g++-15 large round=2 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38620 min=36697 max=64605 payload_bytes=165478401
+aa g++-15 large round=3 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38622 min=36395 max=46137 payload_bytes=165478401
+aa g++-15 large round=3 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37759 min=36345 max=43612 payload_bytes=165478401
+aa g++-15 large round=4 arm=after2 per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=41349 min=36481 max=125727 payload_bytes=165478401
+aa g++-15 large round=4 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38885 min=36398 max=65976 payload_bytes=165478401
+aa g++-15 large round=5 arm=after per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=38990 min=36324 max=52237 payload_bytes=165478401
+aa g++-15 large round=5 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39389 min=36647 max=94151 payload_bytes=165478401
+aa g++-15 large round=6 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38834 min=36374 max=69019 payload_bytes=165478401
+aa g++-15 large round=6 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39199 min=36505 max=50891 payload_bytes=165478401
+aa g++-15 large round=7 arm=after per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=38740 min=36363 max=58100 payload_bytes=165478401
+aa g++-15 large round=7 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38761 min=36643 max=66003 payload_bytes=165478401
+aa g++-15 decide round=1 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=252 max=349 payload_bytes=1
+aa g++-15 decide round=1 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=422 min=266 max=460 payload_bytes=1
+aa g++-15 decide round=2 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=259 max=701 payload_bytes=1
+aa g++-15 decide round=2 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=260 max=307 payload_bytes=1
+aa g++-15 decide round=3 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=259 max=389 payload_bytes=1
+aa g++-15 decide round=3 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=263 max=293 payload_bytes=1
+aa g++-15 decide round=4 arm=after2 per=4000 samples=101 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=271 min=260 max=528 payload_bytes=1
+aa g++-15 decide round=4 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=277 min=264 max=457 payload_bytes=1
+aa g++-15 decide round=5 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=262 max=360 payload_bytes=1
+aa g++-15 decide round=5 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=271 min=262 max=295 payload_bytes=1
+aa g++-15 decide round=6 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=272 min=262 max=469 payload_bytes=1
+aa g++-15 decide round=6 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=261 max=342 payload_bytes=1
+aa g++-15 decide round=7 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=270 min=250 max=330 payload_bytes=1
+aa g++-15 decide round=7 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=259 max=290 payload_bytes=1
+aa g++-16 large round=1 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38615 min=35881 max=66620 payload_bytes=165478401
+aa g++-16 large round=1 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37283 min=35539 max=44487 payload_bytes=165478401
+aa g++-16 large round=2 arm=after2 per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=38110 min=35749 max=85772 payload_bytes=165478401
+aa g++-16 large round=2 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37760 min=35303 max=100069 payload_bytes=165478401
+aa g++-16 large round=3 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38177 min=35628 max=46294 payload_bytes=165478401
+aa g++-16 large round=3 arm=after2 per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=40525 min=35759 max=53117 payload_bytes=165478401
+aa g++-16 large round=4 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38281 min=35628 max=45233 payload_bytes=165478401
+aa g++-16 large round=4 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38104 min=35475 max=46055 payload_bytes=165478401
+aa g++-16 large round=5 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37834 min=35255 max=62797 payload_bytes=165478401
+aa g++-16 large round=5 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38603 min=35677 max=57076 payload_bytes=165478401
+aa g++-16 large round=6 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37772 min=35626 max=57269 payload_bytes=165478401
+aa g++-16 large round=6 arm=after per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=38816 min=35453 max=94619 payload_bytes=165478401
+aa g++-16 large round=7 arm=after per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=39637 min=35898 max=97758 payload_bytes=165478401
+aa g++-16 large round=7 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38463 min=35436 max=49783 payload_bytes=165478401
+aa g++-16 decide round=1 arm=after per=4000 samples=101 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=290 min=272 max=2499 payload_bytes=1
+aa g++-16 decide round=1 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=292 min=276 max=340 payload_bytes=1
+aa g++-16 decide round=2 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=290 min=272 max=330 payload_bytes=1
+aa g++-16 decide round=2 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=290 min=272 max=497 payload_bytes=1
+aa g++-16 decide round=3 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=294 min=273 max=382 payload_bytes=1
+aa g++-16 decide round=3 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=290 min=272 max=322 payload_bytes=1
+aa g++-16 decide round=4 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=273 max=377 payload_bytes=1
+aa g++-16 decide round=4 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=288 min=272 max=322 payload_bytes=1
+aa g++-16 decide round=5 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=290 min=272 max=437 payload_bytes=1
+aa g++-16 decide round=5 arm=after2 per=4000 samples=101 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=289 min=273 max=421 payload_bytes=1
+aa g++-16 decide round=6 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=287 min=274 max=416 payload_bytes=1
+aa g++-16 decide round=6 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=272 max=376 payload_bytes=1
+aa g++-16 decide round=7 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=273 max=1296 payload_bytes=1
+aa g++-16 decide round=7 arm=after2 per=4000 samples=101 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=293 min=272 max=765 payload_bytes=1
+aa clang++-22 large round=1 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36922 min=34416 max=70054 payload_bytes=165478401
+aa clang++-22 large round=1 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36852 min=34614 max=42952 payload_bytes=165478401
+aa clang++-22 large round=2 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36643 min=34569 max=42823 payload_bytes=165478401
+aa clang++-22 large round=2 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37818 min=34755 max=70174 payload_bytes=165478401
+aa clang++-22 large round=3 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37513 min=35195 max=53252 payload_bytes=165478401
+aa clang++-22 large round=3 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37449 min=34524 max=52139 payload_bytes=165478401
+aa clang++-22 large round=4 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37102 min=34796 max=40431 payload_bytes=165478401
+aa clang++-22 large round=4 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36874 min=34633 max=42350 payload_bytes=165478401
+aa clang++-22 large round=5 arm=after per=25 samples=101 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=37487 min=34234 max=69263 payload_bytes=165478401
+aa clang++-22 large round=5 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37115 min=34512 max=61551 payload_bytes=165478401
+aa clang++-22 large round=6 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36549 min=34674 max=58844 payload_bytes=165478401
+aa clang++-22 large round=6 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37217 min=34638 max=65519 payload_bytes=165478401
+aa clang++-22 large round=7 arm=after per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37423 min=34444 max=43674 payload_bytes=165478401
+aa clang++-22 large round=7 arm=after2 per=25 samples=101 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38905 min=34482 max=49949 payload_bytes=165478401
+aa clang++-22 decide round=1 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=256 max=303 payload_bytes=1
+aa clang++-22 decide round=1 arm=after2 per=4000 samples=101 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=279 min=258 max=535 payload_bytes=1
+aa clang++-22 decide round=2 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=279 min=259 max=400 payload_bytes=1
+aa clang++-22 decide round=2 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=255 max=314 payload_bytes=1
+aa clang++-22 decide round=3 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=271 min=257 max=351 payload_bytes=1
+aa clang++-22 decide round=3 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=267 min=258 max=290 payload_bytes=1
+aa clang++-22 decide round=4 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=274 min=256 max=332 payload_bytes=1
+aa clang++-22 decide round=4 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=256 max=306 payload_bytes=1
+aa clang++-22 decide round=5 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=288 min=257 max=319 payload_bytes=1
+aa clang++-22 decide round=5 arm=after2 per=4000 samples=101 steal_ticks=2 other_processes_of_user=0 decide ns_per_message_median=270 min=258 max=4655 payload_bytes=1
+aa clang++-22 decide round=6 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=271 min=258 max=601 payload_bytes=1
+aa clang++-22 decide round=6 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=255 max=386 payload_bytes=1
+aa clang++-22 decide round=7 arm=after per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=276 min=257 max=337 payload_bytes=1
+aa clang++-22 decide round=7 arm=after2 per=4000 samples=101 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=295 min=263 max=443 payload_bytes=1
+
+## Raw lines ab-31
+
+# run uid 1001 user bench nice 0
+ab g++-15 large round=1 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=41689 min=39546 max=46355 payload_bytes=50790401
+ab g++-15 large round=1 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37620 min=36648 max=57308 payload_bytes=50790401
+ab g++-15 large round=2 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37743 min=36466 max=44195 payload_bytes=50790401
+ab g++-15 large round=2 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=43189 min=39777 max=60962 payload_bytes=50790401
+ab g++-15 large round=3 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=44166 min=41049 max=57339 payload_bytes=50790401
+ab g++-15 large round=3 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40333 min=36785 max=49846 payload_bytes=50790401
+ab g++-15 large round=4 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39195 min=36751 max=44503 payload_bytes=50790401
+ab g++-15 large round=4 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=42267 min=39584 max=46157 payload_bytes=50790401
+ab g++-15 large round=5 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=42256 min=39751 max=62646 payload_bytes=50790401
+ab g++-15 large round=5 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38574 min=36296 max=54800 payload_bytes=50790401
+ab g++-15 large round=6 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=39264 min=36909 max=44634 payload_bytes=50790401
+ab g++-15 large round=6 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40877 min=39925 max=44989 payload_bytes=50790401
+ab g++-15 large round=7 arm=before per=25 samples=31 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=41263 min=39686 max=45450 payload_bytes=50790401
+ab g++-15 large round=7 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38580 min=36440 max=67693 payload_bytes=50790401
+ab g++-15 decide round=1 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=283 min=274 max=464 payload_bytes=1
+ab g++-15 decide round=1 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=260 max=315 payload_bytes=1
+ab g++-15 decide round=2 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=262 max=295 payload_bytes=1
+ab g++-15 decide round=2 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=282 min=276 max=305 payload_bytes=1
+ab g++-15 decide round=3 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=285 min=275 max=328 payload_bytes=1
+ab g++-15 decide round=3 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=261 max=290 payload_bytes=1
+ab g++-15 decide round=4 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=256 max=287 payload_bytes=1
+ab g++-15 decide round=4 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=283 min=274 max=305 payload_bytes=1
+ab g++-15 decide round=5 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=283 min=278 max=297 payload_bytes=1
+ab g++-15 decide round=5 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=275 min=261 max=444 payload_bytes=1
+ab g++-15 decide round=6 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=262 max=310 payload_bytes=1
+ab g++-15 decide round=6 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=283 min=276 max=332 payload_bytes=1
+ab g++-15 decide round=7 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=284 min=279 max=302 payload_bytes=1
+ab g++-15 decide round=7 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=267 min=260 max=284 payload_bytes=1
+ab g++-16 large round=1 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=41106 min=38988 max=45951 payload_bytes=50790401
+ab g++-16 large round=1 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36919 min=35523 max=45687 payload_bytes=50790401
+ab g++-16 large round=2 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37298 min=35482 max=39897 payload_bytes=50790401
+ab g++-16 large round=2 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=50189 min=39695 max=116286 payload_bytes=50790401
+ab g++-16 large round=3 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=41812 min=39591 max=79847 payload_bytes=50790401
+ab g++-16 large round=3 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37628 min=35138 max=42660 payload_bytes=50790401
+ab g++-16 large round=4 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38623 min=35576 max=110288 payload_bytes=50790401
+ab g++-16 large round=4 arm=before per=25 samples=31 steal_ticks=1 other_processes_of_user=0 large ns_per_message_median=40767 min=38973 max=45865 payload_bytes=50790401
+ab g++-16 large round=5 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40874 min=39020 max=51298 payload_bytes=50790401
+ab g++-16 large round=5 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37800 min=35576 max=79624 payload_bytes=50790401
+ab g++-16 large round=6 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38094 min=35412 max=69566 payload_bytes=50790401
+ab g++-16 large round=6 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=44892 min=40250 max=71182 payload_bytes=50790401
+ab g++-16 large round=7 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=48758 min=40569 max=72531 payload_bytes=50790401
+ab g++-16 large round=7 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37924 min=35307 max=41042 payload_bytes=50790401
+ab g++-16 decide round=1 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=311 min=300 max=348 payload_bytes=1
+ab g++-16 decide round=1 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=307 min=271 max=510 payload_bytes=1
+ab g++-16 decide round=2 arm=after per=4000 samples=31 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=290 min=277 max=611 payload_bytes=1
+ab g++-16 decide round=2 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=315 min=304 max=344 payload_bytes=1
+ab g++-16 decide round=3 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=320 min=303 max=351 payload_bytes=1
+ab g++-16 decide round=3 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=287 min=276 max=519 payload_bytes=1
+ab g++-16 decide round=4 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=291 min=276 max=350 payload_bytes=1
+ab g++-16 decide round=4 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=312 min=303 max=328 payload_bytes=1
+ab g++-16 decide round=5 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=310 min=304 max=334 payload_bytes=1
+ab g++-16 decide round=5 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=280 min=272 max=299 payload_bytes=1
+ab g++-16 decide round=6 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=288 min=271 max=349 payload_bytes=1
+ab g++-16 decide round=6 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=309 min=302 max=330 payload_bytes=1
+ab g++-16 decide round=7 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=348 min=338 max=432 payload_bytes=1
+ab g++-16 decide round=7 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=289 min=274 max=302 payload_bytes=1
+ab clang++-22 large round=1 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=42797 min=39553 max=66270 payload_bytes=50790401
+ab clang++-22 large round=1 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36876 min=35027 max=40760 payload_bytes=50790401
+ab clang++-22 large round=2 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37046 min=34536 max=39748 payload_bytes=50790401
+ab clang++-22 large round=2 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40236 min=38008 max=43277 payload_bytes=50790401
+ab clang++-22 large round=3 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40048 min=37727 max=44495 payload_bytes=50790401
+ab clang++-22 large round=3 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=52551 min=37274 max=60206 payload_bytes=50790401
+ab clang++-22 large round=4 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36057 min=34795 max=39485 payload_bytes=50790401
+ab clang++-22 large round=4 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=41347 min=38736 max=54945 payload_bytes=50790401
+ab clang++-22 large round=5 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40040 min=37738 max=47497 payload_bytes=50790401
+ab clang++-22 large round=5 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=38128 min=36274 max=42298 payload_bytes=50790401
+ab clang++-22 large round=6 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=37323 min=35012 max=43189 payload_bytes=50790401
+ab clang++-22 large round=6 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40635 min=38532 max=46153 payload_bytes=50790401
+ab clang++-22 large round=7 arm=before per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=40531 min=38611 max=67748 payload_bytes=50790401
+ab clang++-22 large round=7 arm=after per=25 samples=31 steal_ticks=0 other_processes_of_user=0 large ns_per_message_median=36492 min=34705 max=44126 payload_bytes=50790401
+ab clang++-22 decide round=1 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=271 min=263 max=339 payload_bytes=1
+ab clang++-22 decide round=1 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=268 min=259 max=291 payload_bytes=1
+ab clang++-22 decide round=2 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=271 min=258 max=293 payload_bytes=1
+ab clang++-22 decide round=2 arm=before per=4000 samples=31 steal_ticks=1 other_processes_of_user=0 decide ns_per_message_median=276 min=265 max=313 payload_bytes=1
+ab clang++-22 decide round=3 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=264 max=310 payload_bytes=1
+ab clang++-22 decide round=3 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=267 min=259 max=303 payload_bytes=1
+ab clang++-22 decide round=4 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=266 min=259 max=335 payload_bytes=1
+ab clang++-22 decide round=4 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=282 min=261 max=826 payload_bytes=1
+ab clang++-22 decide round=5 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=279 min=262 max=420 payload_bytes=1
+ab clang++-22 decide round=5 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=258 max=705 payload_bytes=1
+ab clang++-22 decide round=6 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=269 min=259 max=298 payload_bytes=1
+ab clang++-22 decide round=6 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=277 min=263 max=310 payload_bytes=1
+ab clang++-22 decide round=7 arm=before per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=277 min=262 max=376 payload_bytes=1
+ab clang++-22 decide round=7 arm=after per=4000 samples=31 steal_ticks=0 other_processes_of_user=0 decide ns_per_message_median=273 min=262 max=595 payload_bytes=1
+
+## bench.cpp
+
+```cpp
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <expected>
+#include <format>
+#include <iostream>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <variant>
+#include <vector>
+
+#include "konsens/node.hpp"
+#include "konsens/wire.hpp"
+
+namespace {
+
+struct counting_storage {
+    std::uint64_t log_len{};
+    konsens::ballot promise{};
+    std::uint64_t decided_idx{};
+    konsens::ballot accepted_round{};
+    std::uint64_t* payload_bytes;
+
+    template <typename R>
+    void count(const R& entries)
+    {
+        for (const auto& e : entries) {
+            *payload_bytes += e.payload.size();
+        }
+    }
+
+    std::expected<void, std::error_code> write_atomically(std::span<const konsens::storage_op> ops)
+    {
+        for (const auto& op : ops) {
+            if (const auto* a = std::get_if<konsens::append_entries>(&op)) {
+                count(a->entries);
+                log_len += a->entries.size();
+            } else if (const auto* p = std::get_if<konsens::append_on_prefix>(&op)) {
+                count(p->entries);
+                log_len = std::min(log_len, p->from_idx) + p->entries.size();
+            } else if (const auto* s = std::get_if<konsens::set_promise>(&op)) {
+                promise = s->promise;
+            } else if (const auto* d = std::get_if<konsens::set_decided_index>(&op)) {
+                decided_idx = d->decided_idx;
+            } else if (const auto* r = std::get_if<konsens::set_accepted_round>(&op)) {
+                accepted_round = r->accepted_round;
+            }
+        }
+        return {};
+    }
+    std::expected<std::vector<konsens::entry>, std::error_code> get_entries(std::uint64_t from, std::uint64_t to) const
+    {
+        const auto end = std::min(to, log_len);
+        return std::vector<konsens::entry>(from < end ? end - from : 0, konsens::entry{konsens::entry_kind::normal});
+    }
+    std::expected<std::uint64_t, std::error_code> get_log_len() const { return log_len; }
+    std::expected<konsens::ballot, std::error_code> get_promise() const { return promise; }
+    std::expected<std::uint64_t, std::error_code> get_decided_idx() const { return decided_idx; }
+    std::expected<konsens::ballot, std::error_code> get_accepted_round() const { return accepted_round; }
+};
+
+}
+
+#include "echo.hpp"
+
+int main(int argc, char** argv)
+{
+    if (argc != 4) {
+        std::cerr << "usage: bench large|decide <messages per sample> <samples>\n";
+        return 2;
+    }
+    const std::string_view mode = argv[1];
+    const auto per_sample = std::strtoull(argv[2], nullptr, 10);
+    const auto samples = std::strtoull(argv[3], nullptr, 10);
+    constexpr std::size_t entries_per_message = 64;
+    constexpr std::size_t payload_size = 1024;
+    constexpr std::uint64_t election_rounds = 40;
+
+    using node_t = konsens::node<counting_storage, echo>;
+    std::array<std::uint64_t, 3> bytes{};
+    std::vector<node_t> nodes;
+    for (konsens::node_id p = 1; p <= 3; ++p) {
+        std::vector<konsens::node_id> peers;
+        for (konsens::node_id q = 1; q <= 3; ++q) {
+            if (q != p) {
+                peers.push_back(q);
+            }
+        }
+        nodes.push_back(*node_t::with({1, p, peers, 0, 3, 2}, counting_storage{.payload_bytes = &bytes.at(p - 1)},
+                                      echo{}, 0));
+    }
+    const auto deliver = [&nodes] {
+        for (bool more = true; more;) {
+            more = false;
+            for (auto& n : nodes) {
+                for (const auto& m : n.take_outgoing_messages()) {
+                    more = true;
+                    const auto to = std::visit([](const auto& x) { return x.to; }, m);
+                    if (!nodes.at(to - 1).handle(m)) {
+                        std::abort();
+                    }
+                }
+            }
+        }
+    };
+    for (std::uint64_t i = 0; i < election_rounds; ++i) {
+        deliver();
+        for (auto& n : nodes) {
+            if (!n.tick()) {
+                std::abort();
+            }
+        }
+    }
+    deliver();
+    const konsens::node_id leader = nodes.front().get_sequence_paxos().get_promise().pid;
+    const konsens::node_id follower = leader == 1 ? 2 : 1;
+    if (!nodes.at(leader - 1).append(konsens::entry{konsens::entry_kind::normal, {std::byte{1}}})) {
+        std::abort();
+    }
+    konsens::accept_decide first{};
+    for (const auto& m : nodes.at(leader - 1).take_outgoing_messages()) {
+        if (const auto* p = std::get_if<konsens::paxos_message>(&m); p != nullptr && p->to == follower) {
+            if (const auto* a = std::get_if<konsens::accept_decide>(&p->msg)) {
+                first = *a;
+            }
+        }
+    }
+    auto& f = nodes.at(follower - 1);
+    {
+        auto b = konsens::encode(konsens::message{konsens::paxos_message{leader, follower, first}});
+        if (!b || !f.handle(*konsens::decode(std::move(*b)))) {
+            std::abort();
+        }
+    }
+    static_cast<void>(f.take_outgoing_messages());
+    const konsens::entry big{konsens::entry_kind::normal, std::vector<std::byte>(payload_size, std::byte{7})};
+    const std::vector<konsens::entry> large(entries_per_message, big);
+    std::uint64_t counter = first.seq_num.counter;
+    std::vector<std::chrono::nanoseconds> times;
+    for (std::uint64_t s = 0; s < samples; ++s) {
+        std::vector<std::string> wire;
+        wire.reserve(per_sample);
+        for (std::uint64_t i = 0; i < per_sample; ++i) {
+            counter += 1;
+            const konsens::sequence_number seq{first.seq_num.session, counter};
+            const konsens::paxos_msg body =
+                mode == "large" ? konsens::paxos_msg{konsens::accept_decide{first.n, seq, first.decided_idx, large}}
+                                : konsens::paxos_msg{konsens::decide{first.n, seq, first.decided_idx}};
+            auto b = konsens::encode(konsens::message{konsens::paxos_message{leader, follower, body}});
+            if (!b) {
+                std::abort();
+            }
+            wire.push_back(std::move(*b));
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (auto& w : wire) {
+            auto r = konsens::decode(std::move(w));
+            if (!r || !f.handle(*r)) {
+                std::abort();
+            }
+        }
+        times.push_back(std::chrono::steady_clock::now() - start);
+        static_cast<void>(f.take_outgoing_messages());
+    }
+    std::ranges::sort(times);
+    const auto median = times.at(times.size() / 2);
+    std::cout << std::format("{} ns_per_message_median={} min={} max={} payload_bytes={}\n", mode,
+                             median.count() / static_cast<long long>(per_sample),
+                             times.front().count() / static_cast<long long>(per_sample),
+                             times.back().count() / static_cast<long long>(per_sample), bytes.at(follower - 1));
+}
+```
