@@ -160,20 +160,6 @@ std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const
     return crc32c::extend(crc32c::extend(0, to_little_endian(index)), kind_and_payload);
 }
 
-std::optional<std::size_t> field_count_of(const entry_kind kind) noexcept {
-    switch (kind) {
-    case entry_kind::normal:
-    case entry_kind::stop_sign:
-        return 0;
-    case entry_kind::register_client:
-    case entry_kind::client_request:
-        return 2;
-    case entry_kind::expire_session:
-        return 1;
-    }
-    return std::nullopt;
-}
-
 entry_fields fields_of(const entry& e) noexcept {
     switch (e.kind) {
     case entry_kind::register_client:

@@ -18,6 +18,7 @@
 #include <random>
 #include <ranges>
 #include <span>
+#include <string>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
@@ -27,6 +28,7 @@
 
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "konsens/wire.hpp"
 
 namespace {
 
@@ -81,6 +83,7 @@ struct options {
     std::uint64_t duplicate{default_duplicate};
     std::uint64_t restart{default_restart};
     bool calls_reconnected{true};
+    bool cbor{false};
 };
 
 struct flag {
@@ -95,9 +98,10 @@ constexpr std::array flags{
 };
 
 constexpr std::string_view no_reconnected_flag = "--no-reconnected";
+constexpr std::string_view cbor_flag = "--cbor";
 
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
-                                   "[--duplicate P] [--restart R] [--no-reconnected]";
+                                   "[--duplicate P] [--restart R] [--no-reconnected] [--cbor]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
@@ -117,6 +121,11 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
         const std::string_view name = rest.front();
         if (name == no_reconnected_flag) {
             o.calls_reconnected = false;
+            rest = rest.subspan(1);
+            continue;
+        }
+        if (name == cbor_flag) {
+            o.cbor = true;
             rest = rest.subspan(1);
             continue;
         }
@@ -203,7 +212,7 @@ std::size_t channel_of(const konsens::message& m)
 
 struct cluster {
     std::array<std::optional<node_t>, node_count> nodes;
-    std::array<std::deque<konsens::message>, channel_count> channels;
+    std::array<std::deque<std::variant<konsens::message, std::string>>, channel_count> channels;
     std::vector<konsens::client_reply> replies;
     std::mt19937_64 random;
     std::uint64_t loss;
@@ -213,6 +222,8 @@ struct cluster {
     tally counts;
     std::vector<std::pair<konsens::node_id, konsens::node_id>> disconnected;
     bool calls_reconnected;
+    bool cbor;
+    std::array<std::uint64_t, konsens::kind_count> kinds;
 
     node_t& at(const std::size_t i) { return nodes.at(i).value(); }
     const node_t& at(const std::size_t i) const { return nodes.at(i).value(); }
@@ -224,7 +235,7 @@ struct cluster {
 
     std::size_t pick_node() { return std::uniform_int_distribution<std::size_t>{0, node_count - 1}(random); }
 
-    void send(konsens::message m)
+    std::expected<void, std::error_code> send(konsens::message m)
     {
         counts.messages += 1;
         if (happens(loss)) {
@@ -232,17 +243,39 @@ struct cluster {
             if (calls_reconnected) {
                 std::visit([this](const auto& x) { disconnected.emplace_back(x.from, x.to); }, m);
             }
-            return;
+            return {};
         }
         auto& channel = channels.at(channel_of(m));
+        std::variant<konsens::message, std::string> sent{std::move(m)};
+        if (cbor) {
+            auto bytes = konsens::encode(std::get<konsens::message>(sent));
+            if (!bytes) [[unlikely]] {
+                return std::unexpected(bytes.error());
+            }
+            sent = std::move(*bytes);
+        }
         if (happens(duplicate)) {
             counts.duplicates += 1;
-            channel.push_back(m);
+            channel.push_back(sent);
         }
-        channel.push_back(std::move(m));
+        channel.push_back(std::move(sent));
+        return {};
     }
 
-    void collect()
+    std::expected<konsens::message, std::error_code> received(std::variant<konsens::message, std::string> sent)
+    {
+        if (!cbor) {
+            return std::get<konsens::message>(std::move(sent));
+        }
+        auto m = konsens::decode(std::get<std::string>(std::move(sent)));
+        if (!m) [[unlikely]] {
+            return m;
+        }
+        kinds.at(konsens::kind_of(*m)) += 1;
+        return m;
+    }
+
+    std::expected<void, std::error_code> collect()
     {
         for (const auto& [from, to] : std::exchange(disconnected, {})) {
             at(from - 1).reconnected(to);
@@ -250,12 +283,15 @@ struct cluster {
         }
         for (auto& n : nodes) {
             for (auto& m : n.value().take_outgoing_messages()) {
-                send(std::move(m));
+                if (auto r = send(std::move(m)); !r) [[unlikely]] {
+                    return r;
+                }
             }
             for (auto& r : n.value().take_client_replies()) {
                 replies.push_back(std::move(r));
             }
         }
+        return {};
     }
 
     std::expected<void, std::error_code> start(const std::size_t i)
@@ -279,8 +315,7 @@ struct cluster {
         }
         nodes.at(i) = std::move(*n);
         counts.restarts += 1;
-        collect();
-        return {};
+        return collect();
     }
 
     bool recovers() const
@@ -319,7 +354,9 @@ struct cluster {
                 return r;
             }
         }
-        collect();
+        if (auto r = collect(); !r) [[unlikely]] {
+            return r;
+        }
         std::array<std::size_t, channel_count> busy{};
         for (;;) {
             const auto last = std::ranges::copy_if(std::views::iota(std::size_t{0}, channel_count), busy.begin(),
@@ -330,13 +367,18 @@ struct cluster {
                 break;
             }
             auto& channel = channels.at(busy.at(std::uniform_int_distribution<std::size_t>{0, waiting - 1}(random)));
-            auto m = std::move(channel.front());
+            auto m = received(std::move(channel.front()));
             channel.pop_front();
-            const auto to = std::visit([](const auto& x) { return x.to; }, m);
-            if (auto r = at(static_cast<std::size_t>(to - 1)).handle(std::move(m)); !r) [[unlikely]] {
+            if (!m) [[unlikely]] {
+                return std::unexpected(m.error());
+            }
+            const auto to = std::visit([](const auto& x) { return x.to; }, *m);
+            if (auto r = at(static_cast<std::size_t>(to - 1)).handle(std::move(*m)); !r) [[unlikely]] {
                 return r;
             }
-            collect();
+            if (auto r = collect(); !r) [[unlikely]] {
+                return r;
+            }
         }
         count_leader_change();
         return {};
@@ -625,7 +667,7 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
 int run(const options& given)
 {
     stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {},
-                         given.calls_reconnected},
+                         given.calls_reconnected, given.cbor, {}},
              {}, {}, {}, 0, 0, 1, 0, 0};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
@@ -699,6 +741,13 @@ int run(const options& given)
                              given.seed, t.rounds, load_rounds, t.messages, t.lost, t.duplicates, t.restarts,
                              t.leader_changes)
               << '\n';
+    if (given.cbor) {
+        std::cout << "Messages through CBOR by kind:";
+        for (std::size_t k = 0; k < s.net.kinds.size(); ++k) {
+            std::cout << std::format(" {}:{}", k, s.net.kinds.at(k));
+        }
+        std::cout << '\n';
+    }
     return EXIT_SUCCESS;
 }
 

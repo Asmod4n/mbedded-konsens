@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <system_error>
@@ -35,31 +36,43 @@ struct entry {
     friend bool operator==(const entry&, const entry&) = default;
 };
 
-inline void throw_if_entry_has_a_field_of_another_kind(const entry& e)
+inline std::optional<std::size_t> field_count_of(const entry_kind kind) noexcept
+{
+    switch (kind) {
+    case entry_kind::normal:
+    case entry_kind::stop_sign:
+        return 0;
+    case entry_kind::register_client:
+    case entry_kind::client_request:
+        return 2;
+    case entry_kind::expire_session:
+        return 1;
+    }
+    return std::nullopt;
+}
+
+inline bool entry_has_a_field_of_another_kind(const entry& e) noexcept
 {
     const bool has_session = e.session != 0;
     const bool has_request_number = e.request_number != 0;
     const bool has_registration = e.client_id != 0 || e.pid != 0;
-    bool wrong = false;
     switch (e.kind) {
     case entry_kind::normal:
     case entry_kind::stop_sign:
-        wrong = has_session || has_request_number || has_registration;
-        break;
+        return has_session || has_request_number || has_registration;
     case entry_kind::register_client:
-        wrong = has_session || has_request_number;
-        break;
+        return has_session || has_request_number;
     case entry_kind::client_request:
-        wrong = has_registration;
-        break;
+        return has_registration;
     case entry_kind::expire_session:
-        wrong = has_request_number || has_registration;
-        break;
-    default:
-        wrong = true;
-        break;
+        return has_request_number || has_registration;
     }
-    if (wrong) [[unlikely]] {
+    return true;
+}
+
+inline void throw_if_entry_has_a_field_of_another_kind(const entry& e)
+{
+    if (entry_has_a_field_of_another_kind(e)) [[unlikely]] {
         throw std::logic_error("konsens: an entry has an unknown kind or a field that its kind does not carry");
     }
 }

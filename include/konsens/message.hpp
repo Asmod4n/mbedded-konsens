@@ -51,10 +51,12 @@ struct sequence_number {
 struct log_sync {
     std::vector<entry> suffix;
     std::uint64_t sync_idx;
+    friend bool operator==(const log_sync&, const log_sync&) = default;
 };
 
 struct prepare_req {
     ballot n;
+    friend bool operator==(const prepare_req&, const prepare_req&) = default;
 };
 
 struct prepare {
@@ -62,6 +64,7 @@ struct prepare {
     std::uint64_t decided_idx;
     ballot n_accepted;
     std::uint64_t accepted_idx;
+    friend bool operator==(const prepare&, const prepare&) = default;
 };
 
 struct promise {
@@ -70,6 +73,7 @@ struct promise {
     std::uint64_t decided_idx;
     std::uint64_t accepted_idx;
     std::optional<konsens::log_sync> log_sync;
+    friend bool operator==(const promise&, const promise&) = default;
 };
 
 struct accept_sync {
@@ -77,6 +81,7 @@ struct accept_sync {
     sequence_number seq_num;
     std::uint64_t decided_idx;
     konsens::log_sync log_sync;
+    friend bool operator==(const accept_sync&, const accept_sync&) = default;
 };
 
 struct accept_decide {
@@ -84,29 +89,35 @@ struct accept_decide {
     sequence_number seq_num;
     std::uint64_t decided_idx;
     std::vector<entry> entries;
+    friend bool operator==(const accept_decide&, const accept_decide&) = default;
 };
 
 struct accepted {
     ballot n;
     std::uint64_t accepted_idx;
+    friend bool operator==(const accepted&, const accepted&) = default;
 };
 
 struct decide {
     ballot n;
     sequence_number seq_num;
     std::uint64_t decided_idx;
+    friend bool operator==(const decide&, const decide&) = default;
 };
 
 struct not_accepted {
     ballot n;
+    friend bool operator==(const not_accepted&, const not_accepted&) = default;
 };
 
 struct proposal_forward {
     std::vector<entry> entries;
+    friend bool operator==(const proposal_forward&, const proposal_forward&) = default;
 };
 
 struct recovery {
     std::uint64_t nonce;
+    friend bool operator==(const recovery&, const recovery&) = default;
 };
 
 struct recovery_response {
@@ -116,25 +127,30 @@ struct recovery_response {
     ballot n_accepted;
     std::vector<entry> log;
     std::uint64_t decided_idx;
+    friend bool operator==(const recovery_response&, const recovery_response&) = default;
 };
 
 struct read_index_request {
     std::uint64_t read;
+    friend bool operator==(const read_index_request&, const read_index_request&) = default;
 };
 
 struct heartbeat {
     ballot n;
     std::uint64_t id;
+    friend bool operator==(const heartbeat&, const heartbeat&) = default;
 };
 
 struct heartbeat_ack {
     ballot n;
     std::uint64_t id;
+    friend bool operator==(const heartbeat_ack&, const heartbeat_ack&) = default;
 };
 
 struct read_index_reply {
     std::vector<std::uint64_t> reads;
     std::uint64_t read_index;
+    friend bool operator==(const read_index_reply&, const read_index_reply&) = default;
 };
 
 using paxos_msg = std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted,
@@ -145,10 +161,12 @@ struct paxos_message {
     node_id from;
     node_id to;
     paxos_msg msg;
+    friend bool operator==(const paxos_message&, const paxos_message&) = default;
 };
 
 struct heartbeat_request {
     std::uint32_t round;
+    friend bool operator==(const heartbeat_request&, const heartbeat_request&) = default;
 };
 
 struct heartbeat_reply {
@@ -156,6 +174,7 @@ struct heartbeat_reply {
     konsens::ballot ballot;
     konsens::ballot leader;
     bool happy;
+    friend bool operator==(const heartbeat_reply&, const heartbeat_reply&) = default;
 };
 
 using heartbeat_msg = std::variant<heartbeat_request, heartbeat_reply>;
@@ -164,6 +183,7 @@ struct ble_message {
     node_id from;
     node_id to;
     heartbeat_msg msg;
+    friend bool operator==(const ble_message&, const ble_message&) = default;
 };
 
 using message = std::variant<paxos_message, ble_message>;

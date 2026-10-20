@@ -8,6 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LMDB REQUIRED IMPORTED_TARGET lmdb)
 find_package(doctest REQUIRED)
+find_package(Boost REQUIRED CONFIG)
+
+set(CBOR_INSTALL OFF)
+add_subdirectory(deps/mbedded-cbor EXCLUDE_FROM_ALL)
 
 set(KONSENS_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror)
 
@@ -15,6 +19,7 @@ file(GLOB KONSENS_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.cpp)
 add_library(konsens ${KONSENS_SOURCES})
 target_include_directories(konsens PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(konsens PUBLIC PkgConfig::LMDB)
+target_link_libraries(konsens PRIVATE mbedded-cbor Boost::headers)
 target_compile_options(konsens PRIVATE ${KONSENS_WARNINGS})
 
 enable_testing()
@@ -35,4 +40,7 @@ foreach(example_source ${KONSENS_EXAMPLES})
     target_compile_options(${example_name} PRIVATE ${KONSENS_WARNINGS})
 endforeach()
 
+target_link_libraries(test_wire PRIVATE mbedded-cbor)
+
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50)
+add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor)

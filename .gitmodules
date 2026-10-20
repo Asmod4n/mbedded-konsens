@@ -1,0 +1,3 @@
+[submodule "deps/mbedded-cbor"]
+	path = deps/mbedded-cbor
+	url = https://github.com/Asmod4n/mbedded-cbor
