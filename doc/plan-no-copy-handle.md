@@ -65,8 +65,8 @@ No public name is new. The overloads take the names that exist.
 
 ## 4. Measurement
 
-The change is made for the rule, not for speed. A measurement still
-shows that it costs nothing. One file outside the tree: decode and
+The change is made for the rule, not for speed. The measurement
+compares the time of both arms. One file outside the tree: decode and
 `node::handle(const received&)` of an `accept_decide` with 64 entries
 of 1 KiB each, into a storage that does nothing. One binary per arm
 (before, after), each built the same way with g++ 16 and clang 22,
@@ -87,3 +87,43 @@ any change to the wire form.
    `node` calls them; the new test; tests green.
 3. Measurement.
 4. README if a public signature changed; state file.
+
+## 7. Changes after the review
+
+The review (approve with changes, 12 findings) is applied as follows.
+
+- R1: `put_entries` in `persistent_storage.cpp` takes
+  `std::span<const entry>`. Step 1 changes `persistent_storage` too.
+- R2: every test that builds an op from a braced list puts the entries
+  in a named `std::vector` first. No op is built from a temporary.
+- R3: `forward_proposals` keeps its `std::vector<entry>` parameter. The
+  `const&` handler of `proposal_forward` copies once into it, whether
+  the follower buffers or forwards.
+- R4: the six places that build an op refer to named objects:
+  `handle_majority_promises` (the locals `suffix` and `proposals`),
+  `handle_recovery_response` (the stored copy, cleared after the
+  write), `handle_acceptsync` and `handle_acceptdecide` (the body),
+  `accept_entries_leader` and `append` (their local vectors).
+- R5: one function in `node` keeps today's dispatch: `serve_clients()`
+  after a Paxos message, and a BLE message dropped while
+  `recovering()` holds.
+- R6: step 4 is dropped. `ballot_leader_election::handle(const
+  ble_message&)` stays. `node` builds the `ble_message` from the small
+  body, as today.
+- R7: the constraint is written inline in the form of `node.hpp:126`.
+  No trait is made.
+- R8: the test compares `span.data()` in `write_atomically` with
+  `entries.data()` of the decoded `accept_decide` in `cbor::ref`. It
+  brings the follower to (follower, accept) with the expected sequence
+  number first. The recording storage wraps `memory_storage`.
+- R9, R10: the bench encodes one message per iteration with a rising
+  sequence number, outside the timed part. The storage sums the payload
+  sizes. Two cases: 64 entries of 1 KiB, and one `decide`. Columns for
+  g++ 15, g++ 16 and clang 22, Release. Each arm names its commit. The
+  run length comes from the state file. One cpu stays free, the
+  priority is raised and recorded, no root, no pinning. Section 4 states
+  no expected result.
+- R11: `counter_stress` output is compared per seed before and after
+  the change, in each mode.
+- R12: the README states that the span of an op is valid only during
+  `write_atomically`.
