@@ -97,3 +97,49 @@ over the wire, CoAP itself. No speed figure: the plan measures nothing.
 2. `--cbor` in `counter_stress`; the 300 seeds.
 3. README: one section on the wire form.
 4. State file in Claude-state.
+
+## 7. Changes after the review
+
+The review `doc/review-plan-wire-cbor.md` (approve with changes) holds
+18 findings. Each is applied as its fix says, with these choices:
+
+- F1, F13: `decode(std::string bytes)` takes the bytes by value, moves
+  them into one shared owner, splits the two items with
+  `cbor::item_size`, and decodes each item with the owner and a view.
+- F2: `decode` copies the body once more out of `cbor::ref`. The copy
+  is provisional (question to the owner).
+- F3: the test of a wrong body uses a body that lacks a member of the
+  kind in the header, and expects `key_not_found`. Kinds with the same
+  keys (`heartbeat` and `heartbeat_ack`, `prepare_req` and
+  `not_accepted`) are named in the test as a known limit of the naive
+  form.
+- F4: `field_count_of` becomes one public function in `storage.hpp`.
+  `persistent_storage.cpp` and `decode` both call it for each entry.
+- F5: each struct in `message.hpp` gets a defaulted `operator==`.
+- F6, F7, F9: distinct values per member; both values of each `bool`;
+  each optional empty and set; all five entry kinds; all 256 values of
+  `method` and of `kind`. Three messages are checked against bytes
+  written by hand from RFC 8949 and RFC 8746.
+- F8: RFC 8949, RFC 8742, RFC 8746 and RFC 7252 go into `refs/` in the
+  commit of `wire.cpp`.
+- F10: the checks of konsens give values of a new enum `wire_errc` in
+  the form of `storage_errc`, one value for each check (provisional
+  names; question to the owner). Errors of mbedded-cbor pass through.
+  Each error test checks the exact value.
+- F11, F12: the header is the struct `header` (RFC 7252 section 3) with
+  `method`, `kind`, `from`, `to`. `kind` is one index over the
+  alternatives of `paxos_msg` followed by those of `heartbeat_msg`. The
+  method POST is a named constant. A `static_assert` holds both
+  variants under 256 alternatives together.
+- F14: Tumbleweed package `libboost_headers-devel`.
+- F15: the code stands in `src/wire.cpp`; mbedded-cbor is linked
+  PRIVATE, so its compile definitions do not reach the users of
+  konsens.
+- F16: the builds are g++ 16 and clang 22 (section 1 shows clang 22
+  compiles `cbor::structs`). The host build directories go.
+- F17: `--cbor` takes no value and stands in the usage text. With it,
+  the network of `counter_stress` holds bytes and counts each kind.
+  For each seed of 1 to 300, the output with `--cbor` equals the output
+  without it, apart from the counts of kinds. A ctest entry runs it.
+- F18: BLE does not check `from` and `to`. This goes on the list of
+  open work, not into this plan.
