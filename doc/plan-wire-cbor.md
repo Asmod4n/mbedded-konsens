@@ -62,7 +62,8 @@ block (owner, 2026-10-20 06:20) come with Packed.
 - `node` does not change. The provisional API is the two free functions
   (the card on the API is not answered yet).
 - Build: mbedded-cbor as a git submodule `deps/mbedded-cbor` at
-  105ab12, through `add_subdirectory` with `CBOR_INSTALL` off. Boost.PFR
+  a4c5624 (owner, 2026-10-20: the state he publishes; from 105ab12 only
+  `schema.hpp` and `validity.hpp` changed), through `add_subdirectory` with `CBOR_INSTALL` off. Boost.PFR
   from the distribution package (`libboost-dev`, Tumbleweed
   `boost-devel`).
 - The host build with g++ 13 stops. The builds are g++ 16 and clang 22
