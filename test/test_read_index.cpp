@@ -116,7 +116,7 @@ TEST_CASE("a read at a leader in accept starts a round at the accepted index") {
 
 // ReadStart, Raft 6.4.1: a follower asks the leader of its promise for the
 // read index. A node that knows no leader cannot start the read, and the
-// caller tries again (provisional error retry, plan section 7).
+// caller tries again (error retry, plan section 7).
 TEST_CASE("a read at a follower goes to the leader of its promise") {
     auto sp = make(1);
     CHECK(failed_with(sp.start_read(4), konsens::client_errc::retry));

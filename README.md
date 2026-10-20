@@ -145,7 +145,6 @@ read index to library v0.
 ### Error values
 
 Each call returns `std::expected`. A reply can also hold an error.
-These error values are provisional. The owner decides them later.
 
 | Error value | Case |
 |---|---|
