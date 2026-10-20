@@ -19,6 +19,7 @@
 #include "konsens/sequence_paxos.hpp"
 #include "konsens/state_machine.hpp"
 #include "konsens/storage.hpp"
+#include "konsens/wire.hpp"
 
 namespace konsens {
 
@@ -115,6 +116,20 @@ public:
         }
         ble_.handle(std::get<ble_message>(m));
         return {};
+    }
+
+    result handle(const received& r)
+    {
+        return std::visit(
+            [this, &r](const auto& body) -> result {
+                using T = std::remove_cvref_t<decltype(*body)>;
+                if constexpr (requires { paxos_msg{std::in_place_type<T>, *body}; }) {
+                    return handle(message{paxos_message{r.from, r.to, paxos_msg{std::in_place_type<T>, *body}}});
+                } else {
+                    return handle(message{ble_message{r.from, r.to, heartbeat_msg{std::in_place_type<T>, *body}}});
+                }
+            },
+            r.msg);
     }
 
     result append(entry e) { return seq_paxos_.append(std::move(e)); }

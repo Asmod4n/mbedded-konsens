@@ -262,17 +262,19 @@ struct cluster {
         return {};
     }
 
-    std::expected<konsens::message, std::error_code> received(std::variant<konsens::message, std::string> sent)
+    std::expected<void, std::error_code> deliver(std::variant<konsens::message, std::string> sent)
     {
         if (!cbor) {
-            return std::get<konsens::message>(std::move(sent));
+            auto& m = std::get<konsens::message>(sent);
+            const auto to = std::visit([](const auto& x) { return x.to; }, m);
+            return at(static_cast<std::size_t>(to - 1)).handle(std::move(m));
         }
-        auto m = konsens::decode(std::get<std::string>(std::move(sent)));
-        if (!m) [[unlikely]] {
-            return m;
+        const auto r = konsens::decode(std::get<std::string>(std::move(sent)));
+        if (!r) [[unlikely]] {
+            return std::unexpected(r.error());
         }
-        kinds.at(konsens::kind_of(*m)) += 1;
-        return m;
+        kinds.at(konsens::kind_of(*r)) += 1;
+        return at(static_cast<std::size_t>(r->to - 1)).handle(*r);
     }
 
     std::expected<void, std::error_code> collect()
@@ -367,13 +369,9 @@ struct cluster {
                 break;
             }
             auto& channel = channels.at(busy.at(std::uniform_int_distribution<std::size_t>{0, waiting - 1}(random)));
-            auto m = received(std::move(channel.front()));
+            auto sent = std::move(channel.front());
             channel.pop_front();
-            if (!m) [[unlikely]] {
-                return std::unexpected(m.error());
-            }
-            const auto to = std::visit([](const auto& x) { return x.to; }, *m);
-            if (auto r = at(static_cast<std::size_t>(to - 1)).handle(std::move(*m)); !r) [[unlikely]] {
+            if (auto r = deliver(std::move(sent)); !r) [[unlikely]] {
                 return r;
             }
             if (auto r = collect(); !r) [[unlikely]] {

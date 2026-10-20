@@ -82,30 +82,26 @@ std::error_code check_entries_of(const proposal_forward& p) noexcept { return ch
 std::error_code check_entries_of(const recovery_response& r) noexcept { return check_entries(r.log); }
 
 template <std::size_t I>
-std::expected<message, std::error_code> decode_body(const std::shared_ptr<const std::string>& owner,
+std::expected<received, std::error_code> decode_body(const std::shared_ptr<const std::string>& owner,
                                                     const std::string_view body, const header& h)
 {
     using body_type = body_of_kind<I>;
-    const auto decoded = cbor::structs<body_type>::decode(owner, body);
+    auto decoded = cbor::structs<body_type>::decode(owner, body);
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error());
     }
     if (const auto fault = check_entries_of(**decoded); fault) [[unlikely]] {
         return std::unexpected(fault);
     }
-    if constexpr (I < paxos_kind_count) {
-        return paxos_message{h.from, h.to, paxos_msg{std::in_place_index<I>, **decoded}};
-    } else {
-        return ble_message{h.from, h.to, heartbeat_msg{std::in_place_index<I - paxos_kind_count>, **decoded}};
-    }
+    return received{h.from, h.to, received_msg{std::in_place_index<I>, std::move(*decoded)}};
 }
 
 template <std::size_t... I>
-std::expected<message, std::error_code> decode_body_of_kind(const std::shared_ptr<const std::string>& owner,
+std::expected<received, std::error_code> decode_body_of_kind(const std::shared_ptr<const std::string>& owner,
                                                             const std::string_view body, const header& h,
                                                             std::index_sequence<I...>)
 {
-    std::expected<message, std::error_code> result = std::unexpected(make_error_code(wire_errc::unknown_kind));
+    std::expected<received, std::error_code> result = std::unexpected(make_error_code(wire_errc::unknown_kind));
     static_cast<void>(((h.kind == I && (result = decode_body<I>(owner, body, h), true)) || ...));
     return result;
 }
@@ -157,7 +153,9 @@ std::expected<std::string, std::error_code> encode(const message& m)
         m);
 }
 
-std::expected<message, std::error_code> decode(std::string bytes)
+std::uint8_t kind_of(const received& r) noexcept { return static_cast<std::uint8_t>(r.msg.index()); }
+
+std::expected<received, std::error_code> decode(std::string bytes)
 {
     const auto owner = std::make_shared<const std::string>(std::move(bytes));
     const std::string_view all = *owner;

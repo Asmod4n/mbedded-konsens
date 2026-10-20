@@ -9,6 +9,8 @@
 #include <type_traits>
 #include <variant>
 
+#include <cbor/ref.hpp>
+
 #include "konsens/message.hpp"
 
 namespace konsens {
@@ -31,10 +33,27 @@ inline constexpr std::size_t kind_count = paxos_kind_count + std::variant_size_v
 
 static_assert(kind_count <= std::size_t{std::numeric_limits<std::uint8_t>::max()} + 1);
 
+template <typename Paxos, typename Heartbeat>
+struct received_msg_of;
+
+template <typename... Paxos, typename... Heartbeat>
+struct received_msg_of<std::variant<Paxos...>, std::variant<Heartbeat...>> {
+    using type = std::variant<cbor::ref<Paxos>..., cbor::ref<Heartbeat>...>;
+};
+
+using received_msg = received_msg_of<paxos_msg, heartbeat_msg>::type;
+
+struct received {
+    node_id from;
+    node_id to;
+    received_msg msg;
+};
+
 std::uint8_t kind_of(const message& m) noexcept;
+std::uint8_t kind_of(const received& r) noexcept;
 
 [[nodiscard]] std::expected<std::string, std::error_code> encode(const message& m);
-[[nodiscard]] std::expected<message, std::error_code> decode(std::string bytes);
+[[nodiscard]] std::expected<received, std::error_code> decode(std::string bytes);
 
 }
 

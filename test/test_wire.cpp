@@ -4,13 +4,16 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <cbor/error.hpp>
@@ -26,8 +29,14 @@
 // post (RFC 7252 section 12.1.1), method_not_allowed (RFC 7252 section
 // 5.9.2.6), extraneous_data (RFC 8949 section 2).
 //
-// Provisional form: decode copies each body once more out of cbor::ref,
-// because cbor::ref gives its value only as a const reference.
+// Provisional names: received and received_msg, the result of decode, and
+// received_msg_of, which builds the variant of cbor::ref from the two
+// variants of message.hpp.
+//
+// Provisional form: decode gives each body in the cbor::ref that
+// mbedded-cbor made, with no copy. node::handle(const received&) copies the
+// body into a message, because sequence_paxos::handle takes a paxos_message
+// by value and sequence_paxos.hpp does not change in this work.
 
 namespace {
 
@@ -206,6 +215,31 @@ std::vector<message> every_kind()
     };
 }
 
+// The test copies a received message into a message, because only a message
+// compares with ==.
+message message_of(const konsens::received& r)
+{
+    return std::visit(
+        [&r](const auto& body) -> message {
+            using T = std::remove_cvref_t<decltype(*body)>;
+            if constexpr (requires { konsens::paxos_msg{std::in_place_type<T>, *body}; }) {
+                return konsens::paxos_message{r.from, r.to, konsens::paxos_msg{std::in_place_type<T>, *body}};
+            } else {
+                return konsens::ble_message{r.from, r.to, konsens::heartbeat_msg{std::in_place_type<T>, *body}};
+            }
+        },
+        r.msg);
+}
+
+std::expected<message, std::error_code> decoded_message(const std::string& bytes)
+{
+    const auto r = konsens::decode(bytes);
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    return message_of(*r);
+}
+
 std::error_code error_of(const std::string& bytes)
 {
     const auto decoded = konsens::decode(bytes);
@@ -229,8 +263,9 @@ TEST_CASE("decode of encode gives the message, and a second encode gives the sam
         REQUIRE(bytes.has_value());
         const auto decoded = konsens::decode(*bytes);
         REQUIRE(decoded.has_value());
-        CHECK(*decoded == m);
-        CHECK(konsens::encode(*decoded) == bytes);
+        CHECK(konsens::kind_of(*decoded) == konsens::kind_of(m));
+        CHECK(message_of(*decoded) == m);
+        CHECK(konsens::encode(message_of(*decoded)) == bytes);
     }
     CHECK(kinds.size() == konsens::kind_count);
 }
@@ -251,7 +286,7 @@ TEST_CASE("an accept_decide with a payload has the bytes of RFC 8949 and RFC 874
         head(map, 2) + text("counter") + integer(21) + text("session") + integer(20) + text("decided_idx") + integer(22);
     CHECK(konsens::kind_of(m) == accept_decide_kind);
     CHECK(konsens::encode(m) == expected);
-    CHECK(konsens::decode(expected) == m);
+    CHECK(decoded_message(expected) == m);
 }
 
 // A std::vector<std::uint64_t> is an RFC 8746 typed array with tag 71, not a
@@ -268,7 +303,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
                           text("read_index") + integer(30);
     CHECK(konsens::kind_of(m) == read_index_reply_kind);
     CHECK(konsens::encode(m) == expected);
-    CHECK(konsens::decode(expected) == m);
+    CHECK(decoded_message(expected) == m);
 }
 
 // A heartbeat_reply carries two bools and two ballots; this test holds the
@@ -281,7 +316,7 @@ TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
                           text("leader") + ballot_bytes(ballot_from(30));
     CHECK(konsens::encode(m) == expected);
-    CHECK(konsens::decode(expected) == m);
+    CHECK(decoded_message(expected) == m);
 }
 
 // RFC 8949 section 3: an input that ends inside an item is not well-formed.
@@ -319,7 +354,7 @@ TEST_CASE("each method other than POST gives method_not_allowed")
         CAPTURE(method);
         const auto bytes = header_bytes(integer(method), integer(recovery_kind), paxos_from, paxos_to) + body;
         if (method == konsens::post) {
-            CHECK(konsens::decode(bytes) == paxos(konsens::recovery{10}));
+            CHECK(decoded_message(bytes) == paxos(konsens::recovery{10}));
         } else {
             CHECK(error_of(bytes) == wire_errc::method_not_allowed);
         }
@@ -378,15 +413,15 @@ TEST_CASE("a body of another kind decodes only when it has the keys of the kind 
           cbor::error::key_not_found);
 
     const auto heartbeat_body = head(map, 2) + text("n") + ballot_bytes(ballot_from(10)) + text("id") + integer(20);
-    CHECK(konsens::decode(header_bytes(heartbeat_kind, paxos_from, paxos_to) + heartbeat_body) ==
+    CHECK(decoded_message(header_bytes(heartbeat_kind, paxos_from, paxos_to) + heartbeat_body) ==
           paxos(konsens::heartbeat{ballot_from(10), 20}));
-    CHECK(konsens::decode(header_bytes(heartbeat_ack_kind, paxos_from, paxos_to) + heartbeat_body) ==
+    CHECK(decoded_message(header_bytes(heartbeat_ack_kind, paxos_from, paxos_to) + heartbeat_body) ==
           paxos(konsens::heartbeat_ack{ballot_from(10), 20}));
 
     const auto n_body = head(map, 1) + text("n") + ballot_bytes(ballot_from(10));
-    CHECK(konsens::decode(header_bytes(prepare_req_kind, paxos_from, paxos_to) + n_body) ==
+    CHECK(decoded_message(header_bytes(prepare_req_kind, paxos_from, paxos_to) + n_body) ==
           paxos(konsens::prepare_req{ballot_from(10)}));
-    CHECK(konsens::decode(header_bytes(not_accepted_kind, paxos_from, paxos_to) + n_body) ==
+    CHECK(decoded_message(header_bytes(not_accepted_kind, paxos_from, paxos_to) + n_body) ==
           paxos(konsens::not_accepted{ballot_from(10)}));
 }
 
@@ -402,7 +437,7 @@ TEST_CASE("an entry kind that is not a value of entry_kind gives unknown_entry_k
         const auto bytes = header_bytes(proposal_forward_kind, paxos_from, paxos_to) +
                            proposal_forward_bytes(entry_bytes(kind, "", 0, 0, 0, 0));
         if (kind < entry_kind_count) {
-            const auto decoded = konsens::decode(bytes);
+            const auto decoded = decoded_message(bytes);
             const auto expected = paxos(konsens::proposal_forward{{entry{static_cast<entry_kind>(kind)}}});
             CHECK(decoded == expected);
         } else {

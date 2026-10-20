@@ -20,6 +20,7 @@ add_library(konsens ${KONSENS_SOURCES})
 target_include_directories(konsens PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(konsens PUBLIC PkgConfig::LMDB)
 target_link_libraries(konsens PRIVATE mbedded-cbor Boost::headers)
+target_include_directories(konsens PUBLIC $<TARGET_PROPERTY:mbedded-cbor,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_options(konsens PRIVATE ${KONSENS_WARNINGS})
 
 enable_testing()
