@@ -45,3 +45,12 @@ target_link_libraries(test_wire PRIVATE mbedded-cbor)
 
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50)
 add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor)
+
+option(KONSENS_BENCH "Build konsens_bench and its A/A copy konsens_bench_aa" OFF)
+if(KONSENS_BENCH)
+    foreach(bench_name konsens_bench konsens_bench_aa)
+        add_executable(${bench_name} ${PROJECT_SOURCE_DIR}/bench/konsens_bench.cpp)
+        target_link_libraries(${bench_name} PRIVATE konsens)
+        target_compile_options(${bench_name} PRIVATE ${KONSENS_WARNINGS})
+    endforeach()
+endif()
