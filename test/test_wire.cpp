@@ -46,7 +46,8 @@
 // and other_crc, get_hardware_fault, keep_recovery_response,
 // select_recovery_source, find_recovery_primary, find_hardware_fault,
 // complete_recovery, handle_get_state, handle_new_state and state_request_;
-// ballot_above_promise of node.hpp.
+// in counter_stress the flag --power-loss, lose_power, power_losses and
+// check_decided_logs; ballot_above_promise of node.hpp.
 //
 // Provisional form: decode gives each body in the cbor::ref that
 // mbedded-cbor made, with no copy. node::handle(const received&) copies the

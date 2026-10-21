@@ -74,6 +74,7 @@ constexpr std::uint64_t default_seed = 1;
 constexpr std::uint64_t default_loss = 10;
 constexpr std::uint64_t default_duplicate = 10;
 constexpr std::uint64_t default_restart = 5;
+constexpr std::uint64_t default_power_loss = 2;
 
 struct options {
     std::uint64_t clients{default_clients};
@@ -82,6 +83,7 @@ struct options {
     std::uint64_t loss{default_loss};
     std::uint64_t duplicate{default_duplicate};
     std::uint64_t restart{default_restart};
+    std::uint64_t power_loss{default_power_loss};
     bool calls_reconnected{true};
     bool cbor{false};
 };
@@ -95,13 +97,14 @@ constexpr std::array flags{
     flag{"--clients", &options::clients},   flag{"--increments", &options::increments},
     flag{"--seed", &options::seed},         flag{"--loss", &options::loss},
     flag{"--duplicate", &options::duplicate}, flag{"--restart", &options::restart},
+    flag{"--power-loss", &options::power_loss},
 };
 
 constexpr std::string_view no_reconnected_flag = "--no-reconnected";
 constexpr std::string_view cbor_flag = "--cbor";
 
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
-                                   "[--duplicate P] [--restart R] [--no-reconnected] [--cbor]";
+                                   "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
@@ -143,7 +146,7 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
         o.*(it->member) = *value;
         rest = rest.subspan(words_of_a_flag);
     }
-    if (o.loss > permille || o.duplicate > permille || o.restart > permille) [[unlikely]] {
+    if (o.loss > permille || o.duplicate > permille || o.restart > permille || o.power_loss > permille) [[unlikely]] {
         return std::unexpected("A chance is above 1000 permille");
     }
     if (o.clients == 0 || o.increments == 0) [[unlikely]] {
@@ -158,7 +161,8 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
 bool takes_defaults_apart_from_the_seed(const options& o)
 {
     return o.clients == default_clients && o.increments == default_increments && o.loss == default_loss &&
-           o.duplicate == default_duplicate && o.restart == default_restart && o.calls_reconnected;
+           o.duplicate == default_duplicate && o.restart == default_restart && o.power_loss == default_power_loss &&
+           o.calls_reconnected;
 }
 
 std::uint64_t value_of(const std::span<const std::byte> bytes)
@@ -200,6 +204,7 @@ struct tally {
     std::uint64_t lost;
     std::uint64_t duplicates;
     std::uint64_t restarts;
+    std::uint64_t power_losses;
     std::uint64_t leader_changes;
 };
 
@@ -320,6 +325,17 @@ struct cluster {
         return collect();
     }
 
+    std::expected<void, std::error_code> lose_power()
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            if (auto r = restart(i); !r) [[unlikely]] {
+                return r;
+            }
+        }
+        counts.power_losses += 1;
+        return {};
+    }
+
     bool recovers() const
     {
         return std::ranges::any_of(nodes,
@@ -438,6 +454,36 @@ struct stress {
     std::uint64_t next_call;
     std::uint64_t round;
     std::uint64_t last_progress_round;
+    std::vector<konsens::entry> decided_history;
+    std::array<std::uint64_t, node_count> checked;
+    std::array<std::uint64_t, node_count> last_decided;
+
+    outcome check_decided_logs()
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            const auto& sp = net.at(i).get_sequence_paxos();
+            const auto decided = sp.get_decided_idx();
+            if (decided < last_decided.at(i) || std::min(decided, sp.get_accepted_idx()) < checked.at(i))
+                [[unlikely]] {
+                return std::unexpected(failure{"S7: the decided index of a node fell", {}});
+            }
+            last_decided.at(i) = decided;
+            const auto suffix = sp.read_decided_suffix(checked.at(i));
+            if (!suffix) [[unlikely]] {
+                return std::unexpected(failure{"read the decided log", suffix.error()});
+            }
+            for (const auto& e : *suffix) {
+                const auto k = checked.at(i);
+                if (k == decided_history.size()) {
+                    decided_history.push_back(e);
+                } else if (decided_history.at(k) != e) [[unlikely]] {
+                    return std::unexpected(failure{"S1: two nodes decided different entries at one index", {}});
+                }
+                checked.at(i) = k + 1;
+            }
+        }
+        return {};
+    }
 
     outcome send_due_calls()
     {
@@ -548,6 +594,9 @@ struct stress {
             return std::unexpected(failure{"run a round", r.error()});
         }
         round += 1;
+        if (auto c = check_decided_logs(); !c) [[unlikely]] {
+            return c;
+        }
         return take_replies();
     }
 
@@ -565,6 +614,10 @@ struct stress {
             if (!net.recovers() && net.happens(given.restart)) {
                 if (auto r = net.restart(net.pick_node()); !r) [[unlikely]] {
                     return std::unexpected(failure{"restart a node", r.error()});
+                }
+            } else if (!net.recovers() && net.happens(given.power_loss)) {
+                if (auto r = net.lose_power(); !r) [[unlikely]] {
+                    return std::unexpected(failure{"restart every node", r.error()});
                 }
             }
             if (auto s = send_due_calls(); !s) [[unlikely]] {
@@ -613,6 +666,9 @@ struct stress {
                 return std::unexpected(failure{"run a round", ran.error()});
             }
             round += 1;
+            if (auto c = check_decided_logs(); !c) [[unlikely]] {
+                return std::unexpected(c.error());
+            }
             std::optional<std::uint64_t> value;
             for (const auto& reply : std::exchange(net.replies, {})) {
                 if (calls.contains(reply.client_id)) {
@@ -666,7 +722,7 @@ int run(const options& given)
 {
     stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {},
                          given.calls_reconnected, given.cbor, {}},
-             {}, {}, {}, 0, 0, 1, 0, 0};
+             {}, {}, {}, 0, 0, 1, 0, 0, {}, {}, {}};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
             return fail(given.seed, {"start the nodes", r.error()});
@@ -735,9 +791,9 @@ int run(const options& given)
 
     const auto& t = s.net.counts;
     std::cout << std::format("Seed {}: {} rounds ({} with faults), {} messages, {} lost, {} duplicates, {} restarts, "
-                             "{} changes of leader.",
+                             "{} restarts of every node, {} changes of leader.",
                              given.seed, t.rounds, load_rounds, t.messages, t.lost, t.duplicates, t.restarts,
-                             t.leader_changes)
+                             t.power_losses, t.leader_changes)
               << '\n';
     if (given.cbor) {
         std::cout << "Messages through CBOR by kind:";
