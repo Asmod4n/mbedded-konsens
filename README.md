@@ -45,9 +45,16 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   program, and the program gives it the messages that arrive.
   `konsens::encode` and `konsens::decode` turn them into bytes.
 - **Errors as values.** Each call returns `std::expected`. A wrong use
-  stops with `std::logic_error`.
-- **Runs on your thread.** Each call runs on the thread of the caller
-  and returns when its commit is done.
+  stops with `std::logic_error`. A write to the disk that fails throws
+  `konsens::write_error`, and an LMDB commit that fails throws
+  `konsens::sync_error`. The messages and the replies of that commit
+  stay in the node.
+- **Group commit.** Each call collects its writes and its messages, and
+  returns a `konsens::transaction`. `commit()` takes the transaction,
+  writes all collected writes in one synchronous LMDB commit, and only
+  then gives the messages and the replies to the program.
+- **Runs on your thread.** Each call runs on the thread of the caller.
+  `commit()` returns when its LMDB commit is done.
 
 ## How a write works
 
@@ -135,27 +142,41 @@ The library is the CMake target `konsens`.
 ### Run a node
 
 The program owns the clock and the network. On each tick of its clock,
-it calls `tick()`. It sends each outgoing message, and it gives each
-message that arrives to `handle_incoming()`.
+it calls `tick()`. It gives the messages that arrived to
+`handle_incoming()` as one batch. It adds the two transactions with
+`+=`, commits them, and sends each outgoing message.
 
 ```cpp
-node.tick();
+auto t = node.tick().value();
+
+// arrived: the bytes of each message from a peer since the last commit
+std::vector<konsens::received> batch;
+for (auto& bytes : arrived)
+    batch.push_back(konsens::decode(std::move(bytes)).value());
+t += node.handle_incoming(std::move(batch)).value();
+
+node.commit(t).value();
 
 for (const auto& m : node.take_outgoing_messages())
     send(konsens::encode(m).value());
-
-// bytes: one message from a peer
-node.handle_incoming(konsens::decode(std::move(bytes)).value());
 ```
+
+Each call collects its writes and its messages and returns a
+transaction. `commit()` writes the collected writes in one LMDB commit.
+`take_outgoing_messages()` and `take_client_replies()` give what a
+commit released. The compiler refuses a transaction that the program
+drops. A commit of a transaction that is committed, or of a transaction
+of another node, throws `std::logic_error`. At most
+`konsens::max_batch_size` messages wait for one commit.
 
 The nonce is a new random number for each start of the process.
 
 ### Write through a session
 
 ```cpp
-node.register_client(client_id);
+node.commit(node.register_client(client_id).value()).value();
 // the reply of the registration carries the session
-node.client_request(client_id, session, 1, payload);
+node.commit(node.client_request(client_id, session, 1, payload).value()).value();
 
 for (const auto& r : node.take_client_replies())
     use(r.client_id, r.response);
@@ -166,7 +187,7 @@ Any node takes a call. A follower forwards it to the leader.
 ### Read
 
 ```cpp
-node.client_query(client_id, payload);
+node.commit(node.client_query(client_id, payload).value()).value();
 ```
 
 The reply comes through `take_client_replies()` when the applied state

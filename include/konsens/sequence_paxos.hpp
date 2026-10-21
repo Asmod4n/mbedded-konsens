@@ -19,9 +19,15 @@
 
 #include "konsens/client.hpp"
 #include "konsens/message.hpp"
+#include "konsens/state_machine.hpp"
 #include "konsens/storage.hpp"
 
 namespace konsens {
+
+template <storage S, state_machine M>
+class node;
+
+static_assert(std::is_nothrow_move_constructible_v<paxos_message>);
 
 enum class paxos_errc { hardware_fault = 1 };
 
@@ -273,10 +279,36 @@ public:
         return sp;
     }
 
-    result handle(const paxos_message& m)
+    result handle(paxos_message m)
     {
-        return std::visit([this, &m](const auto& msg) -> result { return this->handle(m.from, m.to, msg); }, m.msg);
+        incoming_.push_back(std::move(m));
+        const auto& kept = incoming_.back();
+        return std::visit([this, &kept](const auto& msg) -> result { return this->handle(kept.from, kept.to, msg); },
+                          kept.msg);
     }
+
+    [[nodiscard]] result commit()
+    {
+        throw_if_a_write_did_not_finish();
+        if (error_) [[unlikely]] {
+            drop_incoming_and_outgoing();
+            return std::unexpected(*error_);
+        }
+        const bool accepts = state_ == std::pair{role::leader, phase::accept};
+        if (accepts) {
+            accept_entries_leader(buffered_proposals_);
+        }
+        write_waiting_ops_or_throw();
+        if (accepts) {
+            buffered_proposals_.clear();
+        }
+        incoming_.clear();
+        return {};
+    }
+
+private:
+    template <storage, state_machine>
+    friend class node;
 
     template <typename T>
         requires requires(const T& msg) { paxos_msg{std::in_place_type<T>, msg}; }
@@ -342,6 +374,7 @@ public:
         }
     }
 
+public:
     result handle_leader(ballot n)
     {
         if (error_) [[unlikely]] {
@@ -354,10 +387,7 @@ public:
             state_.first = role::follower;
             return {};
         }
-        const std::array<storage_op, 1> ops{set_promise{n}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.push_back(set_promise{n});
         promise_ = n;
         leader_state_ = leader_state::with(n, nodes_);
         leader_state_.set_promise({accepted_round_, accepted_idx_, decided_idx_, pid_}, std::nullopt, true);
@@ -376,15 +406,12 @@ public:
         if (auto r = refuse_if_recovering(); !r) [[unlikely]] {
             return r;
         }
-        if (state_ == std::pair{role::leader, phase::prepare}) {
+        if (state_ == std::pair{role::leader, phase::prepare} || state_ == std::pair{role::leader, phase::accept}) {
             buffered_proposals_.push_back(std::move(e));
             return {};
         }
         std::vector<entry> entries;
         entries.push_back(std::move(e));
-        if (state_ == std::pair{role::leader, phase::accept}) {
-            return accept_entries_leader(entries);
-        }
         forward_proposals(std::move(entries));
         return {};
     }
@@ -435,7 +462,11 @@ public:
         return {};
     }
 
-    std::vector<paxos_message> take_outgoing_messages() { return std::exchange(outgoing_, {}); }
+    std::vector<paxos_message> take_outgoing_messages()
+    {
+        throw_if_ops_wait();
+        return std::exchange(outgoing_, {});
+    }
 
     result start_read(const std::uint64_t read)
     {
@@ -472,6 +503,7 @@ public:
 
     std::expected<std::vector<entry>, std::error_code> read_decided_suffix(std::uint64_t from_idx) const
     {
+        throw_if_ops_wait();
         const auto decided = std::min(decided_idx_, accepted_idx_);
         return internal_storage_.get_entries(std::min(from_idx, decided), decided);
     }
@@ -483,7 +515,25 @@ public:
     std::uint64_t get_accepted_idx() const { return accepted_idx_; }
     const leader_state& get_leader_state() const { return leader_state_; }
     const konsens::read_round& get_read_round() const { return read_round_; }
-    const S& get_internal_storage() const { return internal_storage_; }
+    const S& get_internal_storage() const
+    {
+        throw_if_ops_wait();
+        return internal_storage_;
+    }
+
+    std::expected<bool, std::error_code> log_or_buffered_proposals_contain(const std::uint64_t from_idx,
+                                                                         const entry& e)
+    {
+        if (std::ranges::contains(buffered_proposals_, e)) {
+            return true;
+        }
+        const auto& s = get_storage_after_writing_waiting_ops();
+        const auto log = s.get_entries(std::min(from_idx, accepted_idx_), accepted_idx_);
+        if (!log) [[unlikely]] {
+            return std::unexpected(log.error());
+        }
+        return std::ranges::contains(*log, e);
+    }
     node_id get_pid() const { return pid_; }
     bool votes() const { return !error_; }
     bool recovering() const { return recovering_; }
@@ -513,7 +563,48 @@ private:
     std::unexpected<std::error_code> stop_voting(std::error_code e)
     {
         error_ = e;
+        waiting_ops_.clear();
         return std::unexpected(e);
+    }
+
+    void throw_if_ops_wait() const
+    {
+        if (!waiting_ops_.empty()) [[unlikely]] {
+            throw std::logic_error("konsens: a storage read or a take of messages while storage ops wait for a commit");
+        }
+    }
+
+    void throw_if_a_write_did_not_finish() const
+    {
+        if (write_unfinished_) [[unlikely]] {
+            throw std::logic_error("konsens: a write of the storage threw, and the node takes no further commit");
+        }
+    }
+
+    void write_waiting_ops_or_throw()
+    {
+        throw_if_a_write_did_not_finish();
+        if (waiting_ops_.empty()) {
+            return;
+        }
+        write_unfinished_ = true;
+        if (auto w = internal_storage_.write_atomically(waiting_ops_); !w) [[unlikely]] {
+            throw write_error(w.error(), "konsens: the storage failed to write the waiting ops");
+        }
+        write_unfinished_ = false;
+        waiting_ops_.clear();
+    }
+
+    const S& get_storage_after_writing_waiting_ops()
+    {
+        write_waiting_ops_or_throw();
+        return internal_storage_;
+    }
+
+    void drop_incoming_and_outgoing()
+    {
+        outgoing_.clear();
+        incoming_.clear();
     }
 
     std::unexpected<std::error_code> stop_voting(const konsens::hardware_fault& fault)
@@ -522,9 +613,10 @@ private:
         return stop_voting(make_error_code(paxos_errc::hardware_fault));
     }
 
-    std::expected<konsens::log_sync, std::error_code> create_log_sync(std::uint64_t common_prefix_idx) const
+    std::expected<konsens::log_sync, std::error_code> create_log_sync(std::uint64_t common_prefix_idx)
     {
-        auto suffix = internal_storage_.get_entries(std::min(common_prefix_idx, accepted_idx_), accepted_idx_);
+        const auto& s = get_storage_after_writing_waiting_ops();
+        auto suffix = s.get_entries(std::min(common_prefix_idx, accepted_idx_), accepted_idx_);
         if (!suffix) [[unlikely]] {
             return std::unexpected(suffix.error());
         }
@@ -591,16 +683,13 @@ private:
         }
     }
 
-    result accept_entries_leader(std::span<const entry> entries)
+    void accept_entries_leader(std::span<const entry> entries)
     {
         if (entries.empty()) {
-            return {};
+            return;
         }
         const auto count = entries.size();
-        const std::array<storage_op, 1> ops{append_entries{entries}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.push_back(append_entries{entries});
         accepted_idx_ += count;
         leader_state_.set_accepted_idx(pid_, accepted_idx_);
         for (const auto f : leader_state_.get_promised_followers()) {
@@ -608,7 +697,6 @@ private:
                                  accept_decide{leader_state_.n_leader, leader_state_.next_seq_num(f),
                                                decided_idx_, {entries.begin(), entries.end()}}});
         }
-        return {};
     }
 
     void handle_preparereq(const prepare_req& prepreq, node_id from)
@@ -638,10 +726,7 @@ private:
             }
             sync = std::move(*s);
         }
-        const std::array<storage_op, 1> ops{set_promise{prep.n}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.push_back(set_promise{prep.n});
         promise_ = prep.n;
         state_ = {role::follower, phase::prepare};
         current_seq_num_ = {};
@@ -681,13 +766,10 @@ private:
         auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
         auto proposals = std::exchange(buffered_proposals_, {});
         const auto accepted_idx = std::min(sync_idx, accepted_idx_) + suffix.size() + proposals.size();
-        const std::array<storage_op, 4> ops{append_on_prefix{sync_idx, suffix},
-                                            append_entries{proposals},
-                                            set_accepted_round{leader_state_.n_leader},
-                                            set_decided_index{decided_idx}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.insert(waiting_ops_.end(), {append_on_prefix{sync_idx, suffix}, append_entries{proposals},
+                                                 set_accepted_round{leader_state_.n_leader},
+                                                 set_decided_index{decided_idx}});
+        write_waiting_ops_or_throw();
         accepted_round_ = leader_state_.n_leader;
         decided_idx_ = decided_idx;
         accepted_idx_ = accepted_idx;
@@ -732,11 +814,8 @@ private:
         }
         const auto decided_idx = std::max(decided_idx_, accsync.decided_idx);
         const auto accepted_idx = std::min(sync_idx, accepted_idx_) + accsync.log_sync.suffix.size();
-        const std::array<storage_op, 3> ops{append_on_prefix{sync_idx, accsync.log_sync.suffix},
-                                            set_accepted_round{accsync.n}, set_decided_index{decided_idx}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.insert(waiting_ops_.end(), {append_on_prefix{sync_idx, accsync.log_sync.suffix},
+                                                 set_accepted_round{accsync.n}, set_decided_index{decided_idx}});
         accepted_round_ = accsync.n;
         decided_idx_ = decided_idx;
         accepted_idx_ = accepted_idx;
@@ -761,11 +840,8 @@ private:
         const auto accepted_idx = accepted_idx_ + count;
         const auto u = update_decided(decided_idx_, accepted_idx, acc_dec.decided_idx);
         if (count > 0 || u.decided_idx != decided_idx_) {
-            const std::array<storage_op, 2> ops{append_entries{acc_dec.entries},
-                                                set_decided_index{u.decided_idx}};
-            if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-                return stop_voting(w.error());
-            }
+            waiting_ops_.insert(waiting_ops_.end(),
+                                {append_entries{acc_dec.entries}, set_decided_index{u.decided_idx}});
         }
         accepted_idx_ = accepted_idx;
         decided_idx_ = u.decided_idx;
@@ -783,10 +859,7 @@ private:
         }
         const auto u = update_decided(decided_idx_, accepted_idx_, dec.decided_idx);
         if (u.decided_idx != decided_idx_) {
-            const std::array<storage_op, 1> ops{set_decided_index{u.decided_idx}};
-            if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-                return stop_voting(w.error());
-            }
+            waiting_ops_.push_back(set_decided_index{u.decided_idx});
         }
         decided_idx_ = u.decided_idx;
         if (u.flushed) {
@@ -804,10 +877,7 @@ private:
         if (acc.accepted_idx <= decided_idx_ || !leader_state_.is_chosen(acc.accepted_idx)) {
             return {};
         }
-        const std::array<storage_op, 1> ops{set_decided_index{acc.accepted_idx}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.push_back(set_decided_index{acc.accepted_idx});
         decided_idx_ = acc.accepted_idx;
         for (const auto f : leader_state_.get_promised_followers()) {
             send_decide(f, decided_idx_);
@@ -817,14 +887,15 @@ private:
 
     result handle_recovery(const recovery& rec, const node_id from)
     {
-        const auto last_crc = internal_storage_.get_last_entry_crc();
+        const auto& s = get_storage_after_writing_waiting_ops();
+        const auto last_crc = s.get_last_entry_crc();
         if (!last_crc) [[unlikely]] {
             return stop_voting(last_crc.error());
         }
         const bool primary = !recovering_ && state_ == std::pair{role::leader, phase::accept};
         std::vector<entry> log;
         if (primary) {
-            auto l = internal_storage_.get_entries(0, accepted_idx_);
+            auto l = s.get_entries(0, accepted_idx_);
             if (!l) [[unlikely]] {
                 return stop_voting(l.error());
             }
@@ -861,7 +932,8 @@ private:
             std::ranges::any_of(recovery_responses_, [](const auto& r) { return r.second.primary; })) {
             return {};
         }
-        const auto last_crc = internal_storage_.get_last_entry_crc();
+        const auto& s = get_storage_after_writing_waiting_ops();
+        const auto last_crc = s.get_last_entry_crc();
         if (!last_crc) [[unlikely]] {
             return stop_voting(last_crc.error());
         }
@@ -911,13 +983,14 @@ private:
 
     result handle_get_state(const konsens::get_state& req, const node_id from)
     {
-        const auto last_crc = internal_storage_.get_last_entry_crc();
+        const auto& s = get_storage_after_writing_waiting_ops();
+        const auto last_crc = s.get_last_entry_crc();
         if (!last_crc) [[unlikely]] {
             return stop_voting(last_crc.error());
         }
         std::vector<entry> entries;
         if (accepted_round_ == req.n_accepted && accepted_idx_ == req.accepted_idx) {
-            auto e = internal_storage_.get_entries(std::min(req.from_idx, accepted_idx_), accepted_idx_);
+            auto e = s.get_entries(std::min(req.from_idx, accepted_idx_), accepted_idx_);
             if (!e) [[unlikely]] {
                 return stop_voting(e.error());
             }
@@ -955,7 +1028,8 @@ private:
         if (!ns.entries.empty()) {
             crc = compute_entry_crc(ns.accepted_idx - 1, ns.entries.back());
         } else if (ns.accepted_idx > 0) {
-            const auto own = internal_storage_.get_entries(ns.accepted_idx - 1, ns.accepted_idx);
+            const auto& s = get_storage_after_writing_waiting_ops();
+            const auto own = s.get_entries(ns.accepted_idx - 1, ns.accepted_idx);
             if (!own) [[unlikely]] {
                 return stop_voting(own.error());
             }
@@ -991,11 +1065,9 @@ private:
     {
         const auto decided_idx = std::max(decided_idx_, source_decided_idx);
         const auto accepted_idx = std::min(from_idx, accepted_idx_) + entries.size();
-        const std::array<storage_op, 4> ops{append_on_prefix{from_idx, entries}, set_accepted_round{n_accepted},
-                                            set_decided_index{decided_idx}, set_promise{pr}};
-        if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
-            return stop_voting(w.error());
-        }
+        waiting_ops_.insert(waiting_ops_.end(), {append_on_prefix{from_idx, entries}, set_accepted_round{n_accepted},
+                                                 set_decided_index{decided_idx}, set_promise{pr}});
+        write_waiting_ops_or_throw();
         promise_ = pr;
         accepted_round_ = n_accepted;
         decided_idx_ = decided_idx;
@@ -1026,7 +1098,8 @@ private:
             return {};
         }
         if (state_ == std::pair{role::leader, phase::accept}) {
-            return accept_entries_leader(entries);
+            accept_entries_leader(entries);
+            return {};
         }
         forward_proposals({entries.begin(), entries.end()});
         return {};
@@ -1119,8 +1192,11 @@ private:
     } applied_sync_{};
     std::optional<konsens::promise> cached_promise_message_;
     std::vector<entry> buffered_proposals_;
+    std::vector<storage_op> waiting_ops_;
+    std::vector<paxos_message> incoming_;
     std::vector<paxos_message> outgoing_;
     std::optional<std::error_code> error_;
+    bool write_unfinished_{};
     bool recovering_{};
     std::uint64_t nonce_{};
     std::vector<std::pair<node_id, recovery_response>> recovery_responses_;

@@ -26,6 +26,18 @@ using konsens::role;
 using sp_t = konsens::sequence_paxos<memory_storage>;
 
 constexpr std::uint32_t config_id = 1;
+
+// sequence_paxos writes its storage and releases its messages only at a
+// commit. A node that stopped voting gives its error from the commit and
+// drops its messages, and the tests of such a node check that nothing
+// leaves, so these helpers do not read the result of the commit.
+template <typename S>
+std::vector<paxos_message> committed_messages_of(konsens::sequence_paxos<S>& sp)
+{
+    static_cast<void>(sp.commit());
+    return sp.take_outgoing_messages();
+}
+
 constexpr node_id three = 3;
 constexpr node_id five = 5;
 
@@ -85,7 +97,7 @@ sp_t leader_in_accept(const node_id count = three, const node_id promised = 1)
         REQUIRE(sp.handle({p, count, empty_promise(ballot_of(1, count))}));
     }
     REQUIRE(sp.get_state() == std::pair{role::leader, phase::accept});
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     return sp;
 }
 
@@ -106,7 +118,7 @@ TEST_CASE("a read at a leader in accept starts a round at the accepted index") {
     CHECK(rd.n == ballot_of(1, 3));
     CHECK(rd.id == 1);
     CHECK(rd.acks == std::vector<node_id>{3});
-    const auto hbs = messages_of<konsens::heartbeat>(sp.take_outgoing_messages());
+    const auto hbs = messages_of<konsens::heartbeat>(committed_messages_of(sp));
     REQUIRE(hbs.size() == 2);
     for (const auto& [to, hb] : hbs) {
         CHECK(hb.n == ballot_of(1, 3));
@@ -120,11 +132,11 @@ TEST_CASE("a read at a leader in accept starts a round at the accepted index") {
 TEST_CASE("a read at a follower goes to the leader of its promise") {
     auto sp = make(1);
     CHECK(failed_with(sp.start_read(4), konsens::client_errc::retry));
-    CHECK(sp.take_outgoing_messages().empty());
+    CHECK(committed_messages_of(sp).empty());
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     REQUIRE(sp.start_read(4));
-    const auto out = sp.take_outgoing_messages();
+    const auto out = committed_messages_of(sp);
     REQUIRE(out.size() == 1);
     CHECK(out[0].to == 3);
     CHECK(std::get<konsens::read_index_request>(out[0].msg).read == 4);
@@ -138,20 +150,20 @@ TEST_CASE("handle_read_index_request: only a leader takes the read") {
     auto leader = leader_in_accept();
     REQUIRE(leader.handle({1, 3, konsens::read_index_request{9}}));
     CHECK(leader.get_read_round().reads.size() == 1);
-    CHECK(messages_of<konsens::heartbeat>(leader.take_outgoing_messages()).size() == 2);
+    CHECK(messages_of<konsens::heartbeat>(committed_messages_of(leader)).size() == 2);
 
     auto follower = make(1);
     REQUIRE(follower.handle({2, 1, konsens::read_index_request{9}}));
-    CHECK(follower.take_outgoing_messages().empty());
+    CHECK(committed_messages_of(follower).empty());
     REQUIRE(follower.handle_leader(ballot_of(1, 1)));
     REQUIRE(follower.handle({2, 1, empty_promise(ballot_of(1, 1))}));
     REQUIRE(follower.start_read(5));
-    follower.take_outgoing_messages();
+    committed_messages_of(follower);
     const auto& rd = follower.get_read_round();
     REQUIRE(rd.reads.size() == 1);
     CHECK(rd.reads[0].node == 1);
     REQUIRE(follower.handle({2, 1, konsens::heartbeat_ack{rd.n, rd.id}}));
-    CHECK(messages_of<konsens::read_index_reply>(follower.take_outgoing_messages()).empty());
+    CHECK(messages_of<konsens::read_index_reply>(committed_messages_of(follower)).empty());
 }
 
 // HandleHeartbeat, Raft 6.4: a node acknowledges only the heartbeat of the
@@ -160,11 +172,11 @@ TEST_CASE("handle_read_index_request: only a leader takes the read") {
 TEST_CASE("handle_heartbeat answers only the ballot of the promise") {
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 0, ballot{}, 0}}));
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1, konsens::heartbeat{ballot_of(1, 2), 4}}));
-    CHECK(sp.take_outgoing_messages().empty());
+    CHECK(committed_messages_of(sp).empty());
     REQUIRE(sp.handle({3, 1, konsens::heartbeat{ballot_of(2, 3), 4}}));
-    const auto acks = messages_of<konsens::heartbeat_ack>(sp.take_outgoing_messages());
+    const auto acks = messages_of<konsens::heartbeat_ack>(committed_messages_of(sp));
     REQUIRE(acks.size() == 1);
     CHECK(acks[0].first == 3);
     CHECK(acks[0].second.n == ballot_of(2, 3));
@@ -183,7 +195,7 @@ TEST_CASE("handle_heartbeat_ack: a majority indexes the reads of the round") {
     const auto first = sp.get_read_round();
     REQUIRE(sp.handle({2, 3, konsens::heartbeat_ack{first.n, first.id}}));
     REQUIRE(sp.take_indexed_reads().size() == 1);
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     const auto rd = sp.get_read_round();
     REQUIRE(rd.reads.size() == 2);
     REQUIRE(sp.handle({2, 3, konsens::heartbeat_ack{rd.n, rd.id}}));
@@ -192,7 +204,7 @@ TEST_CASE("handle_heartbeat_ack: a majority indexes the reads of the round") {
     CHECK(indexed[0].read == 7);
     CHECK(indexed[0].read_index == 1);
     CHECK(indexed[0].ballot == ballot_of(1, 3));
-    const auto replies = messages_of<konsens::read_index_reply>(sp.take_outgoing_messages());
+    const auto replies = messages_of<konsens::read_index_reply>(committed_messages_of(sp));
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].first == 1);
     CHECK(replies[0].second.reads == std::vector<std::uint64_t>{8});
@@ -260,15 +272,15 @@ TEST_CASE("handle_heartbeat_ack: a node that lost the leadership completes no ro
 TEST_CASE("a read during a round waits for the next round") {
     auto sp = leader_in_accept();
     REQUIRE(sp.start_read(1));
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     REQUIRE(sp.start_read(2));
-    CHECK(messages_of<konsens::heartbeat>(sp.take_outgoing_messages()).empty());
+    CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).empty());
     const auto first = sp.get_read_round();
     REQUIRE(sp.handle({2, 3, konsens::heartbeat_ack{first.n, first.id}}));
     auto indexed = sp.take_indexed_reads();
     REQUIRE(indexed.size() == 1);
     CHECK(indexed[0].read == 1);
-    CHECK(messages_of<konsens::heartbeat>(sp.take_outgoing_messages()).size() == 2);
+    CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).size() == 2);
     const auto second = sp.get_read_round();
     CHECK(second.id == first.id + 1);
     REQUIRE(sp.handle({1, 3, konsens::heartbeat_ack{second.n, second.id}}));
@@ -285,15 +297,15 @@ TEST_CASE("a read during a round waits for the next round") {
 TEST_CASE("a leader in prepare starts its read round only in accept") {
     auto sp = make(3);
     REQUIRE(sp.handle_leader(ballot_of(2, 3)));
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     REQUIRE(sp.start_read(1));
-    CHECK(messages_of<konsens::heartbeat>(sp.take_outgoing_messages()).empty());
+    CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).empty());
     REQUIRE(sp.handle({1, 3, konsens::heartbeat_ack{ballot_of(2, 3), 1}}));
     CHECK(sp.take_indexed_reads().empty());
     REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(2, 3), ballot_of(1, 1), 1, 1,
                                               konsens::log_sync{{make_entry(1)}, 0}}}));
     REQUIRE(sp.get_state() == std::pair{role::leader, phase::accept});
-    CHECK(messages_of<konsens::heartbeat>(sp.take_outgoing_messages()).size() == 2);
+    CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).size() == 2);
     const auto rd = sp.get_read_round();
     CHECK(rd.read_index == 1);
     REQUIRE(sp.handle({1, 3, konsens::heartbeat_ack{rd.n, rd.id}}));
@@ -325,13 +337,13 @@ TEST_CASE("handle_read_index_reply indexes each read with the promise") {
 TEST_CASE("resend_heartbeats repeats the round to the peers without an acknowledgement") {
     auto sp = leader_in_accept(five, 2);
     sp.resend_heartbeats();
-    CHECK(sp.take_outgoing_messages().empty());
+    CHECK(committed_messages_of(sp).empty());
     REQUIRE(sp.start_read(1));
-    sp.take_outgoing_messages();
+    committed_messages_of(sp);
     const auto rd = sp.get_read_round();
     REQUIRE(sp.handle({1, 5, konsens::heartbeat_ack{rd.n, rd.id}}));
     sp.resend_heartbeats();
-    const auto hbs = messages_of<konsens::heartbeat>(sp.take_outgoing_messages());
+    const auto hbs = messages_of<konsens::heartbeat>(committed_messages_of(sp));
     REQUIRE(hbs.size() == 3);
     for (const auto& [to, hb] : hbs) {
         CHECK(to != 1);

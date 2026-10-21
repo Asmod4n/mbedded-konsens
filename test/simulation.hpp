@@ -7,6 +7,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -14,6 +15,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -40,6 +42,11 @@
 // (plan v0.1 F16). The check adds E1 and R1 in the form of the model. The
 // draws of the random generator stay the same with clients::none, so seed
 // 57 of the reorder test runs the same steps as before.
+// With batches::random, a delivery gives the receiver a batch of 1 to
+// largest_batch messages, and the node commits after the batch. A second
+// generator from the same seed draws the sizes, so the steps of the first
+// generator stay the same. A batch takes the messages to one node in the
+// order of the network, so each channel stays FIFO.
 namespace simulation {
 
 
@@ -64,10 +71,13 @@ constexpr std::size_t query_choices = 5;
 constexpr std::size_t expire_choice = query_choices;
 constexpr std::uint64_t session_stride = std::uint64_t{1} << 32;
 constexpr std::size_t value_size = 8;
+constexpr std::size_t largest_batch = 8;
+constexpr std::uint64_t batch_seed_offset = 0x9e3779b97f4a7c15;
 
 enum class delivery { fifo, reorder };
 enum class rollback { none, one };
 enum class clients { none, two };
+enum class batches { single, random };
 
 // The echo machine holds no state, so a read cannot show which requests it
 // saw. This machine keeps the concatenation of the applied payloads, and a
@@ -364,6 +374,8 @@ struct world {
     bool detailed = false;
     std::uint64_t next_value = 1;
     std::uint64_t nonce = 0;
+    batches sizes = batches::single;
+    std::mt19937_64 batch_random;
 
     template <typename F>
     void note(F make)
@@ -388,6 +400,13 @@ struct world {
     std::size_t proposed_checked = 0;
     std::array<std::pair<std::size_t, std::uint64_t>, node_count> node_checked{};
 
+    void commit(std::size_t i, const std::expected<konsens::transaction, std::error_code>& t)
+    {
+        REQUIRE(t);
+        REQUIRE(nodes[i].commit(*t));
+        collect(i);
+    }
+
     void collect(std::size_t i)
     {
         for (auto& m : nodes[i].take_outgoing_messages()) {
@@ -401,13 +420,28 @@ struct world {
 
     void deliver(std::size_t k)
     {
-        auto m = std::move(network[k]);
+        const auto to = to_of(network[k]);
+        std::vector<message> batch;
+        batch.push_back(std::move(network[k]));
         network.erase(std::next(network.begin(), static_cast<std::ptrdiff_t>(k)));
-        note([&] { return std::string("deliver " + std::to_string(from_of(m)) + "->" + std::to_string(to_of(m)) + " " +
-                        detail_of(m)); });
-        const auto i = to_of(m) - 1;
-        REQUIRE(nodes[i].handle_incoming(std::move(m)));
-        collect(i);
+        if (sizes == batches::random) {
+            const auto size = std::uniform_int_distribution<std::size_t>(1, largest_batch)(batch_random);
+            for (auto it = network.begin(); it != network.end() && batch.size() < size;) {
+                if (to_of(*it) != to) {
+                    ++it;
+                    continue;
+                }
+                batch.push_back(std::move(*it));
+                it = network.erase(it);
+            }
+        }
+        for (const auto& m : batch) {
+            note([&] { return std::string("deliver " + std::to_string(from_of(m)) + "->" + std::to_string(to_of(m)) +
+                                          " " + detail_of(m)); });
+        }
+        note([&] { return std::string("commit " + std::to_string(to) + " after " + std::to_string(batch.size())); });
+        const auto i = to - 1;
+        commit(i, nodes[i].handle_incoming(std::move(batch)));
     }
 
     std::size_t first_of_channel(std::size_t k) const
@@ -425,8 +459,7 @@ struct world {
     void tick(std::size_t i)
     {
         note([&] { return std::string("tick " + std::to_string(i + 1)); });
-        REQUIRE(nodes[i].tick());
-        collect(i);
+        commit(i, nodes[i].tick());
     }
 
     void append(std::size_t i)
@@ -438,6 +471,7 @@ struct world {
         REQUIRE((r || r.error() == konsens::client_errc::recovering));
         if (r) {
             proposed.insert(fields_of(e));
+            REQUIRE(nodes[i].commit(*r));
         }
         collect(i);
     }
@@ -476,6 +510,25 @@ struct world {
         last_decided[i] = nodes[i].get_sequence_paxos().get_decided_idx();
         collect(i);
         rolled_back = true;
+    }
+
+    // A marker that is appended while the leader changes can be lost before
+    // it is decided: Paxos keeps only decided entries. Seed 1224 with
+    // batches lost one so: node 3 reached a majority with the Promise of
+    // node 2, and the Promise of node 1 later in the same batch held the
+    // marker. So the markers wait until one leader in Accept holds the
+    // promise of every node.
+    bool settled() const
+    {
+        const auto leader = std::ranges::find_if(nodes, [](const node_t& n) {
+            return n.get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept};
+        });
+        if (leader == nodes.end()) {
+            return false;
+        }
+        const auto promise = leader->get_sequence_paxos().get_promise();
+        return std::ranges::all_of(nodes,
+                                   [promise](const node_t& n) { return n.get_sequence_paxos().get_promise() == promise; });
     }
 
     ballot highest_promise() const
@@ -579,6 +632,7 @@ struct world {
         const auto r = send();
         if (r) {
             calls.emplace(id, std::move(k));
+            REQUIRE(nodes[i].commit(*r));
         } else {
             const auto e = r.error();
             if (e != konsens::client_errc::recovering && e != konsens::client_errc::retry &&
@@ -791,12 +845,14 @@ struct outcome {
 
 template <typename Cluster>
 outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = rollback::none,
-            clients people = clients::none)
+            clients people = clients::none, batches sizes = batches::random)
 {
     std::mt19937_64 rng(seed);
     const auto pick = [&rng](std::size_t n) { return std::uniform_int_distribution<std::size_t>(0, n - 1)(rng); };
     world<Cluster> w;
     w.detailed = detailed;
+    w.sizes = sizes;
+    w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
         w.nodes.push_back(
             *node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}), concatenation{}, w.nonce));
@@ -854,7 +910,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     }
     std::vector<std::vector<std::byte>> markers;
     for (int r = 0; r < quiet_rounds; ++r) {
-        if (markers.empty() && r >= marker_round && !w.recovers()) {
+        if (markers.empty() && r >= marker_round && !w.recovers() && w.settled()) {
             for (std::size_t i = 0; i < node_count; ++i) {
                 markers.push_back(entry_of(w.next_value).payload);
                 w.append(i);
@@ -883,8 +939,8 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
             return failed(std::move(*v));
         }
     }
-    bool majority_decided = true;
-    bool all_decided = true;
+    bool majority_decided = !markers.empty();
+    bool all_decided = !markers.empty();
     for (const auto& m : markers) {
         std::size_t holders = 0;
         for (const auto& n : w.nodes) {

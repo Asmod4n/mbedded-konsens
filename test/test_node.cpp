@@ -18,6 +18,7 @@
 
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "batches.hpp"
 #include "echo.hpp"
 
 namespace {
@@ -45,21 +46,12 @@ konsens::entry make_entry(std::uint8_t v) { return {konsens::entry_kind::normal,
 
 void step(std::vector<node_t>& nodes, const std::array<bool, 3>& alive)
 {
-    for (bool more = true; more;) {
-        more = false;
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            for (auto& m : nodes[i].take_outgoing_messages()) {
-                more = true;
-                const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                if (alive[i] && alive[to - 1]) {
-                    REQUIRE(nodes[to - 1].handle_incoming(std::move(m)));
-                }
-            }
-        }
-    }
+    batches::deliver(nodes, [&alive](const konsens::message& m) -> std::size_t {
+        return alive.at(batches::from_of(m) - 1) && alive.at(batches::to_of(m) - 1) ? 1 : 0;
+    });
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         if (alive[i]) {
-            REQUIRE(nodes[i].tick());
+            batches::tick_and_commit(nodes[i]);
         }
     }
 }
@@ -81,7 +73,7 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    REQUIRE(nodes[0].append(make_entry(1)));
+    batches::commit(nodes[0], nodes[0].append(make_entry(1)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
@@ -95,7 +87,7 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
     for (int i = 0; i < rounds; ++i) {
         step(nodes, without_leader);
     }
-    REQUIRE(nodes[0].append(make_entry(2)));
+    batches::commit(nodes[0], nodes[0].append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, without_leader);
     }
@@ -144,7 +136,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    REQUIRE(nodes[0].append(make_entry(1)));
+    batches::commit(nodes[0], nodes[0].append(make_entry(1)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
@@ -154,9 +146,11 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
     nodes[2] = *node_t::with(config_of(3), kept, echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
     static_cast<void>(nodes[2].take_outgoing_messages());
-    REQUIRE(nodes[2].handle_incoming(konsens::ble_message{1, 3, konsens::heartbeat_request{1}}));
+    std::vector<konsens::message> heartbeat;
+    heartbeat.emplace_back(konsens::ble_message{1, 3, konsens::heartbeat_request{1}});
+    batches::commit(nodes[2], nodes[2].handle_incoming(std::move(heartbeat)));
     CHECK(nodes[2].take_outgoing_messages().empty());
-    const auto refused = [](const node_t::result& r) { return !r && r.error() == konsens::client_errc::recovering; };
+    const auto refused = [](const auto& r) { return !r && r.error() == konsens::client_errc::recovering; };
     CHECK(refused(nodes[2].append(make_entry(2))));
     CHECK(refused(nodes[2].register_client(1)));
     CHECK(refused(nodes[2].client_request(1, 1, 1, {std::byte{1}})));
@@ -166,7 +160,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
         step(nodes, all);
     }
     CHECK(!nodes[2].get_sequence_paxos().recovering());
-    REQUIRE(nodes[2].append(make_entry(2)));
+    batches::commit(nodes[2], nodes[2].append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
@@ -184,21 +178,14 @@ template <typename Lost>
 bool deliver_losing(std::vector<node_t>& nodes, const Lost lost)
 {
     bool any = false;
-    for (bool more = true; more;) {
-        more = false;
-        for (auto& n : nodes) {
-            for (auto& m : n.take_outgoing_messages()) {
-                more = true;
-                const auto* p = std::get_if<konsens::paxos_message>(&m);
-                if (p != nullptr && lost(*p)) {
-                    any = true;
-                    continue;
-                }
-                const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                REQUIRE(nodes[to - 1].handle_incoming(std::move(m)));
-            }
+    batches::deliver(nodes, [&any, &lost](const konsens::message& m) -> std::size_t {
+        const auto* p = std::get_if<konsens::paxos_message>(&m);
+        if (p != nullptr && lost(*p)) {
+            any = true;
+            return 0;
         }
-    }
+        return 1;
+    });
     return any;
 }
 
@@ -210,22 +197,15 @@ void deliver_all(std::vector<node_t>& nodes)
 std::vector<konsens::paxos_message> step_recording(std::vector<node_t>& nodes, const node_id watched)
 {
     std::vector<konsens::paxos_message> seen;
-    for (bool more = true; more;) {
-        more = false;
-        for (auto& n : nodes) {
-            for (auto& m : n.take_outgoing_messages()) {
-                more = true;
-                if (const auto* p = std::get_if<konsens::paxos_message>(&m);
-                    p != nullptr && (p->to == watched || p->from == watched)) {
-                    seen.push_back(*p);
-                }
-                const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                REQUIRE(nodes[to - 1].handle_incoming(std::move(m)));
-            }
+    batches::deliver(nodes, [&seen, watched](const konsens::message& m) -> std::size_t {
+        if (const auto* p = std::get_if<konsens::paxos_message>(&m);
+            p != nullptr && (p->to == watched || p->from == watched)) {
+            seen.push_back(*p);
         }
-    }
+        return 1;
+    });
     for (auto& n : nodes) {
-        REQUIRE(n.tick());
+        batches::tick_and_commit(n);
     }
     return seen;
 }
@@ -254,7 +234,7 @@ std::vector<node_t> lose_the_last_decide()
 {
     auto nodes = elect_three();
     deliver_all(nodes);
-    REQUIRE(nodes[elected - 1].append(make_entry(1)));
+    batches::commit(nodes[elected - 1], nodes[elected - 1].append(make_entry(1)));
     const bool lost = deliver_losing(nodes, [](const konsens::paxos_message& p) {
         return p.to == behind && std::holds_alternative<konsens::decide>(p.msg);
     });
@@ -291,7 +271,7 @@ void check_resynced(const std::vector<konsens::paxos_message>& seen)
 // catches up through PrepareReq and AcceptSync.
 TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
     auto nodes = lose_the_last_decide();
-    nodes[behind - 1].reconnected(elected);
+    REQUIRE(nodes[behind - 1].commit(nodes[behind - 1].reconnected(elected)));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -322,10 +302,10 @@ TEST_CASE("a follower that lost the last Decide catches up after a resend timeou
 // decided index, so the AcceptSync must carry the entry.
 TEST_CASE("a follower that lost an AcceptDecide with an entry catches up after a resend timeout") {
     auto nodes = elect_three();
-    REQUIRE(nodes[elected - 1].append(make_entry(1)));
+    batches::commit(nodes[elected - 1], nodes[elected - 1].append(make_entry(1)));
     deliver_all(nodes);
     REQUIRE(nodes[behind - 1].get_sequence_paxos().get_decided_idx() == 1);
-    REQUIRE(nodes[elected - 1].append(make_entry(2)));
+    batches::commit(nodes[elected - 1], nodes[elected - 1].append(make_entry(2)));
     const bool lost = deliver_losing(nodes, [](const konsens::paxos_message& p) {
         return p.to == behind &&
                (std::holds_alternative<konsens::accept_decide>(p.msg) || std::holds_alternative<konsens::decide>(p.msg));
@@ -380,29 +360,18 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy") {
     for (node_id p = 1; p <= 3; ++p) {
         nodes.push_back(*recording_node::with(config_of(p), recording_storage{{}, &appended.at(p - 1)}, echo{}, 0));
     }
-    const auto deliver = [&nodes] {
-        for (bool more = true; more;) {
-            more = false;
-            for (auto& n : nodes) {
-                for (const auto& m : n.take_outgoing_messages()) {
-                    more = true;
-                    const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                    REQUIRE(nodes.at(to - 1).handle_incoming(m));
-                }
-            }
-        }
-    };
+    const auto deliver = [&nodes] { batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; }); };
     for (int i = 0; i < rounds; ++i) {
         deliver();
         for (auto& n : nodes) {
-            REQUIRE(n.tick());
+            batches::tick_and_commit(n);
         }
     }
     deliver();
     const node_id leader = nodes.front().get_sequence_paxos().get_promise().pid;
     REQUIRE(leader != 0);
     const node_id follower = leader == 1 ? 2 : 1;
-    REQUIRE(nodes.at(leader - 1).append(make_entry(7)));
+    batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(7)));
     bool checked = false;
     for (const auto& m : nodes.at(leader - 1).take_outgoing_messages()) {
         const auto to = std::visit([](const auto& x) { return x.to; }, m);
@@ -411,17 +380,20 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy") {
         }
         auto bytes = konsens::encode(m);
         REQUIRE(bytes);
-        const auto r = konsens::decode(std::move(*bytes));
+        auto r = konsens::decode(std::move(*bytes));
         REQUIRE(r);
         const auto* acc = std::get_if<cbor::ref<konsens::accept_decide>>(&r->msg);
         if (acc == nullptr) {
             continue;
         }
+        const auto* first = (*acc)->entries.data();
         auto& seen = appended.at(follower - 1);
         seen.clear();
-        REQUIRE(nodes.at(follower - 1).handle_incoming(*r));
+        std::vector<konsens::received> batch;
+        batch.push_back(std::move(*r));
+        batches::commit(nodes.at(follower - 1), nodes.at(follower - 1).handle_incoming(std::move(batch)));
         REQUIRE(seen.size() == 1);
-        CHECK(seen.front() == (*acc)->entries.data());
+        CHECK(seen.front() == first);
         checked = true;
     }
     CHECK(checked);

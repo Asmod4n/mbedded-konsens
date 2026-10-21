@@ -35,6 +35,8 @@ struct memory_cluster {
 // entries are decided by a majority. One node may stay behind: a node that
 // is in Accept while the leader has reset its promise ignores each Prepare
 // of the same ballot (follower.rs:13-51), as in seed 18336 of a longer run.
+// Each delivery is a batch of random size, and the node commits after it,
+// so a message leaves only after the commit of the batch that made it.
 TEST_CASE("simulation with FIFO channels keeps the safety properties") {
     simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count);
 }
@@ -77,9 +79,11 @@ TEST_CASE("simulation with two clients and one rollback keeps the safety propert
 // requirement and that a follower also refuses a stale AcceptSync. Seed 57
 // breaks S1 without that check (the first reordered seed that does): a
 // late AcceptSync shortens the log of a follower, and a later AcceptSync
-// puts its suffix at the wrong index.
+// puts its suffix at the wrong index. The run delivers one message for
+// each batch, so the steps of seed 57 stay the steps that broke S1.
 TEST_CASE("a follower refuses the stale AcceptSync of seed 57") {
-    const auto o = simulation::run<memory_cluster>(57, simulation::delivery::reorder, false);
+    const auto o = simulation::run<memory_cluster>(57, simulation::delivery::reorder, false, simulation::rollback::none,
+                                                   simulation::clients::none, simulation::batches::single);
     CHECK_FALSE(o.violation);
 }
 

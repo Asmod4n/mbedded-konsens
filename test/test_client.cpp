@@ -17,6 +17,7 @@
 #include "konsens/client.hpp"
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "batches.hpp"
 
 namespace {
 
@@ -72,8 +73,8 @@ std::vector<std::byte> bytes_of(const std::string_view s)
     return {b.begin(), b.end()};
 }
 
-node_id from_of(const message& m) { return std::visit([](const auto& x) { return x.from; }, m); }
-node_id to_of(const message& m) { return std::visit([](const auto& x) { return x.to; }, m); }
+using batches::from_of;
+using batches::to_of;
 
 template <typename T>
 bool holds(const message& m)
@@ -104,27 +105,16 @@ struct cluster {
     template <typename Copies>
     void deliver(const Copies copies)
     {
-        for (bool more = true; more;) {
-            more = false;
-            for (auto& n : nodes) {
-                for (auto& m : n.take_outgoing_messages()) {
-                    more = true;
-                    if (!alive[from_of(m) - 1] || !alive[to_of(m) - 1]) {
-                        continue;
-                    }
-                    for (std::size_t k = copies(m); k > 0; --k) {
-                        REQUIRE(at(to_of(m)).handle_incoming(m));
-                    }
-                }
-            }
-        }
+        batches::deliver(nodes, [this, &copies](const message& m) -> std::size_t {
+            return alive.at(from_of(m) - 1) && alive.at(to_of(m) - 1) ? copies(m) : 0;
+        });
     }
 
     void tick()
     {
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             if (alive[i]) {
-                REQUIRE(nodes[i].tick());
+                batches::tick_and_commit(nodes[i]);
             }
         }
     }
@@ -152,7 +142,7 @@ cluster elected()
 
 std::uint64_t registered(cluster& c, const node_id at, const std::uint64_t client_id)
 {
-    REQUIRE(c.at(at).register_client(client_id));
+    batches::commit(c.at(at), c.at(at).register_client(client_id));
     c.deliver(once);
     const auto replies = c.at(at).take_client_replies();
     REQUIRE(replies.size() == 1);
@@ -169,7 +159,7 @@ std::uint64_t registered(cluster& c, const node_id at, const std::uint64_t clien
 TEST_CASE("a start applies the decided log from index 0") {
     auto c = elected();
     const auto s = registered(c, 3, client_a);
-    REQUIRE(c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
     const auto kept = c.at(1).get_sequence_paxos().get_internal_storage();
     REQUIRE(c.at(1).get_applied_idx() == 2);
@@ -187,9 +177,9 @@ TEST_CASE("a start applies the decided log from index 0") {
 // registration change no state of the user.
 TEST_CASE("only the payload of a client request reaches the state machine") {
     auto c = elected();
-    REQUIRE(c.at(3).append({entry_kind::normal, bytes_of("n")}));
+    batches::commit(c.at(3), c.at(3).append({entry_kind::normal, bytes_of("n")}));
     const auto s = registered(c, 3, client_a);
-    REQUIRE(c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
     for (const auto& n : c.nodes) {
         CHECK(n.get_applied_idx() == 3);
@@ -204,9 +194,9 @@ TEST_CASE("only the payload of a client request reaches the state machine") {
 // answer belongs to the call that was made there.
 TEST_CASE("each registration gives the session of its own entry") {
     auto c = elected();
-    REQUIRE(c.at(1).register_client(client_a));
-    REQUIRE(c.at(2).register_client(client_a));
-    REQUIRE(c.at(2).register_client(client_b));
+    batches::commit(c.at(1), c.at(1).register_client(client_a));
+    batches::commit(c.at(2), c.at(2).register_client(client_a));
+    batches::commit(c.at(2), c.at(2).register_client(client_b));
     c.deliver(once);
     const auto log = *c.at(3).read_decided_suffix(0);
     REQUIRE(log.size() == 3);
@@ -236,11 +226,11 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
     const auto sb = registered(c, 2, client_b);
     REQUIRE(sa != sb);
 
-    REQUIRE(c.at(1).client_request(client_a, sa, 1, bytes_of("a")));
+    batches::commit(c.at(1), c.at(1).client_request(client_a, sa, 1, bytes_of("a")));
     c.deliver([](const message& m) -> std::size_t { return holds<konsens::proposal_forward>(m) ? 0 : 1; });
     c.run(rounds, once);
     CHECK(c.at(1).take_client_replies().empty());
-    REQUIRE(c.at(1).client_request(client_a, sa, 1, bytes_of("a")));
+    batches::commit(c.at(1), c.at(1).client_request(client_a, sa, 1, bytes_of("a")));
     c.deliver(once);
     auto replies = c.at(1).take_client_replies();
     REQUIRE(replies.size() == 1);
@@ -248,21 +238,21 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
     CHECK(replies[0].session == sa);
     CHECK(replies[0].response == bytes_of("a"));
 
-    REQUIRE(c.at(2).client_request(client_b, sb, 1, bytes_of("b")));
+    batches::commit(c.at(2), c.at(2).client_request(client_b, sb, 1, bytes_of("b")));
     c.deliver([](const message& m) -> std::size_t { return holds<konsens::proposal_forward>(m) ? 2 : 1; });
     replies = c.at(2).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].client_id == client_b);
     CHECK(replies[0].response == bytes_of("ab"));
 
-    REQUIRE(c.at(3).client_request(client_a, sa, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, sa, 1, bytes_of("a")));
     c.deliver(once);
     replies = c.at(3).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].response == bytes_of("a"));
 
-    REQUIRE(c.at(1).client_request(client_a, sa, 2, bytes_of("c")));
-    REQUIRE(c.at(1).client_request(client_a, sa, 1, bytes_of("a")));
+    batches::commit(c.at(1), c.at(1).client_request(client_a, sa, 2, bytes_of("c")));
+    batches::commit(c.at(1), c.at(1).client_request(client_a, sa, 1, bytes_of("a")));
     c.deliver(once);
     replies = c.at(1).take_client_replies();
     REQUIRE(replies.size() == 2);
@@ -285,8 +275,8 @@ TEST_CASE("expire_session closes a session at the leader once") {
     c.deliver(once);
     CHECK(c.at(3).get_sequence_paxos().get_accepted_idx() == 1);
 
-    REQUIRE(c.at(3).expire_session(client_b, s));
-    REQUIRE(c.at(3).expire_session(client_b, s));
+    batches::commit(c.at(3), c.at(3).expire_session(client_b, s));
+    batches::commit(c.at(3), c.at(3).expire_session(client_b, s));
     c.deliver(once);
     const auto log = *c.at(3).read_decided_suffix(0);
     CHECK(std::ranges::count(log, entry_kind::expire_session, &konsens::entry::kind) == 1);
@@ -297,7 +287,7 @@ TEST_CASE("expire_session closes a session at the leader once") {
     CHECK(replies[0].response);
 
     CHECK(failed_with(c.at(3).expire_session(client_b, s), client_errc::session_expired));
-    REQUIRE(c.at(2).client_request(client_b, s, 1, bytes_of("b")));
+    batches::commit(c.at(2), c.at(2).client_request(client_b, s, 1, bytes_of("b")));
     c.deliver(once);
     replies = c.at(2).take_client_replies();
     REQUIRE(replies.size() == 1);
@@ -316,7 +306,7 @@ TEST_CASE("expire_session closes a session at the leader once") {
 TEST_CASE("a read after a change of leader sees a request that the old leader decided") {
     auto c = elected();
     const auto s = registered(c, 3, client_a);
-    REQUIRE(c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver([](const message& m) -> std::size_t { return holds<konsens::decide>(m) ? 0 : 1; });
     const auto answered = c.at(3).take_client_replies();
     REQUIRE(answered.size() == 1);
@@ -336,7 +326,7 @@ TEST_CASE("a read after a change of leader sees a request that the old leader de
     REQUIRE(c.at(1).get_sequence_paxos().get_promise() == c.at(2).get_sequence_paxos().get_promise());
     REQUIRE(c.at(1).get_applied_idx() == 1);
 
-    REQUIRE(c.at(1).client_query(client_b, {}));
+    batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
     c.deliver(no_accept_sync);
     CHECK(c.at(1).get_applied_idx() == 1);
     CHECK(c.at(1).take_client_replies().empty());
@@ -358,11 +348,11 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
     const auto lost_to_1 = [](const message& m) -> std::size_t {
         return (holds<konsens::accept_decide>(m) || holds<konsens::decide>(m)) && to_of(m) == 1 ? 0 : 1;
     };
-    REQUIRE(c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(lost_to_1);
     REQUIRE(c.at(1).get_applied_idx() == 1);
 
-    REQUIRE(c.at(1).client_query(client_b, {}));
+    batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
     c.deliver(lost_to_1);
     CHECK(c.at(1).take_client_replies().empty());
 
@@ -382,9 +372,9 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
 TEST_CASE("a follower sends a lost read index request again") {
     auto c = elected();
     const auto s = registered(c, 3, client_a);
-    REQUIRE(c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
-    REQUIRE(c.at(1).client_query(client_b, {}));
+    batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
     c.deliver([](const message& m) -> std::size_t { return holds<konsens::read_index_request>(m) ? 0 : 1; });
     CHECK(c.at(1).take_client_replies().empty());
     c.run(rounds, once);
@@ -398,9 +388,9 @@ TEST_CASE("a follower sends a lost read index request again") {
 TEST_CASE("a read at the leader is answered after one round") {
     auto c = elected();
     const auto s = registered(c, 2, client_a);
-    REQUIRE(c.at(2).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(2), c.at(2).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
-    REQUIRE(c.at(3).client_query(client_b, {}));
+    batches::commit(c.at(3), c.at(3).client_query(client_b, {}));
     CHECK(c.at(3).take_client_replies().empty());
     c.deliver(once);
     const auto replies = c.at(3).take_client_replies();
@@ -414,7 +404,7 @@ TEST_CASE("a read at the leader is answered after one round") {
 // timeout of the leader sends the heartbeat of the round again.
 TEST_CASE("a leader sends a lost heartbeat again") {
     auto c = elected();
-    REQUIRE(c.at(3).client_query(client_b, {}));
+    batches::commit(c.at(3), c.at(3).client_query(client_b, {}));
     c.deliver([](const message& m) -> std::size_t { return holds<konsens::heartbeat>(m) ? 0 : 1; });
     CHECK(c.at(3).take_client_replies().empty());
     c.run(rounds, once);

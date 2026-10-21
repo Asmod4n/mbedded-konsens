@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <deque>
 #include <exception>
 #include <expected>
 #include <format>
@@ -75,7 +74,7 @@ konsens::node_config config_of(const konsens::node_id pid)
 
 struct cluster {
     std::array<std::optional<node_t>, node_count> nodes;
-    std::deque<konsens::message> network;
+    std::vector<konsens::message> network;
     std::vector<konsens::client_reply> replies;
     std::uint64_t next_call{1};
 
@@ -93,25 +92,36 @@ struct cluster {
         }
     }
 
+    std::expected<void, std::error_code> commit(const std::size_t i,
+                                                const std::expected<konsens::transaction, std::error_code>& t)
+    {
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        return nodes.at(i)->commit(*t);
+    }
+
     std::expected<void, std::error_code> run_round()
     {
-        for (auto& n : nodes) {
-            if (n) {
-                if (auto r = n->tick(); !r) [[unlikely]] {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            if (nodes.at(i)) {
+                if (auto r = commit(i, nodes.at(i)->tick()); !r) [[unlikely]] {
                     return r;
                 }
             }
         }
         collect();
         while (!network.empty()) {
-            auto m = std::move(network.front());
-            network.pop_front();
-            auto& target = nodes.at(std::visit([](const auto& x) { return x.to; }, m) - 1);
-            if (!target) {
-                continue;
+            std::array<std::vector<konsens::message>, node_count> arrived;
+            for (auto& m : std::exchange(network, {})) {
+                arrived.at(std::visit([](const auto& x) { return x.to; }, m) - 1).push_back(std::move(m));
             }
-            if (auto r = target->handle_incoming(std::move(m)); !r) [[unlikely]] {
-                return r;
+            for (std::size_t i = 0; i < node_count; ++i) {
+                if (nodes.at(i)) {
+                    if (auto r = commit(i, nodes.at(i)->handle_incoming(std::move(arrived.at(i)))); !r) [[unlikely]] {
+                        return r;
+                    }
+                }
             }
             collect();
         }
@@ -161,12 +171,13 @@ struct cluster {
         return std::unexpected(std::make_error_code(std::errc::timed_out));
     }
 
-    std::expected<konsens::client_reply, std::error_code> call(const auto give)
+    std::expected<konsens::client_reply, std::error_code> call(const std::size_t at, const auto give)
     {
         const auto id = next_call++;
-        if (auto r = give(id); !r) [[unlikely]] {
+        if (auto r = commit(at, give(*nodes.at(at), id)); !r) [[unlikely]] {
             return std::unexpected(r.error());
         }
+        collect();
         return wait_for(id);
     }
 };
@@ -192,7 +203,7 @@ int run()
     }
     std::cout << std::format("Node {} is the leader.", *c.leader() + 1) << '\n';
 
-    const auto registered = c.call([&c](const std::uint64_t id) { return c.nodes.at(0)->register_client(id); });
+    const auto registered = c.call(0, [](node_t& n, const std::uint64_t id) { return n.register_client(id); });
     if (!registered) [[unlikely]] {
         return fail("register the client", registered.error());
     }
@@ -201,8 +212,8 @@ int run()
 
     for (std::uint64_t k = 1; k <= increment_count; ++k) {
         const auto at = (k - 1) % node_count;
-        const auto reply = c.call([&c, at, session, k](const std::uint64_t id) {
-            return c.nodes.at(at)->client_request(id, session, k, {});
+        const auto reply = c.call(at, [session, k](node_t& n, const std::uint64_t id) {
+            return n.client_request(id, session, k, {});
         });
         if (!reply) [[unlikely]] {
             return fail("increment the counter", reply.error());
@@ -211,8 +222,8 @@ int run()
                   << '\n';
     }
 
-    const auto again = c.call([&c, session](const std::uint64_t id) {
-        return c.nodes.at(1)->client_request(id, session, increment_count, {});
+    const auto again = c.call(1, [session](node_t& n, const std::uint64_t id) {
+        return n.client_request(id, session, increment_count, {});
     });
     if (!again) [[unlikely]] {
         return fail("send the last increment again", again.error());
@@ -222,7 +233,7 @@ int run()
               << '\n';
 
     for (std::size_t i = 0; i < node_count; ++i) {
-        const auto read = c.call([&c, i](const std::uint64_t id) { return c.nodes.at(i)->client_query(id, {}); });
+        const auto read = c.call(i, [](node_t& n, const std::uint64_t id) { return n.client_query(id, {}); });
         if (!read) [[unlikely]] {
             return fail("read the counter", read.error());
         }
@@ -241,8 +252,8 @@ int run()
     }
     const auto new_leader = *c.leader();
     std::cout << std::format("Node {} is the new leader.", new_leader + 1) << '\n';
-    const auto after = c.call([&c, new_leader, session](const std::uint64_t id) {
-        return c.nodes.at(new_leader)->client_request(id, session, increment_count + 1, {});
+    const auto after = c.call(new_leader, [session](node_t& n, const std::uint64_t id) {
+        return n.client_request(id, session, increment_count + 1, {});
     });
     if (!after) [[unlikely]] {
         return fail("increment after the change of leader", after.error());

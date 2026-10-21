@@ -204,10 +204,11 @@ Cases:
 - encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
   entries of 1024 B. encode_decide, decode_decide: one Decide. A decode
   case copies the bytes before the timer starts.
-- handle_accept_decide, handle_decide: node::handle_incoming(const received&) at a
-  follower in (Follower, Accept), over a store that counts the payload
-  bytes and keeps no entry. The messages are encoded and decoded before
-  the timer starts.
+- handle_accept_decide, handle_decide: node::handle_incoming and
+  node::commit for each batch of at most konsens::max_batch_size messages
+  of the sample, at a follower in
+  (Follower, Accept), over a store that counts the payload bytes and keeps
+  no entry. The messages are encoded and decoded before the timer starts.
 - commit_memory, commit_lmdb: write_atomically of one append_entries with
   one entry, on a fresh memory_storage or persistent_storage for each
   sample.

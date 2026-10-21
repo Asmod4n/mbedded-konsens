@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <deque>
 #include <exception>
 #include <expected>
 #include <iterator>
@@ -143,7 +142,7 @@ struct cluster {
     std::array<std::filesystem::path, node_count> directories;
     uid_t effective_user_id;
     std::array<std::optional<node_t>, node_count> nodes;
-    std::deque<konsens::message> network;
+    std::vector<konsens::message> network;
     std::uint64_t nonce{};
     std::vector<konsens::client_reply> replies{};
 
@@ -178,6 +177,15 @@ struct cluster {
         }
     }
 
+    std::expected<void, std::error_code> commit(const std::size_t i,
+                                                const std::expected<konsens::transaction, std::error_code>& t)
+    {
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        return nodes.at(i)->commit(*t);
+    }
+
     std::optional<konsens::client_reply> take_reply(const std::uint64_t call)
     {
         const auto it = std::ranges::find(replies, call, &konsens::client_reply::client_id);
@@ -191,23 +199,25 @@ struct cluster {
 
     std::expected<void, std::error_code> run_round()
     {
-        for (auto& n : nodes) {
-            if (n) {
-                if (auto r = n->tick(); !r) [[unlikely]] {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            if (nodes.at(i)) {
+                if (auto r = commit(i, nodes.at(i)->tick()); !r) [[unlikely]] {
                     return r;
                 }
             }
         }
         collect();
         while (!network.empty()) {
-            auto m = std::move(network.front());
-            network.pop_front();
-            auto& target = nodes.at(to_of(m) - 1);
-            if (!target) {
-                continue;
+            std::array<std::vector<konsens::message>, node_count> arrived;
+            for (auto& m : std::exchange(network, {})) {
+                arrived.at(to_of(m) - 1).push_back(std::move(m));
             }
-            if (auto r = target->handle_incoming(std::move(m)); !r) [[unlikely]] {
-                return r;
+            for (std::size_t i = 0; i < node_count; ++i) {
+                if (nodes.at(i)) {
+                    if (auto r = commit(i, nodes.at(i)->handle_incoming(std::move(arrived.at(i)))); !r) [[unlikely]] {
+                        return r;
+                    }
+                }
             }
             collect();
         }
@@ -284,22 +294,39 @@ std::expected<void, std::error_code> append_at_leader(cluster& c, const int firs
     if (!l) [[unlikely]] {
         return std::unexpected(std::make_error_code(std::errc::resource_unavailable_try_again));
     }
+    auto& n = *c.nodes.at(*l);
+    std::optional<konsens::transaction> t;
     for (int k = first; k < first + count; ++k) {
         const auto text = "entry " + std::to_string(k);
-        if (auto r = c.nodes.at(*l)->append(entry_of(text)); !r) [[unlikely]] {
-            return r;
+        const auto appended = n.append(entry_of(text));
+        if (!appended) [[unlikely]] {
+            return std::unexpected(appended.error());
+        }
+        if (t) {
+            *t += *appended;
+        } else {
+            t = *appended;
         }
         std::cout << std::format("Node {} appends \"{}\".", *l + 1, text) << '\n';
     }
+    if (!t) {
+        return {};
+    }
+    if (auto r = n.commit(*t); !r) [[unlikely]] {
+        return r;
+    }
+    c.collect();
+    std::cout << std::format("Node {} writes the {} entries in one commit.", *l + 1, count) << '\n';
     return {};
 }
 
-std::expected<konsens::client_reply, std::error_code> call_and_wait(cluster& c, const std::uint64_t call,
-                                                                   const auto give)
+std::expected<konsens::client_reply, std::error_code> call_and_wait(cluster& c, const std::size_t at,
+                                                                   const std::uint64_t call, const auto give)
 {
-    if (auto r = give(); !r) [[unlikely]] {
+    if (auto r = c.commit(at, give(*c.nodes.at(at))); !r) [[unlikely]] {
         return std::unexpected(r.error());
     }
+    c.collect();
     std::optional<konsens::client_reply> reply;
     if (auto r = run_until(c, [&c, &reply, call] {
             reply = c.take_reply(call);
@@ -322,15 +349,15 @@ std::expected<void, std::error_code> run_client(cluster& c)
     }
     const auto writer = (*l + 1) % node_count;
     const auto reader = (*l + 2) % node_count;
-    auto& w = *c.nodes.at(writer);
-    const auto registered = call_and_wait(c, register_call, [&w] { return w.register_client(register_call); });
+    const auto registered =
+        call_and_wait(c, writer, register_call, [](node_t& w) { return w.register_client(register_call); });
     if (!registered) [[unlikely]] {
         return std::unexpected(registered.error());
     }
     const auto session = registered->session;
     std::cout << std::format("A client registers at node {}. Its session is {}.", writer + 1, session) << '\n';
     const std::string_view text = "client text";
-    const auto written = call_and_wait(c, request_call, [&w, session, text] {
+    const auto written = call_and_wait(c, writer, request_call, [session, text](node_t& w) {
         return w.client_request(request_call, session, first_request_number, bytes_of(text));
     });
     if (!written) [[unlikely]] {
@@ -339,8 +366,7 @@ std::expected<void, std::error_code> run_client(cluster& c)
     std::cout << std::format("The client writes \"{}\" at node {} with request number {}. The reply is \"{}\".", text,
                              writer + 1, first_request_number, text_of(*written->response))
               << '\n';
-    auto& r = *c.nodes.at(reader);
-    const auto read = call_and_wait(c, query_call, [&r] { return r.client_query(query_call, {}); });
+    const auto read = call_and_wait(c, reader, query_call, [](node_t& r) { return r.client_query(query_call, {}); });
     if (!read) [[unlikely]] {
         return std::unexpected(read.error());
     }

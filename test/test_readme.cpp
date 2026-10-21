@@ -5,7 +5,6 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <optional>
 #include <random>
 #include <span>
@@ -73,31 +72,27 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
 
 struct cluster {
     std::vector<node_t> nodes;
+    std::vector<std::string> network;
     std::vector<konsens::client_reply> replies;
 
     void round()
     {
-        std::deque<std::string> network;
-        auto collect = [&] {
-            for (auto& n : nodes) {
-                for (const auto& m : n.take_outgoing_messages()) {
-                    network.push_back(konsens::encode(m).value());
-                }
-                for (auto& r : n.take_client_replies()) {
-                    replies.push_back(std::move(r));
-                }
-            }
-        };
-        for (auto& n : nodes) {
-            REQUIRE(n.tick());
-        }
-        collect();
-        while (!network.empty()) {
-            auto bytes = std::move(network.front());
-            network.pop_front();
+        std::vector<std::vector<konsens::received>> arrived(nodes.size());
+        for (auto& bytes : std::exchange(network, {})) {
             auto r = konsens::decode(std::move(bytes)).value();
-            REQUIRE(nodes.at(r.to - 1).handle_incoming(r));
-            collect();
+            arrived.at(r.to - 1).push_back(std::move(r));
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            auto& node = nodes.at(i);
+            auto t = node.tick().value();
+            t += node.handle_incoming(std::move(arrived.at(i))).value();
+            node.commit(t).value();
+            for (const auto& m : node.take_outgoing_messages()) {
+                network.push_back(konsens::encode(m).value());
+            }
+            for (auto& r : node.take_client_replies()) {
+                replies.push_back(std::move(r));
+            }
         }
     }
 
@@ -113,13 +108,27 @@ struct cluster {
         replies.erase(replies.begin());
         return r;
     }
+
+    std::optional<konsens::client_reply> register_client_at(const std::size_t at)
+    {
+        for (int i = 0; i < round_limit; ++i) {
+            round();
+            if (const auto t = nodes.at(at).register_client(client_id)) {
+                nodes.at(at).commit(*t).value();
+                return wait_for_reply();
+            }
+        }
+        return std::nullopt;
+    }
 };
 
 }
 
 // The README shows these calls as the way to run a node, write through a
 // session and read. This test makes the same calls on three nodes on LMDB,
-// with the network of the README: encode, then decode and handle.
+// with the network of the README: on each tick, decode the messages that
+// arrived, handle them as one batch, commit the transaction, then encode
+// and send what the commit released.
 TEST_CASE("the calls of the README write and read a counter")
 {
     temporary_directory d1, d2, d3;
@@ -128,24 +137,18 @@ TEST_CASE("the calls of the README write and read a counter")
     c.nodes.push_back(start(2, d2.path()));
     c.nodes.push_back(start(3, d3.path()));
 
-    std::optional<konsens::client_reply> registered;
-    for (int i = 0; i < round_limit && !registered; ++i) {
-        c.round();
-        if (c.nodes.at(1).register_client(client_id)) {
-            registered = c.wait_for_reply();
-        }
-    }
+    const auto registered = c.register_client_at(1);
     REQUIRE(registered);
     REQUIRE(registered->response);
     const auto session = registered->session;
 
-    REQUIRE(c.nodes.at(1).client_request(client_id, session, 1, {}));
+    c.nodes.at(1).commit(c.nodes.at(1).client_request(client_id, session, 1, {}).value()).value();
     const auto written = c.wait_for_reply();
     REQUIRE(written);
     REQUIRE(written->response);
     CHECK(value_of(*written->response) == 1);
 
-    REQUIRE(c.nodes.at(2).client_query(client_id, {}));
+    c.nodes.at(2).commit(c.nodes.at(2).client_query(client_id, {}).value()).value();
     const auto read = c.wait_for_reply();
     REQUIRE(read);
     REQUIRE(read->response);

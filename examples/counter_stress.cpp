@@ -60,6 +60,7 @@ constexpr std::size_t channel_count = node_count * node_count;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
 constexpr std::uint64_t permille = 1000;
+constexpr std::size_t largest_batch = 8;
 constexpr std::uint64_t call_timeout_rounds = 10;
 constexpr std::uint64_t increments_between_reads = 10;
 constexpr std::uint64_t rounds_without_progress_limit = 1000;
@@ -217,6 +218,7 @@ std::size_t channel_of(const konsens::message& m)
 
 struct cluster {
     std::array<std::optional<node_t>, node_count> nodes;
+    std::array<std::optional<konsens::transaction>, node_count> pending;
     std::array<std::deque<std::variant<konsens::message, std::string>>, channel_count> channels;
     std::vector<konsens::client_reply> replies;
     std::mt19937_64 random;
@@ -239,6 +241,25 @@ struct cluster {
     }
 
     std::size_t pick_node() { return std::uniform_int_distribution<std::size_t>{0, node_count - 1}(random); }
+
+    void add(const std::size_t i, const konsens::transaction t)
+    {
+        if (pending.at(i)) {
+            *pending.at(i) += t;
+        } else {
+            pending.at(i) = t;
+        }
+    }
+
+    std::expected<void, std::error_code> add(const std::size_t i,
+                                             const std::expected<konsens::transaction, std::error_code>& t)
+    {
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        add(i, *t);
+        return {};
+    }
 
     std::expected<void, std::error_code> send(konsens::message m)
     {
@@ -267,28 +288,41 @@ struct cluster {
         return {};
     }
 
-    std::expected<void, std::error_code> deliver(std::variant<konsens::message, std::string> sent)
+    std::expected<void, std::error_code> deliver(const std::size_t to,
+                                                 std::vector<std::variant<konsens::message, std::string>> batch)
     {
         if (!cbor) {
-            auto& m = std::get<konsens::message>(sent);
-            const auto to = std::visit([](const auto& x) { return x.to; }, m);
-            return at(static_cast<std::size_t>(to - 1)).handle_incoming(std::move(m));
+            std::vector<konsens::message> messages;
+            for (auto& sent : batch) {
+                messages.push_back(std::get<konsens::message>(std::move(sent)));
+            }
+            return add(to, at(to).handle_incoming(std::move(messages)));
         }
-        const auto r = konsens::decode(std::get<std::string>(std::move(sent)));
-        if (!r) [[unlikely]] {
-            return std::unexpected(r.error());
+        std::vector<konsens::received> decoded;
+        for (auto& sent : batch) {
+            auto r = konsens::decode(std::get<std::string>(std::move(sent)));
+            if (!r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            kinds.at(konsens::kind_of(*r)) += 1;
+            decoded.push_back(std::move(*r));
         }
-        kinds.at(konsens::kind_of(*r)) += 1;
-        return at(static_cast<std::size_t>(r->to - 1)).handle_incoming(*r);
+        return add(to, at(to).handle_incoming(std::move(decoded)));
     }
 
     std::expected<void, std::error_code> collect()
     {
         for (const auto& [from, to] : std::exchange(disconnected, {})) {
-            at(from - 1).reconnected(to);
-            at(to - 1).reconnected(from);
+            add(from - 1, at(from - 1).reconnected(to));
+            add(to - 1, at(to - 1).reconnected(from));
         }
-        for (auto& n : nodes) {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            auto& n = nodes.at(i);
+            if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
+                if (auto r = n.value().commit(*t); !r) [[unlikely]] {
+                    return r;
+                }
+            }
             for (auto& m : n.value().take_outgoing_messages()) {
                 if (auto r = send(std::move(m)); !r) [[unlikely]] {
                     return r;
@@ -309,6 +343,7 @@ struct cluster {
             return std::unexpected(n.error());
         }
         nodes.at(i).emplace(std::move(*n));
+        pending.at(i).reset();
         return {};
     }
 
@@ -321,6 +356,7 @@ struct cluster {
             return std::unexpected(n.error());
         }
         nodes.at(i) = std::move(*n);
+        pending.at(i).reset();
         counts.restarts += 1;
         return collect();
     }
@@ -367,8 +403,8 @@ struct cluster {
     std::expected<void, std::error_code> run_round()
     {
         counts.rounds += 1;
-        for (auto& n : nodes) {
-            if (auto r = n.value().tick(); !r) [[unlikely]] {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            if (auto r = add(i, at(i).tick()); !r) [[unlikely]] {
                 return r;
             }
         }
@@ -384,10 +420,27 @@ struct cluster {
             if (waiting == 0) {
                 break;
             }
-            auto& channel = channels.at(busy.at(std::uniform_int_distribution<std::size_t>{0, waiting - 1}(random)));
-            auto sent = std::move(channel.front());
-            channel.pop_front();
-            if (auto r = deliver(std::move(sent)); !r) [[unlikely]] {
+            const auto first = busy.at(std::uniform_int_distribution<std::size_t>{0, waiting - 1}(random));
+            const auto to = first % node_count;
+            auto size = std::uniform_int_distribution<std::size_t>{1, largest_batch}(random);
+            std::vector<std::variant<konsens::message, std::string>> batch;
+            for (auto from = first / node_count; size > 0; --size) {
+                auto& channel = channels.at(from * node_count + to);
+                batch.push_back(std::move(channel.front()));
+                channel.pop_front();
+                std::array<std::size_t, node_count> into{};
+                const auto end = std::ranges::copy_if(std::views::iota(std::size_t{0}, node_count), into.begin(),
+                                                      [this, to](const std::size_t f) {
+                                                          return !channels.at(f * node_count + to).empty();
+                                                      })
+                                     .out;
+                const auto senders = static_cast<std::size_t>(std::ranges::distance(into.begin(), end));
+                if (senders == 0) {
+                    break;
+                }
+                from = into.at(std::uniform_int_distribution<std::size_t>{0, senders - 1}(random));
+            }
+            if (auto r = deliver(to, std::move(batch)); !r) [[unlikely]] {
                 return r;
             }
             if (auto r = collect(); !r) [[unlikely]] {
@@ -497,7 +550,8 @@ struct stress {
             c.latest_call = id;
             c.sent_round = round;
             c.waiting = true;
-            auto& n = net.at(net.pick_node());
+            const auto to = net.pick_node();
+            auto& n = net.at(to);
             const auto sent = [&n, &c, id] {
                 if (c.at == step::registering) {
                     return n.register_client(id);
@@ -512,6 +566,8 @@ struct stress {
                     return std::unexpected(failure{"a node refused a call", sent.error()});
                 }
                 c.waiting = false;
+            } else {
+                net.add(to, *sent);
             }
         }
         return {};
@@ -658,6 +714,7 @@ struct stress {
                         return std::unexpected(failure{"a node refused the final read", s.error()});
                     }
                 } else {
+                    net.add(i, *s);
                     pending = id;
                     sent_round = r;
                 }
@@ -720,7 +777,7 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
 
 int run(const options& given)
 {
-    stress s{given, cluster{{}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {},
+    stress s{given, cluster{{}, {}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {},
                          given.calls_reconnected, given.cbor, {}},
              {}, {}, {}, 0, 0, 1, 0, 0, {}, {}, {}};
     for (std::size_t i = 0; i < node_count; ++i) {

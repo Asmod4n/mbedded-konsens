@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <deque>
 #include <exception>
 #include <expected>
 #include <filesystem>
@@ -212,15 +211,37 @@ struct cluster {
     using result = std::expected<void, std::error_code>;
 
     std::vector<konsens::node<S, counter>> nodes;
-    std::deque<std::string> network;
+    std::vector<std::string> network;
     std::vector<konsens::client_reply> replies;
     std::uint64_t next_call{1};
     std::uint64_t rounds{};
     std::uint64_t messages{};
+    std::vector<std::optional<konsens::transaction>> pending;
 
-    result collect_outgoing()
+    result add(const std::size_t i, const std::expected<konsens::transaction, std::error_code>& t)
     {
-        for (auto& n : nodes) {
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        pending.resize(nodes.size());
+        if (pending.at(i)) {
+            *pending.at(i) += *t;
+        } else {
+            pending.at(i) = *t;
+        }
+        return {};
+    }
+
+    result commit_and_collect()
+    {
+        pending.resize(nodes.size());
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            auto& n = nodes.at(i);
+            if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
+                if (auto r = n.commit(*t); !r) [[unlikely]] {
+                    return r;
+                }
+            }
             for (const auto& m : n.take_outgoing_messages()) {
                 auto bytes = konsens::encode(m);
                 if (!bytes) [[unlikely]] {
@@ -238,25 +259,30 @@ struct cluster {
     result run_round()
     {
         rounds += 1;
-        for (auto& n : nodes) {
-            if (auto r = n.tick(); !r) [[unlikely]] {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (auto r = add(i, nodes.at(i).tick()); !r) [[unlikely]] {
                 return r;
             }
         }
-        if (auto c = collect_outgoing(); !c) [[unlikely]] {
+        if (auto c = commit_and_collect(); !c) [[unlikely]] {
             return c;
         }
         while (!network.empty()) {
-            const auto r = konsens::decode(std::move(network.front()));
-            network.pop_front();
-            if (!r) [[unlikely]] {
-                return std::unexpected(r.error());
+            std::vector<std::vector<konsens::received>> arrived(nodes.size());
+            for (auto& bytes : std::exchange(network, {})) {
+                auto r = konsens::decode(std::move(bytes));
+                if (!r) [[unlikely]] {
+                    return std::unexpected(r.error());
+                }
+                messages += 1;
+                arrived.at(r->to - 1).push_back(std::move(*r));
             }
-            messages += 1;
-            if (auto h = nodes.at(r->to - 1).handle_incoming(*r); !h) [[unlikely]] {
-                return h;
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                if (auto h = add(i, nodes.at(i).handle_incoming(std::move(arrived.at(i)))); !h) [[unlikely]] {
+                    return h;
+                }
             }
-            if (auto c = collect_outgoing(); !c) [[unlikely]] {
+            if (auto c = commit_and_collect(); !c) [[unlikely]] {
                 return c;
             }
         }
@@ -312,7 +338,7 @@ struct cluster {
     std::expected<std::uint64_t, std::error_code> register_client(const std::size_t at)
     {
         const auto call = next_call++;
-        if (auto r = nodes.at(at).register_client(call); !r) [[unlikely]] {
+        if (auto r = add(at, nodes.at(at).register_client(call)); !r) [[unlikely]] {
             return std::unexpected(r.error());
         }
         const auto reply = wait_for_replies(call, 1);
@@ -327,7 +353,7 @@ struct cluster {
                                                                        std::vector<std::byte> payload)
     {
         const auto call = next_call++;
-        if (auto r = nodes.at(at).client_request(call, session, request_number, std::move(payload)); !r)
+        if (auto r = add(at, nodes.at(at).client_request(call, session, request_number, std::move(payload))); !r)
             [[unlikely]] {
             return std::unexpected(r.error());
         }
@@ -511,8 +537,12 @@ std::expected<accepting_follower, failure> start_accepting_follower()
     }
     const auto leader = *c->leader();
     const auto follower = follower_of(leader);
-    if (auto r = c->nodes.at(leader).append(konsens::entry{konsens::entry_kind::normal}); !r) [[unlikely]] {
-        return std::unexpected(failure{"append an entry at the leader", r.error()});
+    const auto appended = c->nodes.at(leader).append(konsens::entry{konsens::entry_kind::normal});
+    if (!appended) [[unlikely]] {
+        return std::unexpected(failure{"append an entry at the leader", appended.error()});
+    }
+    if (auto r = c->nodes.at(leader).commit(*appended); !r) [[unlikely]] {
+        return std::unexpected(failure{"commit the entry at the leader", r.error()});
     }
     const auto to = static_cast<konsens::node_id>(follower + 1);
     for (const auto& m : c->nodes.at(leader).take_outgoing_messages()) {
@@ -524,13 +554,19 @@ std::expected<accepting_follower, failure> start_accepting_follower()
         if (acc == nullptr) {
             continue;
         }
-        const auto r = received_of(m);
+        auto r = received_of(m);
         if (!r) [[unlikely]] {
             return std::unexpected(failure{"pass the first AcceptDecide through the wire", r.error()});
         }
         const auto before = c->nodes.at(follower).get_sequence_paxos().get_accepted_idx();
-        if (auto h = c->nodes.at(follower).handle_incoming(*r); !h) [[unlikely]] {
-            return std::unexpected(failure{"handle the first AcceptDecide", h.error()});
+        std::vector<konsens::received> batch;
+        batch.push_back(std::move(*r));
+        const auto handled = c->nodes.at(follower).handle_incoming(std::move(batch));
+        if (!handled) [[unlikely]] {
+            return std::unexpected(failure{"handle the first AcceptDecide", handled.error()});
+        }
+        if (auto h = c->nodes.at(follower).commit(*handled); !h) [[unlikely]] {
+            return std::unexpected(failure{"commit the first AcceptDecide", h.error()});
         }
         std::ignore = c->nodes.at(follower).take_outgoing_messages();
         if (c->nodes.at(follower).get_sequence_paxos().get_state() !=
@@ -558,7 +594,7 @@ case_outcome measure_handle_accept_decide(const run_settings& s)
     auto counter_of_message = f->first.seq_num.counter;
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        std::vector<konsens::received> messages;
+        std::vector<std::vector<konsens::received>> batches;
         for (std::uint64_t k = 0; k < s.ops; ++k) {
             counter_of_message += 1;
             auto r = received_of(konsens::paxos_message{
@@ -568,13 +604,20 @@ case_outcome measure_handle_accept_decide(const run_settings& s)
             if (!r) [[unlikely]] {
                 return std::unexpected(failure{"pass an AcceptDecide through the wire", r.error()});
             }
-            messages.push_back(std::move(*r));
+            if (k % konsens::max_batch_size == 0) {
+                batches.emplace_back();
+            }
+            batches.back().push_back(std::move(*r));
         }
         const auto counted_before = follower.get_sequence_paxos().get_internal_storage().payload_bytes;
         const auto start = std::chrono::steady_clock::now();
-        for (const auto& r : messages) {
-            if (auto h = follower.handle_incoming(r); !h) [[unlikely]] {
-                return std::unexpected(failure{"handle an AcceptDecide", h.error()});
+        for (auto& batch : batches) {
+            const auto handled = follower.handle_incoming(std::move(batch));
+            if (!handled) [[unlikely]] {
+                return std::unexpected(failure{"handle a batch of AcceptDecide messages", handled.error()});
+            }
+            if (auto h = follower.commit(*handled); !h) [[unlikely]] {
+                return std::unexpected(failure{"commit a batch of AcceptDecide messages", h.error()});
             }
         }
         const auto end = std::chrono::steady_clock::now();
@@ -605,7 +648,7 @@ case_outcome measure_handle_decide(const run_settings& s)
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
         counter_of_message += 1;
-        const auto filled = received_of(konsens::paxos_message{
+        auto filled = received_of(konsens::paxos_message{
             from, to,
             konsens::accept_decide{f->first.n, {f->first.seq_num.session, counter_of_message}, decided,
                                    entries_of(s.ops, 0)}});
@@ -613,14 +656,20 @@ case_outcome measure_handle_decide(const run_settings& s)
             return std::unexpected(
                 failure{"pass the AcceptDecide of the empty entries through the wire", filled.error()});
         }
-        if (auto h = follower.handle_incoming(*filled); !h) [[unlikely]] {
-            return std::unexpected(failure{"handle the AcceptDecide of the empty entries", h.error()});
+        std::vector<konsens::received> fill;
+        fill.push_back(std::move(*filled));
+        const auto filled_in = follower.handle_incoming(std::move(fill));
+        if (!filled_in) [[unlikely]] {
+            return std::unexpected(failure{"handle the AcceptDecide of the empty entries", filled_in.error()});
+        }
+        if (auto h = follower.commit(*filled_in); !h) [[unlikely]] {
+            return std::unexpected(failure{"commit the AcceptDecide of the empty entries", h.error()});
         }
         std::ignore = follower.take_outgoing_messages();
         if (follower.get_sequence_paxos().get_accepted_idx() < decided + s.ops) [[unlikely]] {
             return std::unexpected(failure{"accept an entry for each Decide", check_failed()});
         }
-        std::vector<konsens::received> messages;
+        std::vector<std::vector<konsens::received>> batches;
         for (std::uint64_t k = 0; k < s.ops; ++k) {
             counter_of_message += 1;
             decided += 1;
@@ -629,12 +678,19 @@ case_outcome measure_handle_decide(const run_settings& s)
             if (!r) [[unlikely]] {
                 return std::unexpected(failure{"pass a Decide through the wire", r.error()});
             }
-            messages.push_back(std::move(*r));
+            if (k % konsens::max_batch_size == 0) {
+                batches.emplace_back();
+            }
+            batches.back().push_back(std::move(*r));
         }
         const auto start = std::chrono::steady_clock::now();
-        for (const auto& r : messages) {
-            if (auto h = follower.handle_incoming(r); !h) [[unlikely]] {
-                return std::unexpected(failure{"handle a Decide", h.error()});
+        for (auto& batch : batches) {
+            const auto handled = follower.handle_incoming(std::move(batch));
+            if (!handled) [[unlikely]] {
+                return std::unexpected(failure{"handle a batch of Decide messages", handled.error()});
+            }
+            if (auto h = follower.commit(*handled); !h) [[unlikely]] {
+                return std::unexpected(failure{"commit a batch of Decide messages", h.error()});
             }
         }
         const auto end = std::chrono::steady_clock::now();
@@ -797,7 +853,7 @@ case_outcome measure_reads(const run_settings& s, const auto& open_storage)
         const auto start = std::chrono::steady_clock::now();
         for (std::uint64_t k = 0; k < s.ops; ++k) {
             const auto call = c->next_call++;
-            if (auto r = c->nodes.at(at).client_query(call, {}); !r) [[unlikely]] {
+            if (auto r = c->add(at, c->nodes.at(at).client_query(call, {})); !r) [[unlikely]] {
                 return std::unexpected(failure{"send one query", r.error()});
             }
             const auto reply = c->wait_for_replies(call, 1);
@@ -842,8 +898,8 @@ case_outcome measure_write_batches(const run_settings& s, const auto& open_stora
             const auto first_request = request_number + 1;
             for (auto& payload : std::span(payloads).subspan(b, batch_size)) {
                 request_number += 1;
-                if (auto r = c->nodes.at(at).client_request(c->next_call++, *session, request_number,
-                                                            std::move(payload));
+                if (auto r = c->add(at, c->nodes.at(at).client_request(c->next_call++, *session, request_number,
+                                                                       std::move(payload)));
                     !r) [[unlikely]] {
                     return std::unexpected(failure{"send one request of a batch", r.error()});
                 }
