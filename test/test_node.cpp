@@ -128,12 +128,13 @@ TEST_CASE("each client error has its own message") {
 }
 
 // F4 of plan v0.1 at the node: a recovering node drops every message
-// except Recovery and RecoveryResponse, BLE heartbeats included, and refuses each call
-// with recovering. Simulation seed 134 shows why the heartbeats count: the
-// leader 3 restarted, still answered heartbeats, so nodes 1 and 2 kept it
-// as leader, no node was a primary, and recovery waited forever. When the
-// restarted leader answers no heartbeat, nodes 1 and 2 elect a new leader,
-// whose answer completes the recovery.
+// except Recovery and RecoveryResponse, BLE heartbeats included, and
+// refuses each call with recovering. Simulation seed 134 shows why the
+// heartbeats count: the leader 3 restarted, still answered heartbeats, so
+// nodes 1 and 2 kept it as leader, no node was a primary, and recovery
+// waited forever. Since the power-loss path, the answers of both peers with
+// no primary also complete the recovery, so the test no longer checks which
+// node leads afterwards; it checks that the cluster decides again.
 TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
@@ -165,7 +166,6 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
         step(nodes, all);
     }
     CHECK(!nodes[2].get_sequence_paxos().recovering());
-    CHECK(nodes[0].get_sequence_paxos().get_promise().pid != 3);
     REQUIRE(nodes[2].append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);

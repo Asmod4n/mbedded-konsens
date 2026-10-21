@@ -40,7 +40,13 @@
 // recovery_response; get_last_entry_crc of the storage concept and
 // compute_entry_crc, encode_entry, decode_entry and encoded_size_of of
 // storage.hpp; in src/persistent_storage.cpp record_size_of, encode_record
-// and decode_record; src/byte_order.hpp.
+// and decode_record; src/byte_order.hpp; in sequence_paxos.hpp paxos_errc
+// and its value hardware_fault, paxos_error_category, paxos_category, the
+// error value hardware_fault with its members index, pid, crc, other_pid
+// and other_crc, get_hardware_fault, keep_recovery_response,
+// select_recovery_source, find_recovery_primary, find_hardware_fault,
+// complete_recovery, handle_get_state, handle_new_state and state_request_;
+// ballot_above_promise of node.hpp.
 //
 // Provisional form: decode gives each body in the cbor::ref that
 // mbedded-cbor made, with no copy. node::handle(const received&) copies the

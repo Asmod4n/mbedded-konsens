@@ -88,7 +88,7 @@ public:
     {
         if (election_clock_.tick_and_check_timeout()) {
             if (const auto leader = ble_.hb_timeout(seq_paxos_.get_promise())) {
-                if (auto r = seq_paxos_.handle_leader(*leader); !r) [[unlikely]] {
+                if (auto r = seq_paxos_.handle_leader(ballot_above_promise(*leader)); !r) [[unlikely]] {
                     return r;
                 }
             }
@@ -242,6 +242,16 @@ private:
         : seq_paxos_(std::move(seq_paxos)), ble_(std::move(ble)), election_clock_{0, config.election_tick_timeout},
           resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine))
     {
+    }
+
+    ballot ballot_above_promise(const ballot elected) const
+    {
+        const auto promise = seq_paxos_.get_promise();
+        if (elected.pid != seq_paxos_.get_pid() || elected > promise ||
+            seq_paxos_.get_state().first == role::leader) {
+            return elected;
+        }
+        return {elected.config_id, promise.n + 1, elected.priority, elected.pid};
     }
 
     result serve_clients()

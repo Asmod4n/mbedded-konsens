@@ -6,8 +6,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <iterator>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <variant>
@@ -115,6 +118,44 @@ bool compatible(const std::vector<entry>& a, const std::vector<entry>& b)
 {
     const auto n = std::min(a.size(), b.size());
     return std::ranges::equal(std::span(a).first(n), std::span(b).first(n));
+}
+
+memory_storage storage_of(const ballot promise, const ballot n_accepted, const std::vector<entry>& log,
+                          const std::uint64_t decided_idx)
+{
+    memory_storage s;
+    const std::array<konsens::storage_op, 4> ops{konsens::append_entries{log}, konsens::set_promise{promise},
+                                                 konsens::set_accepted_round{n_accepted},
+                                                 konsens::set_decided_index{decided_idx}};
+    REQUIRE(s.write_atomically(ops));
+    return s;
+}
+
+std::uint32_t last_crc_of(const std::vector<entry>& log)
+{
+    return log.empty() ? 0 : konsens::compute_entry_crc(log.size() - 1, log.back());
+}
+
+konsens::recovery_response answer_of(const std::uint64_t nonce, const ballot promise, const ballot n_accepted,
+                                     const std::vector<entry>& log, const std::uint64_t decided_idx)
+{
+    return {nonce, promise, false, n_accepted, {}, decided_idx, true, log.size(), last_crc_of(log)};
+}
+
+konsens::new_state new_state_of(const std::uint64_t nonce, const ballot promise, const ballot n_accepted,
+                                const std::vector<entry>& log, const std::uint64_t decided_idx,
+                                const std::uint64_t from_idx)
+{
+    return {nonce, promise, n_accepted, log.size(), decided_idx, last_crc_of(log), from_idx,
+            std::vector(std::next(log.begin(), static_cast<std::ptrdiff_t>(from_idx)), log.end())};
+}
+
+std::vector<entry> log_of(const sp_t& sp)
+{
+    const auto& st = sp.get_internal_storage();
+    const auto l = st.get_entries(0, *st.get_log_len());
+    REQUIRE(l);
+    return *l;
 }
 
 struct failing_storage {
@@ -429,12 +470,16 @@ TEST_CASE("the answer of a recovering node does not count in the normal recovery
 }
 
 // The answers are kept one per peer: a later answer of a peer replaces its
-// earlier answer. Node 2 first answers as a follower, then as the primary
-// of a new ballot, and recovery completes with that primary.
+// earlier answer. Node 2 first answers as the primary of an old ballot,
+// node 3 answers with a higher promise, so node 2 is not the primary of the
+// highest ballot. Node 2 then answers as the primary of a new ballot, and
+// recovery completes with that primary. A primary among the answers keeps
+// the power-loss path closed.
 TEST_CASE("handle_recovery_response: a later answer of a peer replaces its earlier answer") {
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0, false, 0, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), true, ballot_of(1, 2), {}, 0,
+                                                        false, 0, 0}}));
     REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(sp.recovering());
     REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {}, 0,
@@ -485,19 +530,18 @@ TEST_CASE("handle_recovery: a node that does not vote does not answer") {
 
 // HandleRecoveryResponse: an answer with another nonce is ignored, because
 // it answers an earlier start. RecoveryComplete needs f + 1 answers from
-// peers and one primary; f + 1 answers with no primary keep the node
-// waiting.
+// peers and one primary. With three nodes, f + 1 answers are the answers of
+// every peer, and with no primary among them the power-loss path completes
+// (see the tests of that path), so this test gives one answer only.
 TEST_CASE("handle_recovery_response: an old nonce is ignored and a primary is needed") {
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
     const konsens::recovery_response primary{7, ballot_of(1, 2), true, ballot_of(1, 2), {make_entry(1)}, 1,
-                 false, 1, 0};
+                                             false, 1, 0};
     auto old = primary;
     old.nonce = 6;
     REQUIRE(sp.handle({2, 1, old}));
     REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0}}));
-    CHECK(sp.recovering());
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(sp.recovering());
     CHECK(sp.take_outgoing_messages().empty());
     REQUIRE(sp.handle({2, 1, primary}));
@@ -599,28 +643,375 @@ TEST_CASE("handle_recovery_response: the decided index does not fall") {
     CHECK(sp.get_accepted_idx() == 3);
 }
 
-// Plan v0.1 section 7, provisional form "recovery waits": when every node
-// restarts at the same time, no node is a primary, and the answer of a
-// recovering node does not count in the normal recovery. So no node
-// completes its recovery. The model
-// excludes this case (Rollback: "a full cluster from a backup is no
-// fault"). The operator acts.
-TEST_CASE("when all nodes restart at once, recovery waits") {
-    auto a = make(1, storage_with_promise(ballot_of(1, 3)), 2);
-    auto b = make(2, storage_with_promise(ballot_of(1, 3)), 2);
-    auto c = make(3, storage_with_promise(ballot_of(1, 3)), 2);
+// Section 2 of doc/plan-power-loss-code.md and PowerLossComplete with
+// PowerLossSource in the model: when every node restarts at once, no node
+// is a primary, and the normal recovery cannot complete. With an answer of
+// every peer and no primary among them, each node takes the node with the
+// highest (n_accepted, accepted_idx) as its source. Node 2 holds the highest
+// accepted round, node 3 the longest log of a lower round. Each node ends
+// with the log of node 2, its accepted round, the highest promise and the
+// highest decided index. Before this mode, the cluster waited forever.
+TEST_CASE("when every node restarts, each node takes the log of the highest accepted round") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    const std::vector one_three{make_entry(1), make_entry(3)};
+    const std::vector one_two_four{make_entry(1), make_entry(2), make_entry(4)};
+    auto a = make(1, storage_of(ballot_of(3, 2), ballot_of(2, 3), one_two, 1), 2);
+    auto b = make(2, storage_of(ballot_of(3, 2), ballot_of(3, 2), one_three, 1), 2);
+    auto c = make(3, storage_of(ballot_of(2, 3), ballot_of(2, 3), one_two_four, 1), 2);
     const std::array<sp_t*, 3> nodes{&a, &b, &c};
-    for (std::uint32_t round = 0; round < 10; ++round) {
-        deliver_all(nodes);
-        for (auto* n : nodes) {
-            REQUIRE(n->handle_leader(ballot_of(2 + round, n->get_pid())));
-            REQUIRE(n->resend_message_timeout());
-        }
-    }
     deliver_all(nodes);
     for (const auto* n : nodes) {
-        CHECK(n->recovering());
-        CHECK(n->get_promise() == ballot_of(1, 3));
+        CHECK(!n->recovering());
+        CHECK(n->votes());
+        CHECK(log_of(*n) == one_three);
+        CHECK(n->get_accepted_round() == ballot_of(3, 2));
+        CHECK(n->get_promise() == ballot_of(3, 2));
+        CHECK(n->get_decided_idx() == 1);
+    }
+}
+
+// Item 4 of section 2 and R7: a tie of (n_accepted, accepted_idx) goes to
+// the node itself. Such a node needs no state of another node: it writes
+// the highest promise of all answers and its own, and goes on as after the
+// normal recovery, with PrepareReq to each peer. It sends no get_state.
+TEST_CASE("a node that ties with the highest answer is its own source") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    auto sp = make(1, storage_of(ballot_of(2, 2), ballot_of(2, 2), one_two, 1), 7);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({2, 1, answer_of(7, ballot_of(2, 2), ballot_of(2, 2), one_two, 1)}));
+    CHECK(sp.recovering());
+    REQUIRE(sp.handle({3, 1, answer_of(7, ballot_of(5, 3), ballot_of(1, 1), {make_entry(1)}, 0)}));
+    CHECK(!sp.recovering());
+    CHECK(sp.get_promise() == ballot_of(5, 3));
+    CHECK(*sp.get_internal_storage().get_promise() == ballot_of(5, 3));
+    CHECK(log_of(sp) == one_two);
+    CHECK(sp.get_accepted_round() == ballot_of(2, 2));
+    const auto out = sp.take_outgoing_messages();
+    CHECK(messages_of<konsens::get_state>(out).empty());
+    CHECK(messages_of<konsens::prepare_req>(out).size() == 2);
+}
+
+// R7 and the rule of follower.rs:13-51: two peers tie, so the lowest id is
+// the source. The node holds the same accepted round as the source, so its
+// get_state starts at its own accepted_idx: its entries up to there are the
+// entries of the source (S5).
+TEST_CASE("get_state goes to the lowest id of a tie and starts at accepted_idx with the same round") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    auto sp = make(3, storage_of(ballot_of(2, 2), ballot_of(2, 2), {make_entry(1)}, 0), 7);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({2, 3, answer_of(7, ballot_of(2, 2), ballot_of(2, 2), one_two, 1)}));
+    REQUIRE(sp.handle({1, 3, answer_of(7, ballot_of(2, 2), ballot_of(2, 2), one_two, 1)}));
+    CHECK(sp.recovering());
+    const auto out = sp.take_outgoing_messages();
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].to == 1);
+    CHECK(std::get<konsens::get_state>(out[0].msg) == konsens::get_state{7, ballot_of(2, 2), 2, 1});
+}
+
+// The rule of follower.rs:13-51 for a lower accepted round: the entries of
+// the node after its decided_idx may differ from those of the source, so
+// get_state starts at decided_idx. The node takes new_state: it keeps its
+// decided prefix, replaces the rest by the entries of the source, takes the
+// accepted round of the source, the higher decided index and the highest
+// promise, in one write.
+TEST_CASE("get_state starts at decided_idx with a lower round, and new_state completes the recovery") {
+    const std::vector source{make_entry(1), make_entry(2), make_entry(3)};
+    auto sp = make(3, storage_of(ballot_of(1, 3), ballot_of(1, 1), {make_entry(1), make_entry(9)}, 1), 7);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({1, 3, answer_of(7, ballot_of(4, 1), ballot_of(2, 2), source, 2)}));
+    REQUIRE(sp.handle({2, 3, answer_of(7, ballot_of(2, 2), ballot_of(1, 1), {make_entry(1)}, 0)}));
+    const auto out = sp.take_outgoing_messages();
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].to == 1);
+    CHECK(std::get<konsens::get_state>(out[0].msg) == konsens::get_state{7, ballot_of(2, 2), 3, 1});
+    REQUIRE(sp.handle({1, 3, new_state_of(7, ballot_of(4, 1), ballot_of(2, 2), source, 2, 1)}));
+    CHECK(!sp.recovering());
+    CHECK(log_of(sp) == source);
+    CHECK(sp.get_accepted_idx() == 3);
+    CHECK(sp.get_accepted_round() == ballot_of(2, 2));
+    CHECK(sp.get_decided_idx() == 2);
+    CHECK(sp.get_promise() == ballot_of(4, 1));
+    const auto& st = sp.get_internal_storage();
+    CHECK(*st.get_accepted_round() == ballot_of(2, 2));
+    CHECK(*st.get_decided_idx() == 2);
+    CHECK(*st.get_promise() == ballot_of(4, 1));
+    CHECK(messages_of<konsens::prepare_req>(sp.take_outgoing_messages()).size() == 2);
+}
+
+// Item 4 of section 2, R12: two answers with one accepted round and one
+// accepted_idx hold the same last entry (S5 with AcceptedIdxIsLogLength).
+// A different CRC32C is a hardware fault. The node stops voting (PAR: it
+// stays silent until it is repaired) with an error value that names both
+// nodes, the index and both CRCs. Pairs with accepted_idx 0 hold no entry
+// and are not compared.
+TEST_CASE("a different CRC32C of one last entry stops voting with the evidence") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    auto empty = make(1, storage_of(ballot_of(1, 2), ballot{}, {}, 0), 7);
+    REQUIRE(empty.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, true, 0, 5}}));
+    REQUIRE(empty.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, true, 0, 6}}));
+    CHECK(empty.votes());
+    CHECK(!empty.recovering());
+
+    auto sp = make(1, storage_of(ballot_of(2, 2), ballot_of(2, 2), one_two, 1), 7);
+    sp.take_outgoing_messages();
+    auto changed = answer_of(7, ballot_of(2, 2), ballot_of(2, 2), one_two, 1);
+    changed.last_crc += 1;
+    REQUIRE(sp.handle({2, 1, changed}));
+    const auto r = sp.handle({3, 1, answer_of(7, ballot_of(2, 2), ballot_of(1, 1), {make_entry(1)}, 0)});
+    REQUIRE(!r);
+    CHECK(r.error() == konsens::paxos_errc::hardware_fault);
+    CHECK(r.error().category().name() == std::string_view{"konsens.paxos"});
+    CHECK(r.error().message() != "Unknown paxos error");
+    CHECK(!sp.votes());
+    const auto fault = sp.get_hardware_fault();
+    REQUIRE(fault);
+    CHECK(fault->index == 2);
+    CHECK(fault->pid == 2);
+    CHECK(fault->crc == changed.last_crc);
+    CHECK(fault->other_pid == 1);
+    CHECK(fault->other_crc == last_crc_of(one_two));
+    CHECK(sp.take_outgoing_messages().empty());
+    CHECK(!sp.handle({2, 1, konsens::recovery{8}}));
+    CHECK(sp.take_outgoing_messages().empty());
+}
+
+namespace {
+
+// Node 3 restarts with an empty log after node 1 and node 2 answered with
+// the logs below; node 1 is the source.
+const std::vector<entry> source_log{make_entry(1), make_entry(2)};
+
+sp_t waiting_for_new_state()
+{
+    auto sp = make(3, storage_of(ballot_of(1, 3), ballot{}, {}, 0), 7);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({1, 3, answer_of(7, ballot_of(2, 1), ballot_of(2, 1), source_log, 1)}));
+    REQUIRE(sp.handle({2, 3, answer_of(7, ballot_of(2, 1), ballot_of(1, 1), {make_entry(1)}, 1)}));
+    const auto gs = messages_of<konsens::get_state>(sp.take_outgoing_messages());
+    REQUIRE(gs.size() == 1);
+    REQUIRE(gs[0] == konsens::get_state{7, ballot_of(2, 1), 2, 0});
+    return sp;
+}
+
+}
+
+// R2: the entries of new_state start at the start index and end at the
+// accepted_idx of the source. A new_state that does not cover that range
+// is a fault of the source (card R1 of the model plan), not a lost message,
+// so the node stops voting with the evidence.
+TEST_CASE("new_state whose entries do not end at its accepted_idx stops voting") {
+    auto sp = waiting_for_new_state();
+    auto ns = new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), source_log, 1, 0);
+    ns.entries.pop_back();
+    const auto r = sp.handle({1, 3, ns});
+    REQUIRE(!r);
+    CHECK(r.error() == konsens::paxos_errc::hardware_fault);
+    REQUIRE(sp.get_hardware_fault());
+    CHECK(sp.get_hardware_fault()->other_pid == 1);
+    CHECK(sp.get_hardware_fault()->index == 2);
+}
+
+// R4: the CRC32C of the last received entry must equal the last_crc of the
+// source. A difference means the entry changed on the way or on the disk of
+// the source, and the node does not take it.
+TEST_CASE("new_state whose last entry has another CRC32C stops voting") {
+    auto sp = waiting_for_new_state();
+    auto ns = new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), source_log, 1, 0);
+    ns.entries.back() = make_entry(9);
+    const auto r = sp.handle({1, 3, ns});
+    REQUIRE(!r);
+    CHECK(r.error() == konsens::paxos_errc::hardware_fault);
+    REQUIRE(sp.get_hardware_fault());
+    CHECK(sp.get_hardware_fault()->crc == konsens::compute_entry_crc(1, make_entry(9)));
+    CHECK(sp.get_hardware_fault()->other_crc == last_crc_of(source_log));
+    CHECK(sp.recovering());
+}
+
+// R4 when new_state sends no entry: the start index is the accepted_idx of
+// the source, so the node compares its own entry at that index.
+TEST_CASE("new_state with no entry is compared with the own entry at its accepted_idx") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    const auto restart = [&one_two] {
+        auto sp = make(3, storage_of(ballot_of(2, 1), ballot_of(2, 1), {make_entry(1), make_entry(5)}, 2), 7);
+        sp.take_outgoing_messages();
+        REQUIRE(sp.handle({1, 3, answer_of(7, ballot_of(3, 1), ballot_of(3, 1), one_two, 2)}));
+        REQUIRE(sp.handle({2, 3, answer_of(7, ballot_of(2, 1), ballot_of(1, 1), {make_entry(1)}, 1)}));
+        const auto gs = messages_of<konsens::get_state>(sp.take_outgoing_messages());
+        REQUIRE(gs.size() == 1);
+        REQUIRE(gs[0].from_idx == 2);
+        return sp;
+    };
+    auto differs = restart();
+    CHECK(!differs.handle({1, 3, new_state_of(7, ballot_of(3, 1), ballot_of(3, 1), one_two, 2, 2)}));
+    CHECK(differs.get_hardware_fault()->crc == konsens::compute_entry_crc(1, make_entry(5)));
+
+    const std::vector one_five{make_entry(1), make_entry(5)};
+    auto same = restart();
+    REQUIRE(same.handle({1, 3, new_state_of(7, ballot_of(3, 1), ballot_of(3, 1), one_five, 2, 2)}));
+    CHECK(!same.recovering());
+    CHECK(log_of(same) == one_five);
+    CHECK(same.get_accepted_round() == ballot_of(3, 1));
+}
+
+// R3: the node takes new_state only from the source it asked, with the
+// nonce and the start index of the current request, and only while it
+// recovers. Any other new_state is a stale or a wrong message and changes
+// nothing; the right one completes the recovery, and a duplicate of it
+// after the recovery changes nothing either.
+TEST_CASE("only the new_state of the current request is taken") {
+    auto sp = waiting_for_new_state();
+    const auto ns = new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), source_log, 1, 0);
+    REQUIRE(sp.handle({2, 3, ns}));
+    auto old = ns;
+    old.nonce = 6;
+    REQUIRE(sp.handle({1, 3, old}));
+    auto other_start = new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), source_log, 1, 1);
+    REQUIRE(sp.handle({1, 3, other_start}));
+    CHECK(sp.recovering());
+    CHECK(sp.take_outgoing_messages().empty());
+    REQUIRE(sp.handle({1, 3, ns}));
+    CHECK(!sp.recovering());
+    CHECK(log_of(sp) == source_log);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({1, 3, new_state_of(7, ballot_of(9, 1), ballot_of(9, 1), {make_entry(7)}, 1, 0)}));
+    CHECK(log_of(sp) == source_log);
+    CHECK(sp.get_promise() == ballot_of(2, 1));
+    CHECK(sp.take_outgoing_messages().empty());
+}
+
+// R5: a lost get_state or new_state is sent again. The timeout sends
+// get_state of the current request again, and Recovery to every peer, so
+// that a source that became a primary in the meantime is seen by the normal
+// recovery.
+TEST_CASE("the timeout sends get_state again while the node waits for new_state") {
+    auto sp = waiting_for_new_state();
+    REQUIRE(sp.resend_message_timeout());
+    const auto out = sp.take_outgoing_messages();
+    const auto gs = messages_of<konsens::get_state>(out);
+    REQUIRE(gs.size() == 1);
+    CHECK(gs[0] == konsens::get_state{7, ballot_of(2, 1), 2, 0});
+    CHECK(messages_of<konsens::recovery>(out).size() == 2);
+}
+
+// R6: a source whose state changed after its answer answers get_state with
+// its new values and no entries. The node replaces the answer of the source
+// with these values, selects again, and asks with the new values; the old
+// request is void.
+TEST_CASE("a changed source gives a new selection") {
+    auto sp = waiting_for_new_state();
+    const std::vector three{make_entry(1), make_entry(2), make_entry(3)};
+    auto changed = new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), three, 2, 0);
+    changed.entries.clear();
+    REQUIRE(sp.handle({1, 3, changed}));
+    CHECK(sp.recovering());
+    const auto gs = messages_of<konsens::get_state>(sp.take_outgoing_messages());
+    REQUIRE(gs.size() == 1);
+    CHECK(gs[0] == konsens::get_state{7, ballot_of(2, 1), 3, 0});
+    REQUIRE(sp.handle({1, 3, new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), three, 2, 0)}));
+    CHECK(!sp.recovering());
+    CHECK(log_of(sp) == three);
+}
+
+// Seed 223 of counter_stress with --power-loss 10: node 3 asked node 1
+// with accepted_idx 2. Node 1 had moved to 3 and answered that request with
+// its new values and no entry. Before that answer arrived, a new answer of
+// node 1 to Recovery made node 3 ask again with accepted_idx 3. The old
+// new_state then has the nonce, the start index and the values of the
+// current request, but no entry. Section 7 R3 cannot tell it from a full
+// answer, and R2 would report a hardware fault that does not exist. A
+// new_state with no entry below its accepted_idx is the answer of a changed
+// source to an older request, so the node drops it and waits for the answer
+// to the current request.
+TEST_CASE("a new_state with no entry below its accepted_idx answers an older request and is dropped") {
+    auto sp = waiting_for_new_state();
+    const std::vector three{make_entry(1), make_entry(2), make_entry(3)};
+    REQUIRE(sp.handle({1, 3, answer_of(7, ballot_of(2, 1), ballot_of(2, 1), three, 2)}));
+    const auto gs = messages_of<konsens::get_state>(sp.take_outgoing_messages());
+    REQUIRE(gs.size() == 1);
+    REQUIRE(gs[0] == konsens::get_state{7, ballot_of(2, 1), 3, 0});
+    auto stale = new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), three, 2, 0);
+    stale.entries.clear();
+    REQUIRE(sp.handle({1, 3, stale}));
+    CHECK(sp.votes());
+    CHECK(sp.recovering());
+    CHECK(sp.take_outgoing_messages().empty());
+    REQUIRE(sp.handle({1, 3, new_state_of(7, ballot_of(2, 1), ballot_of(2, 1), three, 2, 0)}));
+    CHECK(!sp.recovering());
+    CHECK(log_of(sp) == three);
+}
+
+// R11 and item 4 of section 2: a source answers get_state whether it
+// recovers or not, and changes no state. With the expected values it sends
+// its entries from the start index; with other values it sends its own
+// values and no entry.
+TEST_CASE("a recovering node answers get_state and changes no state") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    auto sp = make(1, storage_of(ballot_of(2, 1), ballot_of(2, 1), one_two, 1), 4);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({3, 1, konsens::get_state{9, ballot_of(2, 1), 2, 1}}));
+    auto out = sp.take_outgoing_messages();
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].to == 3);
+    CHECK(std::get<konsens::new_state>(out[0].msg) == new_state_of(9, ballot_of(2, 1), ballot_of(2, 1), one_two, 1, 1));
+    REQUIRE(sp.handle({3, 1, konsens::get_state{9, ballot_of(2, 1), 3, 1}}));
+    out = sp.take_outgoing_messages();
+    REQUIRE(out.size() == 1);
+    auto changed = new_state_of(9, ballot_of(2, 1), ballot_of(2, 1), one_two, 1, 1);
+    changed.entries.clear();
+    CHECK(std::get<konsens::new_state>(out[0].msg) == changed);
+    CHECK(sp.recovering());
+    CHECK(log_of(sp) == one_two);
+    CHECK(sp.get_promise() == ballot_of(2, 1));
+}
+
+// R13: node 2 recovers. It answers get_state of node 3 with its entries,
+// then completes its own recovery with node 1 as its source. Its answer
+// changed none of its state, so its recovery takes the state of node 1.
+TEST_CASE("a source that answered get_state completes its recovery with another source") {
+    const std::vector one_two{make_entry(1), make_entry(2)};
+    const std::vector one_two_three{make_entry(1), make_entry(2), make_entry(3)};
+    auto sp = make(2, storage_of(ballot_of(2, 1), ballot_of(2, 1), one_two, 1), 4);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({3, 2, konsens::get_state{9, ballot_of(2, 1), 2, 0}}));
+    CHECK(messages_of<konsens::new_state>(sp.take_outgoing_messages()).size() == 1);
+    REQUIRE(sp.handle({1, 2, answer_of(4, ballot_of(3, 1), ballot_of(3, 1), one_two_three, 2)}));
+    REQUIRE(sp.handle({3, 2, answer_of(4, ballot_of(2, 1), ballot{}, {}, 0)}));
+    const auto gs = messages_of<konsens::get_state>(sp.take_outgoing_messages());
+    REQUIRE(gs.size() == 1);
+    CHECK(gs[0] == konsens::get_state{4, ballot_of(3, 1), 3, 1});
+    REQUIRE(sp.handle({1, 2, new_state_of(4, ballot_of(3, 1), ballot_of(3, 1), one_two_three, 2, 1)}));
+    CHECK(!sp.recovering());
+    CHECK(log_of(sp) == one_two_three);
+    CHECK(sp.get_accepted_round() == ballot_of(3, 1));
+}
+
+// R13: the power-loss path also runs outside a power loss. Node 3 is the
+// leader and restarts; nodes 1 and 2 are its followers in Accept, so no
+// peer is a primary. Each peer answers with recovering = false and no log.
+// With an answer of every peer and no primary, node 3 recovers: its log is
+// as long as theirs in the same round, so it is its own source. After a new
+// election, the cluster decides a new entry.
+TEST_CASE("one node restarts while no peer is a primary, and the power-loss path recovers it") {
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(make_entry(1)));
+    deliver_all(nodes);
+    c = make(3, c.get_internal_storage(), 2);
+    REQUIRE(c.recovering());
+    deliver_all(nodes);
+    CHECK(!c.recovering());
+    CHECK(log_of(c) == std::vector{make_entry(1)});
+    CHECK(c.get_accepted_round() == ballot_of(1, 3));
+    REQUIRE(a.handle_leader(ballot_of(2, 1)));
+    deliver_all(nodes);
+    REQUIRE(a.append(make_entry(2)));
+    deliver_all(nodes);
+    for (const auto* n : nodes) {
+        CHECK(decided_of(*n) == std::vector{make_entry(1), make_entry(2)});
     }
 }
 

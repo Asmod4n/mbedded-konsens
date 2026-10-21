@@ -10,6 +10,7 @@
 #include <ranges>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -21,6 +22,41 @@
 #include "konsens/storage.hpp"
 
 namespace konsens {
+
+enum class paxos_errc { hardware_fault = 1 };
+
+class paxos_error_category final : public std::error_category {
+public:
+    const char* name() const noexcept override { return "konsens.paxos"; }
+
+    std::string message(const int code) const override
+    {
+        switch (static_cast<paxos_errc>(code)) {
+        case paxos_errc::hardware_fault:
+            return "Two nodes disagree on an entry that the protocol keeps equal; the node stops voting";
+        }
+        return "Unknown paxos error";
+    }
+};
+
+inline const std::error_category& paxos_category() noexcept
+{
+    static const paxos_error_category category;
+    return category;
+}
+
+inline std::error_code make_error_code(const paxos_errc code) noexcept
+{
+    return {static_cast<int>(code), paxos_category()};
+}
+
+struct hardware_fault {
+    std::uint64_t index;
+    node_id pid;
+    std::uint32_t crc;
+    node_id other_pid;
+    std::uint32_t other_crc;
+};
 
 enum class role : std::uint8_t { follower, leader };
 
@@ -252,7 +288,8 @@ public:
         if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) [[unlikely]] {
             return {};
         }
-        if (recovering_ && !std::is_same_v<T, recovery> && !std::is_same_v<T, recovery_response>) {
+        if (recovering_ && !std::is_same_v<T, recovery> && !std::is_same_v<T, recovery_response> &&
+            !std::is_same_v<T, konsens::get_state> && !std::is_same_v<T, new_state>) {
             return {};
         }
         if constexpr (std::is_same_v<T, prepare_req>) {
@@ -277,8 +314,10 @@ public:
             return handle_recovery(msg, from);
         } else if constexpr (std::is_same_v<T, recovery_response>) {
             return handle_recovery_response(msg, from);
-        } else if constexpr (std::is_same_v<T, konsens::get_state> || std::is_same_v<T, new_state>) {
-            return {};
+        } else if constexpr (std::is_same_v<T, konsens::get_state>) {
+            return handle_get_state(msg, from);
+        } else if constexpr (std::is_same_v<T, new_state>) {
+            return handle_new_state(msg, from);
         } else if constexpr (std::is_same_v<T, read_index_request>) {
             handle_read_index_request(msg, from);
             return {};
@@ -351,6 +390,9 @@ public:
         }
         if (recovering_) {
             send_recovery_to_all_peers();
+            if (state_request_) {
+                outgoing_.push_back({pid_, state_request_->first, state_request_->second});
+            }
             return {};
         }
         if (state_.first == role::leader) {
@@ -440,6 +482,7 @@ public:
     bool votes() const { return !error_; }
     bool recovering() const { return recovering_; }
     std::optional<std::error_code> get_error() const { return error_; }
+    std::optional<konsens::hardware_fault> get_hardware_fault() const { return hardware_fault_; }
 
     void reconnected(const node_id pid)
     {
@@ -465,6 +508,12 @@ private:
     {
         error_ = e;
         return std::unexpected(e);
+    }
+
+    std::unexpected<std::error_code> stop_voting(const konsens::hardware_fault& fault)
+    {
+        hardware_fault_ = fault;
+        return stop_voting(make_error_code(paxos_errc::hardware_fault));
     }
 
     std::expected<konsens::log_sync, std::error_code> create_log_sync(std::uint64_t common_prefix_idx) const
@@ -783,13 +832,135 @@ private:
         if (!recovering_ || resp.nonce != nonce_) {
             return {};
         }
+        keep_recovery_response(from, resp);
+        return select_recovery_source();
+    }
+
+    void keep_recovery_response(const node_id from, const recovery_response& resp)
+    {
         std::erase_if(recovery_responses_, [from](const auto& r) { return r.first == from; });
         recovery_responses_.emplace_back(from, resp);
-        const auto* l = find_recovery_primary();
-        if (l == nullptr) {
+    }
+
+    result select_recovery_source()
+    {
+        state_request_.reset();
+        if (const auto* l = find_recovery_primary()) {
+            return complete_recovery(0, l->log, std::max(promise_, l->promise), l->n_accepted, l->decided_idx);
+        }
+        if (recovery_responses_.size() < peers_.size() ||
+            std::ranges::any_of(recovery_responses_, [](const auto& r) { return r.second.primary; })) {
             return {};
         }
-        return complete_recovery(0, l->log, std::max(promise_, l->promise), l->n_accepted, l->decided_idx);
+        const auto last_crc = internal_storage_.get_last_entry_crc();
+        if (!last_crc) [[unlikely]] {
+            return stop_voting(last_crc.error());
+        }
+        auto all = recovery_responses_;
+        all.emplace_back(pid_, recovery_response{nonce_, promise_, false, accepted_round_, {}, decided_idx_, true,
+                                                 accepted_idx_, *last_crc});
+        if (const auto fault = find_hardware_fault(all)) [[unlikely]] {
+            return stop_voting(*fault);
+        }
+        const auto pr = std::ranges::max(all | std::views::values | std::views::transform(&recovery_response::promise));
+        const auto& [source, l] = *std::ranges::min_element(all, [this](const auto& x, const auto& y) {
+            if (x.second.n_accepted != y.second.n_accepted) {
+                return x.second.n_accepted > y.second.n_accepted;
+            }
+            if (x.second.accepted_idx != y.second.accepted_idx) {
+                return x.second.accepted_idx > y.second.accepted_idx;
+            }
+            if ((x.first == pid_) != (y.first == pid_)) {
+                return x.first == pid_;
+            }
+            return x.first < y.first;
+        });
+        if (source == pid_) {
+            return complete_recovery(accepted_idx_, {}, pr, accepted_round_, decided_idx_);
+        }
+        const auto from_idx = accepted_round_ == l.n_accepted ? accepted_idx_ : decided_idx_;
+        state_request_.emplace(source, konsens::get_state{nonce_, l.n_accepted, l.accepted_idx, from_idx});
+        outgoing_.push_back({pid_, source, state_request_->second});
+        return {};
+    }
+
+    static std::optional<konsens::hardware_fault>
+    find_hardware_fault(const std::span<const std::pair<node_id, recovery_response>> all)
+    {
+        for (const auto& [i, a] : std::views::enumerate(all)) {
+            for (const auto& b : all.subspan(static_cast<std::size_t>(i) + 1)) {
+                if (a.second.accepted_idx > 0 && a.second.n_accepted == b.second.n_accepted &&
+                    a.second.accepted_idx == b.second.accepted_idx && a.second.last_crc != b.second.last_crc)
+                    [[unlikely]] {
+                    return konsens::hardware_fault{a.second.accepted_idx, a.first, a.second.last_crc, b.first,
+                                                   b.second.last_crc};
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    result handle_get_state(const konsens::get_state& req, const node_id from)
+    {
+        const auto last_crc = internal_storage_.get_last_entry_crc();
+        if (!last_crc) [[unlikely]] {
+            return stop_voting(last_crc.error());
+        }
+        std::vector<entry> entries;
+        if (accepted_round_ == req.n_accepted && accepted_idx_ == req.accepted_idx) {
+            auto e = internal_storage_.get_entries(std::min(req.from_idx, accepted_idx_), accepted_idx_);
+            if (!e) [[unlikely]] {
+                return stop_voting(e.error());
+            }
+            entries = std::move(*e);
+        }
+        outgoing_.push_back({pid_, from,
+                             new_state{req.nonce, promise_, accepted_round_, accepted_idx_, decided_idx_, *last_crc,
+                                       req.from_idx, std::move(entries)}});
+        return {};
+    }
+
+    result handle_new_state(const new_state& ns, const node_id from)
+    {
+        if (!recovering_ || !state_request_ || state_request_->first != from) {
+            return {};
+        }
+        const auto& req = state_request_->second;
+        if (ns.nonce != req.nonce || ns.from_idx != req.from_idx) {
+            return {};
+        }
+        if (ns.n_accepted != req.n_accepted || ns.accepted_idx != req.accepted_idx) {
+            const auto old = std::ranges::find(recovery_responses_, from, [](const auto& r) { return r.first; });
+            const bool source_recovering = old == recovery_responses_.end() || old->second.recovering;
+            keep_recovery_response(from, recovery_response{nonce_, ns.promise, false, ns.n_accepted, {}, ns.decided_idx,
+                                                           source_recovering, ns.accepted_idx, ns.last_crc});
+            return select_recovery_source();
+        }
+        if (ns.entries.empty() && ns.from_idx < ns.accepted_idx) {
+            return {};
+        }
+        if (ns.from_idx > ns.accepted_idx || ns.from_idx + ns.entries.size() != ns.accepted_idx) [[unlikely]] {
+            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, 0, from, ns.last_crc});
+        }
+        std::uint32_t crc = 0;
+        if (!ns.entries.empty()) {
+            crc = compute_entry_crc(ns.accepted_idx - 1, ns.entries.back());
+        } else if (ns.accepted_idx > 0) {
+            const auto own = internal_storage_.get_entries(ns.accepted_idx - 1, ns.accepted_idx);
+            if (!own) [[unlikely]] {
+                return stop_voting(own.error());
+            }
+            if (!own->empty()) {
+                crc = compute_entry_crc(ns.accepted_idx - 1, own->front());
+            }
+        }
+        if (crc != ns.last_crc) [[unlikely]] {
+            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, crc, from, ns.last_crc});
+        }
+        const auto answered = std::ranges::max(recovery_responses_ | std::views::values |
+                                               std::views::transform(&recovery_response::promise));
+        const auto pr = std::max({promise_, ns.promise, answered});
+        return complete_recovery(ns.from_idx, ns.entries, pr, ns.n_accepted, ns.decided_idx);
     }
 
     const recovery_response* find_recovery_primary()
@@ -827,6 +998,7 @@ private:
         leader_state_ = leader_state::with(pr, nodes_);
         recovering_ = false;
         recovery_responses_.clear();
+        state_request_.reset();
         send_preparereq_to_all_peers();
         return {};
     }
@@ -943,9 +1115,14 @@ private:
     bool recovering_{};
     std::uint64_t nonce_{};
     std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
+    std::optional<std::pair<node_id, konsens::get_state>> state_request_;
+    std::optional<konsens::hardware_fault> hardware_fault_;
     std::vector<pending_read> read_pending_;
     konsens::read_round read_round_{};
     std::vector<indexed_read> indexed_reads_;
 };
 
 }
+
+template <>
+struct std::is_error_code_enum<konsens::paxos_errc> : std::true_type {};
