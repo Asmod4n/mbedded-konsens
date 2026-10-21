@@ -13,7 +13,8 @@ CONSTANTS
   \* @typeAlias: msg = {type: Str, n: Int, decided_idx: Int, n_accepted: Int,
   \*   accepted_idx: Int, log_sync: Seq($logSync), seq_num: $seqNum,
   \*   entries: Seq($entry), nonce: Int, promise: Int, primary: Bool,
-  \*   log: Seq($entry), read: Int, id: Int, reads: Set(Int), read_index: Int};
+  \*   log: Seq($entry), read: Int, id: Int, reads: Set(Int), read_index: Int,
+  \*   recovering: Bool};
   \* @typeAlias: promiseMeta = {state: Str, n_accepted: Int, accepted_idx: Int, decided_idx: Int};
   \* @typeAlias: maxMeta = {n_accepted: Int, accepted_idx: Int, decided_idx: Int, pid: Int};
   \* @typeAlias: leaderState = {n_leader: Int, promises_meta: Int -> $promiseMeta,
@@ -65,6 +66,8 @@ CONSTANTS
   MaxRollback,
   \* @type: Bool;
   Recovery,
+  \* @type: Bool;
+  PowerLoss,
   \* @type: Str;
   Mutation,
   \* @type: Bool;
@@ -148,6 +151,8 @@ VARIABLES
   \* @type: Int -> Set($response);
   recovery_responses,
   \* @type: Set(Int);
+  power_loss_completed,
+  \* @type: Set(Int);
   rolled_back,
   \* @type: Int -> Set($durable);
   past_durable,
@@ -207,7 +212,7 @@ volatile == <<role, phase, accepted_idx, current_seq_num,
               cached_promise_message, buffered_proposals, leader_state>>
 env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections>>
 ghost    == <<proposed, decided_history, decided_ballot>>
-recovery == <<recovering, nonce, recovery_responses>>
+recovery == <<recovering, nonce, recovery_responses, power_loss_completed>>
 rollback == <<rolled_back, past_durable>>
 readvars == <<reads, read_pending, read_round>>
 reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
@@ -288,7 +293,7 @@ EmptyMessage ==
   [type |-> "", n |-> DefaultBallot, decided_idx |-> 0, n_accepted |-> DefaultBallot,
    accepted_idx |-> 0, log_sync |-> <<>>, seq_num |-> DefaultSeq, entries |-> <<>>,
    nonce |-> 0, promise |-> DefaultBallot, primary |-> FALSE, log |-> <<>>,
-   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0]
+   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0, recovering |-> FALSE]
 
 \* util.rs:96-108 LeaderState::with
 \* @type: Int => $leaderState;
@@ -419,12 +424,14 @@ RecoveryMsg(x) == [EmptyMessage EXCEPT !.type = "Recovery", !.nonce = x]
 
 \* @type: (Int, Int) => $msg;
 RecoveryResponseMsg(k, x) ==
-  LET primary == role[k] = "Leader" /\ phase[k] = "Accept" IN
+  LET primary == role[k] = "Leader" /\ phase[k] = "Accept"
+      full    == primary \/ PowerLoss IN
   [EmptyMessage EXCEPT !.type = "RecoveryResponse", !.nonce = x, !.promise = promise[k],
    !.primary = primary,
-   !.n_accepted = IF primary THEN n_accepted[k] ELSE DefaultBallot,
-   !.log = IF primary THEN log[k] ELSE <<>>,
-   !.decided_idx = IF primary THEN decided_idx[k] ELSE 0]
+   !.n_accepted = IF full THEN n_accepted[k] ELSE DefaultBallot,
+   !.log = IF full THEN log[k] ELSE <<>>,
+   !.decided_idx = IF full THEN decided_idx[k] ELSE 0,
+   !.recovering = PowerLoss /\ recovering[k]]
 
 \* The answers are complete with f + 1 = Majority answers from other nodes,
 \* one of them from the primary of the highest ballot among the answers.
@@ -434,6 +441,27 @@ RecoveryPrimaries(rs) ==
   IN {r \in rs : r.primary /\ r.promise = mp /\ BallotPid(mp) = r.from}
 \* @type: (Set($response), Int) => Bool;
 RecoveryComplete(rs, i) == Cardinality(rs) >= Majority(i) /\ RecoveryPrimaries(rs) # {}
+
+(* Recovery after a restart of every node (owner, 2026-10-19 and           *)
+(* 2026-10-21; plan model/plan-power-loss.md; provisional name PowerLoss).  *)
+(* With an answer from every peer and no primary among them, the node with  *)
+(* the highest (n_accepted, accepted_idx) among the answers and the node    *)
+(* itself is the source, the rule by which Prepare/Promise of Omni-Paxos    *)
+(* picks a log. Mutation PowerLossWithF completes with f answers.           *)
+\* @type: (Set($response), Int) => Bool;
+PowerLossComplete(rs, i) ==
+  /\ PowerLoss
+  /\ \A r \in rs : ~r.primary
+  /\ IF Mutation = "PowerLossWithF"
+     THEN Cardinality(rs) >= Cardinality(ClusterNodes(i)) - Majority(i)
+     ELSE {r.from : r \in rs} = Peers(i)
+\* @type: (Set($response), Int) => $response;
+PowerLossSource(rs, i) ==
+  LET self == [from |-> i, promise |-> promise[i], primary |-> FALSE, n_accepted |-> n_accepted[i],
+               log |-> log[i], decided_idx |-> decided_idx[i]]
+      all  == rs \cup {self}
+  IN CHOOSE x \in all : \A y \in all :
+       x.n_accepted > y.n_accepted \/ (x.n_accepted = y.n_accepted /\ Len(x.log) >= Len(y.log))
 
 (* Read index, plan item 30, run (e). Omni-Paxos 532ff79 has no read. Names *)
 (* from Raft (Ongaro, dissertation 2014, section 6.4): readIndex, heartbeat. *)
@@ -520,6 +548,7 @@ Init ==
   /\ recovering = [i \in Servers |-> FALSE]
   /\ nonce = [i \in Servers |-> 0]
   /\ recovery_responses = [i \in Servers |-> {}]
+  /\ power_loss_completed = {}
   /\ rolled_back = {}
   /\ past_durable = [i \in Servers |-> {}]
   /\ client = [session |-> 0, request_number |-> 1, sends |-> 0]
@@ -939,13 +968,19 @@ HandleRecoveryResponse(i, j, m, c) ==
   ELSE LET r  == [from |-> j, promise |-> m.promise, primary |-> m.primary,
                   n_accepted |-> m.n_accepted, log |-> m.log, decided_idx |-> m.decided_idx]
            rs == {x \in recovery_responses[i] : x.from # j} \cup {r}
-       IN IF RecoveryComplete(rs, i)
-          THEN LET l  == CHOOSE x \in RecoveryPrimaries(rs) : TRUE
-                   pr == Max(promise[i], l.promise)
+           normal == RecoveryComplete(rs, i)
+       IN IF normal \/ PowerLossComplete(rs, i)
+          THEN LET l  == IF normal THEN CHOOSE x \in RecoveryPrimaries(rs) : TRUE
+                         ELSE PowerLossSource(rs, i)
+                   pr == IF normal THEN Max(promise[i], l.promise)
+                         ELSE CHOOSE p \in {promise[i]} \cup {x.promise : x \in rs} :
+                                \A x \in rs : p >= promise[i] /\ p >= x.promise
+                   di == IF DecidedIdxMonotone THEN Max(decided_idx[i], l.decided_idx)
+                         ELSE l.decided_idx
                IN /\ promise' = [promise EXCEPT ![i] = pr]
                   /\ n_accepted' = [n_accepted EXCEPT ![i] = l.n_accepted]
                   /\ log' = [log EXCEPT ![i] = l.log]
-                  /\ decided_idx' = [decided_idx EXCEPT ![i] = l.decided_idx]
+                  /\ decided_idx' = [decided_idx EXCEPT ![i] = di]
                   /\ role' = [role EXCEPT ![i] = "Follower"]
                   /\ phase' = [phase EXCEPT ![i] = "Recover"]
                   /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(l.log)]
@@ -955,11 +990,14 @@ HandleRecoveryResponse(i, j, m, c) ==
                   /\ leader_state' = [leader_state EXCEPT ![i] = LeaderStateWith(pr)]
                   /\ recovering' = [recovering EXCEPT ![i] = FALSE]
                   /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
+                  /\ power_loss_completed' =
+                       IF ~normal /\ \A k \in ClusterNodes(i) : recovering[k]
+                       THEN power_loss_completed \cup {i} ELSE power_loss_completed
                   /\ chan' = Send(c, i, [k \in Peers(i) |-> <<PrepareReqMsg(pr)>>])
                   /\ UNCHANGED nonce
           ELSE /\ recovery_responses' = [recovery_responses EXCEPT ![i] = rs]
                /\ chan' = c
-               /\ UNCHANGED <<durable, volatile, recovering, nonce>>
+               /\ UNCHANGED <<durable, volatile, recovering, nonce, power_loss_completed>>
 
 \* Raft 6.4.1: a follower asks the leader for the read index of read r.
 \* The leader takes r into the next round. A node that is no leader drops it.
@@ -1106,7 +1144,7 @@ HandleDeactivated(i, c) ==
 Dispatch(i, j, m, c) ==
   IF m.type = "RecoveryResponse"
   THEN HandleRecoveryResponse(i, j, m, c) /\ UNCHANGED <<readvars, buffered_stopsign>>
-  ELSE IF recovering[i]
+  ELSE IF recovering[i] /\ ~(PowerLoss /\ m.type = "Recovery")
   THEN /\ chan' = c
        /\ UNCHANGED <<durable, volatile, recovery, readvars, buffered_stopsign>>
   ELSE IF m.type = "Recovery"
@@ -1246,6 +1284,7 @@ Restart(R, d, Q, rec) ==
   /\ recovering' = At(recovering, [k \in R |-> rec /\ k \notin Q])
   /\ nonce' = At(nonce, [k \in R |-> IF rec /\ k \notin Q THEN nonce[k] + 1 ELSE nonce[k]])
   /\ recovery_responses' = At(recovery_responses, [k \in R |-> {}])
+  /\ UNCHANGED power_loss_completed
   /\ read_pending' = At(read_pending, [k \in R |-> {}])
   /\ read_round' = At(read_round, [k \in R |-> [read_round[k] EXCEPT !.reads = {}, !.acks = {}]])
   /\ UNCHANGED reads
@@ -1302,6 +1341,7 @@ Wipe(i) ==
   /\ leader_state' = [leader_state EXCEPT ![i] = LeaderStateWith(DefaultBallot)]
   /\ recovering' = [recovering EXCEPT ![i] = FALSE]
   /\ recovery_responses' = [recovery_responses EXCEPT ![i] = {}]
+  /\ UNCHANGED power_loss_completed
   /\ read_pending' = [read_pending EXCEPT ![i] = {}]
   /\ read_round' = [read_round EXCEPT ![i].reads = {}, ![i].acks = {}]
   /\ deactivated' = IF Mutation = "StopSignLost" THEN [deactivated EXCEPT ![i] = FALSE]
@@ -1329,9 +1369,8 @@ ResendMessageTimeout(i) ==
   /\ timeouts < MaxTimeout
   /\ timeouts' = timeouts + 1
   /\ IF recovering[i]
-     THEN LET open == {k \in Peers(i) : \A r \in recovery_responses[i] : r.from # k}
-          IN /\ chan' = Send(chan, i, [k \in open |-> <<RecoveryMsg(nonce[i])>>])
-             /\ UNCHANGED <<durable, volatile>>
+     THEN /\ chan' = Send(chan, i, [k \in Peers(i) |-> <<RecoveryMsg(nonce[i])>>])
+          /\ UNCHANGED <<durable, volatile>>
      ELSE IF role[i] = "Leader"
      THEN IF phase[i] \in {"Prepare", "Accept"}
           THEN LET ls == leader_state[i]
@@ -2372,12 +2411,17 @@ View ==
     chan, env, ghost,
     recovering, nonce,
     [i \in Servers |-> IF recovering[i] THEN recovery_responses[i] ELSE {}],
-    rollback, client, readvars, buffered_stopsign, reconfig, leasevars, leaseghost>>
+    power_loss_completed, rollback, client, readvars, buffered_stopsign, reconfig, leasevars, leaseghost>>
 \* Cover of doc/plan-decide-on-resend.md: a follower in Recover at sequence
 \* number {1, 2} with decided index 0 while a leader in Accept has decided
 \* index 1. A run must violate it.
 NoSeed4 == ~\E k, l \in Nodes : role[k] = "Follower" /\ phase[k] = "Recover"
              /\ current_seq_num[k] = [session |-> 1, counter |-> 2] /\ decided_idx[k] = 0
              /\ role[l] = "Leader" /\ phase[l] = "Accept" /\ decided_idx[l] = 1
+
+\* Reach check of the power-loss mode (plan-power-loss.md R7): a run must
+\* violate it, so that a node completes in that mode while every node of
+\* its configuration recovers.
+NoPowerLossCompletion == power_loss_completed = {}
 
 =============================================================================

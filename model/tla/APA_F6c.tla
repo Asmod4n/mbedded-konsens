@@ -21,6 +21,7 @@ OVERRIDE_RuleR == TRUE
 OVERRIDE_DecidedIdxMonotone == TRUE
 OVERRIDE_MaxRollback == 2
 OVERRIDE_Recovery == TRUE
+OVERRIDE_PowerLoss == FALSE
 OVERRIDE_Mutation == "none"
 OVERRIDE_ClientSessions == FALSE
 OVERRIDE_MaxClientSend == 0
