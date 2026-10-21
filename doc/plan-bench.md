@@ -1,0 +1,117 @@
+# Plan: a bench of each part of a write
+
+Source: the owner, 2026-10-21 16:29 (UTC+2): a bench harness that shows
+how fast each part is and where the time goes. This plan gets one
+review before the build.
+
+## 1. Facts checked in this session
+
+- `bench/` holds only `results/`. A bench of 2026-10-20 measured
+  decode plus handle of a follower; its code was deleted after the run,
+  as the rules say for a bench outside the tree.
+- `CMakeLists.txt:26-45`: tests and examples come from a glob; there is
+  no bench target.
+- `storage.hpp:107-113`: `write_atomically(std::span<const storage_op>)`
+  is the one write of a store. `persistent_storage` commits it with a
+  synchronous LMDB commit.
+- `wire.hpp`: `encode(const message&)` and `decode(std::string)`.
+- `node.hpp`: `tick`, `handle`, `client_request`, `client_query`,
+  `take_outgoing_messages`, `take_client_replies`.
+- `bench/results/2026-10-21-092557Z.txt`: the form of a result file with
+  its context (user bench, setpriv, A/A pair, rounds, raw lines).
+
+## 2. Change
+
+1. `bench/konsens_bench.cpp`, one binary in the tree, built only with
+   `-DKONSENS_BENCH=ON`. It takes the name of one case, the number of
+   samples and the size of the payload, and prints one line: the case,
+   the time of one operation as median, minimum and maximum of the
+   samples, and the number of operations in a sample.
+2. Cases, each one part of a write:
+   - `crc32c`: CRC32C of one payload.
+   - `encode_accept_decide`, `decode_accept_decide`: one AcceptDecide
+     with 64 entries of the payload size; `encode_decide`,
+     `decode_decide`.
+   - `handle_accept_decide`, `handle_decide`: a follower in
+     (Follower, Accept) on a store that counts the bytes.
+   - `commit_memory`, `commit_lmdb`: `write_atomically` of one
+     `append_entries` with one entry, on `memory_storage` and on
+     `persistent_storage` in a directory that the run names.
+   - `write_memory`, `write_lmdb`: three nodes in one process, the
+     network a queue; one `client_request` at a follower until its
+     reply.
+   - `read_memory`, `read_lmdb`: one `client_query` at a follower until
+     its reply.
+   - `write_batch_memory`, `write_batch_lmdb`: 64 requests sent before
+     the first round, the time until the last reply, divided by 64.
+3. `bench/run.sh`: builds the bench in podman (image
+   localhost/cxx-matrix, g++ 16, Release `-O2 -DNDEBUG`), runs each case
+   as the user bench through setpriv, 7 rounds with the order of the
+   cases turned around each second round, and writes one result file
+   `bench/results/<UTC>.txt` with the context of the rules and the raw
+   lines. The binary that the run builds is its own A/A pair: the first
+   case of each round runs twice.
+4. The run length is 31 samples, as measured for this machine
+   (state file, 2026-10-20). The A/A difference of the run is its noise
+   floor and stands in the file.
+5. The disk of the LMDB cases is the disk of the session. The file
+   names it (file system and device from `/proc/mounts`).
+
+## 3. Tests
+
+The bench checks its own result where a result exists: the CRC of the
+check value, a decoded message equal to the encoded one, a counter
+reply equal to the number of writes. A case whose check fails prints
+the failure and exits with 1.
+
+## 4. Not in this plan
+
+Several processes or machines, a real network, the IO of the binary.
+
+## 5. Order
+
+1. Plan and review.
+2. `konsens_bench.cpp` and the CMake option; one run of each case.
+3. `run.sh`; one full run; the result file.
+4. README: the table of the section Performance from that file.
+
+## 6. Changes after the review
+
+The review (approve with changes, 13 findings) is applied as follows.
+
+- R1: the source is built twice into two binaries, `konsens_bench` and
+  `konsens_bench_aa`. Every case runs in both, and the file gives the
+  A/A difference of each case. The A/A is measured first.
+- R2: each case has a fixed number of operations per sample, chosen so
+  that a sample lasts about 10 ms. The run length of this bench is
+  measured (31 and 101 samples, A/A of each) and goes into the state
+  file.
+- R3: mbedded-konsens builds only with g++ 16 (README, state file), so
+  the table has one column: g++ 16 Release. A second compiler gets a
+  column when the floor changes.
+- R4, R5: the setup of each case is outside the timed part: the
+  election, the registration of the client, `persistent_storage::open`,
+  and the follower brought to (Follower, Accept). A write uses a request
+  number that rises by one. The time runs from the call to its reply.
+- R6: the cluster cases send each message through `encode` and
+  `decode`. They count the rounds and the messages of each write. The
+  file says that the parts do not add up to a write, because a round
+  also carries heartbeats and resends.
+- R7: the decode cases copy the bytes outside the timed part.
+- R8: the LMDB directory is on a mount of the host directory under the
+  scratchpad, owned by user bench. The file gives the file system and
+  the mount options seen inside the container. `map_size` comes from
+  samples, operations and payload.
+- R9: the commit cases open a fresh store for each sample outside the
+  timed part; the cluster cases record the log length at the first and
+  the last sample.
+- R10: `crc32c` times `crc32c::extend`, the form that a write uses
+  today, and its number is throughput over independent payloads.
+- R11: payloads of 64 B, 1 KiB and 64 KiB for `crc32c`, `commit_*` and
+  `write_*`; the AcceptDecide cases take 64 entries of 1 KiB.
+- R12: the bench is committed before the run, and the file names that
+  commit with its dirty mark, the instruction set, the libraries read
+  off the binary, the scheduler, steal ticks and other processes of the
+  user per row, and the free cpus.
+- R13: `handle_*` compares the bytes counted with the bytes sent;
+  `commit_*` compares `get_log_len` after each commit.
