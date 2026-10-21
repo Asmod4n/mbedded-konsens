@@ -28,8 +28,9 @@ So the mutation that always starts at `accepted_idx` breaks the prefix that the 
 
 PowerLoss = FALSE. Breadth-first with `-deadlock`, 3 workers.
 
-- New model (4c357be): 177428893 states generated, 45351136 distinct states found, 0 states left on queue.. The depth of the complete state graph search is 37. No error. Finished in 01h 34min at (2026-10-21 12:02:34)
-- Old model (b1f15d7, before the power-loss change): runs now; its result is added to this file.
+- New model (4c357be): 177428893 states generated, 45351136 distinct states found, 0 states left on queue. The depth of the complete state graph search is 37. No error. Finished in 01h 34min at (2026-10-21 12:02:34)
+- Old model (b1f15d7, before the power-loss change): 176234869 states generated, 45345778 distinct states found, 0 states left on queue. The depth of the complete state graph search is 37. No error. Finished in 01h 32min (start 20261021T120843Z).
+- Both arms hold every property. The new model has 5358 more distinct states. With PowerLoss = FALSE and MaxTimeout = 0, the one change that acts in MC_F6b is that recovery keeps the maximum of its own decided_idx and that of the primary, so the difference is taken to come from that change (inferred, not traced).
 - Run 20261017T052813Z-F6b on the model of that day found 45345778 distinct states.
 
 A first pair of runs without `-deadlock` stopped at a deadlock of the bounds (depth 15 and 14), and a second pair stopped when the disk was full. Neither is a result.
