@@ -127,7 +127,30 @@ struct recovery_response {
     ballot n_accepted;
     std::vector<entry> log;
     std::uint64_t decided_idx;
+    bool recovering;
+    std::uint64_t accepted_idx;
+    std::uint32_t last_crc;
     friend bool operator==(const recovery_response&, const recovery_response&) = default;
+};
+
+struct get_state {
+    std::uint64_t nonce;
+    ballot n_accepted;
+    std::uint64_t accepted_idx;
+    std::uint64_t from_idx;
+    friend bool operator==(const get_state&, const get_state&) = default;
+};
+
+struct new_state {
+    std::uint64_t nonce;
+    ballot promise;
+    ballot n_accepted;
+    std::uint64_t accepted_idx;
+    std::uint64_t decided_idx;
+    std::uint32_t last_crc;
+    std::uint64_t from_idx;
+    std::vector<entry> entries;
+    friend bool operator==(const new_state&, const new_state&) = default;
 };
 
 struct read_index_request {
@@ -154,8 +177,8 @@ struct read_index_reply {
 };
 
 using paxos_msg = std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted,
-                               decide, not_accepted, proposal_forward, recovery, recovery_response,
-                               read_index_request, heartbeat, heartbeat_ack, read_index_reply>;
+                               decide, not_accepted, proposal_forward, recovery, recovery_response, get_state,
+                               new_state, read_index_request, heartbeat, heartbeat_ack, read_index_reply>;
 
 struct paxos_message {
     node_id from;

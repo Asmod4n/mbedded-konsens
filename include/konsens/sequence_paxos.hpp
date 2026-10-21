@@ -277,6 +277,8 @@ public:
             return handle_recovery(msg, from);
         } else if constexpr (std::is_same_v<T, recovery_response>) {
             return handle_recovery_response(msg, from);
+        } else if constexpr (std::is_same_v<T, konsens::get_state> || std::is_same_v<T, new_state>) {
+            return {};
         } else if constexpr (std::is_same_v<T, read_index_request>) {
             handle_read_index_request(msg, from);
             return {};
@@ -768,7 +770,8 @@ private:
         }
         outgoing_.push_back({pid_, from,
                              recovery_response{rec.nonce, promise_, primary, primary ? accepted_round_ : ballot{},
-                                               std::move(log), primary ? decided_idx_ : 0}});
+                                               std::move(log), primary ? decided_idx_ : 0, false,
+                                               primary ? accepted_idx_ : 0, 0}});
         return {};
     }
 

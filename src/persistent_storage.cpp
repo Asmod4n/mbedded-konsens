@@ -2,8 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
-#include <concepts>
 #include <cstdlib>
 #include <format>
 #include <iostream>
@@ -18,6 +16,7 @@
 
 #include <lmdb.h>
 
+#include "byte_order.hpp"
 #include "konsens/crc32c.hpp"
 #include "konsens/entry_range.hpp"
 
@@ -37,11 +36,6 @@ constexpr std::string_view accepted_round_key = "accepted_round";
 constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
 constexpr std::size_t crc_size = sizeof(std::uint32_t);
-constexpr std::size_t field_size = sizeof(std::uint64_t);
-constexpr std::size_t max_field_count = 2;
-
-using entry_fields = std::array<std::uint64_t, max_field_count>;
-
 constexpr std::size_t config_id_offset = 0;
 constexpr std::size_t n_offset = config_id_offset + sizeof(ballot::config_id);
 constexpr std::size_t priority_offset = n_offset + sizeof(ballot::n);
@@ -78,34 +72,6 @@ std::error_code to_error_code(const int lmdb_status) noexcept {
         return {lmdb_status, std::generic_category()};
     }
     return {lmdb_status, lmdb_category()};
-}
-
-template <std::unsigned_integral T>
-std::array<std::byte, sizeof(T)> to_little_endian(const T value) noexcept {
-    const T ordered = std::endian::native == std::endian::little ? value : std::byteswap(value);
-    return std::bit_cast<std::array<std::byte, sizeof(T)>>(ordered);
-}
-
-template <std::unsigned_integral T>
-std::array<std::byte, sizeof(T)> to_big_endian(const T value) noexcept {
-    const T ordered = std::endian::native == std::endian::big ? value : std::byteswap(value);
-    return std::bit_cast<std::array<std::byte, sizeof(T)>>(ordered);
-}
-
-template <std::unsigned_integral T>
-T from_little_endian(const std::span<const std::byte, sizeof(T)> bytes) noexcept {
-    std::array<std::byte, sizeof(T)> copy{};
-    std::ranges::copy(bytes, copy.begin());
-    const T value = std::bit_cast<T>(copy);
-    return std::endian::native == std::endian::little ? value : std::byteswap(value);
-}
-
-template <std::unsigned_integral T>
-T from_big_endian(const std::span<const std::byte, sizeof(T)> bytes) noexcept {
-    std::array<std::byte, sizeof(T)> copy{};
-    std::ranges::copy(bytes, copy.begin());
-    const T value = std::bit_cast<T>(copy);
-    return std::endian::native == std::endian::big ? value : std::byteswap(value);
 }
 
 MDB_val value_of(const std::span<const std::byte> bytes) noexcept {
@@ -157,85 +123,31 @@ std::expected<void, std::error_code> commit_or_end_process(transaction txn) {
     return {};
 }
 
-std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const std::byte> kind_and_payload) noexcept {
-    return crc32c::extend(crc32c::extend(0, to_little_endian(index)), kind_and_payload);
+std::size_t record_size_of(const entry& e) {
+    return encoded_size_of(e) + crc_size;
 }
 
-entry_fields fields_of(const entry& e) noexcept {
-    switch (e.kind) {
-    case entry_kind::register_client:
-        return {e.client_id, e.pid};
-    case entry_kind::client_request:
-        return {e.session, e.request_number};
-    case entry_kind::expire_session:
-        return {e.session, 0};
-    case entry_kind::normal:
-    case entry_kind::stop_sign:
-        break;
-    }
-    return {};
+void encode_record(const std::uint64_t index, const entry& e, const std::span<std::byte> out) noexcept {
+    const auto encoded = out.first(out.size() - crc_size);
+    encode_entry(e, encoded);
+    std::ranges::copy(to_little_endian(compute_entry_crc(index, encoded)), out.last(crc_size).begin());
 }
 
-entry entry_of(const entry_kind kind, const entry_fields& fields, const std::span<const std::byte> payload) {
-    entry e{kind, std::vector<std::byte>(payload.begin(), payload.end())};
-    switch (kind) {
-    case entry_kind::register_client:
-        e.client_id = fields[0];
-        e.pid = fields[1];
-        break;
-    case entry_kind::client_request:
-        e.session = fields[0];
-        e.request_number = fields[1];
-        break;
-    case entry_kind::expire_session:
-        e.session = fields[0];
-        break;
-    case entry_kind::normal:
-    case entry_kind::stop_sign:
-        break;
-    }
-    return e;
-}
-
-std::size_t encoded_size_of(const entry& e) {
-    throw_if_entry_has_a_field_of_another_kind(e);
-    return kind_size + field_size * field_count_of(e.kind).value() + e.payload.size() + crc_size;
-}
-
-void encode_entry(const std::uint64_t index, const entry& e, const std::span<std::byte> out) noexcept {
-    out.front() = std::byte{std::to_underlying(e.kind)};
-    auto next = std::next(out.begin(), kind_size);
-    const auto fields = fields_of(e);
-    for (const auto field : std::span(fields).first(field_count_of(e.kind).value_or(0))) {
-        next = std::ranges::copy(to_little_endian(field), next).out;
-    }
-    std::ranges::copy(e.payload, next);
-    const auto crc = compute_entry_crc(index, out.first(out.size() - crc_size));
-    std::ranges::copy(to_little_endian(crc), out.last(crc_size).begin());
-}
-
-std::expected<entry, read_failure> decode_entry(const std::uint64_t index, const std::span<const std::byte> value) {
+std::expected<entry, read_failure> decode_record(const std::uint64_t index, const std::span<const std::byte> value) {
     if (value.size() < kind_size + crc_size) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::malformed_record, index, 0, 0});
     }
-    const auto kind_and_payload = value.first(value.size() - crc_size);
+    const auto encoded = value.first(value.size() - crc_size);
     const auto stored = from_little_endian<std::uint32_t>(value.last<crc_size>());
-    const auto computed = compute_entry_crc(index, kind_and_payload);
+    const auto computed = compute_entry_crc(index, encoded);
     if (stored != computed) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::crc_mismatch, index, stored, computed});
     }
-    const auto kind = static_cast<entry_kind>(std::to_integer<std::uint8_t>(kind_and_payload.front()));
-    const auto field_count = field_count_of(kind);
-    if (!field_count || kind_and_payload.size() < kind_size + field_size * *field_count) [[unlikely]] {
+    auto decoded = decode_entry(encoded);
+    if (!decoded) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::malformed_record, index, stored, computed});
     }
-    entry_fields fields{};
-    auto rest = kind_and_payload.subspan(kind_size);
-    for (auto& field : std::span(fields).first(*field_count)) {
-        field = from_little_endian<std::uint64_t>(rest.first<field_size>());
-        rest = rest.subspan(field_size);
-    }
-    return entry_of(kind, fields, rest);
+    return std::move(*decoded);
 }
 
 std::array<std::byte, ballot_size> encode_ballot(const ballot& b) noexcept {
@@ -274,12 +186,12 @@ std::expected<std::uint64_t, std::error_code> read_log_len(MDB_txn* txn, const M
 std::expected<void, std::error_code> put_entry(const write_target& target, const std::uint64_t index, const entry& e) {
     const auto key_bytes = to_big_endian(index);
     MDB_val key = value_of(key_bytes);
-    MDB_val data{encoded_size_of(e), nullptr};
+    MDB_val data{record_size_of(e), nullptr};
     const int status = mdb_put(target.txn, target.log_dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    encode_entry(index, e, writable_bytes_of(data));
+    encode_record(index, e, writable_bytes_of(data));
     return {};
 }
 
@@ -526,7 +438,7 @@ std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries
         if (index >= to) {
             break;
         }
-        auto decoded = decode_entry(index, bytes_of(data));
+        auto decoded = decode_record(index, bytes_of(data));
         if (!decoded) [[unlikely]] {
             return std::unexpected(decoded.error());
         }
@@ -573,6 +485,39 @@ std::expected<std::uint64_t, std::error_code> persistent_storage::get_decided_id
 std::expected<ballot, std::error_code> persistent_storage::get_accepted_round() const {
     throw_if_moved_from();
     return read_ballot(env_.get(), meta_dbi_, accepted_round_key);
+}
+
+std::expected<std::uint32_t, std::error_code> persistent_storage::get_last_entry_crc() const {
+    throw_if_moved_from();
+    const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    MDB_cursor* raw_cursor = nullptr;
+    const int cursor_opened = mdb_cursor_open(txn->get(), log_dbi_, &raw_cursor);
+    if (cursor_opened != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(cursor_opened));
+    }
+    const cursor c{raw_cursor};
+    MDB_val key{};
+    MDB_val data{};
+    const int status = mdb_cursor_get(c.get(), &key, &data, MDB_LAST);
+    if (status == MDB_NOTFOUND) {
+        return 0;
+    }
+    if (status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    const auto key_bytes = bytes_of(key);
+    if (key_bytes.size() != index_size) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto index = from_big_endian<std::uint64_t>(key_bytes.first<index_size>());
+    const auto decoded = decode_record(index, bytes_of(data));
+    if (!decoded) [[unlikely]] {
+        return std::unexpected(decoded.error().code);
+    }
+    return from_little_endian<std::uint32_t>(bytes_of(data).last<crc_size>());
 }
 
 }

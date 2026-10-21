@@ -192,10 +192,11 @@ node_id to_of(const message& m) { return std::visit([](const auto& x) { return x
 
 std::string name_of(const message& m)
 {
-    static constexpr std::array<const char*, 15> paxos{
+    static constexpr std::array<const char*, 17> paxos{
         "prepare_req", "prepare",           "promise",            "accept_sync", "accept_decide",
         "accepted",    "decide",            "not_accepted",       "proposal_forward", "recovery",
-        "recovery_response", "read_index_request", "heartbeat", "heartbeat_ack", "read_index_reply"};
+        "recovery_response", "get_state", "new_state", "read_index_request", "heartbeat", "heartbeat_ack",
+        "read_index_reply"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());

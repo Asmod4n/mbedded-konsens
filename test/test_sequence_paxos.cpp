@@ -133,6 +133,7 @@ struct failing_storage {
     auto get_promise() const { return inner.get_promise(); }
     auto get_decided_idx() const { return inner.get_decided_idx(); }
     auto get_accepted_round() const { return inner.get_accepted_round(); }
+    auto get_last_entry_crc() const { return inner.get_last_entry_crc(); }
 };
 
 }
@@ -366,7 +367,7 @@ TEST_CASE("a recovering node drops messages, refuses proposals and resends recov
     const auto refused = sp.append(make_entry(1));
     REQUIRE(!refused);
     CHECK(refused.error() == konsens::client_errc::recovering);
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0}}));
     REQUIRE(sp.resend_message_timeout());
     const auto rs = messages_of<konsens::recovery>(sp.take_outgoing_messages());
     REQUIRE(rs.size() == 2);
@@ -380,10 +381,11 @@ TEST_CASE("a recovering node drops messages, refuses proposals and resends recov
 TEST_CASE("handle_recovery_response: a later answer of a peer replaces its earlier answer") {
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0, false, 0, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(sp.recovering());
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {}, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {}, 0,
+                                                        false, 0, 0}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_promise() == ballot_of(2, 2));
 }
@@ -439,13 +441,14 @@ TEST_CASE("handle_recovery: a node that does not vote does not answer") {
 TEST_CASE("handle_recovery_response: an old nonce is ignored and a primary is needed") {
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
-    const konsens::recovery_response primary{7, ballot_of(1, 2), true, ballot_of(1, 2), {make_entry(1)}, 1};
+    const konsens::recovery_response primary{7, ballot_of(1, 2), true, ballot_of(1, 2), {make_entry(1)}, 1,
+                 false, 1, 0};
     auto old = primary;
     old.nonce = 6;
     REQUIRE(sp.handle({2, 1, old}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(sp.recovering());
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(sp.recovering());
     CHECK(sp.take_outgoing_messages().empty());
     REQUIRE(sp.handle({2, 1, primary}));
@@ -461,11 +464,13 @@ TEST_CASE("handle_recovery_response: only the primary of the highest ballot coun
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
     REQUIRE(sp.handle(
-        {2, 1, konsens::recovery_response{7, ballot_of(1, 2), true, ballot_of(1, 2), {make_entry(1)}, 1}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0}}));
+        {2, 1, konsens::recovery_response{7, ballot_of(1, 2), true, ballot_of(1, 2), {make_entry(1)}, 1,
+                                          false, 1, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(sp.recovering());
     REQUIRE(sp.handle(
-        {3, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {make_entry(1)}, 1}}));
+        {3, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {make_entry(1)}, 1,
+                                          false, 1, 0}}));
     CHECK(sp.recovering());
 }
 
@@ -481,12 +486,13 @@ TEST_CASE("handle_recovery_response: the node takes the state of the primary") {
     REQUIRE(s.write_atomically(ops));
     auto sp = make(1, s, 7);
     sp.take_outgoing_messages();
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, 0}}));
     REQUIRE(sp.handle(
-        {2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {make_entry(1)}, 1}}));
+        {2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {make_entry(1)}, 1,
+                                          false, 1, 0}}));
     CHECK(sp.recovering());
     REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), true, ballot_of(2, 3),
-                                                        {make_entry(1), make_entry(2)}, 1}}));
+                                                        {make_entry(1), make_entry(2)}, 1, false, 2, 0}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_state() == std::pair{role::follower, phase::recover});
     CHECK(sp.get_promise() == ballot_of(3, 1));
@@ -509,8 +515,9 @@ TEST_CASE("handle_recovery_response: the node takes the state of the primary") {
 TEST_CASE("handle_recovery_response: the node takes a higher promise of the primary") {
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(4, 2), true, ballot_of(4, 2), {}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(4, 2), false, ballot{}, {}, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(4, 2), true, ballot_of(4, 2), {}, 0,
+                                                        false, 0, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(4, 2), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_promise() == ballot_of(4, 2));
     CHECK(*sp.get_internal_storage().get_promise() == ballot_of(4, 2));
@@ -534,8 +541,9 @@ TEST_CASE("handle_recovery_response: the decided index does not fall") {
     auto sp = make(1, s, 7);
     sp.take_outgoing_messages();
     REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2),
-                                                        {make_entry(1), make_entry(2), make_entry(3)}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 2), false, ballot{}, {}, 0}}));
+                                                        {make_entry(1), make_entry(2), make_entry(3)}, 0,
+                 false, 3, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 2), false, ballot{}, {}, 0, false, 0, 0}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_decided_idx() == 2);
     CHECK(*sp.get_internal_storage().get_decided_idx() == 2);

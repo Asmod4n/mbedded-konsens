@@ -81,6 +81,8 @@ std::error_code check_entries_of(const proposal_forward& p) noexcept { return ch
 
 std::error_code check_entries_of(const recovery_response& r) noexcept { return check_entries(r.log); }
 
+std::error_code check_entries_of(const new_state& n) noexcept { return check_entries(n.entries); }
+
 template <std::size_t I>
 std::expected<received, std::error_code> decode_body(const std::shared_ptr<const std::string>& owner,
                                                     const std::string_view body, const header& h)

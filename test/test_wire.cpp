@@ -33,6 +33,15 @@
 // received_msg_of, which builds the variant of cbor::ref from the two
 // variants of message.hpp.
 //
+// Provisional names of the recovery after a power loss
+// (doc/plan-power-loss-code.md): the messages get_state and new_state (from
+// the state transfer of VR Revisited, section not checked); their members
+// from_idx and entries; the members recovering, accepted_idx and last_crc of
+// recovery_response; get_last_entry_crc of the storage concept and
+// compute_entry_crc, encode_entry, decode_entry and encoded_size_of of
+// storage.hpp; in src/persistent_storage.cpp record_size_of, encode_record
+// and decode_record; src/byte_order.hpp.
+//
 // Provisional form: decode gives each body in the cbor::ref that
 // mbedded-cbor made, with no copy. node::handle(const received&) copies the
 // body into a message, because sequence_paxos::handle takes a paxos_message
@@ -203,8 +212,10 @@ std::vector<message> every_kind()
         paxos(konsens::not_accepted{ballot_from(10)}),
         paxos(konsens::proposal_forward{five_entries()}),
         paxos(konsens::recovery{10}),
-        paxos(konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40}),
-        paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40}),
+        paxos(konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40, false, 41, 42}),
+        paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40, true, 41, 42}),
+        paxos(konsens::get_state{10, ballot_from(20), 30, 31}),
+        paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, five_entries()}),
         paxos(konsens::read_index_request{10}),
         paxos(konsens::heartbeat{ballot_from(10), 20}),
         paxos(konsens::heartbeat_ack{ballot_from(10), 20}),
@@ -270,6 +281,45 @@ TEST_CASE("decode of encode gives the message, and a second encode gives the sam
     CHECK(kinds.size() == konsens::kind_count);
 }
 
+// The kind byte is the only name of a message on the wire, and it is the
+// index of the type in paxos_msg, then in heartbeat_msg. A new type in the
+// middle of a variant moves every later kind, so that an old node and a new
+// node no longer understand each other. This table fixes each kind byte, so
+// that such a change fails here and is made on purpose.
+TEST_CASE("each kind of message has its fixed kind byte")
+{
+    const std::vector<std::pair<message, std::uint8_t>> table{
+        {paxos(konsens::prepare_req{ballot_from(10)}), 0},
+        {paxos(konsens::prepare{ballot_from(10), 20, ballot_from(30), 40}), 1},
+        {paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt}), 2},
+        {paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{{}, 23}}), 3},
+        {paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, {}}), 4},
+        {paxos(konsens::accepted{ballot_from(10), 20}), 5},
+        {paxos(konsens::decide{ballot_from(10), {20, 21}, 22}), 6},
+        {paxos(konsens::not_accepted{ballot_from(10)}), 7},
+        {paxos(konsens::proposal_forward{{}}), 8},
+        {paxos(konsens::recovery{10}), 9},
+        {paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), {}, 40, true, 41, 42}), 10},
+        {paxos(konsens::get_state{10, ballot_from(20), 30, 31}), 11},
+        {paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, {}}), 12},
+        {paxos(konsens::read_index_request{10}), 13},
+        {paxos(konsens::heartbeat{ballot_from(10), 20}), 14},
+        {paxos(konsens::heartbeat_ack{ballot_from(10), 20}), 15},
+        {paxos(konsens::read_index_reply{{10}, 20}), 16},
+        {ble(konsens::heartbeat_request{10}), 17},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 18},
+    };
+    CHECK(table.size() == konsens::kind_count);
+    for (const auto& [m, kind] : table) {
+        INFO("kind ", int{kind});
+        CHECK(konsens::kind_of(m) == kind);
+        const auto bytes = konsens::encode(m);
+        REQUIRE(bytes.has_value());
+        const auto [from, to] = std::visit([](const auto& x) { return std::pair{x.from, x.to}; }, m);
+        CHECK(bytes->starts_with(header_bytes(kind, from, to)));
+    }
+}
+
 // A round trip does not show the form on the wire. These bytes are written
 // from RFC 8949 and RFC 8746, so a change of a key, of the order of the keys
 // or of the order of the kinds fails here.
@@ -293,7 +343,7 @@ TEST_CASE("an accept_decide with a payload has the bytes of RFC 8949 and RFC 874
 // CBOR array. This test holds the bytes of that tag.
 TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 {
-    constexpr std::uint64_t read_index_reply_kind = 14;
+    constexpr std::uint64_t read_index_reply_kind = 16;
     constexpr std::uint64_t first_read = 1;
     constexpr std::uint64_t second_read = 258;
     const auto m = paxos(konsens::read_index_reply{{first_read, second_read}, 30});
@@ -310,7 +360,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 16;
+    constexpr std::uint64_t heartbeat_reply_kind = 18;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
@@ -406,8 +456,8 @@ TEST_CASE("a body of another kind decodes only when it has the keys of the kind 
     constexpr std::uint64_t prepare_req_kind = 0;
     constexpr std::uint64_t decide_kind = 6;
     constexpr std::uint64_t not_accepted_kind = 7;
-    constexpr std::uint64_t heartbeat_kind = 12;
-    constexpr std::uint64_t heartbeat_ack_kind = 13;
+    constexpr std::uint64_t heartbeat_kind = 14;
+    constexpr std::uint64_t heartbeat_ack_kind = 15;
     const auto heartbeat_request_body = head(map, 1) + text("round") + integer(10);
     CHECK(error_of(header_bytes(decide_kind, paxos_from, paxos_to) + heartbeat_request_body) ==
           cbor::error::key_not_found);

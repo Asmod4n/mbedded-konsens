@@ -362,6 +362,7 @@ struct recording_storage {
     auto get_promise() const { return inner.get_promise(); }
     auto get_decided_idx() const { return inner.get_decided_idx(); }
     auto get_accepted_round() const { return inner.get_accepted_round(); }
+    auto get_last_entry_crc() const { return inner.get_last_entry_crc(); }
 };
 
 }

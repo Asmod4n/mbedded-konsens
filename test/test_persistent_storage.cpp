@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "konsens/crc32c.hpp"
+#include "konsens/memory_storage.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "temporary_directory.hpp"
 
@@ -162,6 +164,41 @@ TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index") {
     REQUIRE_FALSE(got.has_value());
     CHECK(got.error() == konsens::storage_errc::crc_mismatch);
     CHECK(storage.get_entries(0, 1) == std::vector<konsens::entry>{normal_entry("zero")});
+}
+
+// Recovery after a power loss compares the CRC32C of the last entry of
+// two nodes, and one node may run on LMDB and the other in memory. So both
+// storages give the same value for the same log: an empty log gives 0, and
+// each kind of entry is tried. The expected value of the last entry is
+// written from the record format: the index in 8 bytes little endian, the
+// kind in one byte, the fields of the kind in 8 bytes little endian each,
+// then the payload.
+TEST_CASE("both storages give the same CRC32C of the last entry") {
+    const temporary_directory dir;
+    auto lmdb = open_storage(dir.path());
+    konsens::memory_storage memory;
+    CHECK(lmdb.get_last_entry_crc() == 0u);
+    CHECK(memory.get_last_entry_crc() == 0u);
+    const std::vector<konsens::entry> each_kind{
+        normal_entry("first"),
+        {konsens::entry_kind::stop_sign, {}},
+        {.kind = konsens::entry_kind::register_client, .client_id = 7, .pid = 3},
+        {.kind = konsens::entry_kind::expire_session, .session = 1},
+        {konsens::entry_kind::client_request, bytes_of("x"), 1, 2}};
+    for (const auto& e : each_kind) {
+        const std::vector<konsens::entry> one{e};
+        const std::vector<konsens::storage_op> ops{konsens::append_entries{one}};
+        REQUIRE(lmdb.write_atomically(ops).has_value());
+        REQUIRE(memory.write_atomically(ops).has_value());
+        const auto from_lmdb = lmdb.get_last_entry_crc();
+        REQUIRE(from_lmdb.has_value());
+        CHECK(from_lmdb == memory.get_last_entry_crc());
+    }
+    const std::array<unsigned char, 26> last_record{4, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0,
+                                                   2, 0, 0, 0, 0, 0, 0, 0, 'x'};
+    std::vector<std::byte> bytes;
+    std::ranges::transform(last_record, std::back_inserter(bytes), [](const unsigned char c) { return std::byte{c}; });
+    CHECK(lmdb.get_last_entry_crc() == konsens::crc32c::extend(0, bytes));
 }
 
 // A full disk is an error value, and the node keeps its state. The failed

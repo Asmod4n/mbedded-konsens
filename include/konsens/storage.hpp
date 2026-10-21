@@ -77,6 +77,12 @@ inline void throw_if_entry_has_a_field_of_another_kind(const entry& e)
     }
 }
 
+std::size_t encoded_size_of(const entry& e);
+void encode_entry(const entry& e, std::span<std::byte> out) noexcept;
+std::optional<entry> decode_entry(std::span<const std::byte> encoded_entry);
+std::uint32_t compute_entry_crc(std::uint64_t index, std::span<const std::byte> encoded_entry) noexcept;
+std::uint32_t compute_entry_crc(std::uint64_t index, const entry& e);
+
 struct append_entries {
     std::span<const entry> entries;
 };
@@ -110,6 +116,7 @@ concept storage = requires(S& s, const S& cs, std::span<const storage_op> ops, s
     { cs.get_promise() } -> std::same_as<std::expected<ballot, std::error_code>>;
     { cs.get_decided_idx() } -> std::same_as<std::expected<std::uint64_t, std::error_code>>;
     { cs.get_accepted_round() } -> std::same_as<std::expected<ballot, std::error_code>>;
+    { cs.get_last_entry_crc() } -> std::same_as<std::expected<std::uint32_t, std::error_code>>;
 };
 
 }

@@ -50,6 +50,7 @@ public:
     [[nodiscard]] std::expected<ballot, std::error_code> get_promise() const;
     [[nodiscard]] std::expected<std::uint64_t, std::error_code> get_decided_idx() const;
     [[nodiscard]] std::expected<ballot, std::error_code> get_accepted_round() const;
+    [[nodiscard]] std::expected<std::uint32_t, std::error_code> get_last_entry_crc() const;
 
 private:
     struct env_close {

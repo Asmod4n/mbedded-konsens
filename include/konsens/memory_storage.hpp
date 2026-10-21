@@ -39,6 +39,14 @@ public:
     std::expected<std::uint64_t, std::error_code> get_decided_idx() const { return decided_idx_; }
     std::expected<ballot, std::error_code> get_accepted_round() const { return accepted_round_; }
 
+    std::expected<std::uint32_t, std::error_code> get_last_entry_crc() const
+    {
+        if (log_.empty()) {
+            return 0;
+        }
+        return compute_entry_crc(log_.size() - 1, log_.back());
+    }
+
 private:
     void apply(const append_entries& o)
     {
