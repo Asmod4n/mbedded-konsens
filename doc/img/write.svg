@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-label="a write: the leader and one more node commit the entry to disk, then the leader decides it and sends Decide">
+<style>
+text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;fill:#1f2328} .m{fill:#59636e;font-size:13px} .c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+.l{stroke:#d0d7de;stroke-width:2} .a{stroke:#0969da;stroke-width:2;fill:none} .b{fill:#ddf4ff;stroke:#0969da;stroke-width:1.5} .g{fill:#dafbe1;stroke:#1a7f37;stroke-width:1.5}
+@keyframes k0{0%,4.00%{opacity:0.08}7.00%,96%{opacity:1}100%{opacity:0.08}}
+.s0{animation:k0 14.0s linear infinite}
+@keyframes k1{0%,10.77%{opacity:0.08}13.77%,96%{opacity:1}100%{opacity:0.08}}
+.s1{animation:k1 14.0s linear infinite}
+@keyframes k2{0%,17.54%{opacity:0.08}20.54%,96%{opacity:1}100%{opacity:0.08}}
+.s2{animation:k2 14.0s linear infinite}
+@keyframes k3{0%,24.31%{opacity:0.08}27.31%,96%{opacity:1}100%{opacity:0.08}}
+.s3{animation:k3 14.0s linear infinite}
+@keyframes k4{0%,31.08%{opacity:0.08}34.08%,96%{opacity:1}100%{opacity:0.08}}
+.s4{animation:k4 14.0s linear infinite}
+@keyframes k5{0%,37.85%{opacity:0.08}40.85%,96%{opacity:1}100%{opacity:0.08}}
+.s5{animation:k5 14.0s linear infinite}
+@keyframes k6{0%,44.62%{opacity:0.08}47.62%,96%{opacity:1}100%{opacity:0.08}}
+.s6{animation:k6 14.0s linear infinite}
+@keyframes k7{0%,51.38%{opacity:0.08}54.38%,96%{opacity:1}100%{opacity:0.08}}
+.s7{animation:k7 14.0s linear infinite}
+@keyframes k8{0%,58.15%{opacity:0.08}61.15%,96%{opacity:1}100%{opacity:0.08}}
+.s8{animation:k8 14.0s linear infinite}
+@keyframes k9{0%,64.92%{opacity:0.08}67.92%,96%{opacity:1}100%{opacity:0.08}}
+.s9{animation:k9 14.0s linear infinite}
+@keyframes k10{0%,71.69%{opacity:0.08}74.69%,96%{opacity:1}100%{opacity:0.08}}
+.s10{animation:k10 14.0s linear infinite}
+@keyframes k11{0%,78.46%{opacity:0.08}81.46%,96%{opacity:1}100%{opacity:0.08}}
+.s11{animation:k11 14.0s linear infinite}
+@keyframes k12{0%,85.23%{opacity:0.08}88.23%,96%{opacity:1}100%{opacity:0.08}}
+.s12{animation:k12 14.0s linear infinite}
+@media (prefers-reduced-motion:reduce){[class^=s],[class*=" s"]{animation:none}}
+</style>
+<rect width="960" height="540" fill="#ffffff"/>
+<defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#0969da"/></marker></defs>
+<text x="70" y="28" text-anchor="middle">client</text>
+<line class="l" x1="70" y1="40" x2="70" y2="528"/>
+<text x="330" y="28" text-anchor="middle">leader, node 1</text>
+<line class="l" x1="330" y1="40" x2="330" y2="528"/>
+<text x="600" y="28" text-anchor="middle">node 2</text>
+<line class="l" x1="600" y1="40" x2="600" y2="528"/>
+<text x="860" y="28" text-anchor="middle">node 3</text>
+<line class="l" x1="860" y1="40" x2="860" y2="528"/>
+<g class="s0">
+<line class="a" x1="78" y1="70" x2="322" y2="70" marker-end="url(#h)"/>
+<text class="c" x="200.0" y="63" text-anchor="middle">client_request</text>
+</g>
+<g class="s1">
+<rect class="b" x="214.5" y="89" width="231" height="26" rx="5"/>
+<text x="330" y="107" text-anchor="middle">synchronous LMDB commit</text>
+</g>
+<g class="s2">
+<line class="a" x1="338" y1="146" x2="592" y2="146" marker-end="url(#h)"/>
+<text class="c" x="465.0" y="139" text-anchor="middle">AcceptDecide</text>
+</g>
+<g class="s3">
+<line class="a" x1="338" y1="176" x2="852" y2="176" marker-end="url(#h)"/>
+<text class="c" x="595.0" y="169" text-anchor="middle">AcceptDecide</text>
+</g>
+<g class="s4">
+<rect class="b" x="484.5" y="195" width="231" height="26" rx="5"/>
+<text x="600" y="213" text-anchor="middle">synchronous LMDB commit</text>
+</g>
+<g class="s5">
+<line class="a" x1="592" y1="250" x2="338" y2="250" marker-end="url(#h)"/>
+<text class="c" x="465.0" y="243" text-anchor="middle">Accepted</text>
+</g>
+<g class="s6">
+<rect class="g" x="250.5" y="271" width="159" height="26" rx="5"/>
+<text x="330" y="289" text-anchor="middle">2 of 3: decided</text>
+</g>
+<g class="s7">
+<line class="a" x1="338" y1="326" x2="592" y2="326" marker-end="url(#h)"/>
+<text class="c" x="465.0" y="319" text-anchor="middle">Decide</text>
+</g>
+<g class="s8">
+<rect class="g" x="201.0" y="347" width="258" height="26" rx="5"/>
+<text x="330" y="365" text-anchor="middle">apply to the state machine</text>
+</g>
+<g class="s9">
+<line class="a" x1="322" y1="400" x2="78" y2="400" marker-end="url(#h)"/>
+<text class="c" x="200.0" y="393" text-anchor="middle">client_reply</text>
+</g>
+<g class="s10">
+<rect class="b" x="744.5" y="421" width="231" height="26" rx="5"/>
+<text x="860" y="439" text-anchor="middle">synchronous LMDB commit</text>
+</g>
+<g class="s11">
+<line class="a" x1="852" y1="476" x2="338" y2="476" marker-end="url(#h)"/>
+<text class="c" x="595.0" y="469" text-anchor="middle">Accepted</text>
+</g>
+<g class="s12">
+<line class="a" x1="338" y1="516" x2="852" y2="516" marker-end="url(#h)"/>
+<text class="c" x="595.0" y="509" text-anchor="middle">Decide</text>
+</g>
+</svg>
