@@ -43,6 +43,7 @@ host() {
     git -C "$repo" status --porcelain > "$work/dirty-paths-$stamp.txt"
     if [[ -s $work/dirty-paths-$stamp.txt ]]; then dirty=dirty; else dirty=clean; fi
     podman --version > "$work/podman-version-$stamp.txt"
+    podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
     podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/lmdb:/lmdb" -v "$ccache:/ccache" \
         -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
@@ -63,13 +64,11 @@ context() {
     echo "# commit $commit $dirty"
     sed 's/^/# dirty path /' "/work/dirty-paths-$stamp.txt"
     echo "# podman $(cat "/work/podman-version-$stamp.txt")"
-    if [[ -r /run/.containerenv ]]; then
-        echo "# container $(grep -E '^(engine|image|imageid)=' /run/.containerenv | tr '\n' ' ')"
-    fi
+    echo "# container podman, image $(cat "/work/image-$stamp.txt")"
     echo "# os $(. /etc/os-release && echo "$PRETTY_NAME")"
     echo "# compiler $($compiler --version | head -n 1)"
     echo "# build type Release, CMAKE_CXX_FLAGS_RELEASE $(grep -E '^CMAKE_CXX_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
-    echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F bench/konsens_bench.cpp | tail -n 1)"
+    echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/bench/konsens_bench.cpp')"
     echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
     for b in "${binaries[@]}"; do
@@ -85,7 +84,7 @@ context() {
         echo "# scheduler no /sys/kernel/sched_ext"
     fi
     echo "# virtual machine hypervisor flag $(grep -m 1 -cw hypervisor /proc/cpuinfo || true)"
-    echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2-) nproc $(nproc)"
+    echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') nproc $(nproc)"
     echo "# cpu flags sha256 $(grep -m 1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)"
     echo "# user $bench_user uid $bench_uid through setpriv, nice $(nice), threads 1 (the bench starts no thread)"
     echo "# lmdb mount $(awk '$2 == "/lmdb"' /proc/mounts)"
