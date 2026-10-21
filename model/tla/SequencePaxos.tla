@@ -2078,7 +2078,8 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "DecideWithoutLease", "ForcedWithoutWait", "WitnessGrantsAnyEpoch",
                      "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
-                     "NoDecideOnResend", "DecideOnResendOldSeq"}
+                     "NoDecideOnResend", "DecideOnResendOldSeq",
+                     "PowerLossWithF"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
