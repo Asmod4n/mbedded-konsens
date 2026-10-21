@@ -22,7 +22,7 @@ CONSTANTS
   \*   max_promise_meta: $maxMeta, max_promise_sync: Seq($logSync)};
   \* @typeAlias: durable = {promise: Int, n_accepted: Int, log: Seq($entry), decided_idx: Int};
   \* @typeAlias: response = {from: Int, promise: Int, primary: Bool, n_accepted: Int,
-  \*   log: Seq($entry), decided_idx: Int};
+  \*   log: Seq($entry), decided_idx: Int, recovering: Bool};
   \* @typeAlias: read = {state: Str, node: Int, decided_at_start: Seq($entry),
   \*   read_index: Int, result: Seq($entry), stale: Bool, contract_stale_ok: Bool,
   \*   crashes: Int, rolled_back: Set(Int), ballot: Int, decided_new_at_start: Seq($entry),
@@ -433,14 +433,17 @@ RecoveryResponseMsg(k, x) ==
    !.decided_idx = IF full THEN decided_idx[k] ELSE 0,
    !.recovering = PowerLoss /\ recovering[k]]
 
-\* The answers are complete with f + 1 = Majority answers from other nodes,
-\* one of them from the primary of the highest ballot among the answers.
+\* The answers are complete with f + 1 = Majority answers from other nodes
+\* that do not recover, one of them from the primary of the highest ballot
+\* among these answers.
 \* @type: Set($response) => Set($response);
 RecoveryPrimaries(rs) ==
   LET mp == CHOOSE p \in {r.promise : r \in rs} : \A r \in rs : p >= r.promise
   IN {r \in rs : r.primary /\ r.promise = mp /\ BallotPid(mp) = r.from}
 \* @type: (Set($response), Int) => Bool;
-RecoveryComplete(rs, i) == Cardinality(rs) >= Majority(i) /\ RecoveryPrimaries(rs) # {}
+RecoveryComplete(rs, i) ==
+  LET normal == {r \in rs : ~r.recovering}
+  IN Cardinality(normal) >= Majority(i) /\ RecoveryPrimaries(normal) # {}
 
 (* Recovery after a restart of every node (owner, 2026-10-19 and           *)
 (* 2026-10-21; plan model/plan-power-loss.md; provisional name PowerLoss).  *)
@@ -458,7 +461,7 @@ PowerLossComplete(rs, i) ==
 \* @type: (Set($response), Int) => $response;
 PowerLossSource(rs, i) ==
   LET self == [from |-> i, promise |-> promise[i], primary |-> FALSE, n_accepted |-> n_accepted[i],
-               log |-> log[i], decided_idx |-> decided_idx[i]]
+               log |-> log[i], decided_idx |-> decided_idx[i], recovering |-> TRUE]
       all  == rs \cup {self}
   IN CHOOSE x \in all : \A y \in all :
        x.n_accepted > y.n_accepted \/ (x.n_accepted = y.n_accepted /\ Len(x.log) >= Len(y.log))
@@ -966,11 +969,13 @@ HandleRecoveryResponse(i, j, m, c) ==
   THEN /\ chan' = c
        /\ UNCHANGED <<durable, volatile, recovery>>
   ELSE LET r  == [from |-> j, promise |-> m.promise, primary |-> m.primary,
-                  n_accepted |-> m.n_accepted, log |-> m.log, decided_idx |-> m.decided_idx]
+                  n_accepted |-> m.n_accepted, log |-> m.log, decided_idx |-> m.decided_idx,
+                  recovering |-> m.recovering]
            rs == {x \in recovery_responses[i] : x.from # j} \cup {r}
            normal == RecoveryComplete(rs, i)
        IN IF normal \/ PowerLossComplete(rs, i)
-          THEN LET l  == IF normal THEN CHOOSE x \in RecoveryPrimaries(rs) : TRUE
+          THEN LET l  == IF normal
+                         THEN CHOOSE x \in RecoveryPrimaries({y \in rs : ~y.recovering}) : TRUE
                          ELSE PowerLossSource(rs, i)
                    pr == IF normal THEN Max(promise[i], l.promise)
                          ELSE CHOOSE p \in {promise[i]} \cup {x.promise : x \in rs} :
