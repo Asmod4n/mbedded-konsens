@@ -71,16 +71,29 @@ entries after its own from that source.
 
 ## Performance
 
-A follower decodes one message and handles it, on a store that counts
-the bytes, g++ 16 `-O2`, x86-64, median of 7 runs on a Firecracker VM:
+Each part of a write, one at a time. Three nodes in one process, the
+network a queue, each message through `encode` and `decode`. g++ 16
+`-O2`, x86-64, a Firecracker VM with 4 cpus, ext4. ns or µs per
+operation, median of 7 rounds of 31 samples, payload 1 KiB:
 
-| Message | Time |
+| Operation | Time |
 |---|---|
-| AcceptDecide with 64 entries of 1 KiB | 37.8 µs |
-| Decide | 289 ns |
+| CRC32C | 2.1 µs |
+| LMDB commit of one entry | 349 µs |
+| Write, memory | 9.1 µs |
+| Write, LMDB | 2.0 ms |
+| 64 writes at once, LMDB, per write | 2.0 ms |
+| Read, LMDB | 5.9 µs |
 
-The run and its context:
-[bench/results/2026-10-20-214023Z.txt](bench/results/2026-10-20-214023Z.txt).
+| Message | Encode | Decode | Handle |
+|---|---|---|---|
+| AcceptDecide, 64 × 1 KiB | 45 µs | 57 µs | 750 ns |
+| Decide | 66 ns | 265 ns | 26 ns |
+
+The largest difference between two builds of the same source is 6.6 %.
+All cases, the payloads of 64 B and 64 KiB and the context of the run:
+[bench/results/2026-10-21-144527Z.txt](bench/results/2026-10-21-144527Z.txt).
+`bench/run.sh` runs the bench; the option `-DKONSENS_BENCH=ON` builds it.
 The cost of the checksum against a MAC:
 [bench/results/2026-10-21-092557Z.txt](bench/results/2026-10-21-092557Z.txt).
 
