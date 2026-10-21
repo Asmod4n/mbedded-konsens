@@ -121,3 +121,61 @@ hash chain for a large database, the CRC32C instruction path.
 4. Power-loss path with `get_state` and `new_state`; unit tests.
 5. `counter_stress` fault; seeds.
 6. README and state file.
+
+## 7. Changes after the review
+
+The review (approve with changes, 13 findings) is applied as follows.
+
+- R1: the model checks the kept prefix. In the power-loss branch,
+  `PowerLossKeptPrefix` states that the entries before the start index
+  of the code are equal in the node and in the source, and that the
+  start index is not above the log of the source. A failure stops TLC
+  (`Assert`). Mutation `PowerLossStartAtAccepted` always starts at
+  `accepted_idx` and must stop it. Until those runs are done, section 3
+  is an argument and not a check.
+- R2: the node takes `new_state` only when the start index is not
+  above the `accepted_idx` of the source and the start index plus the
+  number of entries equals that `accepted_idx`. Otherwise it stops
+  voting with the error value of a hardware fault and its evidence
+  (provisional; the same case as card R1).
+- R3: the node takes `new_state` only while it waits for it, only from
+  the chosen source, and only with the nonce, the start index and the
+  expected values of the current request. `new_state` carries its
+  start index. Any other `new_state` is dropped, also after the
+  recovery ended.
+- R4: the node compares the CRC32C of the last received entry (or of
+  its own entry at that index when nothing is sent) with the
+  `last_crc` of the answer of the source. A difference is a hardware
+  fault.
+- R5: `resend_message_timeout` while the node waits for `new_state`
+  sends `get_state` again. A new answer from the source with other
+  values replaces its answer and starts a new selection; the old
+  request is then void.
+- R6: `new_state` is a full answer: it also carries `promise` and
+  `last_crc`. On a mismatch the node replaces only the answer of the
+  source and selects again. A model run MC_p_dup (MC_p with
+  MaxDuplicate = 1) checks stale answers.
+- R7: a tie goes to the node itself, then to the lowest node id. The
+  model uses the same rule (`PowerLossSource`).
+- R8: the CRC32C of an entry is one function of the storage module
+  over the index and the encoded entry; `memory_storage` computes it
+  too. The `storage` concept gets `get_last_entry_crc()`. A recovering
+  node reads it for each answer; a read error stops voting.
+- R9: the two new messages change every wire kind of BLE, so old and
+  new nodes cannot talk (allowed before the first release). A test
+  fixes each kind byte, and `check_entries_of(new_state)` is added.
+- R10: `new_state` for a node that starts empty carries the whole log
+  from its start index. This is the same size as an AcceptSync today
+  and is listed in section 5 as a known limit.
+- R11: the drop rule of `handle()` passes `recovery`, `get_state` and
+  `recovery_response` while recovering, and `new_state` only as R3
+  says. A node that stopped voting answers nothing; that is a liveness
+  limit beside R9 of the model plan.
+- R12: only pairs with `accepted_idx > 0` are compared, the node's own
+  entry included. The README states that one faulty node with no equal
+  pair is not found by this check.
+- R13: tests for R2 to R6 and R11; a source that answers `get_state`
+  and then completes with another source; one node that restarts
+  during an election while no peer is a primary, so the power-loss
+  path runs outside a power loss.
+- Section 1: the maximum of `decided_idx` is at line 792, not 790.

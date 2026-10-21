@@ -464,7 +464,22 @@ PowerLossSource(rs, i) ==
                log |-> log[i], decided_idx |-> decided_idx[i], recovering |-> TRUE]
       all  == rs \cup {self}
   IN CHOOSE x \in all : \A y \in all :
-       x.n_accepted > y.n_accepted \/ (x.n_accepted = y.n_accepted /\ Len(x.log) >= Len(y.log))
+       \/ x.n_accepted > y.n_accepted
+       \/ x.n_accepted = y.n_accepted /\ Len(x.log) > Len(y.log)
+       \/ x.n_accepted = y.n_accepted /\ Len(x.log) = Len(y.log)
+          /\ (x.from = i \/ (y.from # i /\ x.from <= y.from))
+
+(* The code keeps the entries before the start index and takes the rest  *)
+(* from the source (doc/plan-power-loss-code.md): from its accepted_idx   *)
+(* with the same n_accepted, else from its decided_idx, the rule of        *)
+(* follower.rs:13-51. The model takes the whole log of the source; this   *)
+(* states that both give the same log. Mutation PowerLossStartAtAccepted  *)
+(* always starts at accepted_idx.                                         *)
+\* @type: (Int, $response) => Bool;
+PowerLossKeptPrefix(i, l) ==
+  LET start == IF Mutation = "PowerLossStartAtAccepted" \/ n_accepted[i] = l.n_accepted
+               THEN accepted_idx[i] ELSE decided_idx[i]
+  IN start <= Len(l.log) /\ SubSeq(log[i], 1, start) = SubSeq(l.log, 1, start)
 
 (* Read index, plan item 30, run (e). Omni-Paxos 532ff79 has no read. Names *)
 (* from Raft (Ongaro, dissertation 2014, section 6.4): readIndex, heartbeat. *)
@@ -982,7 +997,8 @@ HandleRecoveryResponse(i, j, m, c) ==
                                 \A x \in rs : p >= promise[i] /\ p >= x.promise
                    di == IF DecidedIdxMonotone THEN Max(decided_idx[i], l.decided_idx)
                          ELSE l.decided_idx
-               IN /\ promise' = [promise EXCEPT ![i] = pr]
+               IN /\ normal \/ Assert(PowerLossKeptPrefix(i, l), "PowerLossKeptPrefix")
+                  /\ promise' = [promise EXCEPT ![i] = pr]
                   /\ n_accepted' = [n_accepted EXCEPT ![i] = l.n_accepted]
                   /\ log' = [log EXCEPT ![i] = l.log]
                   /\ decided_idx' = [decided_idx EXCEPT ![i] = di]
@@ -2084,7 +2100,7 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
                      "NoDecideOnResend", "DecideOnResendOldSeq",
-                     "PowerLossWithF"}
+                     "PowerLossWithF", "PowerLossStartAtAccepted"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
