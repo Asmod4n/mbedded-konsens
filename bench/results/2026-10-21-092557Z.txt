@@ -1,0 +1,339 @@
+# Bench: CRC32C against a MAC per message
+
+Question of the owner (2026-10-21): how much slower is the check of one
+log entry with a MAC instead of, or beside, the CRC32C in hardware.
+
+What: one checksum or MAC over one message of 64 B, 1 KiB or 64 KiB.
+A sample computes it over 2^24 / size messages, taken in turn from 16
+different buffers, and divides the time by that count. Each process
+takes 31 samples after one warm-up sample and prints their median. The
+loop computes independent messages, so the processor can overlap one
+message with the next: the numbers are throughput, not the latency of
+one message.
+
+Arms, each its own binary of one source file (outside the tree, given
+below):
+- CRC_TABLE: the form of src/crc32c.cpp today, a table of 256 values.
+- CRC_HW: _mm_crc32_u64 over 8 bytes, _mm_crc32_u8 over the rest.
+- HMAC_SHA256: OpenSSL EVP_MAC "HMAC" with SHA-256, a 32-byte key; the
+  context is made once and set up again for each message.
+- BLAKE2B_MAC: OpenSSL EVP_MAC "BLAKE2BMAC", the same key, output 64 B.
+- CRC_HW_HMAC_SHA256: both over the same message.
+- CRC_HW2: CRC_HW compiled a second time, for the A/A pair.
+Both CRC arms give e3069283 for "123456789", the check value of
+CRC-32C.
+
+Run: 7 rounds; each round runs every arm for each size; the order of
+the arms turns around each second round. The table compares the median
+of the 7 process medians. Run length: 31 samples; the A/A difference
+is at most 0.8 %, which is the noise floor.
+
+Build: g++-16 (Ubuntu 16.2.0-3ubuntu1), -std=c++23 -O2 -DNDEBUG
+-msse4.2 -Wall -Wextra -Werror, linked with -lcrypto.
+Libraries: openssl OpenSSL 4.0.3 29 Sep 2026 (Library: OpenSSL 4.0.3 29 Sep 2026);libcrypto /usr/lib/x86_64-linux-gnu/libcrypto.so.3;glibc ldd (Ubuntu GLIBC 2.44-1ubuntu2) 2.44;.
+Machine: Firecracker VM, uname 6.18.44-fc-v140 nproc 4, Intel(R) Xeon(R)
+Processor with sha_ni, avx2, avx512f, vaes; cpu flags sha256 733bd6f8a6de28df.
+Container: podman, image localhost/cxx-matrix with the Ubuntu package
+libssl-dev added.
+User and priority: each process runs as the user bench (uid 1001, not
+root), started by setpriv, nice 0. other_processes_of_user is 0 in
+every row. Not pinned. Threads: 1. Three cpus stayed free.
+
+## Result, medians
+
+### 64 bytes per message
+
+| arm | ns per message | spread | vs CRC_HW |
+|---|---|---|---|
+| CRC_TABLE | 90.6 | 90.1-90.8 | x 36.3 |
+| CRC_HW | 2.5 | 2.5-2.5 | x 1.0 |
+| HMAC_SHA256 | 177.7 | 176.9-184.5 | x 71.1 |
+| BLAKE2B_MAC | 300.9 | 298.3-312.3 | x 120.4 |
+| CRC_HW_HMAC_SHA256 | 179.4 | 178.4-180.6 | x 71.8 |
+
+A/A (CRC_HW against CRC_HW2): 0.8 %
+
+### 1024 bytes per message
+
+| arm | ns per message | spread | vs CRC_HW |
+|---|---|---|---|
+| CRC_TABLE | 2103.4 | 2097.0-2144.5 | x 32.6 |
+| CRC_HW | 64.6 | 63.6-65.0 | x 1.0 |
+| HMAC_SHA256 | 692.6 | 687.3-706.0 | x 10.7 |
+| BLAKE2B_MAC | 1179.1 | 1175.0-1186.4 | x 18.3 |
+| CRC_HW_HMAC_SHA256 | 762.5 | 760.0-768.4 | x 11.8 |
+
+A/A (CRC_HW against CRC_HW2): 0.2 %
+
+### 65536 bytes per message
+
+| arm | ns per message | spread | vs CRC_HW |
+|---|---|---|---|
+| CRC_TABLE | 137607.6 | 137099.4-137932.8 | x 21.6 |
+| CRC_HW | 6375.4 | 6353.1-6443.1 | x 1.0 |
+| HMAC_SHA256 | 35237.1 | 35028.3-36248.0 | x 5.5 |
+| BLAKE2B_MAC | 64535.7 | 64168.2-65023.7 | x 10.1 |
+| CRC_HW_HMAC_SHA256 | 41744.4 | 41588.2-42001.8 | x 6.5 |
+
+A/A (CRC_HW against CRC_HW2): 0.5 %
+
+## Source
+
+```cpp
+// Arm is chosen at build time: ARM_CRC_TABLE, ARM_CRC_HW, ARM_HMAC_SHA256, ARM_BLAKE2B_MAC, ARM_CRC_HW_HMAC_SHA256
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <nmmintrin.h>
+#include <openssl/core_names.h>
+#include <openssl/evp.h>
+#include <openssl/params.h>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace {
+
+constexpr std::uint32_t poly = 0x82F63B78u;
+constexpr std::array<std::uint32_t, 256> table = [] {
+    std::array<std::uint32_t, 256> r{};
+    for (std::uint32_t v = 0; v < 256; ++v) {
+        std::uint32_t x = v;
+        for (int b = 0; b < 8; ++b) x = (x & 1u) ? (x >> 1) ^ poly : x >> 1;
+        r[v] = x;
+    }
+    return r;
+}();
+
+[[maybe_unused]] std::uint32_t crc_table(std::span<const std::byte> d) {
+    return std::ranges::fold_left(d, ~0u, [](std::uint32_t r, std::byte o) {
+        return table[static_cast<std::uint8_t>(r ^ std::to_integer<std::uint32_t>(o))] ^ (r >> 8);
+    }) ^ ~0u;
+}
+
+[[maybe_unused]] std::uint32_t crc_hw(std::span<const std::byte> d) {
+    std::uint64_t c = ~0u;
+    std::size_t i = 0;
+    for (; i + 8 <= d.size(); i += 8) {
+        std::uint64_t w;
+        std::memcpy(&w, d.data() + i, 8);
+        c = _mm_crc32_u64(c, w);
+    }
+    auto c32 = static_cast<std::uint32_t>(c);
+    for (; i < d.size(); ++i) c32 = _mm_crc32_u8(c32, std::to_integer<std::uint8_t>(d[i]));
+    return c32 ^ ~0u;
+}
+
+struct mac {
+    EVP_MAC* m;
+    EVP_MAC_CTX* ctx;
+    std::array<unsigned char, 32> key{};
+    mac(const char* name, const char* digest) {
+        m = EVP_MAC_fetch(nullptr, name, nullptr);
+        ctx = EVP_MAC_CTX_new(m);
+        std::vector<OSSL_PARAM> p;
+        if (digest) p.push_back(OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(digest), 0));
+        p.push_back(OSSL_PARAM_construct_end());
+        for (std::size_t i = 0; i < key.size(); ++i) key[i] = static_cast<unsigned char>(i * 7 + 1);
+        if (!EVP_MAC_init(ctx, key.data(), key.size(), p.data())) std::abort();
+    }
+    std::uint32_t operator()(std::span<const std::byte> d) {
+        std::array<unsigned char, 64> out{};
+        std::size_t n = 0;
+        if (!EVP_MAC_init(ctx, nullptr, 0, nullptr)) std::abort();
+        EVP_MAC_update(ctx, reinterpret_cast<const unsigned char*>(d.data()), d.size());
+        EVP_MAC_final(ctx, out.data(), &n, out.size());
+        std::uint32_t r;
+        std::memcpy(&r, out.data(), 4);
+        return r;
+    }
+};
+
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "check") {
+        const char* v = "123456789";
+        auto d = std::as_bytes(std::span(v, 9));
+        std::printf("crc_table=%08x crc_hw=%08x expected=e3069283\n", crc_table(d), crc_hw(d));
+        return 0;
+    }
+    const std::size_t size = std::stoul(argv[1]);
+    const int samples = std::stoi(argv[2]);
+    const std::size_t per = std::max<std::size_t>(1, (std::size_t{1} << 24) / size);
+    std::vector<std::byte> buf(size * 16);
+    for (std::size_t i = 0; i < buf.size(); ++i) buf[i] = static_cast<std::byte>(i * 131 + 7);
+#if defined(ARM_HMAC_SHA256) || defined(ARM_CRC_HW_HMAC_SHA256)
+    mac h("HMAC", "SHA256");
+#elif defined(ARM_BLAKE2B_MAC)
+    mac h("BLAKE2BMAC", nullptr);
+#endif
+    auto one = [&](std::span<const std::byte> d) -> std::uint32_t {
+#if defined(ARM_CRC_TABLE)
+        return crc_table(d);
+#elif defined(ARM_CRC_HW)
+        return crc_hw(d);
+#elif defined(ARM_CRC_HW_HMAC_SHA256)
+        return crc_hw(d) ^ h(d);
+#else
+        return h(d);
+#endif
+    };
+    std::vector<double> ns;
+    volatile std::uint32_t sink = 0;
+    for (int s = 0; s < samples + 1; ++s) {
+        std::uint32_t acc = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (std::size_t k = 0; k < per; ++k) acc ^= one(std::span(buf).subspan((k % 16) * size, size));
+        const auto t1 = std::chrono::steady_clock::now();
+        sink = sink ^ acc;
+        if (s > 0) ns.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() / per);
+    }
+    std::ranges::sort(ns);
+    std::printf("size=%zu per=%zu samples=%d ns_median=%.2f min=%.2f max=%.2f\n", size, per, samples, ns[ns.size() / 2], ns.front(), ns.back());
+}
+```
+
+## Raw lines
+
+# openssl OpenSSL 4.0.3 29 Sep 2026 (Library: OpenSSL 4.0.3 29 Sep 2026)
+# libcrypto /usr/lib/x86_64-linux-gnu/libcrypto.so.3
+# glibc ldd (Ubuntu GLIBC 2.44-1ubuntu2) 2.44
+# uname 6.18.44-fc-v140 nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# binary CRC_TABLE needs GLIBCXX_3.4 GLIBCXX_3.4.19 GLIBC_2.2.5 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.34 GLIBC_2.38 
+# binary CRC_HW needs GLIBCXX_3.4 GLIBCXX_3.4.19 GLIBC_2.2.5 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.34 GLIBC_2.38 
+# binary CRC_HW2 needs GLIBCXX_3.4 GLIBCXX_3.4.19 GLIBC_2.2.5 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.34 GLIBC_2.38 
+# binary HMAC_SHA256 needs GLIBCXX_3.4 GLIBCXX_3.4.19 GLIBC_2.2.5 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.34 GLIBC_2.38 OPENSSL_4.0.0 
+# binary BLAKE2B_MAC needs GLIBCXX_3.4 GLIBCXX_3.4.19 GLIBC_2.2.5 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.34 GLIBC_2.38 OPENSSL_4.0.0 
+# binary CRC_HW_HMAC_SHA256 needs GLIBCXX_3.4 GLIBCXX_3.4.19 GLIBC_2.2.5 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.34 GLIBC_2.38 OPENSSL_4.0.0 
+round=1 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=90.64 min=89.92 max=92.62
+round=1 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.51 min=2.46 max=2.90
+round=1 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.53 min=2.46 max=2.83
+round=1 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=3 size=64 per=262144 samples=31 ns_median=184.46 min=176.58 max=232.07
+round=1 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=300.38 min=299.05 max=354.56
+round=1 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=179.06 min=178.10 max=183.38
+round=1 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=2103.40 min=2093.30 max=2177.79
+round=1 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.29 min=63.16 max=67.17
+round=1 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.56 min=63.14 max=66.91
+round=1 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=1024 per=16384 samples=31 ns_median=690.21 min=684.76 max=700.09
+round=1 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=1175.60 min=1170.65 max=1268.32
+round=1 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=761.44 min=755.93 max=771.01
+round=1 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=137481.33 min=136630.26 max=159030.50
+round=1 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6421.62 min=6242.41 max=7183.77
+round=1 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6454.27 min=6252.89 max=7735.41
+round=1 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=35457.86 min=34905.39 max=39393.46
+round=1 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=64397.02 min=63951.25 max=83315.65
+round=1 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=41690.63 min=41302.93 max=42917.00
+round=2 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=179.51 min=178.68 max=185.68
+round=2 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=300.88 min=299.48 max=321.50
+round=2 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=178.51 min=175.88 max=183.14
+round=2 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.54 min=2.44 max=3.42
+round=2 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.54 min=2.44 max=3.54
+round=2 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=90.23 min=89.64 max=104.84
+round=2 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=762.51 min=755.12 max=808.32
+round=2 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=1 size=1024 per=16384 samples=31 ns_median=1186.41 min=1179.20 max=1310.72
+round=2 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=1024 per=16384 samples=31 ns_median=700.80 min=689.18 max=815.66
+round=2 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.47 min=63.30 max=77.08
+round=2 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.59 min=63.33 max=88.01
+round=2 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=2099.69 min=2090.48 max=2111.79
+round=2 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=42001.79 min=41346.73 max=43855.58
+round=2 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=64184.96 min=63869.38 max=78421.13
+round=2 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=35265.64 min=34957.60 max=35541.83
+round=2 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6347.95 min=6237.72 max=6781.34
+round=2 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6353.05 min=6236.45 max=6708.69
+round=2 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=137932.75 min=136377.45 max=145679.06
+round=3 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=90.66 min=89.45 max=93.46
+round=3 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.49 min=2.45 max=2.70
+round=3 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.52 min=2.46 max=3.64
+round=3 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=177.17 min=176.34 max=181.00
+round=3 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=300.05 min=297.93 max=302.16
+round=3 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=178.45 min=177.80 max=179.35
+round=3 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=2098.64 min=2085.68 max=2110.93
+round=3 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.93 min=63.17 max=67.46
+round=3 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.98 min=63.16 max=68.81
+round=3 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=693.08 min=684.52 max=766.52
+round=3 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=1179.06 min=1172.04 max=1249.45
+round=3 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=761.96 min=754.50 max=793.80
+round=3 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=137587.52 min=136592.26 max=143656.31
+round=3 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6443.06 min=6238.36 max=8348.86
+round=3 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6440.62 min=6281.77 max=7366.28
+round=3 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=36247.96 min=35139.47 max=58792.09
+round=3 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=64719.96 min=63990.54 max=83251.49
+round=3 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=41731.91 min=41183.42 max=43594.50
+round=4 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=2 size=64 per=262144 samples=31 ns_median=179.22 min=178.56 max=180.01
+round=4 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=298.32 min=297.24 max=299.66
+round=4 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=176.95 min=176.06 max=177.82
+round=4 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.52 min=2.45 max=3.04
+round=4 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.49 min=2.46 max=5.09
+round=4 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=90.79 min=89.42 max=107.10
+round=4 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=768.37 min=758.67 max=802.35
+round=4 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=1177.56 min=1170.25 max=1224.68
+round=4 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=705.96 min=682.70 max=767.03
+round=4 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.89 min=63.19 max=83.12
+round=4 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=65.05 min=63.33 max=78.78
+round=4 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=2 size=1024 per=16384 samples=31 ns_median=2112.98 min=2087.23 max=2410.93
+round=4 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=41833.24 min=41241.61 max=42371.80
+round=4 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=64168.22 min=63736.30 max=67129.04
+round=4 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=35028.34 min=34830.96 max=35369.56
+round=4 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6306.82 min=6244.29 max=6682.19
+round=4 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6375.07 min=6254.23 max=6561.17
+round=4 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=2 size=65536 per=256 samples=31 ns_median=137099.41 min=136613.96 max=138253.82
+round=5 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=90.06 min=89.60 max=90.58
+round=5 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=2.50 min=2.46 max=3.41
+round=5 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.50 min=2.46 max=3.54
+round=5 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=179.56 min=177.65 max=191.55
+round=5 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=312.29 min=309.20 max=324.71
+round=5 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=180.36 min=178.91 max=214.15
+round=5 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=2105.75 min=2093.64 max=2133.57
+round=5 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.79 min=63.18 max=79.19
+round=5 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=63.92 min=63.15 max=85.02
+round=5 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=692.57 min=686.16 max=723.29
+round=5 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=1186.04 min=1176.33 max=1254.76
+round=5 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=767.99 min=756.35 max=845.31
+round=5 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=137668.56 min=136624.80 max=141106.34
+round=5 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6436.68 min=6236.81 max=8262.08
+round=5 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6384.33 min=6236.84 max=6731.52
+round=5 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=35235.31 min=34935.30 max=44636.05
+round=5 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=64660.95 min=64046.64 max=69056.89
+round=5 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=41744.39 min=41306.90 max=42094.30
+round=6 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=180.55 min=179.20 max=184.04
+round=6 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=2 size=64 per=262144 samples=31 ns_median=302.09 min=300.06 max=310.26
+round=6 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=2 size=64 per=262144 samples=31 ns_median=177.67 min=175.86 max=240.35
+round=6 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.52 min=2.46 max=2.97
+round=6 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.52 min=2.46 max=2.76
+round=6 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=90.59 min=89.35 max=104.27
+round=6 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=760.01 min=755.66 max=773.01
+round=6 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=1175.01 min=1168.64 max=1183.57
+round=6 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=688.33 min=683.09 max=707.38
+round=6 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=63.89 min=62.68 max=67.10
+round=6 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.58 min=63.15 max=82.05
+round=6 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=1 size=1024 per=16384 samples=31 ns_median=2144.53 min=2094.47 max=2292.14
+round=6 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=3 size=65536 per=256 samples=31 ns_median=41588.21 min=41141.18 max=81407.01
+round=6 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=64535.72 min=63777.05 max=65784.96
+round=6 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=35201.59 min=34923.19 max=35801.38
+round=6 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6410.34 min=6236.57 max=7168.76
+round=6 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6358.34 min=6237.11 max=6792.10
+round=6 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=137755.52 min=136881.62 max=142978.84
+round=7 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=90.63 min=89.51 max=95.00
+round=7 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.48 min=2.46 max=3.33
+round=7 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=2.48 min=2.44 max=3.06
+round=7 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=176.96 min=176.33 max=179.57
+round=7 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=1 size=64 per=262144 samples=31 ns_median=301.28 min=298.75 max=307.29
+round=7 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=64 per=262144 samples=31 ns_median=179.41 min=178.31 max=182.87
+round=7 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=2096.97 min=2086.99 max=2134.52
+round=7 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=63.56 min=63.16 max=67.69
+round=7 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=64.42 min=63.16 max=67.67
+round=7 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=687.33 min=684.23 max=777.17
+round=7 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=1024 per=16384 samples=31 ns_median=1183.79 min=1174.36 max=1338.12
+round=7 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=1024 per=16384 samples=31 ns_median=764.03 min=758.16 max=780.94
+round=7 arm=CRC_TABLE nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=137607.61 min=136812.31 max=138448.68
+round=7 arm=CRC_HW nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6375.42 min=6246.69 max=6925.87
+round=7 arm=CRC_HW2 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=6640.19 min=6274.98 max=7088.11
+round=7 arm=HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=35237.05 min=34979.81 max=35699.87
+round=7 arm=BLAKE2B_MAC nice=0 other_processes_of_user=0 steal_ticks=0 size=65536 per=256 samples=31 ns_median=65023.70 min=64156.13 max=67164.93
+round=7 arm=CRC_HW_HMAC_SHA256 nice=0 other_processes_of_user=0 steal_ticks=1 size=65536 per=256 samples=31 ns_median=41828.50 min=41178.84 max=54761.86
