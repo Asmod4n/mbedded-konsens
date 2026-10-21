@@ -107,6 +107,16 @@ struct set_accepted_round {
 using storage_op = std::variant<append_entries, append_on_prefix, set_promise, set_decided_index,
                                 set_accepted_round>;
 
+class write_error : public std::system_error {
+public:
+    using std::system_error::system_error;
+};
+
+class sync_error : public write_error {
+public:
+    using write_error::write_error;
+};
+
 template <typename S>
 concept storage = requires(S& s, const S& cs, std::span<const storage_op> ops, std::uint64_t from,
                            std::uint64_t to) {

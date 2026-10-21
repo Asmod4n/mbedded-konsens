@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdlib>
 #include <format>
-#include <iostream>
 #include <iterator>
 #include <optional>
 #include <ranges>
@@ -94,7 +92,7 @@ struct transaction_abort {
     void operator()(MDB_txn* txn) const noexcept { mdb_txn_abort(txn); }
 };
 
-using transaction = std::unique_ptr<MDB_txn, transaction_abort>;
+using mdb_txn = std::unique_ptr<MDB_txn, transaction_abort>;
 
 struct cursor_close {
     void operator()(MDB_cursor* cursor) const noexcept { mdb_cursor_close(cursor); }
@@ -102,23 +100,22 @@ struct cursor_close {
 
 using cursor = std::unique_ptr<MDB_cursor, cursor_close>;
 
-std::expected<transaction, std::error_code> begin_transaction(MDB_env* env, const unsigned int flags) {
+std::expected<mdb_txn, std::error_code> begin_transaction(MDB_env* env, const unsigned int flags) {
     MDB_txn* txn = nullptr;
     const int status = mdb_txn_begin(env, nullptr, flags, &txn);
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    return transaction{txn};
+    return mdb_txn{txn};
 }
 
-std::expected<void, std::error_code> commit_or_end_process(transaction txn) {
+std::expected<void, std::error_code> commit_or_throw(mdb_txn txn) {
     const int status = mdb_txn_commit(txn.release());
     if (status == MDB_MAP_FULL) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
     if (status != MDB_SUCCESS) [[unlikely]] {
-        std::cerr << "mdb_txn_commit failed: " << mdb_strerror(status) << '\n';
-        std::abort();
+        throw sync_error(to_error_code(status), "konsens: mdb_txn_commit failed");
     }
     return {};
 }
@@ -380,7 +377,7 @@ persistent_storage::open(const std::filesystem::path& directory, const std::size
     if (meta_opened != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(meta_opened));
     }
-    const auto committed = commit_or_end_process(std::move(*txn));
+    const auto committed = commit_or_throw(std::move(*txn));
     if (!committed) [[unlikely]] {
         return std::unexpected(committed.error());
     }
@@ -404,7 +401,7 @@ std::expected<void, std::error_code> persistent_storage::write_atomically(const 
     if (!log_len) [[unlikely]] {
         return std::unexpected(log_len.error());
     }
-    return commit_or_end_process(std::move(*txn));
+    return commit_or_throw(std::move(*txn));
 }
 
 std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries(const std::uint64_t from,

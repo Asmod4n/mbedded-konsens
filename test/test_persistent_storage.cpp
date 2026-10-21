@@ -3,18 +3,23 @@
 
 #include <algorithm>
 #include <array>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#include <sys/resource.h>
 
 #include "konsens/crc32c.hpp"
 #include "konsens/memory_storage.hpp"
@@ -32,6 +37,7 @@ constexpr uid_t non_root_user_id = 1000;
 constexpr uid_t root_user_id = 0;
 constexpr std::size_t map_size = std::size_t{16} << 20;
 constexpr std::size_t tiny_map_size = std::size_t{64} << 10;
+constexpr std::size_t large_entry_size = std::size_t{64} << 10;
 
 std::vector<std::byte> bytes_of(const std::string_view text) {
     std::vector<std::byte> result;
@@ -201,9 +207,9 @@ TEST_CASE("both storages give the same CRC32C of the last entry") {
     CHECK(lmdb.get_last_entry_crc() == konsens::crc32c::extend(0, bytes));
 }
 
-// A full disk is an error value, and the node keeps its state. The failed
-// write must leave nothing behind, because write_atomically is one
-// transaction.
+// A full map is an error value of write_atomically, which the node raises
+// as write_error (test_group_commit.cpp). The failed write must leave
+// nothing behind, because write_atomically is one transaction.
 TEST_CASE("a full map gives no_space_on_device and writes nothing") {
     const temporary_directory dir;
     auto opened = konsens::persistent_storage::open(dir.path(), tiny_map_size, non_root_user_id);
@@ -222,6 +228,39 @@ TEST_CASE("a full map gives no_space_on_device and writes nothing") {
     const std::vector<konsens::storage_op> small{konsens::append_entries{fits}};
     CHECK(storage.write_atomically(small).has_value());
     CHECK(storage.get_log_len() == 1u);
+}
+
+// The decision of the owner (2026-10-21): an LMDB commit that fails is a
+// failure of the machine. write_atomically throws sync_error with the error
+// code, and nothing in the library catches it. A limit on the size of a
+// file makes the commit fail, because the pages of a write transaction
+// reach the file only in mdb_txn_commit. The limit holds this test process,
+// and the test sets it back before it checks anything.
+TEST_CASE("a failed LMDB commit throws sync_error and writes nothing") {
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    rlimit unlimited{};
+    REQUIRE(getrlimit(RLIMIT_FSIZE, &unlimited) == 0);
+    rlimit limited = unlimited;
+    limited.rlim_cur = std::filesystem::file_size(dir.path() / "data.mdb");
+    const std::vector large{
+        konsens::entry{konsens::entry_kind::normal, std::vector<std::byte>(large_entry_size, std::byte{0x5a})}};
+    const std::vector<konsens::storage_op> ops{konsens::append_entries{large}};
+    const auto handler = std::signal(SIGXFSZ, SIG_IGN);
+    const int limit_set = setrlimit(RLIMIT_FSIZE, &limited);
+    std::optional<std::error_code> thrown;
+    try {
+        static_cast<void>(storage.write_atomically(ops));
+    } catch (const konsens::sync_error& e) {
+        thrown = e.code();
+    }
+    const int limit_reset = setrlimit(RLIMIT_FSIZE, &unlimited);
+    std::signal(SIGXFSZ, handler);
+    REQUIRE(limit_set == 0);
+    REQUIRE(limit_reset == 0);
+    REQUIRE(thrown);
+    CHECK((*thrown == std::errc::file_too_large || *thrown == std::errc::io_error));
+    CHECK(storage.get_log_len() == 0u);
 }
 
 // The owner decided that a start as root is refused.
@@ -306,4 +345,86 @@ TEST_CASE("an entry with a field of another kind is a wrong use") {
         CHECK_THROWS_AS((void)storage.write_atomically(on_prefix), std::logic_error);
     }
     CHECK(storage.get_log_len() == 0u);
+}
+
+namespace {
+
+struct stored_state {
+    std::vector<konsens::entry> log;
+    konsens::ballot promise;
+    std::uint64_t decided_idx;
+    konsens::ballot accepted_round;
+    std::uint32_t last_entry_crc;
+
+    friend bool operator==(const stored_state&, const stored_state&) = default;
+};
+
+template <typename S>
+stored_state stored_state_of(const S& s)
+{
+    const auto len = s.get_log_len();
+    REQUIRE(len);
+    const auto log = s.get_entries(0, *len);
+    const auto promise = s.get_promise();
+    const auto decided = s.get_decided_idx();
+    const auto round = s.get_accepted_round();
+    const auto crc = s.get_last_entry_crc();
+    REQUIRE(log);
+    REQUIRE(promise);
+    REQUIRE(decided);
+    REQUIRE(round);
+    REQUIRE(crc);
+    return {*log, *promise, *decided, *round, *crc};
+}
+
+std::vector<konsens::storage_op> ops_of_one_batch(const std::vector<konsens::entry>& first,
+                                                  const std::vector<konsens::entry>& replaced,
+                                                  const std::vector<konsens::entry>& last)
+{
+    return {konsens::set_promise{{1, 2, 0, 3}},
+            konsens::append_entries{first},
+            konsens::set_accepted_round{{1, 2, 0, 3}},
+            konsens::set_decided_index{1},
+            konsens::append_on_prefix{2, replaced},
+            konsens::set_decided_index{3},
+            konsens::append_entries{last},
+            konsens::set_promise{{1, 4, 0, 1}}};
+}
+
+template <typename S>
+void check_one_batch_equals_the_ops_one_by_one(S& batched, S& single)
+{
+    const std::vector<konsens::entry> first{normal_entry("a"), normal_entry("b"), normal_entry("c")};
+    const std::vector<konsens::entry> replaced{normal_entry("x"), normal_entry("y")};
+    const std::vector<konsens::entry> last{normal_entry("z")};
+    const auto ops = ops_of_one_batch(first, replaced, last);
+    REQUIRE(batched.write_atomically(ops));
+    for (const auto& op : ops) {
+        REQUIRE(single.write_atomically(std::span(&op, 1)));
+    }
+    CHECK(stored_state_of(batched) == stored_state_of(single));
+    CHECK(stored_state_of(batched).log ==
+          std::vector{normal_entry("a"), normal_entry("b"), normal_entry("x"), normal_entry("y"), normal_entry("z")});
+}
+
+}
+
+// R7 of the review of doc/plan-group-commit.md: a commit gives one
+// write_atomically all ops of a batch, where each handler wrote its own ops
+// before. The store must apply the ops of one call in order, an
+// append_on_prefix after an append_entries of the same call included, so
+// that one batch leaves the store as the same ops one by one do.
+TEST_CASE("one write of the ops of a batch leaves the store as the ops one by one do") {
+    SUBCASE("memory_storage") {
+        konsens::memory_storage batched;
+        konsens::memory_storage single;
+        check_one_batch_equals_the_ops_one_by_one(batched, single);
+    }
+    SUBCASE("persistent_storage") {
+        const temporary_directory batched_dir;
+        const temporary_directory single_dir;
+        auto batched = open_storage(batched_dir.path());
+        auto single = open_storage(single_dir.path());
+        check_one_batch_equals_the_ops_one_by_one(batched, single);
+    }
 }
