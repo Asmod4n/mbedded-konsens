@@ -103,3 +103,39 @@ the review checks the claim.
 3. Callers: tests, examples, bench, README.
 4. Seeds and simulation.
 5. Measurement.
+
+## 9. Changes after the review
+
+The review (approve with changes, 11 findings) is applied as follows.
+
+- R1: `handle_incoming(std::vector<received> batch)` takes the batch by
+  value; the node owns it until the commit. Client entries move into
+  `buffered_proposals_`; the commit calls `accept_entries_leader` once
+  with them. The spans into locals at sequence_paxos.hpp:383, 682-684
+  and 858 stay valid because those paths write at once (R4).
+- R2: provisional form with no token: every call collects; `commit()`
+  writes once and then releases the messages and the replies;
+  `take_outgoing_messages` and `take_client_replies` give only released
+  items. A missing commit sends nothing. `pending_commit` goes. The
+  owner decides between this form and the token form.
+- R3: `append`, `expire_session`, `reconnected`, the one-message
+  `handle_incoming` and the messages of BLE also join the batch, and
+  their messages are held.
+- R4: P1. One private read accessor of sequence_paxos writes the
+  waiting ops before each storage read, so no list of handlers is
+  needed. A public read while ops wait throws `std::logic_error`.
+- R5: section 2 holds under P1 as the model trace Receive..., Lose of
+  each message sent, Crash.
+- R6: provisional: `commit` returns `result`; on an error it stops
+  voting and drops the held messages and replies. A batch has one named
+  limit of messages. The owner decides the error path.
+- R7: a test compares the store after one batch with the store after
+  the same ops one by one, on memory and on LMDB.
+- R8: the leader counts its own entry before the commit; this is safe
+  only because every message is held, the resend of Decide and the read
+  rounds included. A mutation that sends before the write must fail the
+  tests.
+- R9: section 7 holds; model runs use MaxLoss not below the batch
+  length. Retry replies are held too.
+- R10: the node keeps its buffers and clears them after each commit.
+- R11: the tests of the review are added to section 5.
