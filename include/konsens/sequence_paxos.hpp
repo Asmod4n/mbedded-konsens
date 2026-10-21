@@ -298,7 +298,13 @@ public:
         } else if constexpr (std::is_same_v<T, prepare>) {
             return handle_prepare(msg, from);
         } else if constexpr (std::is_same_v<T, konsens::promise>) {
-            return handle_promise(msg, from);
+            if (state_ == std::pair{role::leader, phase::prepare}) {
+                return handle_promise_prepare(msg, from);
+            }
+            if (state_ == std::pair{role::leader, phase::accept}) {
+                return handle_promise_accept(msg, from);
+            }
+            return {};
         } else if constexpr (std::is_same_v<T, accept_sync>) {
             return handle_acceptsync(msg, from);
         } else if constexpr (std::is_same_v<T, accept_decide>) {
@@ -645,23 +651,26 @@ private:
         return {};
     }
 
-    result handle_promise(const konsens::promise& prom, node_id from)
+    result handle_promise_prepare(const konsens::promise& prom, node_id from)
     {
-        if (state_.first != role::leader || prom.n != leader_state_.n_leader) {
+        if (prom.n != leader_state_.n_leader) {
             return {};
         }
         const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from};
-        if (state_.second == phase::prepare) {
-            if (leader_state_.set_promise(meta, prom.log_sync, true)) {
-                return handle_majority_promises();
-            }
-            return {};
-        }
-        if (state_.second == phase::accept) {
-            leader_state_.set_promise(meta, std::nullopt, false);
-            return send_accsync(from);
+        if (leader_state_.set_promise(meta, prom.log_sync, true)) {
+            return handle_majority_promises();
         }
         return {};
+    }
+
+    result handle_promise_accept(const konsens::promise& prom, node_id from)
+    {
+        if (prom.n != leader_state_.n_leader) {
+            return {};
+        }
+        const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from};
+        leader_state_.set_promise(meta, std::nullopt, false);
+        return send_accsync(from);
     }
 
     result handle_majority_promises()

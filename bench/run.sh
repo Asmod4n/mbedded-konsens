@@ -204,7 +204,7 @@ Cases:
 - encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
   entries of 1024 B. encode_decide, decode_decide: one Decide. A decode
   case copies the bytes before the timer starts.
-- handle_accept_decide, handle_decide: node::handle(const received&) at a
+- handle_accept_decide, handle_decide: node::handle_incoming(const received&) at a
   follower in (Follower, Accept), over a store that counts the payload
   bytes and keeps no entry. The messages are encoded and decoded before
   the timer starts.

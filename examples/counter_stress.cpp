@@ -272,14 +272,14 @@ struct cluster {
         if (!cbor) {
             auto& m = std::get<konsens::message>(sent);
             const auto to = std::visit([](const auto& x) { return x.to; }, m);
-            return at(static_cast<std::size_t>(to - 1)).handle(std::move(m));
+            return at(static_cast<std::size_t>(to - 1)).handle_incoming(std::move(m));
         }
         const auto r = konsens::decode(std::get<std::string>(std::move(sent)));
         if (!r) [[unlikely]] {
             return std::unexpected(r.error());
         }
         kinds.at(konsens::kind_of(*r)) += 1;
-        return at(static_cast<std::size_t>(r->to - 1)).handle(*r);
+        return at(static_cast<std::size_t>(r->to - 1)).handle_incoming(*r);
     }
 
     std::expected<void, std::error_code> collect()

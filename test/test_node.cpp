@@ -52,7 +52,7 @@ void step(std::vector<node_t>& nodes, const std::array<bool, 3>& alive)
                 more = true;
                 const auto to = std::visit([](const auto& x) { return x.to; }, m);
                 if (alive[i] && alive[to - 1]) {
-                    REQUIRE(nodes[to - 1].handle(std::move(m)));
+                    REQUIRE(nodes[to - 1].handle_incoming(std::move(m)));
                 }
             }
         }
@@ -154,7 +154,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
     nodes[2] = *node_t::with(config_of(3), kept, echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
     static_cast<void>(nodes[2].take_outgoing_messages());
-    REQUIRE(nodes[2].handle(konsens::ble_message{1, 3, konsens::heartbeat_request{1}}));
+    REQUIRE(nodes[2].handle_incoming(konsens::ble_message{1, 3, konsens::heartbeat_request{1}}));
     CHECK(nodes[2].take_outgoing_messages().empty());
     const auto refused = [](const node_t::result& r) { return !r && r.error() == konsens::client_errc::recovering; };
     CHECK(refused(nodes[2].append(make_entry(2))));
@@ -195,7 +195,7 @@ bool deliver_losing(std::vector<node_t>& nodes, const Lost lost)
                     continue;
                 }
                 const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                REQUIRE(nodes[to - 1].handle(std::move(m)));
+                REQUIRE(nodes[to - 1].handle_incoming(std::move(m)));
             }
         }
     }
@@ -220,7 +220,7 @@ std::vector<konsens::paxos_message> step_recording(std::vector<node_t>& nodes, c
                     seen.push_back(*p);
                 }
                 const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                REQUIRE(nodes[to - 1].handle(std::move(m)));
+                REQUIRE(nodes[to - 1].handle_incoming(std::move(m)));
             }
         }
     }
@@ -387,7 +387,7 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy") {
                 for (const auto& m : n.take_outgoing_messages()) {
                     more = true;
                     const auto to = std::visit([](const auto& x) { return x.to; }, m);
-                    REQUIRE(nodes.at(to - 1).handle(m));
+                    REQUIRE(nodes.at(to - 1).handle_incoming(m));
                 }
             }
         }
@@ -419,7 +419,7 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy") {
         }
         auto& seen = appended.at(follower - 1);
         seen.clear();
-        REQUIRE(nodes.at(follower - 1).handle(*r));
+        REQUIRE(nodes.at(follower - 1).handle_incoming(*r));
         REQUIRE(seen.size() == 1);
         CHECK(seen.front() == (*acc)->entries.data());
         checked = true;

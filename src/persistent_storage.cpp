@@ -82,11 +82,11 @@ MDB_val value_of(const std::string_view text) noexcept {
     return MDB_val{text.size(), const_cast<char*>(text.data())};
 }
 
-std::span<const std::byte> bytes_of(const MDB_val& value) noexcept {
+std::span<const std::byte> as_bytes(const MDB_val& value) noexcept {
     return {static_cast<const std::byte*>(value.mv_data), value.mv_size};
 }
 
-std::span<std::byte> writable_bytes_of(const MDB_val& value) noexcept {
+std::span<std::byte> as_writable_bytes(const MDB_val& value) noexcept {
     return {static_cast<std::byte*>(value.mv_data), value.mv_size};
 }
 
@@ -191,7 +191,7 @@ std::expected<void, std::error_code> put_entry(const write_target& target, const
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    encode_record(index, e, writable_bytes_of(data));
+    encode_record(index, e, as_writable_bytes(data));
     return {};
 }
 
@@ -227,7 +227,7 @@ std::expected<void, std::error_code> put_meta(const write_target& target, const 
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    const auto out = writable_bytes_of(data);
+    const auto out = as_writable_bytes(data);
     std::ranges::copy(body, out.begin());
     std::ranges::copy(to_little_endian(crc32c::extend(0, body)), out.last(crc_size).begin());
     return {};
@@ -244,7 +244,7 @@ get_meta(MDB_txn* txn, const MDB_dbi meta_dbi, const std::string_view name, cons
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    const auto value = bytes_of(data);
+    const auto value = as_bytes(data);
     if (value.size() != body_size + crc_size) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
@@ -430,7 +430,7 @@ std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries
         if (status != MDB_SUCCESS) [[unlikely]] {
             return std::unexpected(read_failure{to_error_code(status), from + entries.size(), 0, 0});
         }
-        const auto key_bytes = bytes_of(key);
+        const auto key_bytes = as_bytes(key);
         if (key_bytes.size() != index_size) [[unlikely]] {
             return std::unexpected(read_failure{storage_errc::malformed_record, from + entries.size(), 0, 0});
         }
@@ -438,7 +438,7 @@ std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries
         if (index >= to) {
             break;
         }
-        auto decoded = decode_record(index, bytes_of(data));
+        auto decoded = decode_record(index, as_bytes(data));
         if (!decoded) [[unlikely]] {
             return std::unexpected(decoded.error());
         }
@@ -508,16 +508,16 @@ std::expected<std::uint32_t, std::error_code> persistent_storage::get_last_entry
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    const auto key_bytes = bytes_of(key);
+    const auto key_bytes = as_bytes(key);
     if (key_bytes.size() != index_size) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
     const auto index = from_big_endian<std::uint64_t>(key_bytes.first<index_size>());
-    const auto decoded = decode_record(index, bytes_of(data));
+    const auto decoded = decode_record(index, as_bytes(data));
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error().code);
     }
-    return from_little_endian<std::uint32_t>(bytes_of(data).last<crc_size>());
+    return from_little_endian<std::uint32_t>(as_bytes(data).last<crc_size>());
 }
 
 }

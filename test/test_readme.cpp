@@ -96,7 +96,7 @@ struct cluster {
             auto bytes = std::move(network.front());
             network.pop_front();
             auto r = konsens::decode(std::move(bytes)).value();
-            REQUIRE(nodes.at(r.to - 1).handle(r));
+            REQUIRE(nodes.at(r.to - 1).handle_incoming(r));
             collect();
         }
     }

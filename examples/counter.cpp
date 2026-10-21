@@ -110,7 +110,7 @@ struct cluster {
             if (!target) {
                 continue;
             }
-            if (auto r = target->handle(std::move(m)); !r) [[unlikely]] {
+            if (auto r = target->handle_incoming(std::move(m)); !r) [[unlikely]] {
                 return r;
             }
             collect();

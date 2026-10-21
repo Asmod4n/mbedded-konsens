@@ -406,7 +406,7 @@ struct world {
         note([&] { return std::string("deliver " + std::to_string(from_of(m)) + "->" + std::to_string(to_of(m)) + " " +
                         detail_of(m)); });
         const auto i = to_of(m) - 1;
-        REQUIRE(nodes[i].handle(std::move(m)));
+        REQUIRE(nodes[i].handle_incoming(std::move(m)));
         collect(i);
     }
 

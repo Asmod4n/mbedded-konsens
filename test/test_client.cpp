@@ -113,7 +113,7 @@ struct cluster {
                         continue;
                     }
                     for (std::size_t k = copies(m); k > 0; --k) {
-                        REQUIRE(at(to_of(m)).handle(m));
+                        REQUIRE(at(to_of(m)).handle_incoming(m));
                     }
                 }
             }

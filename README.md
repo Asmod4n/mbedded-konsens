@@ -136,7 +136,7 @@ The library is the CMake target `konsens`.
 
 The program owns the clock and the network. On each tick of its clock,
 it calls `tick()`. It sends each outgoing message, and it gives each
-message that arrives to `handle()`.
+message that arrives to `handle_incoming()`.
 
 ```cpp
 node.tick();
@@ -145,7 +145,7 @@ for (const auto& m : node.take_outgoing_messages())
     send(konsens::encode(m).value());
 
 // bytes: one message from a peer
-node.handle(konsens::decode(std::move(bytes)).value());
+node.handle_incoming(konsens::decode(std::move(bytes)).value());
 ```
 
 The nonce is a new random number for each start of the process.

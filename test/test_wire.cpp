@@ -27,7 +27,7 @@
 // decode_body, decode_body_of_kind and encode_parts; the flag --cbor of
 // counter_stress. The names with a source: header (RFC 7252 section 3),
 // post (RFC 7252 section 12.1.1), method_not_allowed (RFC 7252 section
-// 5.9.2.6), extraneous_data (RFC 8949 section 2).
+// 5.9.2.6), extraneous_data (RFC 8949 section 1.2).
 //
 // Provisional names: received and received_msg, the result of decode, and
 // received_msg_of, which builds the variant of cbor::ref from the two
@@ -50,7 +50,7 @@
 // check_decided_logs; ballot_above_promise of node.hpp.
 //
 // Provisional form: decode gives each body in the cbor::ref that
-// mbedded-cbor made, with no copy. node::handle(const received&) copies the
+// mbedded-cbor made, with no copy. node::handle_incoming(const received&) copies the
 // body into a message, because sequence_paxos::handle takes a paxos_message
 // by value and sequence_paxos.hpp does not change in this work.
 

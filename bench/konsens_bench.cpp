@@ -253,7 +253,7 @@ struct cluster {
                 return std::unexpected(r.error());
             }
             messages += 1;
-            if (auto h = nodes.at(r->to - 1).handle(*r); !h) [[unlikely]] {
+            if (auto h = nodes.at(r->to - 1).handle_incoming(*r); !h) [[unlikely]] {
                 return h;
             }
             if (auto c = collect_outgoing(); !c) [[unlikely]] {
@@ -529,7 +529,7 @@ std::expected<accepting_follower, failure> start_accepting_follower()
             return std::unexpected(failure{"pass the first AcceptDecide through the wire", r.error()});
         }
         const auto before = c->nodes.at(follower).get_sequence_paxos().get_accepted_idx();
-        if (auto h = c->nodes.at(follower).handle(*r); !h) [[unlikely]] {
+        if (auto h = c->nodes.at(follower).handle_incoming(*r); !h) [[unlikely]] {
             return std::unexpected(failure{"handle the first AcceptDecide", h.error()});
         }
         std::ignore = c->nodes.at(follower).take_outgoing_messages();
@@ -573,7 +573,7 @@ case_outcome measure_handle_accept_decide(const run_settings& s)
         const auto counted_before = follower.get_sequence_paxos().get_internal_storage().payload_bytes;
         const auto start = std::chrono::steady_clock::now();
         for (const auto& r : messages) {
-            if (auto h = follower.handle(r); !h) [[unlikely]] {
+            if (auto h = follower.handle_incoming(r); !h) [[unlikely]] {
                 return std::unexpected(failure{"handle an AcceptDecide", h.error()});
             }
         }
@@ -613,7 +613,7 @@ case_outcome measure_handle_decide(const run_settings& s)
             return std::unexpected(
                 failure{"pass the AcceptDecide of the empty entries through the wire", filled.error()});
         }
-        if (auto h = follower.handle(*filled); !h) [[unlikely]] {
+        if (auto h = follower.handle_incoming(*filled); !h) [[unlikely]] {
             return std::unexpected(failure{"handle the AcceptDecide of the empty entries", h.error()});
         }
         std::ignore = follower.take_outgoing_messages();
@@ -633,7 +633,7 @@ case_outcome measure_handle_decide(const run_settings& s)
         }
         const auto start = std::chrono::steady_clock::now();
         for (const auto& r : messages) {
-            if (auto h = follower.handle(r); !h) [[unlikely]] {
+            if (auto h = follower.handle_incoming(r); !h) [[unlikely]] {
                 return std::unexpected(failure{"handle a Decide", h.error()});
             }
         }

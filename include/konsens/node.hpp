@@ -103,7 +103,7 @@ public:
         return serve_clients();
     }
 
-    result handle(const message& m)
+    result handle_incoming(const message& m)
     {
         return std::visit(
             [this](const auto& outer) -> result {
@@ -113,7 +113,7 @@ public:
             m);
     }
 
-    result handle(const received& r)
+    result handle_incoming(const received& r)
     {
         return std::visit([this, &r](const auto& body) { return this->handle(r.from, r.to, *body); }, r.msg);
     }
