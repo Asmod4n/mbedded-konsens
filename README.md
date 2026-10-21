@@ -86,20 +86,20 @@ operation, median of 7 rounds of 31 samples, payload 1 KiB:
 | Operation | Time |
 |---|---|
 | CRC32C | 2.1 µs |
-| LMDB commit of one entry | 349 µs |
-| Write, memory | 9.1 µs |
-| Write, LMDB | 2.0 ms |
-| 64 writes at once, LMDB, per write | 2.0 ms |
-| Read, LMDB | 5.9 µs |
+| LMDB commit of one entry | 329 µs |
+| Write, memory | 10.2 µs |
+| Write, LMDB | 1.8 ms |
+| 64 writes at once, LMDB, per write | 69 µs |
+| Read, LMDB | 7.4 µs |
 
 | Message | Encode | Decode | Handle |
 |---|---|---|---|
-| AcceptDecide, 64 × 1 KiB | 45 µs | 57 µs | 750 ns |
-| Decide | 66 ns | 265 ns | 26 ns |
+| AcceptDecide, 64 × 1 KiB | 45 µs | 56 µs | 5.3 µs |
+| Decide | 66 ns | 261 ns | 66 ns |
 
-The largest difference between two builds of the same source is 6.6 %.
+The largest difference between two builds of the same source is 16.7 %.
 All cases, the payloads of 64 B and 64 KiB and the context of the run:
-[bench/results/2026-10-21-144527Z.txt](bench/results/2026-10-21-144527Z.txt).
+[bench/results/2026-10-21-193700Z.txt](bench/results/2026-10-21-193700Z.txt).
 `bench/run.sh` runs the bench; the option `-DKONSENS_BENCH=ON` builds it.
 The cost of the checksum against a MAC:
 [bench/results/2026-10-21-092557Z.txt](bench/results/2026-10-21-092557Z.txt).
