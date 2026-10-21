@@ -252,7 +252,7 @@ public:
         if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) [[unlikely]] {
             return {};
         }
-        if (recovering_ && !std::is_same_v<T, recovery_response>) {
+        if (recovering_ && !std::is_same_v<T, recovery> && !std::is_same_v<T, recovery_response>) {
             return {};
         }
         if constexpr (std::is_same_v<T, prepare_req>) {
@@ -757,9 +757,13 @@ private:
         return {};
     }
 
-    result handle_recovery(const recovery& rec, node_id from)
+    result handle_recovery(const recovery& rec, const node_id from)
     {
-        const bool primary = state_ == std::pair{role::leader, phase::accept};
+        const auto last_crc = internal_storage_.get_last_entry_crc();
+        if (!last_crc) [[unlikely]] {
+            return stop_voting(last_crc.error());
+        }
+        const bool primary = !recovering_ && state_ == std::pair{role::leader, phase::accept};
         std::vector<entry> log;
         if (primary) {
             auto l = internal_storage_.get_entries(0, accepted_idx_);
@@ -769,34 +773,46 @@ private:
             log = std::move(*l);
         }
         outgoing_.push_back({pid_, from,
-                             recovery_response{rec.nonce, promise_, primary, primary ? accepted_round_ : ballot{},
-                                               std::move(log), primary ? decided_idx_ : 0, false,
-                                               primary ? accepted_idx_ : 0, 0}});
+                             recovery_response{rec.nonce, promise_, primary, accepted_round_, std::move(log),
+                                               decided_idx_, recovering_, accepted_idx_, *last_crc}});
         return {};
     }
 
-    result handle_recovery_response(const recovery_response& resp, node_id from)
+    result handle_recovery_response(const recovery_response& resp, const node_id from)
     {
         if (!recovering_ || resp.nonce != nonce_) {
             return {};
         }
         std::erase_if(recovery_responses_, [from](const auto& r) { return r.first == from; });
         recovery_responses_.emplace_back(from, resp);
-        const auto highest = std::ranges::max(recovery_responses_ | std::views::values |
-                                              std::views::transform(&recovery_response::promise));
-        const auto l = std::ranges::find_if(recovery_responses_, [highest](const auto& r) {
-            return r.second.primary && r.second.promise == highest && highest.pid == r.first;
-        });
-        if (recovery_responses_.size() < leader_state_.majority() || l == recovery_responses_.end()) {
+        const auto* l = find_recovery_primary();
+        if (l == nullptr) {
             return {};
         }
-        const auto pr = std::max(promise_, l->second.promise);
-        const auto n_accepted = l->second.n_accepted;
-        const auto decided_idx = std::max(decided_idx_, l->second.decided_idx);
-        const auto accepted_idx = l->second.log.size();
-        const std::array<storage_op, 4> ops{append_on_prefix{0, l->second.log},
-                                            set_accepted_round{n_accepted}, set_decided_index{decided_idx},
-                                            set_promise{pr}};
+        return complete_recovery(0, l->log, std::max(promise_, l->promise), l->n_accepted, l->decided_idx);
+    }
+
+    const recovery_response* find_recovery_primary()
+    {
+        auto normal = recovery_responses_ | std::views::filter([](const auto& r) { return !r.second.recovering; });
+        if (static_cast<std::size_t>(std::ranges::distance(normal)) < leader_state_.majority()) {
+            return nullptr;
+        }
+        const auto highest =
+            std::ranges::max(normal | std::views::values | std::views::transform(&recovery_response::promise));
+        const auto l = std::ranges::find_if(normal, [highest](const auto& r) {
+            return r.second.primary && r.second.promise == highest && highest.pid == r.first;
+        });
+        return l == normal.end() ? nullptr : &l->second;
+    }
+
+    result complete_recovery(const std::uint64_t from_idx, const std::span<const entry> entries, const ballot pr,
+                             const ballot n_accepted, const std::uint64_t source_decided_idx)
+    {
+        const auto decided_idx = std::max(decided_idx_, source_decided_idx);
+        const auto accepted_idx = std::min(from_idx, accepted_idx_) + entries.size();
+        const std::array<storage_op, 4> ops{append_on_prefix{from_idx, entries}, set_accepted_round{n_accepted},
+                                            set_decided_index{decided_idx}, set_promise{pr}};
         if (auto w = internal_storage_.write_atomically(ops); !w) [[unlikely]] {
             return stop_voting(w.error());
         }

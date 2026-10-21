@@ -347,18 +347,17 @@ TEST_CASE("a first start does not recover") {
 }
 
 // Dispatch in SequencePaxos.tla: a recovering node drops each message
-// except RecoveryResponse, takes no leadership (HandleLeader needs
-// ~recovering) and refuses a proposal. The timeout sends Recovery again to
-// every peer. The model sends it only to the peers that have not answered;
-// then a node whose peers all answered before a primary existed waits
-// forever (simulation seed 2). A later answer replaces the earlier answer
-// of the same peer, as in HandleRecoveryResponse. This form is provisional
-// and goes to the owner.
+// except Recovery and RecoveryResponse, takes no leadership (HandleLeader
+// needs ~recovering) and refuses a proposal. The timeout sends Recovery
+// again to every peer. The model sends it only to the peers that have not
+// answered; then a node whose peers all answered before a primary existed
+// waits forever (simulation seed 2). A later answer replaces the earlier
+// answer of the same peer, as in HandleRecoveryResponse. This form is
+// provisional and goes to the owner.
 TEST_CASE("a recovering node drops messages, refuses proposals and resends recovery") {
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     sp.take_outgoing_messages();
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 0, ballot{}, 0}}));
-    REQUIRE(sp.handle({2, 1, konsens::recovery{9}}));
     CHECK(sp.take_outgoing_messages().empty());
     CHECK(*sp.get_internal_storage().get_promise() == ballot_of(1, 2));
     REQUIRE(sp.handle_leader(ballot_of(5, 1)));
@@ -373,6 +372,60 @@ TEST_CASE("a recovering node drops messages, refuses proposals and resends recov
     REQUIRE(rs.size() == 2);
     CHECK(rs[0].nonce == 7);
     CHECK(rs[1].nonce == 7);
+}
+
+// Item 2 of section 2 of doc/plan-power-loss-code.md and RecoveryResponseMsg
+// with PowerLoss: a recovering node answers Recovery, so that a cluster in
+// which every node restarted can recover. The answer says that the node
+// recovers, is no primary, and carries the durable state and the CRC32C of
+// the last entry. The answer changes no state of the node.
+TEST_CASE("a recovering node answers recovery and changes no state") {
+    memory_storage s = storage_with_promise(ballot_of(3, 1));
+    const std::vector two{make_entry(1), make_entry(2)};
+    const std::array<konsens::storage_op, 3> ops{konsens::append_entries{two},
+                                                 konsens::set_accepted_round{ballot_of(2, 2)},
+                                                 konsens::set_decided_index{1}};
+    REQUIRE(s.write_atomically(ops));
+    auto sp = make(1, s, 7);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({2, 1, konsens::recovery{9}}));
+    const auto out = sp.take_outgoing_messages();
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].to == 2);
+    CHECK(std::get<konsens::recovery_response>(out[0].msg) ==
+          konsens::recovery_response{9, ballot_of(3, 1), false, ballot_of(2, 2), {}, 1, true, 2,
+                                     konsens::compute_entry_crc(1, make_entry(2))});
+    CHECK(sp.recovering());
+    CHECK(sp.get_state() == std::pair{role::follower, phase::recover});
+    CHECK(sp.get_promise() == ballot_of(3, 1));
+    CHECK(sp.get_accepted_idx() == 2);
+    CHECK(sp.get_decided_idx() == 1);
+    CHECK(*sp.get_internal_storage().get_entries(0, 2) == two);
+}
+
+// Run 3 of model/results/20261021T081623Z-power-loss-rollback-S2.md, steps
+// 7 to 14. Node 1 holds v1 at ballot 3.3 and has decided it. It restarts.
+// Node 2 is still the primary of the old ballot 2.2 with v2. Node 3 rolled
+// back and answers as a recovering node with no promise. If the answer of
+// node 3 counted, ballot 2.2 would be the highest of two answers, node 1
+// would take v2 over its decided v1, and S2 would break. RecoveryComplete
+// counts only the answers with recovering = FALSE, so node 1 waits.
+TEST_CASE("the answer of a recovering node does not count in the normal recovery") {
+    memory_storage s = storage_with_promise(ballot_of(3, 3));
+    const std::vector v1{make_entry(1)};
+    const std::array<konsens::storage_op, 3> ops{konsens::append_entries{v1},
+                                                 konsens::set_accepted_round{ballot_of(3, 3)},
+                                                 konsens::set_decided_index{1}};
+    REQUIRE(s.write_atomically(ops));
+    auto sp = make(1, s, 7);
+    sp.take_outgoing_messages();
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {make_entry(2)},
+                                                        0, false, 1, konsens::compute_entry_crc(0, make_entry(2))}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot{}, false, ballot{}, {}, 0, true, 0, 0}}));
+    CHECK(sp.recovering());
+    CHECK(sp.get_accepted_round() == ballot_of(3, 3));
+    CHECK(decided_of(sp) == v1);
+    CHECK(messages_of<konsens::prepare_req>(sp.take_outgoing_messages()).empty());
 }
 
 // The answers are kept one per peer: a later answer of a peer replaces its
@@ -392,8 +445,12 @@ TEST_CASE("handle_recovery_response: a later answer of a peer replaces its earli
 
 // HandleRecovery and RecoveryResponseMsg: the leader in Accept is the
 // primary and sends its promise, accepted round, whole log and decided
-// index, with the nonce of the request. A follower sends only its promise.
-TEST_CASE("handle_recovery: the primary sends its state, a follower its promise") {
+// index, with the nonce of the request. A follower sends the same state
+// with no log (item 1 of section 2 of doc/plan-power-loss-code.md: the code
+// sends it always, the model only with PowerLoss). Each answer carries
+// accepted_idx and the CRC32C of the last entry, and says that the node
+// does not recover.
+TEST_CASE("handle_recovery: the primary sends its state and log, a follower its state") {
     auto a = make(1);
     auto b = make(2);
     auto c = make(3);
@@ -402,26 +459,18 @@ TEST_CASE("handle_recovery: the primary sends its state, a follower its promise"
     deliver_all(nodes);
     REQUIRE(c.append(make_entry(1)));
     deliver_all(nodes);
+    const auto crc = konsens::compute_entry_crc(0, make_entry(1));
     REQUIRE(c.handle({2, 3, konsens::recovery{4}}));
     auto out = c.take_outgoing_messages();
     REQUIRE(out.size() == 1);
     CHECK(out[0].to == 2);
-    const auto p = std::get<konsens::recovery_response>(out[0].msg);
-    CHECK(p.nonce == 4);
-    CHECK(p.primary);
-    CHECK(p.promise == ballot_of(1, 3));
-    CHECK(p.n_accepted == ballot_of(1, 3));
-    CHECK(p.log == std::vector{make_entry(1)});
-    CHECK(p.decided_idx == 1);
+    CHECK(std::get<konsens::recovery_response>(out[0].msg) ==
+          konsens::recovery_response{4, ballot_of(1, 3), true, ballot_of(1, 3), {make_entry(1)}, 1, false, 1, crc});
     REQUIRE(a.handle({2, 1, konsens::recovery{4}}));
     out = a.take_outgoing_messages();
     REQUIRE(out.size() == 1);
-    const auto f = std::get<konsens::recovery_response>(out[0].msg);
-    CHECK(!f.primary);
-    CHECK(f.promise == ballot_of(1, 3));
-    CHECK(f.n_accepted == ballot{});
-    CHECK(f.log.empty());
-    CHECK(f.decided_idx == 0);
+    CHECK(std::get<konsens::recovery_response>(out[0].msg) ==
+          konsens::recovery_response{4, ballot_of(1, 3), false, ballot_of(1, 3), {}, 1, false, 1, crc});
 }
 
 // IfVotes in HandleRecovery: a node that does not vote does not answer.
@@ -551,8 +600,9 @@ TEST_CASE("handle_recovery_response: the decided index does not fall") {
 }
 
 // Plan v0.1 section 7, provisional form "recovery waits": when every node
-// restarts at the same time, no node is a primary and a recovering node
-// does not answer Recovery. So no node completes its recovery. The model
+// restarts at the same time, no node is a primary, and the answer of a
+// recovering node does not count in the normal recovery. So no node
+// completes its recovery. The model
 // excludes this case (Rollback: "a full cluster from a backup is no
 // fault"). The operator acts.
 TEST_CASE("when all nodes restart at once, recovery waits") {

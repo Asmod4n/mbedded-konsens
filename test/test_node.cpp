@@ -128,7 +128,7 @@ TEST_CASE("each client error has its own message") {
 }
 
 // F4 of plan v0.1 at the node: a recovering node drops every message
-// except RecoveryResponse, BLE heartbeats included, and refuses each call
+// except Recovery and RecoveryResponse, BLE heartbeats included, and refuses each call
 // with recovering. Simulation seed 134 shows why the heartbeats count: the
 // leader 3 restarted, still answered heartbeats, so nodes 1 and 2 kept it
 // as leader, no node was a primary, and recovery waited forever. When the
