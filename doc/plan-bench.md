@@ -210,3 +210,51 @@ database.
    threads.
 9. Tests: the threaded cases run in a Debug build with ThreadSanitizer
    once, with no report.
+
+## 10. Changes after the review of 9
+
+The review (needs changes, 15 findings) is applied as follows.
+
+- The serial cases already open one LMDB env per node, in its own
+  directory (bench:765-767).
+- R1: the node thread waits with `std::condition_variable_any::wait`
+  with the stop token and the predicate "inbox not empty".
+- R2: the main thread waits with a predicate under its inbox mutex:
+  every reply with a client id in the range of the calls has arrived,
+  or a failure has arrived.
+- R3: a thread swaps its inbox out under its own lock, releases the
+  lock, and only then decodes, handles, commits and pushes. No thread
+  holds two inbox locks.
+- R4: an inbox element is a `std::variant` of an encoded message and a
+  client call. The node thread runs the client call and joins its
+  transaction with `+=`. The main thread never touches a node while the
+  threads run.
+- R5: the thread body catches what reaches it, puts a failure into the
+  main inbox and notifies.
+- R6: a thread takes at most `konsens::max_batch_size` elements per
+  commit.
+- R7: the main thread puts all calls of a sample under one lock with
+  one notify. A node thread puts all its messages for one target under
+  one lock.
+- R8: each thread keeps its own counters and timers: messages,
+  `write_atomically` calls and commit time. The main thread reads them
+  and the leader state only after the join. The rows give messages
+  per op and commits per node per op in both harnesses, and no rounds.
+- R9: the serial harness ticks in its timed part and the threaded one
+  does not. The file states it.
+- R10: a count of the elements in flight, under one mutex with a
+  condition variable. The main thread waits until it is zero, then
+  stops and joins, then checks log length, decided index and leader.
+- R11: the jthreads are the last members of `threaded_cluster`, so they
+  join before the nodes close their envs. Nodes stay in a vector that
+  does not grow after the start.
+- R12: the file puts `write_lmdb_threads` beside `lmdb_put` times N
+  commits in series, N as measured, and says that the three envs share
+  one disk.
+- R13: the file records 4 threads, of which at most 3 are runnable. It
+  says that the memory cases mostly measure the wakeup of threads.
+- R14: one Debug build of its own with `-fsanitize=thread`. The
+  distribution's liblmdb is not instrumented. The bench links
+  `Threads::Threads`.
+- R15: `threaded_cluster` and the `*_threads` names go to the owner as
+  questions.
