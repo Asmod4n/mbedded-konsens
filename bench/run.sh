@@ -3,6 +3,7 @@ set -euo pipefail
 
 image=localhost/cxx-matrix
 compiler=g++-16
+c_compiler=gcc-16
 build_jobs=2
 bench_user=bench
 bench_uid=1001
@@ -20,6 +21,10 @@ cases=(
     "read_memory 0" "read_lmdb 0"
     "write_batch_memory 64" "write_batch_memory 1024" "write_batch_memory 65536"
     "write_batch_lmdb 64" "write_batch_lmdb 1024" "write_batch_lmdb 65536"
+    "lmdb_put 64" "lmdb_put 1024" "lmdb_put 65536"
+    "lmdb_put_like_storage 64" "lmdb_put_like_storage 1024" "lmdb_put_like_storage 65536"
+    "lmdb_get 64" "lmdb_get 1024" "lmdb_get 65536"
+    "get_entries_lmdb 64" "get_entries_lmdb 1024" "get_entries_lmdb 65536"
 )
 
 usage() {
@@ -53,7 +58,8 @@ host() {
 build() {
     local stamp=$1
     cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" \
-        -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
+        -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_C_COMPILER=$c_compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
         > "/work/cmake-$stamp.log" 2>&1 || { tail -n 40 "/work/cmake-$stamp.log" >&2; exit 1; }
     cmake --build /work/build --target "${binaries[@]}" -j $build_jobs \
         > "/work/build-$stamp.log" 2>&1 || { tail -n 40 "/work/build-$stamp.log" >&2; exit 1; }
@@ -95,7 +101,7 @@ run_one() {
     local round=$1 name=$2 payload=$3 binary=$4 samples=$5
     local directory=/lmdb/$round-$name-$payload-$binary other running steal_before steal_after line status=0
     local -a arguments=("$name" "$samples" "$payload")
-    if [[ $name == *_lmdb ]]; then
+    if [[ $name == *lmdb* ]]; then
         mkdir "$directory"
         chown "$bench_uid:$bench_uid" "$directory"
         arguments+=("$directory")
@@ -132,6 +138,9 @@ rounds() {
 
 summary() {
     awk -v main="${binaries[0]}" -v aa="${binaries[1]}" '
+    BEGIN { payload_count = split("64 1024 65536", payloads, " ") }
+    function shown(table, key) { return (key in table && table[key] != "") ? table[key] : "-" }
+    function cell(key) { return (key in median) ? sprintf("%.2f", median[key]) : "-" }
     function middle(key, binary,    n, i, j, t, a) {
         n = count[key, binary]
         for (i = 1; i <= n; i++) a[i] = value[key, binary, i] + 0
@@ -148,7 +157,11 @@ summary() {
         if (!(key in seen)) { seen[key] = 1; keys[++key_count] = key }
         n = ++count[key, field["binary"]]
         value[key, field["binary"], n] = field["ns_per_op_median"]
-        if (field["binary"] == main) { rounds_per_op[key] = field["rounds_per_op"]; messages_per_op[key] = field["messages_per_op"] }
+        if (field["binary"] == main) {
+            rounds_per_op[key] = field["rounds_per_op"]; messages_per_op[key] = field["messages_per_op"]
+            writes_per_op[key] = field["write_atomically_per_op"]
+            leader_ns[key] = field["leader_ns_per_op"]; follower_ns[key] = field["follower_ns_per_op"]
+        }
     }
     END {
         print "## A/A difference of each case"
@@ -172,14 +185,37 @@ summary() {
         print ""
         print "ns per operation: the median of the round medians. Spread: the lowest and the highest round median."
         print ""
-        print "| case | payload B | ns per op | spread | rounds per op | messages per op |"
-        print "|---|---|---|---|---|---|"
+        print "Leader and follower: the commit time of the leader and of the slower follower, in ns per operation,"
+        print "from the last raw line of the case."
+        print ""
+        print "| case | payload B | ns per op | spread | rounds per op | messages per op | write_atomically per op | leader ns | follower ns |"
+        print "|---|---|---|---|---|---|---|---|---|"
         for (k = 1; k <= key_count; k++) {
             split(keys[k], part, " ")
             m = middle(keys[k], main)
-            printf "| %s | %s | %.2f | %.2f-%.2f | %s | %s |\n", part[1], part[2], m, low, high, \
-                (keys[k] in rounds_per_op && rounds_per_op[keys[k]] != "" ? rounds_per_op[keys[k]] : "-"), \
-                (keys[k] in messages_per_op && messages_per_op[keys[k]] != "" ? messages_per_op[keys[k]] : "-")
+            median[keys[k]] = m
+            printf "| %s | %s | %.2f | %.2f-%.2f | %s | %s | %s | %s | %s |\n", part[1], part[2], m, low, high, \
+                shown(rounds_per_op, keys[k]), shown(messages_per_op, keys[k]), shown(writes_per_op, keys[k]), \
+                shown(leader_ns, keys[k]), shown(follower_ns, keys[k])
+        }
+        print ""
+        print "## Each library case beside its LMDB baseline"
+        print ""
+        print "ns per operation, " main ". Commits: the LMDB commits in series of one write_lmdb operation."
+        print ""
+        print "| payload B | lmdb_put | lmdb_put_like_storage | commit_lmdb | write_lmdb | commits | write_batch_lmdb |"
+        print "|---|---|---|---|---|---|---|"
+        for (p = 1; p <= payload_count; p++) {
+            b = payloads[p]
+            printf "| %s | %s | %s | %s | %s | %s | %s |\n", b, cell("lmdb_put " b), cell("lmdb_put_like_storage " b), \
+                cell("commit_lmdb " b), cell("write_lmdb " b), shown(writes_per_op, "write_lmdb " b), cell("write_batch_lmdb " b)
+        }
+        print ""
+        print "| payload B | lmdb_get | get_entries_lmdb |"
+        print "|---|---|---|"
+        for (p = 1; p <= payload_count; p++) {
+            b = payloads[p]
+            printf "| %s | %s | %s |\n", b, cell("lmdb_get " b), cell("get_entries_lmdb " b)
         }
         print ""
         printf "Processes that failed: %d.\n", failed
@@ -216,10 +252,41 @@ Cases:
   through encode and decode, and the network is a queue. One
   client_request at a follower, timed from the call to its reply.
 - read_memory, read_lmdb: one client_query at a follower, timed from the
-  call to its reply.
+  call to its reply. read_lmdb answers from the state machine in memory
+  after one read-index round, so it stands beside read_memory, not
+  beside lmdb_get.
 - write_batch_memory, write_batch_lmdb: 64 client_request calls at a
   follower before the first round, timed until the last reply, divided
   by 64.
+
+- lmdb_put: LMDB alone. One mdb_txn_begin, one mdb_put of the payload
+  under a big-endian 8-byte key that rises by one, with flags 0, and one
+  mdb_txn_commit. The env opens as persistent_storage::open opens it:
+  env flags 0, so each commit syncs, mode 0600, maxdbs 2, one named
+  database, the map size of commit_lmdb. A fresh env for each sample,
+  opened before the timer starts.
+- lmdb_put_like_storage: as lmdb_put, but each transaction calls
+  mdb_stat once and reserves the payload plus the record overhead of
+  the library (the kind and the CRC) with MDB_APPEND | MDB_RESERVE, as
+  write_atomically does. It copies the record into the reserved bytes.
+- lmdb_get: LMDB alone. One read-only mdb_txn_begin, one mdb_get of a
+  key that was written before the timer starts, a comparison of the
+  value with the payload, and one mdb_txn_abort.
+- get_entries_lmdb: persistent_storage::get_entries(0, 1) of an entry
+  that was written before the timer starts, and a comparison of the
+  payload. It stands beside lmdb_get.
+
+write_lmdb runs the three nodes in one process. Its time holds the
+commits of all three nodes one after the other: write_atomically_per_op
+LMDB commits in series, the number as measured. A cluster on three
+machines commits on the followers at the same time.
+
+leader_ns_per_op and follower_ns_per_op are the time spent in
+node::commit at the leader and at the slower of the two followers, for
+each operation. The latency on three machines is about the leader time
+plus the slowest follower time plus the network. This bench does not
+measure that latency. A cluster case fails when the leader changes
+during the timed samples.
 
 In the cluster cases a round also carries heartbeats and resends, so the
 parts do not add up to a write. rounds_per_op and messages_per_op give
@@ -233,7 +300,10 @@ the encoded one. handle_accept_decide compares the bytes counted with the
 bytes sent; handle_decide compares the decided index with the last
 Decide. The commit cases compare the log length with the number of
 commits after each sample. The cluster cases compare each counter reply
-with the number of writes. A process whose check fails prints the
+with the number of writes. lmdb_put and lmdb_put_like_storage compare
+the number of entries of mdb_stat with the number of puts after each
+sample. lmdb_get and get_entries_lmdb compare each value with the
+payload. A process whose check fails prints the
 failure and exits with 1; its raw line shows the exit status.
 
 Run: $rounds rounds. Each round runs every case with every payload in

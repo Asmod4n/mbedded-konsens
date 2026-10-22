@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
+#include <lmdb.h>
 
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
@@ -59,6 +60,11 @@ constexpr std::size_t lmdb_record_overhead_bytes = 64;
 constexpr std::size_t lmdb_copies_of_each_page = 2;
 constexpr std::size_t lmdb_base_map_bytes = std::size_t{64} << 20;
 constexpr std::uint64_t setup_entries = 16;
+constexpr unsigned int lmdb_named_database_count = 2;
+constexpr mdb_mode_t lmdb_file_mode = 0600;
+constexpr const char* lmdb_database_name = "log";
+constexpr std::size_t entry_crc_bytes = sizeof(std::uint32_t);
+constexpr std::uint64_t stored_key = 0;
 
 struct failure {
     std::string_view step;
@@ -93,6 +99,11 @@ double ns_per_op_of(const std::chrono::steady_clock::time_point start, const std
 double per_op(const std::uint64_t count, const run_settings& s)
 {
     return static_cast<double>(count) / static_cast<double>(s.samples * s.ops);
+}
+
+double per_op(const std::chrono::nanoseconds spent, const run_settings& s)
+{
+    return std::chrono::duration<double, std::nano>(spent).count() / static_cast<double>(s.samples * s.ops);
 }
 
 std::size_t map_bytes_for(const std::uint64_t entry_count, const std::size_t payload_bytes)
@@ -183,6 +194,36 @@ struct counting_storage {
     }
 };
 
+template <konsens::storage S>
+struct storage_spy {
+    S store;
+    std::uint64_t write_calls;
+
+    std::expected<void, std::error_code> write_atomically(const std::span<const konsens::storage_op> ops)
+    {
+        write_calls += 1;
+        return store.write_atomically(ops);
+    }
+
+    std::expected<std::vector<konsens::entry>, std::error_code> get_entries(const std::uint64_t from,
+                                                                            const std::uint64_t to) const
+    {
+        return store.get_entries(from, to);
+    }
+
+    std::expected<std::uint64_t, std::error_code> get_log_len() const { return store.get_log_len(); }
+    std::expected<konsens::ballot, std::error_code> get_promise() const { return store.get_promise(); }
+    std::expected<std::uint64_t, std::error_code> get_decided_idx() const { return store.get_decided_idx(); }
+    std::expected<konsens::ballot, std::error_code> get_accepted_round() const { return store.get_accepted_round(); }
+    std::expected<std::uint32_t, std::error_code> get_last_entry_crc() const { return store.get_last_entry_crc(); }
+};
+
+template <konsens::storage S>
+storage_spy<S> spy_of(S store)
+{
+    return {std::move(store), 0};
+}
+
 konsens::node_config config_of(const konsens::node_id pid)
 {
     std::vector<konsens::node_id> peers;
@@ -218,6 +259,7 @@ struct cluster {
     std::uint64_t rounds{};
     std::uint64_t messages{};
     std::vector<std::optional<konsens::transaction>> pending;
+    std::vector<std::chrono::nanoseconds> commit_time;
 
     result add(const std::size_t i, const std::expected<konsens::transaction, std::error_code>& t)
     {
@@ -236,10 +278,14 @@ struct cluster {
     result commit_and_collect()
     {
         pending.resize(nodes.size());
+        commit_time.resize(nodes.size());
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             auto& n = nodes.at(i);
             if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
-                if (auto r = n.commit(*t); !r) [[unlikely]] {
+                const auto start = std::chrono::steady_clock::now();
+                auto r = n.commit(*t);
+                commit_time.at(i) += std::chrono::steady_clock::now() - start;
+                if (!r) [[unlikely]] {
                     return r;
                 }
             }
@@ -368,6 +414,15 @@ struct cluster {
     std::uint64_t log_len_of(const std::size_t at) const
     {
         return nodes.at(at).get_sequence_paxos().get_internal_storage().get_log_len().value_or(0);
+    }
+
+    std::uint64_t write_calls() const
+    {
+        std::uint64_t sum = 0;
+        for (const auto& n : nodes) {
+            sum += n.get_sequence_paxos().get_internal_storage().write_calls;
+        }
+        return sum;
     }
 };
 
@@ -752,10 +807,266 @@ case_outcome measure_commit_lmdb(const run_settings& s)
     });
 }
 
+using memory_spy = storage_spy<konsens::memory_storage>;
+using lmdb_spy = storage_spy<konsens::persistent_storage>;
+
+struct env_close {
+    void operator()(MDB_env* env) const noexcept { mdb_env_close(env); }
+};
+
+struct transaction_abort {
+    void operator()(MDB_txn* txn) const noexcept { mdb_txn_abort(txn); }
+};
+
+using mdb_env = std::unique_ptr<MDB_env, env_close>;
+using mdb_txn = std::unique_ptr<MDB_txn, transaction_abort>;
+
+struct lmdb_store {
+    mdb_env env;
+    MDB_dbi dbi;
+};
+
+std::error_code error_code_of(const int lmdb_status)
+{
+    if (lmdb_status > 0) {
+        return {lmdb_status, std::generic_category()};
+    }
+    return {lmdb_status, konsens::lmdb_category()};
+}
+
+std::expected<mdb_txn, failure> begin_transaction(MDB_env* const env, const unsigned int flags)
+{
+    MDB_txn* txn = nullptr;
+    if (const int status = mdb_txn_begin(env, nullptr, flags, &txn); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_txn_begin", error_code_of(status)});
+    }
+    return mdb_txn{txn};
+}
+
+std::expected<lmdb_store, failure> open_lmdb_store(const std::filesystem::path& directory, const std::size_t map_bytes)
+{
+    std::filesystem::create_directories(directory);
+    MDB_env* raw_env = nullptr;
+    if (const int status = mdb_env_create(&raw_env); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_env_create", error_code_of(status)});
+    }
+    mdb_env env{raw_env};
+    if (const int status = mdb_env_set_maxdbs(env.get(), lmdb_named_database_count); status != MDB_SUCCESS)
+        [[unlikely]] {
+        return std::unexpected(failure{"mdb_env_set_maxdbs", error_code_of(status)});
+    }
+    if (const int status = mdb_env_set_mapsize(env.get(), map_bytes); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_env_set_mapsize", error_code_of(status)});
+    }
+    if (const int status = mdb_env_open(env.get(), directory.c_str(), 0, lmdb_file_mode); status != MDB_SUCCESS)
+        [[unlikely]] {
+        return std::unexpected(failure{"mdb_env_open", error_code_of(status)});
+    }
+    auto txn = begin_transaction(env.get(), 0);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    MDB_dbi dbi = 0;
+    if (const int status = mdb_dbi_open(txn->get(), lmdb_database_name, MDB_CREATE, &dbi); status != MDB_SUCCESS)
+        [[unlikely]] {
+        return std::unexpected(failure{"mdb_dbi_open", error_code_of(status)});
+    }
+    if (const int status = mdb_txn_commit(txn->release()); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_txn_commit of the database", error_code_of(status)});
+    }
+    return lmdb_store{std::move(env), dbi};
+}
+
+std::array<std::byte, sizeof(std::uint64_t)> big_endian_key_of(const std::uint64_t index)
+{
+    const auto ordered = std::endian::native == std::endian::big ? index : std::byteswap(index);
+    return std::bit_cast<std::array<std::byte, sizeof index>>(ordered);
+}
+
+MDB_val value_of(const std::span<const std::byte> bytes)
+{
+    return MDB_val{bytes.size(), const_cast<std::byte*>(bytes.data())};
+}
+
+std::expected<void, failure> put_payload(const lmdb_store& store, const std::uint64_t index,
+                                         const std::span<const std::byte> payload)
+{
+    auto txn = begin_transaction(store.env.get(), 0);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    const auto key_bytes = big_endian_key_of(index);
+    MDB_val key = value_of(key_bytes);
+    MDB_val data = value_of(payload);
+    if (const int status = mdb_put(txn->get(), store.dbi, &key, &data, 0); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_put", error_code_of(status)});
+    }
+    if (const int status = mdb_txn_commit(txn->release()); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_txn_commit", error_code_of(status)});
+    }
+    return {};
+}
+
+std::expected<void, failure> put_record_like_storage(const lmdb_store& store, const std::uint64_t index,
+                                                     const std::span<const std::byte> record)
+{
+    auto txn = begin_transaction(store.env.get(), 0);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    MDB_stat stat{};
+    if (const int status = mdb_stat(txn->get(), store.dbi, &stat); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_stat", error_code_of(status)});
+    }
+    const auto key_bytes = big_endian_key_of(index);
+    MDB_val key = value_of(key_bytes);
+    MDB_val data{record.size(), nullptr};
+    if (const int status = mdb_put(txn->get(), store.dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
+        status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_put", error_code_of(status)});
+    }
+    std::ranges::copy(record, std::span(static_cast<std::byte*>(data.mv_data), data.mv_size).begin());
+    if (const int status = mdb_txn_commit(txn->release()); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_txn_commit", error_code_of(status)});
+    }
+    return {};
+}
+
+std::expected<std::uint64_t, failure> entry_count_of(const lmdb_store& store)
+{
+    const auto txn = begin_transaction(store.env.get(), MDB_RDONLY);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    MDB_stat stat{};
+    if (const int status = mdb_stat(txn->get(), store.dbi, &stat); status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(failure{"mdb_stat", error_code_of(status)});
+    }
+    return stat.ms_entries;
+}
+
+case_outcome measure_lmdb_puts(const run_settings& s, const std::span<const std::byte> value, const auto& put)
+{
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        auto store = open_lmdb_store(s.directory / std::format("sample-{}", sample), map_bytes_for(s.ops, s.payload_bytes));
+        if (!store) [[unlikely]] {
+            return std::unexpected(store.error());
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t k = 0; k < s.ops; ++k) {
+            if (auto p = put(*store, k, value); !p) [[unlikely]] {
+                return std::unexpected(p.error());
+            }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        const auto count = entry_count_of(*store);
+        if (!count) [[unlikely]] {
+            return std::unexpected(count.error());
+        }
+        if (*count != s.ops) [[unlikely]] {
+            return std::unexpected(failure{"compare the number of entries with the number of puts", check_failed()});
+        }
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, s.ops));
+        }
+    }
+    return case_result{ns, std::format("value_bytes={}", value.size())};
+}
+
+case_outcome measure_lmdb_put(const run_settings& s)
+{
+    const std::vector<std::byte> payload(s.payload_bytes, payload_byte);
+    return measure_lmdb_puts(s, payload, put_payload);
+}
+
+case_outcome measure_lmdb_put_like_storage(const run_settings& s)
+{
+    const konsens::entry e{konsens::entry_kind::normal, std::vector<std::byte>(s.payload_bytes, payload_byte)};
+    const std::vector<std::byte> record(konsens::encoded_size_of(e) + entry_crc_bytes, payload_byte);
+    return measure_lmdb_puts(s, record, put_record_like_storage);
+}
+
+std::span<const std::byte> as_bytes(const MDB_val& value)
+{
+    return {static_cast<const std::byte*>(value.mv_data), value.mv_size};
+}
+
+case_outcome measure_lmdb_get(const run_settings& s)
+{
+    const std::vector<std::byte> payload(s.payload_bytes, payload_byte);
+    const auto store = open_lmdb_store(s.directory / "store", map_bytes_for(1, s.payload_bytes));
+    if (!store) [[unlikely]] {
+        return std::unexpected(store.error());
+    }
+    if (auto p = put_payload(*store, stored_key, payload); !p) [[unlikely]] {
+        return std::unexpected(p.error());
+    }
+    const auto key_bytes = big_endian_key_of(stored_key);
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t k = 0; k < s.ops; ++k) {
+            const auto txn = begin_transaction(store->env.get(), MDB_RDONLY);
+            if (!txn) [[unlikely]] {
+                return std::unexpected(txn.error());
+            }
+            MDB_val key = value_of(key_bytes);
+            MDB_val data{};
+            if (const int status = mdb_get(txn->get(), store->dbi, &key, &data); status != MDB_SUCCESS) [[unlikely]] {
+                return std::unexpected(failure{"mdb_get", error_code_of(status)});
+            }
+            const auto value = as_bytes(data);
+            if (!std::equal(value.begin(), value.end(), payload.begin(), payload.end())) [[unlikely]] {
+                return std::unexpected(failure{"compare the value with the payload", check_failed()});
+            }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, s.ops));
+        }
+    }
+    return case_result{ns, std::string{}};
+}
+
+case_outcome measure_get_entries_lmdb(const run_settings& s)
+{
+    const auto directory = s.directory / "store";
+    std::filesystem::create_directories(directory);
+    auto store = konsens::persistent_storage::open(directory, map_bytes_for(1, s.payload_bytes), geteuid());
+    if (!store) [[unlikely]] {
+        return std::unexpected(failure{"open the store", store.error()});
+    }
+    const auto entries = entries_of(1, s.payload_bytes);
+    const std::array<konsens::storage_op, 1> ops{konsens::append_entries{entries}};
+    if (auto w = store->write_atomically(ops); !w) [[unlikely]] {
+        return std::unexpected(failure{"write the entry", w.error()});
+    }
+    const auto& payload = entries.front().payload;
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t k = 0; k < s.ops; ++k) {
+            const auto read = store->get_entries(stored_key, stored_key + 1);
+            if (!read) [[unlikely]] {
+                return std::unexpected(failure{"get_entries", read.error()});
+            }
+            if (read->size() != 1 || read->front().payload != payload) [[unlikely]] {
+                return std::unexpected(failure{"compare the entry with the payload", check_failed()});
+            }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, s.ops));
+        }
+    }
+    return case_result{ns, std::string{}};
+}
+
 auto memory_nodes()
 {
-    return []([[maybe_unused]] const konsens::node_id pid) -> std::expected<konsens::memory_storage, std::error_code> {
-        return konsens::memory_storage{};
+    return []([[maybe_unused]] const konsens::node_id pid) -> std::expected<memory_spy, std::error_code> {
+        return spy_of(konsens::memory_storage{});
     };
 }
 
@@ -766,7 +1077,8 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op)
     return [map_bytes, &s](const konsens::node_id pid) {
         const auto directory = s.directory / std::format("node-{}", pid);
         std::filesystem::create_directories(directory);
-        return konsens::persistent_storage::open(directory, map_bytes, geteuid());
+        return konsens::persistent_storage::open(directory, map_bytes, geteuid()).transform(
+            spy_of<konsens::persistent_storage>);
     };
 }
 
@@ -774,19 +1086,55 @@ struct traffic {
     std::uint64_t rounds;
     std::uint64_t messages;
     std::uint64_t log_len;
+    std::uint64_t write_calls;
+    std::optional<std::size_t> leader;
+    std::vector<std::chrono::nanoseconds> commit_time;
 };
 
-template <konsens::storage S>
-traffic traffic_of(const cluster<S>& c, const std::size_t at)
+traffic traffic_of(const auto& c, const std::size_t at)
 {
-    return {c.rounds, c.messages, c.log_len_of(at)};
+    return {c.rounds, c.messages, c.log_len_of(at), c.write_calls(), c.leader(), c.commit_time};
 }
 
-std::string details_of(const traffic& first, const traffic& last, const run_settings& s)
+std::optional<std::string> commit_times_of(const traffic& first, const traffic& last, const run_settings& s)
 {
-    return std::format("rounds_per_op={:.2f} messages_per_op={:.2f} log_len_first={} log_len_last={}",
-                       per_op(last.rounds - first.rounds, s), per_op(last.messages - first.messages, s), first.log_len,
-                       last.log_len);
+    if (!first.leader || first.leader != last.leader || first.commit_time.size() != last.commit_time.size())
+        [[unlikely]] {
+        return std::nullopt;
+    }
+    std::chrono::nanoseconds leader{};
+    std::chrono::nanoseconds slowest_follower{};
+    for (std::size_t i = 0; i < last.commit_time.size(); ++i) {
+        const auto spent = last.commit_time.at(i) - first.commit_time.at(i);
+        if (i == *first.leader) {
+            leader = spent;
+        } else {
+            slowest_follower = std::max(slowest_follower, spent);
+        }
+    }
+    return std::format("leader_ns_per_op={:.0f} follower_ns_per_op={:.0f}", per_op(leader, s),
+                       per_op(slowest_follower, s));
+}
+
+std::expected<std::string, failure> details_of(const traffic& first, const traffic& last, const run_settings& s)
+{
+    const auto commit_times = commit_times_of(first, last, s);
+    if (!commit_times) [[unlikely]] {
+        return std::unexpected(failure{"keep one leader through the timed samples", check_failed()});
+    }
+    return std::format("rounds_per_op={:.2f} messages_per_op={:.2f} write_atomically_per_op={:.2f} {} "
+                       "log_len_first={} log_len_last={}",
+                       per_op(last.rounds - first.rounds, s), per_op(last.messages - first.messages, s),
+                       per_op(last.write_calls - first.write_calls, s), *commit_times, first.log_len, last.log_len);
+}
+
+case_outcome outcome_of(std::vector<double> ns, const traffic& first, const traffic& last, const run_settings& s)
+{
+    auto details = details_of(first, last, s);
+    if (!details) [[unlikely]] {
+        return std::unexpected(details.error());
+    }
+    return case_result{std::move(ns), std::move(*details)};
 }
 
 template <konsens::storage S>
@@ -825,7 +1173,7 @@ case_outcome measure_writes(const run_settings& s, const auto& open_storage)
             ns.push_back(ns_per_op_of(start, end, s.ops));
         }
     }
-    return case_result{ns, details_of(first, traffic_of(*c, at), s)};
+    return outcome_of(std::move(ns), first, traffic_of(*c, at), s);
 }
 
 template <konsens::storage S>
@@ -870,7 +1218,7 @@ case_outcome measure_reads(const run_settings& s, const auto& open_storage)
             ns.push_back(ns_per_op_of(start, end, s.ops));
         }
     }
-    return case_result{ns, details_of(first, traffic_of(*c, at), s)};
+    return outcome_of(std::move(ns), first, traffic_of(*c, at), s);
 }
 
 template <konsens::storage S>
@@ -920,37 +1268,37 @@ case_outcome measure_write_batches(const run_settings& s, const auto& open_stora
             ns.push_back(ns_per_op_of(start, end, s.ops));
         }
     }
-    return case_result{ns, details_of(first, traffic_of(*c, at), s)};
+    return outcome_of(std::move(ns), first, traffic_of(*c, at), s);
 }
 
 case_outcome measure_write_memory(const run_settings& s)
 {
-    return measure_writes<konsens::memory_storage>(s, memory_nodes());
+    return measure_writes<memory_spy>(s, memory_nodes());
 }
 
 case_outcome measure_write_lmdb(const run_settings& s)
 {
-    return measure_writes<konsens::persistent_storage>(s, lmdb_nodes(s, 1));
+    return measure_writes<lmdb_spy>(s, lmdb_nodes(s, 1));
 }
 
 case_outcome measure_read_memory(const run_settings& s)
 {
-    return measure_reads<konsens::memory_storage>(s, memory_nodes());
+    return measure_reads<memory_spy>(s, memory_nodes());
 }
 
 case_outcome measure_read_lmdb(const run_settings& s)
 {
-    return measure_reads<konsens::persistent_storage>(s, lmdb_nodes(s, 0));
+    return measure_reads<lmdb_spy>(s, lmdb_nodes(s, 0));
 }
 
 case_outcome measure_write_batch_memory(const run_settings& s)
 {
-    return measure_write_batches<konsens::memory_storage>(s, memory_nodes());
+    return measure_write_batches<memory_spy>(s, memory_nodes());
 }
 
 case_outcome measure_write_batch_lmdb(const run_settings& s)
 {
-    return measure_write_batches<konsens::persistent_storage>(s, lmdb_nodes(s, 1));
+    return measure_write_batches<lmdb_spy>(s, lmdb_nodes(s, 1));
 }
 
 using measure_function = case_outcome(const run_settings&);
@@ -979,6 +1327,10 @@ constexpr auto cases = std::to_array<bench_case>({
     {"read_lmdb", measure_read_lmdb, {}, 1700, true},
     {"write_batch_memory", measure_write_batch_memory, {2048, 768, 64}, 0, false},
     {"write_batch_lmdb", measure_write_batch_lmdb, {64, 64, 64}, 0, true},
+    {"lmdb_put", measure_lmdb_put, {30, 24, 16}, 0, true},
+    {"lmdb_put_like_storage", measure_lmdb_put_like_storage, {30, 24, 16}, 0, true},
+    {"lmdb_get", measure_lmdb_get, {140000, 130000, 8000}, 0, true},
+    {"get_entries_lmdb", measure_get_entries_lmdb, {75000, 55000, 2000}, 0, true},
 });
 
 constexpr bool batches_are_whole()
@@ -1002,7 +1354,7 @@ constexpr std::size_t directory_argument = 4;
 constexpr std::string_view usage =
     "Usage: konsens_bench <case> <samples> <payload_bytes> [<directory>]\n"
     "A case with a payload takes 64, 1024 or 65536 bytes; every other case takes 0.\n"
-    "A case whose name ends in _lmdb takes the directory of its stores; no other case takes one.\n";
+    "A case whose name holds lmdb takes the directory of its stores; no other case takes one.\n";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
