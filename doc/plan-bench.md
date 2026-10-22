@@ -115,3 +115,26 @@ The review (approve with changes, 13 findings) is applied as follows.
   user per row, and the free cpus.
 - R13: `handle_*` compares the bytes counted with the bytes sent;
   `commit_*` compares `get_log_len` after each commit.
+
+## 7. Plain LMDB as the baseline
+
+Source: the owner, 2026-10-22 06:19 (UTC+2): write one value and read
+one value with LMDB alone, then the same through the library.
+
+1. Case `lmdb_put`: one `mdb_txn_begin`, one `mdb_put` of the payload
+   under an 8-byte key that rises by one, one `mdb_txn_commit`; the env
+   opens as `persistent_storage::open` does (flags 0, mode 0600, the
+   same map size), a fresh env for each sample outside the timed part.
+   Check: after each sample `mdb_stat` gives the number of puts.
+2. Case `lmdb_get`: one read-only `mdb_txn_begin`, one `mdb_get` of a
+   key that was written before the timer starts, one `mdb_txn_abort`.
+   Check: the value equals the payload.
+3. Payloads: 64 B, 1 KiB, 64 KiB for `lmdb_put`; 1 KiB for `lmdb_get`.
+4. The table of the result puts each library case beside its baseline:
+   `lmdb_put` / `commit_lmdb` / `write_lmdb` / `write_batch_lmdb` and
+   `lmdb_get` / `read_lmdb`. The file says that `write_lmdb` runs three
+   nodes in one process, so it holds the commits of all three nodes one
+   after the other, and that a cluster on three machines commits on the
+   followers at the same time.
+5. The bench links LMDB directly for these two cases only; no LMDB
+   name enters the library.
