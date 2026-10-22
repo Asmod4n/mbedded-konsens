@@ -199,7 +199,7 @@ the time of the sample divided by that number. Each process prints the
 median, the minimum and the maximum of its samples.
 
 Cases:
-- crc32c: crc32c::extend over one payload, taken in turn from 16 buffers.
+- crc32c: crc32c::Crc32c of Google crc32c over one payload, taken in turn from 16 buffers.
   The operations are independent, so the number is throughput.
 - encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
   entries of 1024 B. encode_decide, decode_decide: one Decide. A decode

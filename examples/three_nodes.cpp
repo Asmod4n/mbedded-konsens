@@ -387,6 +387,9 @@ int fail(const std::string_view step, const std::error_code& code)
 
 int run(const std::span<const std::string_view> args)
 {
+    if (!konsens::can_use_crc32c_instruction()) [[unlikely]] {
+        std::cerr << "Warning: the CPU has no CRC32C instruction. Each CRC32C runs without it and is slower.\n";
+    }
     bool allow_root = false;
     std::vector<std::filesystem::path> given;
     for (const auto a : args) {

@@ -21,7 +21,8 @@
 
 #include <sys/resource.h>
 
-#include "konsens/crc32c.hpp"
+#include <crc32c/crc32c.h>
+
 #include "konsens/memory_storage.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "temporary_directory.hpp"
@@ -204,7 +205,7 @@ TEST_CASE("both storages give the same CRC32C of the last entry") {
                                                    2, 0, 0, 0, 0, 0, 0, 0, 'x'};
     std::vector<std::byte> bytes;
     std::ranges::transform(last_record, std::back_inserter(bytes), [](const unsigned char c) { return std::byte{c}; });
-    CHECK(lmdb.get_last_entry_crc() == konsens::crc32c::extend(0, bytes));
+    CHECK(lmdb.get_last_entry_crc() == crc32c::Crc32c(bytes.data(), bytes.size()));
 }
 
 // A full map is an error value of write_atomically, which the node raises

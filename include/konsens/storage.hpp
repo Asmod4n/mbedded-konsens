@@ -82,6 +82,7 @@ void encode_entry(const entry& e, std::span<std::byte> out) noexcept;
 std::optional<entry> decode_entry(std::span<const std::byte> encoded_entry);
 std::uint32_t compute_entry_crc(std::uint64_t index, std::span<const std::byte> encoded_entry) noexcept;
 std::uint32_t compute_entry_crc(std::uint64_t index, const entry& e);
+bool can_use_crc32c_instruction() noexcept;
 
 struct append_entries {
     std::span<const entry> entries;

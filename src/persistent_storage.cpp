@@ -12,10 +12,10 @@
 #include <utility>
 #include <variant>
 
+#include <crc32c/crc32c.h>
 #include <lmdb.h>
 
 #include "byte_order.hpp"
-#include "konsens/crc32c.hpp"
 #include "konsens/entry_range.hpp"
 
 namespace konsens {
@@ -226,7 +226,7 @@ std::expected<void, std::error_code> put_meta(const write_target& target, const 
     }
     const auto out = as_writable_bytes(data);
     std::ranges::copy(body, out.begin());
-    std::ranges::copy(to_little_endian(crc32c::extend(0, body)), out.last(crc_size).begin());
+    std::ranges::copy(to_little_endian(crc32c::Crc32c(body.data(), body.size())), out.last(crc_size).begin());
     return {};
 }
 
@@ -246,7 +246,7 @@ get_meta(MDB_txn* txn, const MDB_dbi meta_dbi, const std::string_view name, cons
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
     const auto body = value.first(body_size);
-    if (from_little_endian<std::uint32_t>(value.last<crc_size>()) != crc32c::extend(0, body)) [[unlikely]] {
+    if (from_little_endian<std::uint32_t>(value.last<crc_size>()) != crc32c::Crc32c(body.data(), body.size())) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::crc_mismatch));
     }
     return body;

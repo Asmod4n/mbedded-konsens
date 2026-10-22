@@ -23,7 +23,8 @@
 
 #include <unistd.h>
 
-#include "konsens/crc32c.hpp"
+#include <crc32c/crc32c.h>
+
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
@@ -398,8 +399,7 @@ std::size_t follower_of(const std::size_t leader)
 
 case_outcome measure_crc32c(const run_settings& s)
 {
-    if (konsens::crc32c::extend(0, std::as_bytes(std::span(crc32c_check_input))) != crc32c_check_value)
-        [[unlikely]] {
+    if (crc32c::Crc32c(crc32c_check_input) != crc32c_check_value) [[unlikely]] {
         return std::unexpected(failure{"compare the CRC32C of the check input with the check value", check_failed()});
     }
     const std::vector<std::vector<std::byte>> buffers(crc_buffer_count,
@@ -409,7 +409,8 @@ case_outcome measure_crc32c(const run_settings& s)
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
         const auto start = std::chrono::steady_clock::now();
         for (std::uint64_t k = 0; k < s.ops; ++k) {
-            folded ^= konsens::crc32c::extend(0, buffers.at(k % crc_buffer_count));
+            const auto& buffer = buffers.at(k % crc_buffer_count);
+            folded ^= crc32c::Crc32c(buffer.data(), buffer.size());
         }
         const auto end = std::chrono::steady_clock::now();
         if (sample >= warm_up_samples) {
@@ -963,7 +964,7 @@ struct bench_case {
 };
 
 constexpr auto cases = std::to_array<bench_case>({
-    {"crc32c", measure_crc32c, {100000, 5000, 72}, 0, false},
+    {"crc32c", measure_crc32c, {3400000, 300000, 3000}, 0, false},
     {"encode_accept_decide", measure_encode_accept_decide, {}, 200, false},
     {"decode_accept_decide", measure_decode_accept_decide, {}, 160, false},
     {"encode_decide", measure_encode_decide, {}, 150000, false},

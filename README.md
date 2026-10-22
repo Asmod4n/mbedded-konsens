@@ -113,6 +113,7 @@ The cost of the checksum against a MAC:
 | LMDB | `liblmdb` with pkg-config |
 | Boost | the headers |
 | mbedded-cbor | the submodule `deps/mbedded-cbor` |
+| crc32c | the submodule `deps/crc32c`, Google crc32c, BSD-3-Clause license |
 | doctest | for the tests |
 
 The library runs as a user that is not root.
@@ -130,8 +131,8 @@ On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel`.
 ```sh
 git clone https://github.com/Asmod4n/mbedded-konsens
 cd mbedded-konsens
-git submodule update --init deps/mbedded-cbor
-CXX=g++-16 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+git submodule update --init deps/mbedded-cbor deps/crc32c
+CC=gcc-16 CXX=g++-16 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
@@ -170,6 +171,10 @@ of another node, throws `std::logic_error`. At most
 `konsens::max_batch_size` messages wait for one commit.
 
 The nonce is a new random number for each start of the process.
+
+At start, the program calls `konsens::can_use_crc32c_instruction()`.
+When it gives false, the CPU has no CRC32C instruction, each CRC32C
+runs without it and is slower, and the program writes a warning.
 
 ### Write through a session
 

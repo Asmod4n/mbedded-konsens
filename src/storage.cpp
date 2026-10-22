@@ -5,8 +5,11 @@
 #include <iterator>
 #include <utility>
 
+#include <crc32c/crc32c.h>
+#include <crc32c_arm64_check.h>
+#include <crc32c_sse42_check.h>
+
 #include "byte_order.hpp"
-#include "konsens/crc32c.hpp"
 
 namespace konsens {
 
@@ -90,13 +93,25 @@ std::optional<entry> decode_entry(const std::span<const std::byte> encoded_entry
 }
 
 std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const std::byte> encoded_entry) noexcept {
-    return crc32c::extend(crc32c::extend(0, to_little_endian(index)), encoded_entry);
+    const auto index_bytes = to_little_endian(index);
+    return crc32c::Extend(crc32c::Crc32c(index_bytes.data(), index_bytes.size()),
+                          reinterpret_cast<const std::uint8_t*>(encoded_entry.data()), encoded_entry.size());
 }
 
 std::uint32_t compute_entry_crc(const std::uint64_t index, const entry& e) {
     std::vector<std::byte> encoded(encoded_size_of(e));
     encode_entry(e, encoded);
     return compute_entry_crc(index, encoded);
+}
+
+bool can_use_crc32c_instruction() noexcept {
+#if HAVE_SSE42 && (defined(_M_X64) || defined(__x86_64__))
+    return crc32c::CanUseSse42();
+#elif HAVE_ARM64_CRC32C
+    return crc32c::CanUseArm64Crc32();
+#else
+    return false;
+#endif
 }
 
 }
