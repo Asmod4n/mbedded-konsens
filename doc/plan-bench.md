@@ -170,3 +170,43 @@ The review (needs changes, 8 findings) is applied as follows.
   time plus the slowest follower time plus the network, and that this
   bench does not measure that latency.
 - R8: `mdb_stat` after each put sample gives the number of puts.
+
+## 9. Three nodes in parallel
+
+Source: the owner, 2026-10-22 06:22 and 06:23 (UTC+2): the three nodes
+run in parallel in one process, and each node has its own LMDB
+database.
+
+1. A second harness `threaded_cluster` beside `cluster`. Each node runs
+   on its own `std::jthread`. The node, its storage and its inbox
+   belong to that thread alone. Each node opens its own LMDB env in its
+   own directory.
+2. The inbox of a node is a `std::mutex`, a `std::condition_variable`
+   and a vector of encoded messages and client calls. A thread waits on
+   the condition variable until its inbox is not empty or a stop is
+   requested. It takes everything that waits, decodes it, calls
+   `handle_incoming` once, calls `commit`, encodes the released
+   messages and puts each into the inbox of its target. Replies go to
+   the inbox of the main thread. The messages stay encoded between the
+   threads, as in `cluster`.
+3. The election runs before the threads start, on the same nodes, with
+   `cluster::elect`. No `tick` runs in the timed part. The case fails
+   when the leader changes in the timed part.
+4. Cases, beside the serial ones: `write_lmdb_threads`,
+   `write_batch_lmdb_threads`, `read_lmdb_threads`, and the same three
+   on memory. The client sends to a follower, as in the serial cases.
+   The main thread starts the clock, puts the call into the inbox of
+   that follower, waits on its own condition variable for the reply,
+   and stops the clock. Names provisional.
+5. The serial cases stay as arms until the owner decides.
+6. The timers of 8 (R7) run in each thread, so `leader_ns_per_op` and
+   `follower_ns_per_op` hold in both harnesses.
+7. Checks: each reply has the counter value that the serial case
+   expects. After the run each node has the same log length and the
+   same decided index.
+8. Threads: the main thread and three node threads. The machine has 4
+   processors and the bench leaves one free; the main thread waits
+   while the nodes work. The result file records the number of
+   threads.
+9. Tests: the threaded cases run in a Debug build with ThreadSanitizer
+   once, with no report.
