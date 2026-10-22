@@ -3,6 +3,7 @@
 #include <bit>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -10,13 +11,18 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <iostream>
+#include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -65,6 +71,7 @@ constexpr mdb_mode_t lmdb_file_mode = 0600;
 constexpr const char* lmdb_database_name = "log";
 constexpr std::size_t entry_crc_bytes = sizeof(std::uint32_t);
 constexpr std::uint64_t stored_key = 0;
+constexpr std::chrono::seconds reply_timeout{60};
 
 struct failure {
     std::string_view step;
@@ -96,14 +103,19 @@ double ns_per_op_of(const std::chrono::steady_clock::time_point start, const std
     return std::chrono::duration<double, std::nano>(end - start).count() / static_cast<double>(ops);
 }
 
+double ops_of_all_samples(const run_settings& s)
+{
+    return static_cast<double>((warm_up_samples + s.samples) * s.ops);
+}
+
 double per_op(const std::uint64_t count, const run_settings& s)
 {
-    return static_cast<double>(count) / static_cast<double>(s.samples * s.ops);
+    return static_cast<double>(count) / ops_of_all_samples(s);
 }
 
 double per_op(const std::chrono::nanoseconds spent, const run_settings& s)
 {
-    return std::chrono::duration<double, std::nano>(spent).count() / static_cast<double>(s.samples * s.ops);
+    return std::chrono::duration<double, std::nano>(spent).count() / ops_of_all_samples(s);
 }
 
 std::size_t map_bytes_for(const std::uint64_t entry_count, const std::size_t payload_bytes)
@@ -249,6 +261,23 @@ bool holds_equal(const konsens::received& r, const konsens::node_id from, const 
 }
 
 template <konsens::storage S>
+std::optional<std::size_t> leader_of(const std::vector<konsens::node<S, counter>>& nodes)
+{
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes.at(i).get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept}) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+template <konsens::storage S>
+std::uint64_t log_len_of(const std::vector<konsens::node<S, counter>>& nodes, const std::size_t at)
+{
+    return nodes.at(at).get_sequence_paxos().get_internal_storage().get_log_len().value_or(0);
+}
+
+template <konsens::storage S>
 struct cluster {
     using result = std::expected<void, std::error_code>;
 
@@ -256,7 +285,6 @@ struct cluster {
     std::vector<std::string> network;
     std::vector<konsens::client_reply> replies;
     std::uint64_t next_call{1};
-    std::uint64_t rounds{};
     std::uint64_t messages{};
     std::vector<std::optional<konsens::transaction>> pending;
     std::vector<std::chrono::nanoseconds> commit_time;
@@ -305,7 +333,6 @@ struct cluster {
 
     result run_round()
     {
-        rounds += 1;
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             if (auto r = add(i, nodes.at(i).tick()); !r) [[unlikely]] {
                 return r;
@@ -336,21 +363,10 @@ struct cluster {
         return {};
     }
 
-    std::optional<std::size_t> leader() const
-    {
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (nodes.at(i).get_sequence_paxos().get_state() ==
-                std::pair{konsens::role::leader, konsens::phase::accept}) {
-                return i;
-            }
-        }
-        return std::nullopt;
-    }
-
     result elect()
     {
         for (std::uint64_t r = 0; r < round_limit; ++r) {
-            if (leader()) {
+            if (leader_of(nodes)) {
                 return {};
             }
             if (auto ran = run_round(); !ran) [[unlikely]] {
@@ -411,18 +427,32 @@ struct cluster {
         return std::move(reply->front());
     }
 
-    std::uint64_t log_len_of(const std::size_t at) const
+    std::expected<std::vector<konsens::client_reply>, std::error_code>
+    send_requests(const std::size_t at, const std::uint64_t session, const std::uint64_t first_request,
+                  const std::span<std::vector<std::byte>> payloads)
     {
-        return nodes.at(at).get_sequence_paxos().get_internal_storage().get_log_len().value_or(0);
+        const auto first_call = next_call;
+        for (auto& payload : payloads) {
+            const auto request_number = first_request + (next_call - first_call);
+            if (auto r = add(at, nodes.at(at).client_request(next_call++, session, request_number, std::move(payload)));
+                !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+        }
+        return wait_for_replies(first_call, payloads.size());
     }
 
-    std::uint64_t write_calls() const
+    std::expected<konsens::client_reply, std::error_code> send_query(const std::size_t at)
     {
-        std::uint64_t sum = 0;
-        for (const auto& n : nodes) {
-            sum += n.get_sequence_paxos().get_internal_storage().write_calls;
+        const auto call = next_call++;
+        if (auto r = add(at, nodes.at(at).client_query(call, {})); !r) [[unlikely]] {
+            return std::unexpected(r.error());
         }
-        return sum;
+        auto reply = wait_for_replies(call, 1);
+        if (!reply) [[unlikely]] {
+            return std::unexpected(reply.error());
+        }
+        return std::move(reply->front());
     }
 };
 
@@ -591,7 +621,7 @@ std::expected<accepting_follower, failure> start_accepting_follower()
     if (!c) [[unlikely]] {
         return std::unexpected(c.error());
     }
-    const auto leader = *c->leader();
+    const auto leader = *leader_of(c->nodes);
     const auto follower = follower_of(leader);
     const auto appended = c->nodes.at(leader).append(konsens::entry{konsens::entry_kind::normal});
     if (!appended) [[unlikely]] {
@@ -1082,18 +1112,369 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op)
     };
 }
 
+struct client_request_call {
+    std::uint64_t call;
+    std::uint64_t session;
+    std::uint64_t request_number;
+    std::vector<std::byte> payload;
+};
+
+struct client_query_call {
+    std::uint64_t call;
+};
+
+using inbox_element = std::variant<std::string, client_request_call, client_query_call>;
+
+struct node_inbox {
+    std::mutex mutex;
+    std::condition_variable_any ready;
+    std::vector<inbox_element> elements;
+};
+
+struct reply_inbox {
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::vector<konsens::client_reply> replies;
+    std::optional<failure> failed;
+};
+
+struct elements_in_flight {
+    std::mutex mutex;
+    std::condition_variable none_left;
+    std::uint64_t count;
+};
+
+struct thread_counters {
+    std::uint64_t messages;
+    std::chrono::nanoseconds commit_time;
+};
+
+konsens::node_id destination_of(const konsens::message& m)
+{
+    return std::visit([](const auto& held) { return held.to; }, m);
+}
+
+bool is_reply_of(const konsens::client_reply& reply, const std::uint64_t first_call, const std::uint64_t count)
+{
+    return reply.client_id >= first_call && reply.client_id - first_call < count;
+}
+
+template <konsens::storage S>
+struct threaded_cluster {
+    using result = std::expected<void, failure>;
+
+    std::vector<konsens::node<S, counter>> nodes;
+    std::uint64_t next_call;
+    std::optional<std::size_t> leader_at_start = leader_of(nodes);
+    std::vector<node_inbox> inboxes = std::vector<node_inbox>(nodes.size());
+    std::vector<thread_counters> counters = std::vector<thread_counters>(nodes.size());
+    reply_inbox replies{};
+    elements_in_flight in_flight{};
+    std::vector<std::jthread> threads{};
+
+    void start()
+    {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            threads.emplace_back([this, i](const std::stop_token stop) { serve(stop, i); });
+        }
+    }
+
+    void serve(const std::stop_token stop, const std::size_t i)
+    {
+        thread_counters own{};
+        try {
+            if (auto r = serve_until_stopped(stop, i, own); !r) [[unlikely]] {
+                std::cerr << std::format("Node {} failed at the step \"{}\": {}.", i + 1, r.error().step,
+                                         r.error().code.message())
+                          << '\n';
+                report(r.error());
+            }
+        } catch (const std::exception& e) {
+            std::cerr << std::format("Node {} ended with an exception: {}", i + 1, e.what()) << '\n';
+            report(failure{"run a node thread", check_failed()});
+        }
+        counters.at(i) = own;
+    }
+
+    void report(const failure& f)
+    {
+        {
+            const std::scoped_lock lock(replies.mutex);
+            replies.failed = f;
+        }
+        replies.ready.notify_all();
+    }
+
+    result serve_until_stopped(const std::stop_token stop, const std::size_t i, thread_counters& own)
+    {
+        auto& inbox = inboxes.at(i);
+        while (true) {
+            std::vector<inbox_element> taken;
+            {
+                std::unique_lock lock(inbox.mutex);
+                if (!inbox.ready.wait(lock, stop, [&inbox] { return !inbox.elements.empty(); })) {
+                    return {};
+                }
+                if (inbox.elements.size() <= konsens::max_batch_size) {
+                    taken.swap(inbox.elements);
+                } else {
+                    const auto first = inbox.elements.begin();
+                    const auto last = std::next(first, static_cast<std::ptrdiff_t>(konsens::max_batch_size));
+                    taken.assign(std::make_move_iterator(first), std::make_move_iterator(last));
+                    inbox.elements.erase(first, last);
+                }
+            }
+            if (auto r = handle(i, std::move(taken), own); !r) [[unlikely]] {
+                return r;
+            }
+        }
+    }
+
+    result handle(const std::size_t i, std::vector<inbox_element> taken, thread_counters& own)
+    {
+        auto& n = nodes.at(i);
+        std::vector<konsens::received> batch;
+        std::optional<konsens::transaction> t;
+        const auto join = [&t](const konsens::transaction& more) {
+            if (t) {
+                *t += more;
+            } else {
+                t = more;
+            }
+        };
+        for (auto& element : taken) {
+            if (auto* bytes = std::get_if<std::string>(&element)) {
+                auto r = konsens::decode(std::move(*bytes));
+                if (!r) [[unlikely]] {
+                    return std::unexpected(failure{"decode a message", r.error()});
+                }
+                own.messages += 1;
+                batch.push_back(std::move(*r));
+            } else if (auto* request = std::get_if<client_request_call>(&element)) {
+                const auto called = n.client_request(request->call, request->session, request->request_number,
+                                                     std::move(request->payload));
+                if (!called) [[unlikely]] {
+                    return std::unexpected(failure{"call client_request", called.error()});
+                }
+                join(*called);
+            } else if (const auto* query = std::get_if<client_query_call>(&element)) {
+                const auto called = n.client_query(query->call, {});
+                if (!called) [[unlikely]] {
+                    return std::unexpected(failure{"call client_query", called.error()});
+                }
+                join(*called);
+            }
+        }
+        const auto handled = n.handle_incoming(std::move(batch));
+        if (!handled) [[unlikely]] {
+            return std::unexpected(failure{"handle the incoming messages", handled.error()});
+        }
+        join(*handled);
+        const auto start = std::chrono::steady_clock::now();
+        const auto committed = n.commit(*t);
+        own.commit_time += std::chrono::steady_clock::now() - start;
+        if (!committed) [[unlikely]] {
+            return std::unexpected(failure{"commit", committed.error()});
+        }
+        std::vector<std::vector<inbox_element>> outgoing(nodes.size());
+        std::uint64_t sent = 0;
+        for (const auto& m : n.take_outgoing_messages()) {
+            auto bytes = konsens::encode(m);
+            if (!bytes) [[unlikely]] {
+                return std::unexpected(failure{"encode a message", bytes.error()});
+            }
+            outgoing.at(destination_of(m) - 1).emplace_back(std::move(*bytes));
+            sent += 1;
+        }
+        add_in_flight(sent);
+        for (std::size_t target = 0; target < outgoing.size(); ++target) {
+            push(target, std::move(outgoing.at(target)));
+        }
+        if (auto released = n.take_client_replies(); !released.empty()) {
+            {
+                const std::scoped_lock lock(replies.mutex);
+                std::ranges::move(released, std::back_inserter(replies.replies));
+            }
+            replies.ready.notify_all();
+        }
+        remove_in_flight(taken.size());
+        return {};
+    }
+
+    void add_in_flight(const std::uint64_t count)
+    {
+        const std::scoped_lock lock(in_flight.mutex);
+        in_flight.count += count;
+    }
+
+    void remove_in_flight(const std::uint64_t count)
+    {
+        bool none_left = false;
+        {
+            const std::scoped_lock lock(in_flight.mutex);
+            in_flight.count -= count;
+            none_left = in_flight.count == 0;
+        }
+        if (none_left) {
+            in_flight.none_left.notify_all();
+        }
+    }
+
+    void push(const std::size_t target, std::vector<inbox_element> elements)
+    {
+        if (elements.empty()) {
+            return;
+        }
+        auto& inbox = inboxes.at(target);
+        {
+            const std::scoped_lock lock(inbox.mutex);
+            std::ranges::move(elements, std::back_inserter(inbox.elements));
+        }
+        inbox.ready.notify_one();
+    }
+
+    void put_calls(const std::size_t at, std::vector<inbox_element> calls)
+    {
+        add_in_flight(calls.size());
+        push(at, std::move(calls));
+    }
+
+    std::expected<std::vector<konsens::client_reply>, std::error_code> wait_for_replies(const std::uint64_t first_call,
+                                                                                        const std::uint64_t count)
+    {
+        std::unique_lock lock(replies.mutex);
+        const auto arrived = [this, first_call, count] {
+            return replies.failed ||
+                   static_cast<std::uint64_t>(std::ranges::count_if(replies.replies, [first_call, count](const auto& r) {
+                       return is_reply_of(r, first_call, count);
+                   })) == count;
+        };
+        if (!replies.ready.wait_for(lock, reply_timeout, arrived)) [[unlikely]] {
+            return std::unexpected(std::make_error_code(std::errc::timed_out));
+        }
+        if (replies.failed) [[unlikely]] {
+            return std::unexpected(replies.failed->code);
+        }
+        std::vector<konsens::client_reply> taken;
+        std::erase_if(replies.replies, [&taken, first_call, count](auto& reply) {
+            if (!is_reply_of(reply, first_call, count)) {
+                return false;
+            }
+            taken.push_back(std::move(reply));
+            return true;
+        });
+        return taken;
+    }
+
+    std::expected<konsens::client_reply, std::error_code> send_request(const std::size_t at, const std::uint64_t session,
+                                                                       const std::uint64_t request_number,
+                                                                       std::vector<std::byte> payload)
+    {
+        const auto call = next_call++;
+        std::vector<inbox_element> calls;
+        calls.emplace_back(client_request_call{call, session, request_number, std::move(payload)});
+        put_calls(at, std::move(calls));
+        auto reply = wait_for_replies(call, 1);
+        if (!reply) [[unlikely]] {
+            return std::unexpected(reply.error());
+        }
+        return std::move(reply->front());
+    }
+
+    std::expected<std::vector<konsens::client_reply>, std::error_code>
+    send_requests(const std::size_t at, const std::uint64_t session, const std::uint64_t first_request,
+                  const std::span<std::vector<std::byte>> payloads)
+    {
+        const auto first_call = next_call;
+        std::vector<inbox_element> calls;
+        for (auto& payload : payloads) {
+            calls.emplace_back(client_request_call{next_call, session, first_request + (next_call - first_call),
+                                                   std::move(payload)});
+            next_call += 1;
+        }
+        put_calls(at, std::move(calls));
+        return wait_for_replies(first_call, payloads.size());
+    }
+
+    std::expected<konsens::client_reply, std::error_code> send_query(const std::size_t at)
+    {
+        const auto call = next_call++;
+        std::vector<inbox_element> calls;
+        calls.emplace_back(client_query_call{call});
+        put_calls(at, std::move(calls));
+        auto reply = wait_for_replies(call, 1);
+        if (!reply) [[unlikely]] {
+            return std::unexpected(reply.error());
+        }
+        return std::move(reply->front());
+    }
+
+    result finish()
+    {
+        {
+            std::unique_lock lock(in_flight.mutex);
+            if (!in_flight.none_left.wait_for(lock, reply_timeout, [this] { return in_flight.count == 0; }))
+                [[unlikely]] {
+                return std::unexpected(
+                    failure{"wait until no message is in flight", std::make_error_code(std::errc::timed_out)});
+            }
+        }
+        threads.clear();
+        if (replies.failed) [[unlikely]] {
+            return std::unexpected(*replies.failed);
+        }
+        if (leader_of(nodes) != leader_at_start) [[unlikely]] {
+            return std::unexpected(failure{"keep one leader while the threads run", check_failed()});
+        }
+        const auto& first = nodes.front().get_sequence_paxos();
+        if (!std::ranges::all_of(nodes, [&first](const auto& n) {
+                const auto& sp = n.get_sequence_paxos();
+                return sp.get_decided_idx() == first.get_decided_idx() &&
+                       sp.get_internal_storage().get_log_len() == first.get_internal_storage().get_log_len();
+            })) [[unlikely]] {
+            return std::unexpected(
+                failure{"compare the log length and the decided index of the nodes", check_failed()});
+        }
+        return {};
+    }
+};
+
 struct traffic {
-    std::uint64_t rounds;
     std::uint64_t messages;
     std::uint64_t log_len;
-    std::uint64_t write_calls;
+    std::vector<std::uint64_t> write_calls;
     std::optional<std::size_t> leader;
     std::vector<std::chrono::nanoseconds> commit_time;
 };
 
-traffic traffic_of(const auto& c, const std::size_t at)
+template <konsens::storage S>
+std::vector<std::uint64_t> write_calls_of(const std::vector<konsens::node<S, counter>>& nodes)
 {
-    return {c.rounds, c.messages, c.log_len_of(at), c.write_calls(), c.leader(), c.commit_time};
+    std::vector<std::uint64_t> calls;
+    for (const auto& n : nodes) {
+        calls.push_back(n.get_sequence_paxos().get_internal_storage().write_calls);
+    }
+    return calls;
+}
+
+template <konsens::storage S>
+traffic traffic_of(const cluster<S>& c, const std::size_t at)
+{
+    auto commit_time = c.commit_time;
+    commit_time.resize(c.nodes.size());
+    return {c.messages, log_len_of(c.nodes, at), write_calls_of(c.nodes), leader_of(c.nodes), commit_time};
+}
+
+template <konsens::storage S>
+traffic traffic_of(const threaded_cluster<S>& c, const std::size_t at)
+{
+    std::uint64_t messages = 0;
+    std::vector<std::chrono::nanoseconds> commit_time;
+    for (const auto& counted : c.counters) {
+        messages += counted.messages;
+        commit_time.push_back(counted.commit_time);
+    }
+    return {messages, log_len_of(c.nodes, at), write_calls_of(c.nodes), leader_of(c.nodes), commit_time};
 }
 
 std::optional<std::string> commit_times_of(const traffic& first, const traffic& last, const run_settings& s)
@@ -1116,16 +1497,27 @@ std::optional<std::string> commit_times_of(const traffic& first, const traffic& 
                        per_op(slowest_follower, s));
 }
 
+std::string write_calls_per_node_of(const traffic& first, const traffic& last, const run_settings& s)
+{
+    std::string text;
+    for (std::size_t i = 0; i < last.write_calls.size(); ++i) {
+        text += std::format("{}{:.2f}", i == 0 ? "" : "/", per_op(last.write_calls.at(i) - first.write_calls.at(i), s));
+    }
+    return text;
+}
+
 std::expected<std::string, failure> details_of(const traffic& first, const traffic& last, const run_settings& s)
 {
     const auto commit_times = commit_times_of(first, last, s);
-    if (!commit_times) [[unlikely]] {
-        return std::unexpected(failure{"keep one leader through the timed samples", check_failed()});
+    if (!commit_times || first.write_calls.size() != last.write_calls.size()) [[unlikely]] {
+        return std::unexpected(failure{"keep one leader through the samples", check_failed()});
     }
-    return std::format("rounds_per_op={:.2f} messages_per_op={:.2f} write_atomically_per_op={:.2f} {} "
+    const auto write_calls = std::ranges::fold_left(last.write_calls, std::uint64_t{0}, std::plus{}) -
+                             std::ranges::fold_left(first.write_calls, std::uint64_t{0}, std::plus{});
+    return std::format("messages_per_op={:.2f} write_atomically_per_op={:.2f} write_atomically_per_node_per_op={} {} "
                        "log_len_first={} log_len_last={}",
-                       per_op(last.rounds - first.rounds, s), per_op(last.messages - first.messages, s),
-                       per_op(last.write_calls - first.write_calls, s), *commit_times, first.log_len, last.log_len);
+                       per_op(last.messages - first.messages, s), per_op(write_calls, s),
+                       write_calls_per_node_of(first, last, s), *commit_times, first.log_len, last.log_len);
 }
 
 case_outcome outcome_of(std::vector<double> ns, const traffic& first, const traffic& last, const run_settings& s)
@@ -1138,29 +1530,45 @@ case_outcome outcome_of(std::vector<double> ns, const traffic& first, const traf
 }
 
 template <konsens::storage S>
-case_outcome measure_writes(const run_settings& s, const auto& open_storage)
+struct client_cluster {
+    cluster<S> c;
+    std::size_t at;
+    std::uint64_t session;
+};
+
+template <konsens::storage S>
+std::expected<client_cluster<S>, failure> start_client_cluster(const auto& open_storage,
+                                                               const std::uint64_t writes_before)
 {
     auto c = start_cluster<S>(open_storage);
     if (!c) [[unlikely]] {
         return std::unexpected(c.error());
     }
-    const auto at = follower_of(*c->leader());
+    const auto at = follower_of(*leader_of(c->nodes));
     const auto session = c->register_client(at);
     if (!session) [[unlikely]] {
         return std::unexpected(failure{"register the client", session.error()});
     }
+    for (std::uint64_t k = 1; k <= writes_before; ++k) {
+        if (const auto reply = c->send_request(at, *session, k, {}); !reply) [[unlikely]] {
+            return std::unexpected(failure{"write before the samples", reply.error()});
+        }
+    }
+    return client_cluster<S>{std::move(*c), at, *session};
+}
+
+using timed_samples = std::expected<std::vector<double>, failure>;
+
+constexpr auto time_writes = [](const run_settings& s, auto& c, const std::size_t at,
+                                const std::uint64_t session) -> timed_samples {
     std::uint64_t request_number = 0;
-    traffic first{};
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
         std::vector<std::vector<std::byte>> payloads(s.ops, std::vector<std::byte>(s.payload_bytes, payload_byte));
-        if (sample == warm_up_samples) {
-            first = traffic_of(*c, at);
-        }
         const auto start = std::chrono::steady_clock::now();
         for (auto& payload : payloads) {
             request_number += 1;
-            const auto reply = c->send_request(at, *session, request_number, std::move(payload));
+            const auto reply = c.send_request(at, session, request_number, std::move(payload));
             if (!reply) [[unlikely]] {
                 return std::unexpected(failure{"write one request", reply.error()});
             }
@@ -1173,43 +1581,20 @@ case_outcome measure_writes(const run_settings& s, const auto& open_storage)
             ns.push_back(ns_per_op_of(start, end, s.ops));
         }
     }
-    return outcome_of(std::move(ns), first, traffic_of(*c, at), s);
-}
+    return ns;
+};
 
-template <konsens::storage S>
-case_outcome measure_reads(const run_settings& s, const auto& open_storage)
-{
-    auto c = start_cluster<S>(open_storage);
-    if (!c) [[unlikely]] {
-        return std::unexpected(c.error());
-    }
-    const auto at = follower_of(*c->leader());
-    const auto session = c->register_client(at);
-    if (!session) [[unlikely]] {
-        return std::unexpected(failure{"register the client", session.error()});
-    }
-    for (std::uint64_t k = 1; k <= writes_before_read; ++k) {
-        if (const auto reply = c->send_request(at, *session, k, {}); !reply) [[unlikely]] {
-            return std::unexpected(failure{"write before the reads", reply.error()});
-        }
-    }
-    traffic first{};
+constexpr auto time_reads = [](const run_settings& s, auto& c, const std::size_t at,
+                               [[maybe_unused]] const std::uint64_t session) -> timed_samples {
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        if (sample == warm_up_samples) {
-            first = traffic_of(*c, at);
-        }
         const auto start = std::chrono::steady_clock::now();
         for (std::uint64_t k = 0; k < s.ops; ++k) {
-            const auto call = c->next_call++;
-            if (auto r = c->add(at, c->nodes.at(at).client_query(call, {})); !r) [[unlikely]] {
-                return std::unexpected(failure{"send one query", r.error()});
-            }
-            const auto reply = c->wait_for_replies(call, 1);
+            const auto reply = c.send_query(at);
             if (!reply) [[unlikely]] {
-                return std::unexpected(failure{"wait for the reply of one query", reply.error()});
+                return std::unexpected(failure{"read one query", reply.error()});
             }
-            if (counter_value_of(reply->front()) != writes_before_read) [[unlikely]] {
+            if (counter_value_of(*reply) != writes_before_read) [[unlikely]] {
                 return std::unexpected(failure{"compare the counter reply with the number of writes", check_failed()});
             }
         }
@@ -1218,45 +1603,24 @@ case_outcome measure_reads(const run_settings& s, const auto& open_storage)
             ns.push_back(ns_per_op_of(start, end, s.ops));
         }
     }
-    return outcome_of(std::move(ns), first, traffic_of(*c, at), s);
-}
+    return ns;
+};
 
-template <konsens::storage S>
-case_outcome measure_write_batches(const run_settings& s, const auto& open_storage)
-{
-    auto c = start_cluster<S>(open_storage);
-    if (!c) [[unlikely]] {
-        return std::unexpected(c.error());
-    }
-    const auto at = follower_of(*c->leader());
-    const auto session = c->register_client(at);
-    if (!session) [[unlikely]] {
-        return std::unexpected(failure{"register the client", session.error()});
-    }
+constexpr auto time_write_batches = [](const run_settings& s, auto& c, const std::size_t at,
+                                       const std::uint64_t session) -> timed_samples {
     std::uint64_t request_number = 0;
-    traffic first{};
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
         std::vector<std::vector<std::byte>> payloads(s.ops, std::vector<std::byte>(s.payload_bytes, payload_byte));
-        if (sample == warm_up_samples) {
-            first = traffic_of(*c, at);
-        }
         const auto start = std::chrono::steady_clock::now();
         for (std::size_t b = 0; b < payloads.size(); b += batch_size) {
-            const auto first_call = c->next_call;
+            const auto first_call = c.next_call;
             const auto first_request = request_number + 1;
-            for (auto& payload : std::span(payloads).subspan(b, batch_size)) {
-                request_number += 1;
-                if (auto r = c->add(at, c->nodes.at(at).client_request(c->next_call++, *session, request_number,
-                                                                       std::move(payload)));
-                    !r) [[unlikely]] {
-                    return std::unexpected(failure{"send one request of a batch", r.error()});
-                }
-            }
-            const auto replies = c->wait_for_replies(first_call, batch_size);
+            const auto replies = c.send_requests(at, session, first_request, std::span(payloads).subspan(b, batch_size));
             if (!replies) [[unlikely]] {
-                return std::unexpected(failure{"wait for the replies of a batch", replies.error()});
+                return std::unexpected(failure{"write one batch", replies.error()});
             }
+            request_number += batch_size;
             if (!std::ranges::all_of(*replies, [first_call, first_request](const auto& reply) {
                     return counter_value_of(reply) == first_request + (reply.client_id - first_call);
                 })) [[unlikely]] {
@@ -1268,37 +1632,104 @@ case_outcome measure_write_batches(const run_settings& s, const auto& open_stora
             ns.push_back(ns_per_op_of(start, end, s.ops));
         }
     }
-    return outcome_of(std::move(ns), first, traffic_of(*c, at), s);
+    return ns;
+};
+
+template <konsens::storage S>
+case_outcome measure_cluster(const run_settings& s, const auto& open_storage, const std::uint64_t writes_before,
+                             const auto& time)
+{
+    auto p = start_client_cluster<S>(open_storage, writes_before);
+    if (!p) [[unlikely]] {
+        return std::unexpected(p.error());
+    }
+    const auto first = traffic_of(p->c, p->at);
+    auto ns = time(s, p->c, p->at, p->session);
+    if (!ns) [[unlikely]] {
+        return std::unexpected(ns.error());
+    }
+    return outcome_of(std::move(*ns), first, traffic_of(p->c, p->at), s);
+}
+
+template <konsens::storage S>
+case_outcome measure_threaded_cluster(const run_settings& s, const auto& open_storage,
+                                      const std::uint64_t writes_before, const auto& time)
+{
+    auto p = start_client_cluster<S>(open_storage, writes_before);
+    if (!p) [[unlikely]] {
+        return std::unexpected(p.error());
+    }
+    threaded_cluster<S> c{std::move(p->c.nodes), p->c.next_call};
+    const auto first = traffic_of(c, p->at);
+    c.start();
+    auto ns = time(s, c, p->at, p->session);
+    if (!ns) [[unlikely]] {
+        return std::unexpected(ns.error());
+    }
+    if (auto f = c.finish(); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return outcome_of(std::move(*ns), first, traffic_of(c, p->at), s);
 }
 
 case_outcome measure_write_memory(const run_settings& s)
 {
-    return measure_writes<memory_spy>(s, memory_nodes());
+    return measure_cluster<memory_spy>(s, memory_nodes(), 0, time_writes);
 }
 
 case_outcome measure_write_lmdb(const run_settings& s)
 {
-    return measure_writes<lmdb_spy>(s, lmdb_nodes(s, 1));
+    return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_writes);
 }
 
 case_outcome measure_read_memory(const run_settings& s)
 {
-    return measure_reads<memory_spy>(s, memory_nodes());
+    return measure_cluster<memory_spy>(s, memory_nodes(), writes_before_read, time_reads);
 }
 
 case_outcome measure_read_lmdb(const run_settings& s)
 {
-    return measure_reads<lmdb_spy>(s, lmdb_nodes(s, 0));
+    return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 0), writes_before_read, time_reads);
 }
 
 case_outcome measure_write_batch_memory(const run_settings& s)
 {
-    return measure_write_batches<memory_spy>(s, memory_nodes());
+    return measure_cluster<memory_spy>(s, memory_nodes(), 0, time_write_batches);
 }
 
 case_outcome measure_write_batch_lmdb(const run_settings& s)
 {
-    return measure_write_batches<lmdb_spy>(s, lmdb_nodes(s, 1));
+    return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_write_batches);
+}
+
+case_outcome measure_write_memory_threads(const run_settings& s)
+{
+    return measure_threaded_cluster<memory_spy>(s, memory_nodes(), 0, time_writes);
+}
+
+case_outcome measure_write_lmdb_threads(const run_settings& s)
+{
+    return measure_threaded_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_writes);
+}
+
+case_outcome measure_read_memory_threads(const run_settings& s)
+{
+    return measure_threaded_cluster<memory_spy>(s, memory_nodes(), writes_before_read, time_reads);
+}
+
+case_outcome measure_read_lmdb_threads(const run_settings& s)
+{
+    return measure_threaded_cluster<lmdb_spy>(s, lmdb_nodes(s, 0), writes_before_read, time_reads);
+}
+
+case_outcome measure_write_batch_memory_threads(const run_settings& s)
+{
+    return measure_threaded_cluster<memory_spy>(s, memory_nodes(), 0, time_write_batches);
+}
+
+case_outcome measure_write_batch_lmdb_threads(const run_settings& s)
+{
+    return measure_threaded_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_write_batches);
 }
 
 using measure_function = case_outcome(const run_settings&);
@@ -1331,6 +1762,12 @@ constexpr auto cases = std::to_array<bench_case>({
     {"lmdb_put_like_storage", measure_lmdb_put_like_storage, {30, 24, 16}, 0, true},
     {"lmdb_get", measure_lmdb_get, {140000, 130000, 8000}, 0, true},
     {"get_entries_lmdb", measure_get_entries_lmdb, {75000, 55000, 2000}, 0, true},
+    {"write_memory_threads", measure_write_memory_threads, {100, 95, 30}, 0, false},
+    {"write_lmdb_threads", measure_write_lmdb_threads, {5, 5, 3}, 0, true},
+    {"read_memory_threads", measure_read_memory_threads, {}, 120, false},
+    {"read_lmdb_threads", measure_read_lmdb_threads, {}, 115, true},
+    {"write_batch_memory_threads", measure_write_batch_memory_threads, {1280, 768, 64}, 0, false},
+    {"write_batch_lmdb_threads", measure_write_batch_lmdb_threads, {192, 256, 64}, 0, true},
 });
 
 constexpr bool batches_are_whole()

@@ -25,6 +25,11 @@ cases=(
     "lmdb_put_like_storage 64" "lmdb_put_like_storage 1024" "lmdb_put_like_storage 65536"
     "lmdb_get 64" "lmdb_get 1024" "lmdb_get 65536"
     "get_entries_lmdb 64" "get_entries_lmdb 1024" "get_entries_lmdb 65536"
+    "write_memory_threads 64" "write_memory_threads 1024" "write_memory_threads 65536"
+    "write_lmdb_threads 64" "write_lmdb_threads 1024" "write_lmdb_threads 65536"
+    "read_memory_threads 0" "read_lmdb_threads 0"
+    "write_batch_memory_threads 64" "write_batch_memory_threads 1024" "write_batch_memory_threads 65536"
+    "write_batch_lmdb_threads 64" "write_batch_lmdb_threads 1024" "write_batch_lmdb_threads 65536"
 )
 
 usage() {
@@ -92,7 +97,7 @@ context() {
     echo "# virtual machine hypervisor flag $(grep -m 1 -cw hypervisor /proc/cpuinfo || true)"
     echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') nproc $(nproc)"
     echo "# cpu flags sha256 $(grep -m 1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)"
-    echo "# user $bench_user uid $bench_uid through setpriv, nice $(nice), threads 1 (the bench starts no thread)"
+    echo "# user $bench_user uid $bench_uid through setpriv, nice $(nice), threads 1 in a serial case, 4 in a case whose name ends in _threads (the main thread and three node threads, at most 3 runnable)"
     echo "# lmdb mount $(awk '$2 == "/lmdb"' /proc/mounts)"
     echo "# loadavg at start $(cat /proc/loadavg)"
 }
@@ -158,8 +163,9 @@ summary() {
         n = ++count[key, field["binary"]]
         value[key, field["binary"], n] = field["ns_per_op_median"]
         if (field["binary"] == main) {
-            rounds_per_op[key] = field["rounds_per_op"]; messages_per_op[key] = field["messages_per_op"]
+            messages_per_op[key] = field["messages_per_op"]
             writes_per_op[key] = field["write_atomically_per_op"]
+            writes_per_node[key] = field["write_atomically_per_node_per_op"]
             leader_ns[key] = field["leader_ns_per_op"]; follower_ns[key] = field["follower_ns_per_op"]
         }
     }
@@ -188,27 +194,31 @@ summary() {
         print "Leader and follower: the commit time of the leader and of the slower follower, in ns per operation,"
         print "from the last raw line of the case."
         print ""
-        print "| case | payload B | ns per op | spread | rounds per op | messages per op | write_atomically per op | leader ns | follower ns |"
+        print "| case | payload B | ns per op | spread | messages per op | write_atomically per op | per node | leader ns | follower ns |"
         print "|---|---|---|---|---|---|---|---|---|"
         for (k = 1; k <= key_count; k++) {
             split(keys[k], part, " ")
             m = middle(keys[k], main)
             median[keys[k]] = m
             printf "| %s | %s | %.2f | %.2f-%.2f | %s | %s | %s | %s | %s |\n", part[1], part[2], m, low, high, \
-                shown(rounds_per_op, keys[k]), shown(messages_per_op, keys[k]), shown(writes_per_op, keys[k]), \
+                shown(messages_per_op, keys[k]), shown(writes_per_op, keys[k]), shown(writes_per_node, keys[k]), \
                 shown(leader_ns, keys[k]), shown(follower_ns, keys[k])
         }
         print ""
         print "## Each library case beside its LMDB baseline"
         print ""
         print "ns per operation, " main ". Commits: the LMDB commits in series of one write_lmdb operation."
+        print "lmdb_put x commits: lmdb_put times that number."
         print ""
-        print "| payload B | lmdb_put | lmdb_put_like_storage | commit_lmdb | write_lmdb | commits | write_batch_lmdb |"
-        print "|---|---|---|---|---|---|---|"
+        print "| payload B | lmdb_put | lmdb_put_like_storage | commit_lmdb | write_lmdb | commits | lmdb_put x commits | write_lmdb_threads | write_batch_lmdb | write_batch_lmdb_threads |"
+        print "|---|---|---|---|---|---|---|---|---|---|"
         for (p = 1; p <= payload_count; p++) {
             b = payloads[p]
-            printf "| %s | %s | %s | %s | %s | %s | %s |\n", b, cell("lmdb_put " b), cell("lmdb_put_like_storage " b), \
-                cell("commit_lmdb " b), cell("write_lmdb " b), shown(writes_per_op, "write_lmdb " b), cell("write_batch_lmdb " b)
+            n = shown(writes_per_op, "write_lmdb " b)
+            series = ("lmdb_put " b) in median && n != "-" ? sprintf("%.2f", median["lmdb_put " b] * n) : "-"
+            printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", b, cell("lmdb_put " b), \
+                cell("lmdb_put_like_storage " b), cell("commit_lmdb " b), cell("write_lmdb " b), n, series, \
+                cell("write_lmdb_threads " b), cell("write_batch_lmdb " b), cell("write_batch_lmdb_threads " b)
         }
         print ""
         print "| payload B | lmdb_get | get_entries_lmdb |"
@@ -286,13 +296,36 @@ node::commit at the leader and at the slower of the two followers, for
 each operation. The latency on three machines is about the leader time
 plus the slowest follower time plus the network. This bench does not
 measure that latency. A cluster case fails when the leader changes
-during the timed samples.
+during the samples.
 
-In the cluster cases a round also carries heartbeats and resends, so the
-parts do not add up to a write. rounds_per_op and messages_per_op give
-the rounds and the messages of each operation. log_len_first and
-log_len_last give the log length of the follower at the first and after
-the last sample.
+- write_memory_threads, write_lmdb_threads, read_memory_threads,
+  read_lmdb_threads, write_batch_memory_threads,
+  write_batch_lmdb_threads: the same operations with each node on its
+  own thread. Each node has its own LMDB env in its own directory; the
+  three envs share one disk. The election, the registration of the
+  client and the write before the reads run on the serial harness
+  before the threads start. A node thread takes the messages and the
+  client calls that wait in its inbox, at most konsens::max_batch_size,
+  calls handle_incoming once and commit once, and puts the encoded
+  messages into the inbox of each target. The main thread puts the
+  calls into the inbox of the follower and waits for the replies. After
+  the last sample it waits until no message is in flight, stops and
+  joins the threads, and checks that each node has the same log length
+  and the same decided index and that the leader did not change. The
+  memory cases mostly measure the wakeup of the threads.
+
+The serial harness calls tick at each node in each round of the timed
+part, so its rounds also carry heartbeats and resends. The threaded
+harness calls no tick. The parts do not add up to a write.
+messages_per_op gives the messages of each operation,
+write_atomically_per_op the calls of write_atomically at all nodes and
+write_atomically_per_node_per_op the calls at node 1, 2 and 3. These
+numbers and the commit times count all samples, the warm-up sample
+too. log_len_first and log_len_last give the log length of the
+follower before the first sample and after the last sample.
+
+write_lmdb_threads stands beside lmdb_put times the number of LMDB
+commits in series of write_lmdb.
 
 Checks: crc32c compares the CRC of "123456789" with the check value
 e3069283. The encode and decode cases compare each decoded message with

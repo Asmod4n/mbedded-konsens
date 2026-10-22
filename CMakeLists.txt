@@ -63,9 +63,10 @@ add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increment
 
 option(KONSENS_BENCH "Build konsens_bench and its A/A copy konsens_bench_aa" OFF)
 if(KONSENS_BENCH)
+    find_package(Threads REQUIRED)
     foreach(bench_name konsens_bench konsens_bench_aa)
         add_executable(${bench_name} ${PROJECT_SOURCE_DIR}/bench/konsens_bench.cpp)
-        target_link_libraries(${bench_name} PRIVATE konsens crc32c)
+        target_link_libraries(${bench_name} PRIVATE konsens crc32c Threads::Threads)
         target_compile_options(${bench_name} PRIVATE ${KONSENS_WARNINGS})
     endforeach()
 endif()
