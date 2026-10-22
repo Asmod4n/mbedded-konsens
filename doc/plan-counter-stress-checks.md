@@ -64,3 +64,46 @@ of the build. No claim of speed is made.
 ## 5. Names
 
 `--lmdb` after the library it selects. No new public name.
+
+## 6. Changes after the review
+
+The review (approve with changes, 10 findings) is applied as follows.
+
+- R1: S2b records, for each new entry of `decided_history`, the
+  accepted round of the node that decided it
+  (`sp.get_accepted_round()`). counter_stress checks once per round, so
+  the recorded round can be at or above the round of the decision. The
+  check is weaker than the one of the model and cannot fail falsely.
+  The term `ConfigurationId` of the model is dropped: there is one
+  configuration.
+- R2: S2b and S5 read the whole log with
+  `get_internal_storage().get_entries` and `get_log_len`, only after
+  `collect`. An error of the read is the failure "read the log".
+- R3: the S3 set holds two forms, inserted before the call:
+  register `{register_client, {}, 0, 0, client_id, pid of the node
+  that took the call}` and increment `{client_request, {}, session,
+  request_number, 0, 0}`. A read makes no entry; the stress makes no
+  `expire_session`; the library makes no StopSign and no no-op. S3 on
+  the decided history covers each node through S1.
+- R4: a power loss of counter_stress restarts every process and keeps
+  the storage. It is not a loss of the disk cache. S5 holds under it.
+- R5: a restart destroys the old node first and then opens the
+  storage again, through a stop and start pair for each storage type,
+  as test/simulation.hpp:502-507 and test_simulation_lmdb.cpp:31-47 do.
+- R6: the counter-checks port the mutations of the model:
+  `SyncIgnored` (S2b), `LeaderReplacesValue` (S3), `SeqNumUnchecked`
+  (S5). The check order is S7, S1, S2b, S3, S5. A mutation that fails
+  only on an earlier property is reported as such and not counted as a
+  catch.
+- R7: S5 compares two logs only from the lower of their decided
+  indices. S2b reads the leader log only from its checked index up to
+  the last entry it must hold.
+- R8: section 4 goes. No claim of speed is made. One `--lmdb` seed is
+  timed first, and the number of LMDB seeds follows from that time.
+  Parallel runs stay within the processors.
+- R9: the `--lmdb` seeds run as a user that is not root, through
+  setpriv. `--lmdb` gets no CTest. The temporary directories take the
+  form of three_nodes.cpp:62-87, moved into one header of the examples
+  that both examples include. The map size has a named constant.
+- R10: counter_stress has no comments; the reasons stand in this plan
+  and in the state file.
