@@ -138,3 +138,35 @@ one value with LMDB alone, then the same through the library.
    followers at the same time.
 5. The bench links LMDB directly for these two cases only; no LMDB
    name enters the library.
+
+## 8. Changes after the review
+
+The review (needs changes, 8 findings) is applied as follows.
+
+- R1: two put arms, both with a big-endian key that rises by one.
+  `lmdb_put` puts the raw payload with flags 0.
+  `lmdb_put_like_storage` reserves the payload plus the record overhead
+  of `put_entry` with `MDB_APPEND | MDB_RESERVE`, and calls `mdb_stat`
+  once, as `write_atomically` does.
+- R2: the env opens with maxdbs 2 and one named DBI with `MDB_CREATE`,
+  outside the timed part. The map size is
+  `map_bytes_for(ops, payload_bytes)`. The env flags are 0, so each
+  commit syncs, as in the library.
+- R3: `read_lmdb` answers from the state machine in memory after one
+  read-index round, so the table puts it beside `read_memory`, not
+  beside `lmdb_get`.
+- R4: case `get_entries_lmdb` calls `persistent_storage::get_entries(i,
+  i + 1)` on an entry written before the timer. It stands beside
+  `lmdb_get`. Both run with 64 B, 1 KiB and 64 KiB. Check: the bytes
+  equal the payload.
+- R5: the bench gets `lmdb.h` through the PUBLIC dependency of
+  `konsens`; item 7.5 goes. Open point: the dependency is PUBLIC
+  because persistent_storage.hpp:60 shows `MDB_env`.
+- R6: the bench counts the calls of `write_atomically` per op. The file
+  writes "N LMDB commits in series" with N as measured.
+- R7: `commit_and_collect` times each `n.commit(*t)` and sums the time
+  per node. The rows give `leader_ns_per_op` and `follower_ns_per_op`.
+  The file says that the latency on three machines is about the leader
+  time plus the slowest follower time plus the network, and that this
+  bench does not measure that latency.
+- R8: `mdb_stat` after each put sample gives the number of puts.
