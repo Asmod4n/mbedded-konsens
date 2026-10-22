@@ -37,7 +37,8 @@ struct memory_cluster {
 // of the same ballot (follower.rs:13-51), as in seed 18336 of a longer run.
 // Each delivery is a batch of random size, and the node commits after it,
 // so a message leaves only after the commit of the batch that made it.
-TEST_CASE("simulation with FIFO channels keeps the safety properties") {
+TEST_CASE("simulation with FIFO channels keeps the safety properties")
+{
     simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count);
 }
 
@@ -52,7 +53,8 @@ TEST_CASE("simulation with FIFO channels keeps the safety properties") {
 // for this node, and handle_leader refuses a ballot that is not above the
 // promise. The node takes the next round above its promise instead
 // (ballot_above_promise in node.hpp, a provisional form).
-TEST_CASE("simulation with one rollback keeps the safety properties") {
+TEST_CASE("simulation with one rollback keeps the safety properties")
+{
     simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count, simulation::rollback::one);
 }
 
@@ -62,7 +64,8 @@ TEST_CASE("simulation with one rollback keeps the safety properties") {
 // rolls back. Each state also keeps E1 and R1 of the model. The counts show
 // that the run took each client path: a lost call, a call sent again and a
 // read across a change of leader.
-TEST_CASE("simulation with two clients and one rollback keeps the safety properties") {
+TEST_CASE("simulation with two clients and one rollback keeps the safety properties")
+{
     const auto c = simulation::run_seeds<memory_cluster>(simulation::delivery::fifo, seed_count,
                                                          simulation::rollback::one, simulation::clients::two);
     CHECK(c.sessions > 0);
@@ -81,7 +84,8 @@ TEST_CASE("simulation with two clients and one rollback keeps the safety propert
 // late AcceptSync shortens the log of a follower, and a later AcceptSync
 // puts its suffix at the wrong index. The run delivers one message for
 // each batch, so the steps of seed 57 stay the steps that broke S1.
-TEST_CASE("a follower refuses the stale AcceptSync of seed 57") {
+TEST_CASE("a follower refuses the stale AcceptSync of seed 57")
+{
     const auto o = simulation::run<memory_cluster>(57, simulation::delivery::reorder, false, simulation::rollback::none,
                                                    simulation::clients::none, simulation::batches::single);
     CHECK_FALSE(o.violation);
@@ -90,6 +94,7 @@ TEST_CASE("a follower refuses the stale AcceptSync of seed 57") {
 // Without FIFO channels other paths still break the properties: seed 72
 // breaks S2b. The library requires FIFO channels, so this case is skipped.
 // It stays to show what the requirement protects.
-TEST_CASE("simulation with reordered messages keeps the safety properties" * doctest::skip()) {
+TEST_CASE("simulation with reordered messages keeps the safety properties" * doctest::skip())
+{
     simulation::run_seeds<memory_cluster>(simulation::delivery::reorder, seed_count);
 }

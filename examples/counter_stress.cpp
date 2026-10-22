@@ -18,8 +18,8 @@
 #include <random>
 #include <ranges>
 #include <span>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -95,9 +95,12 @@ struct flag {
 };
 
 constexpr std::array flags{
-    flag{"--clients", &options::clients},   flag{"--increments", &options::increments},
-    flag{"--seed", &options::seed},         flag{"--loss", &options::loss},
-    flag{"--duplicate", &options::duplicate}, flag{"--restart", &options::restart},
+    flag{"--clients", &options::clients},
+    flag{"--increments", &options::increments},
+    flag{"--seed", &options::seed},
+    flag{"--loss", &options::loss},
+    flag{"--duplicate", &options::duplicate},
+    flag{"--restart", &options::restart},
     flag{"--power-loss", &options::power_loss},
 };
 
@@ -374,8 +377,7 @@ struct cluster {
 
     bool recovers() const
     {
-        return std::ranges::any_of(nodes,
-                                   [](const auto& n) { return n.value().get_sequence_paxos().recovering(); });
+        return std::ranges::any_of(nodes, [](const auto& n) { return n.value().get_sequence_paxos().recovering(); });
     }
 
     std::optional<std::size_t> leader() const
@@ -516,8 +518,7 @@ struct stress {
         for (std::size_t i = 0; i < node_count; ++i) {
             const auto& sp = net.at(i).get_sequence_paxos();
             const auto decided = sp.get_decided_idx();
-            if (decided < last_decided.at(i) || std::min(decided, sp.get_accepted_idx()) < checked.at(i))
-                [[unlikely]] {
+            if (decided < last_decided.at(i) || std::min(decided, sp.get_accepted_idx()) < checked.at(i)) [[unlikely]] {
                 return std::unexpected(failure{"S7: the decided index of a node fell", {}});
             }
             last_decided.at(i) = decided;
@@ -777,9 +778,32 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
 
 int run(const options& given)
 {
-    stress s{given, cluster{{}, {}, {}, {}, std::mt19937_64{given.seed}, given.loss, given.duplicate, 0, {}, {}, {},
-                         given.calls_reconnected, given.cbor, {}},
-             {}, {}, {}, 0, 0, 1, 0, 0, {}, {}, {}};
+    stress s{given,
+             cluster{{},
+                     {},
+                     {},
+                     {},
+                     std::mt19937_64{given.seed},
+                     given.loss,
+                     given.duplicate,
+                     0,
+                     {},
+                     {},
+                     {},
+                     given.calls_reconnected,
+                     given.cbor,
+                     {}},
+             {},
+             {},
+             {},
+             0,
+             0,
+             1,
+             0,
+             0,
+             {},
+             {},
+             {}};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
             return fail(given.seed, {"start the nodes", r.error()});

@@ -9,8 +9,8 @@
 #include <memory>
 #include <optional>
 #include <set>
-#include <stdexcept>
 #include <span>
+#include <stdexcept>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -188,9 +188,10 @@ public:
         return current_transaction();
     }
 
-    [[nodiscard]] std::expected<transaction, std::error_code>
-    client_request(const std::uint64_t client_id, const std::uint64_t session, const std::uint64_t request_number,
-                   std::vector<std::byte> payload)
+    [[nodiscard]] std::expected<transaction, std::error_code> client_request(const std::uint64_t client_id,
+                                                                             const std::uint64_t session,
+                                                                             const std::uint64_t request_number,
+                                                                             std::vector<std::byte> payload)
     {
         if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
             return std::unexpected(r.error());
@@ -198,8 +199,8 @@ public:
         if (request_number == 0) [[unlikely]] {
             throw std::logic_error("konsens: a request number starts at 1");
         }
-        if (auto r = seq_paxos_.append({entry_kind::client_request, std::move(payload), session, request_number});
-            !r) [[unlikely]] {
+        if (auto r = seq_paxos_.append({entry_kind::client_request, std::move(payload), session, request_number}); !r)
+            [[unlikely]] {
             return std::unexpected(r.error());
         }
         requests_.insert_or_assign({session, request_number}, client_id);
@@ -318,8 +319,8 @@ private:
     {
         return std::visit(
             [this](const auto& outer) -> result {
-                return std::visit(
-                    [this, &outer](const auto& msg) { return this->handle(outer.from, outer.to, msg); }, outer.msg);
+                return std::visit([this, &outer](const auto& msg) { return this->handle(outer.from, outer.to, msg); },
+                                  outer.msg);
             },
             m);
     }
@@ -371,8 +372,7 @@ private:
     ballot ballot_above_promise(const ballot elected) const
     {
         const auto promise = seq_paxos_.get_promise();
-        if (elected.pid != seq_paxos_.get_pid() || elected > promise ||
-            seq_paxos_.get_state().first == role::leader) {
+        if (elected.pid != seq_paxos_.get_pid() || elected > promise || seq_paxos_.get_state().first == role::leader) {
             return elected;
         }
         return {elected.config_id, promise.n + 1, elected.priority, elected.pid};

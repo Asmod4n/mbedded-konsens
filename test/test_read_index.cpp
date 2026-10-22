@@ -59,9 +59,15 @@ sp_t make(const node_id pid, const node_id count = three)
     return *sp_t::with({pid, peers_of(pid, count)}, {}, first_nonce);
 }
 
-entry make_entry(const std::uint8_t v) { return {konsens::entry_kind::normal, {std::byte{v}}}; }
+entry make_entry(const std::uint8_t v)
+{
+    return {konsens::entry_kind::normal, {std::byte{v}}};
+}
 
-ballot ballot_of(const std::uint32_t n, const node_id pid) { return {config_id, n, 0, pid}; }
+ballot ballot_of(const std::uint32_t n, const node_id pid)
+{
+    return {config_id, n, 0, pid};
+}
 
 template <typename T>
 std::vector<std::pair<node_id, T>> messages_of(const std::vector<paxos_message>& out)
@@ -83,7 +89,10 @@ bool failed_with(const std::expected<T, std::error_code>& r, const konsens::clie
     return !r.has_value() && r.error() == e;
 }
 
-konsens::promise empty_promise(const ballot n) { return {n, ballot{}, 0, 0, std::nullopt}; }
+konsens::promise empty_promise(const ballot n)
+{
+    return {n, ballot{}, 0, 0, std::nullopt};
+}
 
 // Node 3 leads ballot (1, 3) in phase Accept with one accepted and not yet
 // decided entry, so that its accepted_idx (1) differs from its decided_idx
@@ -108,7 +117,8 @@ sp_t leader_in_accept(const node_id count = three, const node_id promised = 1)
 // decided_idx below an entry that the old leader decided and answered
 // (finding 1 of the review of plan v0.1). The round sends one Heartbeat to
 // each peer.
-TEST_CASE("a read at a leader in accept starts a round at the accepted index") {
+TEST_CASE("a read at a leader in accept starts a round at the accepted index")
+{
     auto sp = leader_in_accept();
     REQUIRE(sp.get_accepted_idx() == 1);
     REQUIRE(sp.get_decided_idx() == 0);
@@ -129,7 +139,8 @@ TEST_CASE("a read at a leader in accept starts a round at the accepted index") {
 // ReadStart, Raft 6.4.1: a follower asks the leader of its promise for the
 // read index. A node that knows no leader cannot start the read, and the
 // caller tries again (error retry, plan section 7).
-TEST_CASE("a read at a follower goes to the leader of its promise") {
+TEST_CASE("a read at a follower goes to the leader of its promise")
+{
     auto sp = make(1);
     CHECK(failed_with(sp.start_read(4), konsens::client_errc::retry));
     CHECK(committed_messages_of(sp).empty());
@@ -146,7 +157,8 @@ TEST_CASE("a read at a follower goes to the leader of its promise") {
 // node that is no leader drops it; were it to keep it, it would answer the
 // read after a later election with a reply that the follower did not ask of
 // it.
-TEST_CASE("handle_read_index_request: only a leader takes the read") {
+TEST_CASE("handle_read_index_request: only a leader takes the read")
+{
     auto leader = leader_in_accept();
     REQUIRE(leader.handle({1, 3, konsens::read_index_request{9}}));
     CHECK(leader.get_read_round().reads.size() == 1);
@@ -169,7 +181,8 @@ TEST_CASE("handle_read_index_request: only a leader takes the read") {
 // HandleHeartbeat, Raft 6.4: a node acknowledges only the heartbeat of the
 // ballot it promised. An acknowledgement from a node with another promise
 // would count a node that may already serve a higher leader.
-TEST_CASE("handle_heartbeat answers only the ballot of the promise") {
+TEST_CASE("handle_heartbeat answers only the ballot of the promise")
+{
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 0, ballot{}, 0}}));
     committed_messages_of(sp);
@@ -187,7 +200,8 @@ TEST_CASE("handle_heartbeat answers only the ballot of the promise") {
 // each read of the round. The leader keeps its own reads and sends each
 // follower one ReadIndexReply with the reads of that follower. Reads 7 and
 // 8 come while round 1 runs, so round 2 holds both.
-TEST_CASE("handle_heartbeat_ack: a majority indexes the reads of the round") {
+TEST_CASE("handle_heartbeat_ack: a majority indexes the reads of the round")
+{
     auto sp = leader_in_accept();
     REQUIRE(sp.start_read(6));
     REQUIRE(sp.start_read(7));
@@ -215,7 +229,8 @@ TEST_CASE("handle_heartbeat_ack: a majority indexes the reads of the round") {
 // HandleHeartbeatAck: an acknowledgement counts only for the round with the
 // same id. A late or duplicated acknowledgement of an earlier round says
 // nothing about the time after the new round started.
-TEST_CASE("handle_heartbeat_ack: an acknowledgement of an earlier round does not count") {
+TEST_CASE("handle_heartbeat_ack: an acknowledgement of an earlier round does not count")
+{
     auto sp = leader_in_accept();
     REQUIRE(sp.start_read(1));
     const auto first = sp.get_read_round();
@@ -230,7 +245,8 @@ TEST_CASE("handle_heartbeat_ack: an acknowledgement of an earlier round does not
 
 // HandleHeartbeatAck: an acknowledgement counts only with the ballot of the
 // round. The ack of another ballot comes from a node with another promise.
-TEST_CASE("handle_heartbeat_ack: an acknowledgement of another ballot does not count") {
+TEST_CASE("handle_heartbeat_ack: an acknowledgement of another ballot does not count")
+{
     auto sp = leader_in_accept();
     REQUIRE(sp.start_read(1));
     const auto rd = sp.get_read_round();
@@ -241,7 +257,8 @@ TEST_CASE("handle_heartbeat_ack: an acknowledgement of another ballot does not c
 // HandleHeartbeatAck: the acknowledgements are a set of nodes. With five
 // nodes a majority is three; two copies of one acknowledgement are one
 // node, and a duplicate on the channel must not complete the round.
-TEST_CASE("handle_heartbeat_ack: a duplicate acknowledgement counts once") {
+TEST_CASE("handle_heartbeat_ack: a duplicate acknowledgement counts once")
+{
     auto sp = leader_in_accept(five, 2);
     REQUIRE(sp.start_read(1));
     const auto rd = sp.get_read_round();
@@ -255,7 +272,8 @@ TEST_CASE("handle_heartbeat_ack: a duplicate acknowledgement counts once") {
 // HandleHeartbeatAck: only a leader in Accept completes a round. A leader
 // that promised a higher ballot meanwhile would index its read with the new
 // promise, and the node would no longer see that the promise changed.
-TEST_CASE("handle_heartbeat_ack: a node that lost the leadership completes no round") {
+TEST_CASE("handle_heartbeat_ack: a node that lost the leadership completes no round")
+{
     auto sp = leader_in_accept();
     REQUIRE(sp.start_read(1));
     const auto rd = sp.get_read_round();
@@ -269,7 +287,8 @@ TEST_CASE("handle_heartbeat_ack: a node that lost the leadership completes no ro
 // wait, and the next round takes all of them when the round completes, as
 // in group commit. A second round that started at once would replace the
 // reads of the first, and those reads would never get an index.
-TEST_CASE("a read during a round waits for the next round") {
+TEST_CASE("a read during a round waits for the next round")
+{
     auto sp = leader_in_accept();
     REQUIRE(sp.start_read(1));
     committed_messages_of(sp);
@@ -294,7 +313,8 @@ TEST_CASE("a read during a round waits for the next round") {
 // decided at ballot (1, 1), and node 3 has an empty log. A round in Prepare
 // would take read index 0, and node 1, which promised (2, 3), would
 // acknowledge it. The round starts after the sync, with read index 1.
-TEST_CASE("a leader in prepare starts its read round only in accept") {
+TEST_CASE("a leader in prepare starts its read round only in accept")
+{
     auto sp = make(3);
     REQUIRE(sp.handle_leader(ballot_of(2, 3)));
     committed_messages_of(sp);
@@ -302,8 +322,8 @@ TEST_CASE("a leader in prepare starts its read round only in accept") {
     CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).empty());
     REQUIRE(sp.handle({1, 3, konsens::heartbeat_ack{ballot_of(2, 3), 1}}));
     CHECK(sp.take_indexed_reads().empty());
-    REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(2, 3), ballot_of(1, 1), 1, 1,
-                                              konsens::log_sync{{make_entry(1)}, 0}}}));
+    REQUIRE(sp.handle(
+        {1, 3, konsens::promise{ballot_of(2, 3), ballot_of(1, 1), 1, 1, konsens::log_sync{{make_entry(1)}, 0}}}));
     REQUIRE(sp.get_state() == std::pair{role::leader, phase::accept});
     CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).size() == 2);
     const auto rd = sp.get_read_round();
@@ -317,7 +337,8 @@ TEST_CASE("a leader in prepare starts its read round only in accept") {
 // HandleReadIndexReply, Raft 6.4.1: the follower keeps the read index for
 // each of its reads, with the promise it holds now, so that the node can
 // drop the read when the promise changes.
-TEST_CASE("handle_read_index_reply indexes each read with the promise") {
+TEST_CASE("handle_read_index_reply indexes each read with the promise")
+{
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     REQUIRE(sp.handle({3, 1, konsens::read_index_reply{{4, 6}, 2}}));
@@ -334,7 +355,8 @@ TEST_CASE("handle_read_index_reply indexes each read with the promise") {
 // A lost Heartbeat or HeartbeatAck would stop the round, and every read
 // after it, for good. The resend timeout sends the heartbeat of the round
 // again to each peer that has not acknowledged it; the round id stays.
-TEST_CASE("resend_heartbeats repeats the round to the peers without an acknowledgement") {
+TEST_CASE("resend_heartbeats repeats the round to the peers without an acknowledgement")
+{
     auto sp = leader_in_accept(five, 2);
     sp.resend_heartbeats();
     CHECK(committed_messages_of(sp).empty());

@@ -44,7 +44,8 @@ class storage_error_category final : public std::error_category {
 public:
     const char* name() const noexcept override { return "konsens.storage"; }
 
-    std::string message(const int code) const override {
+    std::string message(const int code) const override
+    {
         switch (static_cast<storage_errc>(code)) {
         case storage_errc::crc_mismatch:
             return "The CRC32C of a record does not agree with its data";
@@ -62,7 +63,8 @@ public:
     std::string message(const int code) const override { return mdb_strerror(code); }
 };
 
-std::error_code to_error_code(const int lmdb_status) noexcept {
+std::error_code to_error_code(const int lmdb_status) noexcept
+{
     if (lmdb_status == MDB_MAP_FULL) {
         return std::make_error_code(std::errc::no_space_on_device);
     }
@@ -72,19 +74,23 @@ std::error_code to_error_code(const int lmdb_status) noexcept {
     return {lmdb_status, lmdb_category()};
 }
 
-MDB_val value_of(const std::span<const std::byte> bytes) noexcept {
+MDB_val value_of(const std::span<const std::byte> bytes) noexcept
+{
     return MDB_val{bytes.size(), const_cast<std::byte*>(bytes.data())};
 }
 
-MDB_val value_of(const std::string_view text) noexcept {
+MDB_val value_of(const std::string_view text) noexcept
+{
     return MDB_val{text.size(), const_cast<char*>(text.data())};
 }
 
-std::span<const std::byte> as_bytes(const MDB_val& value) noexcept {
+std::span<const std::byte> as_bytes(const MDB_val& value) noexcept
+{
     return {static_cast<const std::byte*>(value.mv_data), value.mv_size};
 }
 
-std::span<std::byte> as_writable_bytes(const MDB_val& value) noexcept {
+std::span<std::byte> as_writable_bytes(const MDB_val& value) noexcept
+{
     return {static_cast<std::byte*>(value.mv_data), value.mv_size};
 }
 
@@ -100,7 +106,8 @@ struct cursor_close {
 
 using cursor = std::unique_ptr<MDB_cursor, cursor_close>;
 
-std::expected<mdb_txn, std::error_code> begin_transaction(MDB_env* env, const unsigned int flags) {
+std::expected<mdb_txn, std::error_code> begin_transaction(MDB_env* env, const unsigned int flags)
+{
     MDB_txn* txn = nullptr;
     const int status = mdb_txn_begin(env, nullptr, flags, &txn);
     if (status != MDB_SUCCESS) [[unlikely]] {
@@ -109,7 +116,8 @@ std::expected<mdb_txn, std::error_code> begin_transaction(MDB_env* env, const un
     return mdb_txn{txn};
 }
 
-std::expected<void, std::error_code> commit_or_throw(mdb_txn txn) {
+std::expected<void, std::error_code> commit_or_throw(mdb_txn txn)
+{
     const int status = mdb_txn_commit(txn.release());
     if (status == MDB_MAP_FULL) [[unlikely]] {
         return std::unexpected(to_error_code(status));
@@ -120,17 +128,20 @@ std::expected<void, std::error_code> commit_or_throw(mdb_txn txn) {
     return {};
 }
 
-std::size_t record_size_of(const entry& e) {
+std::size_t record_size_of(const entry& e)
+{
     return encoded_size_of(e) + crc_size;
 }
 
-void encode_record(const std::uint64_t index, const entry& e, const std::span<std::byte> out) noexcept {
+void encode_record(const std::uint64_t index, const entry& e, const std::span<std::byte> out) noexcept
+{
     const auto encoded = out.first(out.size() - crc_size);
     encode_entry(e, encoded);
     std::ranges::copy(to_little_endian(compute_entry_crc(index, encoded)), out.last(crc_size).begin());
 }
 
-std::expected<entry, read_failure> decode_record(const std::uint64_t index, const std::span<const std::byte> value) {
+std::expected<entry, read_failure> decode_record(const std::uint64_t index, const std::span<const std::byte> value)
+{
     if (value.size() < kind_size + crc_size) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::malformed_record, index, 0, 0});
     }
@@ -147,7 +158,8 @@ std::expected<entry, read_failure> decode_record(const std::uint64_t index, cons
     return std::move(*decoded);
 }
 
-std::array<std::byte, ballot_size> encode_ballot(const ballot& b) noexcept {
+std::array<std::byte, ballot_size> encode_ballot(const ballot& b) noexcept
+{
     std::array<std::byte, ballot_size> out{};
     auto next = std::ranges::copy(to_little_endian(b.config_id), out.begin()).out;
     next = std::ranges::copy(to_little_endian(b.n), next).out;
@@ -156,7 +168,8 @@ std::array<std::byte, ballot_size> encode_ballot(const ballot& b) noexcept {
     return out;
 }
 
-ballot decode_ballot(const std::span<const std::byte, ballot_size> bytes) noexcept {
+ballot decode_ballot(const std::span<const std::byte, ballot_size> bytes) noexcept
+{
     return ballot{
         from_little_endian<std::uint32_t>(bytes.subspan<config_id_offset, sizeof(ballot::config_id)>()),
         from_little_endian<std::uint32_t>(bytes.subspan<n_offset, sizeof(ballot::n)>()),
@@ -171,7 +184,8 @@ struct write_target {
     MDB_dbi meta_dbi;
 };
 
-std::expected<std::uint64_t, std::error_code> read_log_len(MDB_txn* txn, const MDB_dbi log_dbi) {
+std::expected<std::uint64_t, std::error_code> read_log_len(MDB_txn* txn, const MDB_dbi log_dbi)
+{
     MDB_stat stat{};
     const int status = mdb_stat(txn, log_dbi, &stat);
     if (status != MDB_SUCCESS) [[unlikely]] {
@@ -180,7 +194,8 @@ std::expected<std::uint64_t, std::error_code> read_log_len(MDB_txn* txn, const M
     return stat.ms_entries;
 }
 
-std::expected<void, std::error_code> put_entry(const write_target& target, const std::uint64_t index, const entry& e) {
+std::expected<void, std::error_code> put_entry(const write_target& target, const std::uint64_t index, const entry& e)
+{
     const auto key_bytes = to_big_endian(index);
     MDB_val key = value_of(key_bytes);
     MDB_val data{record_size_of(e), nullptr};
@@ -193,7 +208,8 @@ std::expected<void, std::error_code> put_entry(const write_target& target, const
 }
 
 std::expected<std::uint64_t, std::error_code> put_entries(const write_target& target, const std::uint64_t log_len,
-                                                          const std::span<const entry> entries) {
+                                                          const std::span<const entry> entries)
+{
     for (const auto& [offset, e] : std::views::enumerate(entries)) {
         const auto put = put_entry(target, log_len + static_cast<std::uint64_t>(offset), e);
         if (!put) [[unlikely]] {
@@ -204,7 +220,8 @@ std::expected<std::uint64_t, std::error_code> put_entries(const write_target& ta
 }
 
 std::expected<void, std::error_code> delete_entries(const write_target& target, const std::uint64_t from,
-                                                    const std::uint64_t to) {
+                                                    const std::uint64_t to)
+{
     for (const auto index : std::views::iota(from, to)) {
         const auto key_bytes = to_big_endian(index);
         MDB_val key = value_of(key_bytes);
@@ -217,7 +234,8 @@ std::expected<void, std::error_code> delete_entries(const write_target& target, 
 }
 
 std::expected<void, std::error_code> put_meta(const write_target& target, const std::string_view name,
-                                              const std::span<const std::byte> body) {
+                                              const std::span<const std::byte> body)
+{
     MDB_val key = value_of(name);
     MDB_val data{body.size() + crc_size, nullptr};
     const int status = mdb_put(target.txn, target.meta_dbi, &key, &data, MDB_RESERVE);
@@ -231,7 +249,8 @@ std::expected<void, std::error_code> put_meta(const write_target& target, const 
 }
 
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-get_meta(MDB_txn* txn, const MDB_dbi meta_dbi, const std::string_view name, const std::size_t body_size) {
+get_meta(MDB_txn* txn, const MDB_dbi meta_dbi, const std::string_view name, const std::size_t body_size)
+{
     MDB_val key = value_of(name);
     MDB_val data{};
     const int status = mdb_get(txn, meta_dbi, &key, &data);
@@ -246,19 +265,22 @@ get_meta(MDB_txn* txn, const MDB_dbi meta_dbi, const std::string_view name, cons
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
     const auto body = value.first(body_size);
-    if (from_little_endian<std::uint32_t>(value.last<crc_size>()) != crc32c::Crc32c(body.data(), body.size())) [[unlikely]] {
+    if (from_little_endian<std::uint32_t>(value.last<crc_size>()) != crc32c::Crc32c(body.data(), body.size()))
+        [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::crc_mismatch));
     }
     return body;
 }
 
 std::expected<std::uint64_t, std::error_code> apply(const write_target& target, const std::uint64_t log_len,
-                                                    const append_entries& op) {
+                                                    const append_entries& op)
+{
     return put_entries(target, log_len, op.entries);
 }
 
 std::expected<std::uint64_t, std::error_code> apply(const write_target& target, const std::uint64_t log_len,
-                                                    const append_on_prefix& op) {
+                                                    const append_on_prefix& op)
+{
     const auto prefix_len = std::min(log_len, op.from_idx);
     const auto deleted = delete_entries(target, prefix_len, log_len);
     if (!deleted) [[unlikely]] {
@@ -268,25 +290,27 @@ std::expected<std::uint64_t, std::error_code> apply(const write_target& target, 
 }
 
 std::expected<std::uint64_t, std::error_code> apply(const write_target& target, const std::uint64_t log_len,
-                                                    const set_promise& op) {
+                                                    const set_promise& op)
+{
     return put_meta(target, promise_key, encode_ballot(op.promise)).transform([log_len] { return log_len; });
 }
 
 std::expected<std::uint64_t, std::error_code> apply(const write_target& target, const std::uint64_t log_len,
-                                                    const set_decided_index& op) {
-    return put_meta(target, decided_idx_key, to_little_endian(op.decided_idx)).transform([log_len] {
-        return log_len;
-    });
+                                                    const set_decided_index& op)
+{
+    return put_meta(target, decided_idx_key, to_little_endian(op.decided_idx)).transform([log_len] { return log_len; });
 }
 
 std::expected<std::uint64_t, std::error_code> apply(const write_target& target, const std::uint64_t log_len,
-                                                    const set_accepted_round& op) {
+                                                    const set_accepted_round& op)
+{
     return put_meta(target, accepted_round_key, encode_ballot(op.accepted_round)).transform([log_len] {
         return log_len;
     });
 }
 
-std::expected<ballot, std::error_code> read_ballot(MDB_env* env, const MDB_dbi meta_dbi, const std::string_view name) {
+std::expected<ballot, std::error_code> read_ballot(MDB_env* env, const MDB_dbi meta_dbi, const std::string_view name)
+{
     const auto txn = begin_transaction(env, MDB_RDONLY);
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
@@ -303,21 +327,25 @@ std::expected<ballot, std::error_code> read_ballot(MDB_env* env, const MDB_dbi m
 
 }
 
-const std::error_category& storage_category() noexcept {
+const std::error_category& storage_category() noexcept
+{
     static const storage_error_category category;
     return category;
 }
 
-std::error_code make_error_code(const storage_errc code) noexcept {
+std::error_code make_error_code(const storage_errc code) noexcept
+{
     return {static_cast<int>(code), storage_category()};
 }
 
-const std::error_category& lmdb_category() noexcept {
+const std::error_category& lmdb_category() noexcept
+{
     static const lmdb_error_category category;
     return category;
 }
 
-std::string read_failure::message() const {
+std::string read_failure::message() const
+{
     if (code == storage_errc::crc_mismatch) {
         return std::format("The CRC32C of the log entry at index {} does not agree: stored 0x{:08x}, computed 0x{:08x}",
                            index, stored_crc, computed_crc);
@@ -325,23 +353,28 @@ std::string read_failure::message() const {
     return std::format("The read of the log entry at index {} failed: {}", index, code.message());
 }
 
-void persistent_storage::env_close::operator()(MDB_env* env) const noexcept {
+void persistent_storage::env_close::operator()(MDB_env* env) const noexcept
+{
     mdb_env_close(env);
 }
 
 persistent_storage::persistent_storage(std::unique_ptr<MDB_env, env_close> env, const unsigned int log_dbi,
                                        const unsigned int meta_dbi) noexcept
-    : env_{std::move(env)}, log_dbi_{log_dbi}, meta_dbi_{meta_dbi} {}
+    : env_{std::move(env)}, log_dbi_{log_dbi}, meta_dbi_{meta_dbi}
+{
+}
 
-void persistent_storage::throw_if_moved_from() const {
+void persistent_storage::throw_if_moved_from() const
+{
     if (!env_) [[unlikely]] {
         throw std::logic_error("The persistent_storage was moved from and has no LMDB environment");
     }
 }
 
-std::expected<persistent_storage, std::error_code>
-persistent_storage::open(const std::filesystem::path& directory, const std::size_t map_size,
-                         const uid_t effective_user_id) {
+std::expected<persistent_storage, std::error_code> persistent_storage::open(const std::filesystem::path& directory,
+                                                                            const std::size_t map_size,
+                                                                            const uid_t effective_user_id)
+{
     if (effective_user_id == root_user_id) [[unlikely]] {
         return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
     }
@@ -384,7 +417,8 @@ persistent_storage::open(const std::filesystem::path& directory, const std::size
     return persistent_storage{std::move(env), log_dbi, meta_dbi};
 }
 
-std::expected<void, std::error_code> persistent_storage::write_atomically(const std::span<const storage_op> ops) {
+std::expected<void, std::error_code> persistent_storage::write_atomically(const std::span<const storage_op> ops)
+{
     throw_if_moved_from();
     auto txn = begin_transaction(env_.get(), 0);
     if (!txn) [[unlikely]] {
@@ -405,7 +439,8 @@ std::expected<void, std::error_code> persistent_storage::write_atomically(const 
 }
 
 std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries(const std::uint64_t from,
-                                                                                 const std::uint64_t to) const {
+                                                                                 const std::uint64_t to) const
+{
     throw_if_moved_from();
     throw_if_from_after_to(from, to);
     const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
@@ -445,11 +480,13 @@ std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries
 }
 
 std::expected<std::vector<entry>, std::error_code> persistent_storage::get_entries(const std::uint64_t from,
-                                                                                   const std::uint64_t to) const {
+                                                                                   const std::uint64_t to) const
+{
     return read_entries(from, to).transform_error([](const read_failure& failure) { return failure.code; });
 }
 
-std::expected<std::uint64_t, std::error_code> persistent_storage::get_log_len() const {
+std::expected<std::uint64_t, std::error_code> persistent_storage::get_log_len() const
+{
     throw_if_moved_from();
     const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
@@ -458,12 +495,14 @@ std::expected<std::uint64_t, std::error_code> persistent_storage::get_log_len() 
     return read_log_len(txn->get(), log_dbi_);
 }
 
-std::expected<ballot, std::error_code> persistent_storage::get_promise() const {
+std::expected<ballot, std::error_code> persistent_storage::get_promise() const
+{
     throw_if_moved_from();
     return read_ballot(env_.get(), meta_dbi_, promise_key);
 }
 
-std::expected<std::uint64_t, std::error_code> persistent_storage::get_decided_idx() const {
+std::expected<std::uint64_t, std::error_code> persistent_storage::get_decided_idx() const
+{
     throw_if_moved_from();
     const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
@@ -479,12 +518,14 @@ std::expected<std::uint64_t, std::error_code> persistent_storage::get_decided_id
     return from_little_endian<std::uint64_t>(body->value().first<sizeof(std::uint64_t)>());
 }
 
-std::expected<ballot, std::error_code> persistent_storage::get_accepted_round() const {
+std::expected<ballot, std::error_code> persistent_storage::get_accepted_round() const
+{
     throw_if_moved_from();
     return read_ballot(env_.get(), meta_dbi_, accepted_round_key);
 }
 
-std::expected<std::uint32_t, std::error_code> persistent_storage::get_last_entry_crc() const {
+std::expected<std::uint32_t, std::error_code> persistent_storage::get_last_entry_crc() const
+{
     throw_if_moved_from();
     const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {

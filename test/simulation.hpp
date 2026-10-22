@@ -49,7 +49,6 @@
 // order of the network, so each channel stays FIFO.
 namespace simulation {
 
-
 using konsens::ballot;
 using konsens::entry;
 using konsens::message;
@@ -120,7 +119,10 @@ std::vector<std::byte> bytes_of(std::uint64_t v)
     return payload;
 }
 
-entry entry_of(std::uint64_t v) { return {konsens::entry_kind::normal, bytes_of(v)}; }
+entry entry_of(std::uint64_t v)
+{
+    return {konsens::entry_kind::normal, bytes_of(v)};
+}
 
 std::uint64_t value_of(std::span<const std::byte> bytes)
 {
@@ -133,7 +135,10 @@ std::uint64_t value_of(std::span<const std::byte> bytes)
     return v;
 }
 
-std::uint64_t value_of(const entry& e) { return value_of(std::span(e.payload)); }
+std::uint64_t value_of(const entry& e)
+{
+    return value_of(std::span(e.payload));
+}
 
 std::vector<std::uint64_t> values_of(std::span<const std::byte> bytes)
 {
@@ -149,7 +154,10 @@ std::vector<std::uint64_t> values_of(std::span<const std::byte> bytes)
 using entry_fields =
     std::tuple<konsens::entry_kind, std::vector<std::byte>, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t>;
 
-entry_fields fields_of(const entry& e) { return {e.kind, e.payload, e.session, e.request_number, e.client_id, e.pid}; }
+entry_fields fields_of(const entry& e)
+{
+    return {e.kind, e.payload, e.session, e.request_number, e.client_id, e.pid};
+}
 
 std::uint64_t request_value(std::uint64_t session, std::uint64_t request_number)
 {
@@ -197,16 +205,22 @@ bool executed_once(const std::vector<std::uint64_t>& values)
     return std::ranges::all_of(values, [&seen](const std::uint64_t x) { return seen.insert(x).second; });
 }
 
-node_id from_of(const message& m) { return std::visit([](const auto& x) { return x.from; }, m); }
-node_id to_of(const message& m) { return std::visit([](const auto& x) { return x.to; }, m); }
+node_id from_of(const message& m)
+{
+    return std::visit([](const auto& x) { return x.from; }, m);
+}
+node_id to_of(const message& m)
+{
+    return std::visit([](const auto& x) { return x.to; }, m);
+}
 
 std::string name_of(const message& m)
 {
     static constexpr std::array<const char*, 17> paxos{
-        "prepare_req", "prepare",           "promise",            "accept_sync", "accept_decide",
-        "accepted",    "decide",            "not_accepted",       "proposal_forward", "recovery",
-        "recovery_response", "get_state", "new_state", "read_index_request", "heartbeat", "heartbeat_ack",
-        "read_index_reply"};
+        "prepare_req",       "prepare",         "promise",      "accept_sync",        "accept_decide",
+        "accepted",          "decide",          "not_accepted", "proposal_forward",   "recovery",
+        "recovery_response", "get_state",       "new_state",    "read_index_request", "heartbeat",
+        "heartbeat_ack",     "read_index_reply"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());
@@ -230,7 +244,10 @@ std::string text_of(const entry& e)
     return std::to_string(value_of(e));
 }
 
-std::string ballot_text(const ballot& b) { return "(" + std::to_string(b.n) + "," + std::to_string(b.pid) + ")"; }
+std::string ballot_text(const ballot& b)
+{
+    return "(" + std::to_string(b.n) + "," + std::to_string(b.pid) + ")";
+}
 
 std::string detail_of(const message& m)
 {
@@ -436,8 +453,10 @@ struct world {
             }
         }
         for (const auto& m : batch) {
-            note([&] { return std::string("deliver " + std::to_string(from_of(m)) + "->" + std::to_string(to_of(m)) +
-                                          " " + detail_of(m)); });
+            note([&] {
+                return std::string("deliver " + std::to_string(from_of(m)) + "->" + std::to_string(to_of(m)) + " " +
+                                   detail_of(m));
+            });
         }
         note([&] { return std::string("commit " + std::to_string(to) + " after " + std::to_string(batch.size())); });
         const auto i = to - 1;
@@ -527,8 +546,8 @@ struct world {
             return false;
         }
         const auto promise = leader->get_sequence_paxos().get_promise();
-        return std::ranges::all_of(nodes,
-                                   [promise](const node_t& n) { return n.get_sequence_paxos().get_promise() == promise; });
+        return std::ranges::all_of(
+            nodes, [promise](const node_t& n) { return n.get_sequence_paxos().get_promise() == promise; });
     }
 
     ballot highest_promise() const
@@ -567,8 +586,7 @@ struct world {
         case call_kind::register_client: {
             const auto& log = views[i].log;
             if (!r.response || r.session == 0 || r.session > log.size() ||
-                log[r.session - 1].kind != konsens::entry_kind::register_client ||
-                log[r.session - 1].client_id != id) {
+                log[r.session - 1].kind != konsens::entry_kind::register_client || log[r.session - 1].client_id != id) {
                 fail_client("the reply to RegisterClient call " + std::to_string(id) + " names no entry of it");
                 return;
             }
@@ -585,8 +603,7 @@ struct world {
             }
             if (r.response) {
                 if (*r.response != bytes_of(request_value(k.session, k.request_number))) {
-                    fail_client("the reply to request call " + std::to_string(id) +
-                                " is not the reply of its request");
+                    fail_client("the reply to request call " + std::to_string(id) + " is not the reply of its request");
                     return;
                 }
                 if (c.session == k.session && c.request_number == k.request_number) {
@@ -665,8 +682,8 @@ struct world {
         const auto id = next_call;
         next_call += 1;
         auto& n = nodes[i];
-        const auto who = "client " + std::to_string(c + 1) + " call " + std::to_string(id) + " at node " +
-                         std::to_string(i + 1);
+        const auto who =
+            "client " + std::to_string(c + 1) + " call " + std::to_string(id) + " at node " + std::to_string(i + 1);
         const auto wait = [&cl, id, step](const bool given) {
             if (given) {
                 cl.pending = id;
@@ -705,8 +722,8 @@ struct world {
             });
             return;
         }
-        const entry request{konsens::entry_kind::client_request,
-                            bytes_of(request_value(cl.session, cl.request_number)), cl.session, cl.request_number};
+        const entry request{konsens::entry_kind::client_request, bytes_of(request_value(cl.session, cl.request_number)),
+                            cl.session, cl.request_number};
         note([&] { return who + ": request " + text_of(request); });
         wait(give(i, id, {c, call_kind::client_request, cl.session, cl.request_number, {}}, [&] {
             const auto r = n.client_request(id, cl.session, cl.request_number, request.payload);
@@ -775,8 +792,8 @@ struct world {
         for (std::size_t i = 0; i < node_count; ++i) {
             for (std::size_t j = i + 1; j < node_count; ++j) {
                 if (!compatible(v[i].decided_prefix(), v[j].decided_prefix())) {
-                    return "S1: decided prefixes of nodes " + std::to_string(i + 1) + " and " +
-                           std::to_string(j + 1) + " differ";
+                    return "S1: decided prefixes of nodes " + std::to_string(i + 1) + " and " + std::to_string(j + 1) +
+                           " differ";
                 }
             }
         }
@@ -854,8 +871,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     w.sizes = sizes;
     w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
-        w.nodes.push_back(
-            *node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}), concatenation{}, w.nonce));
+        w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}), concatenation{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);

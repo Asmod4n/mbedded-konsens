@@ -192,7 +192,8 @@ int run()
 {
     cluster c{};
     for (std::size_t i = 0; i < node_count; ++i) {
-        auto n = node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), konsens::memory_storage{}, counter{}, i + 1);
+        auto n =
+            node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), konsens::memory_storage{}, counter{}, i + 1);
         if (!n) [[unlikely]] {
             return fail("start the nodes", n.error());
         }
@@ -212,9 +213,8 @@ int run()
 
     for (std::uint64_t k = 1; k <= increment_count; ++k) {
         const auto at = (k - 1) % node_count;
-        const auto reply = c.call(at, [session, k](node_t& n, const std::uint64_t id) {
-            return n.client_request(id, session, k, {});
-        });
+        const auto reply = c.call(
+            at, [session, k](node_t& n, const std::uint64_t id) { return n.client_request(id, session, k, {}); });
         if (!reply) [[unlikely]] {
             return fail("increment the counter", reply.error());
         }
@@ -222,9 +222,8 @@ int run()
                   << '\n';
     }
 
-    const auto again = c.call(1, [session](node_t& n, const std::uint64_t id) {
-        return n.client_request(id, session, increment_count, {});
-    });
+    const auto again = c.call(
+        1, [session](node_t& n, const std::uint64_t id) { return n.client_request(id, session, increment_count, {}); });
     if (!again) [[unlikely]] {
         return fail("send the last increment again", again.error());
     }

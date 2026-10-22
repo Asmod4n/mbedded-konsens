@@ -105,8 +105,7 @@ struct set_accepted_round {
     ballot accepted_round;
 };
 
-using storage_op = std::variant<append_entries, append_on_prefix, set_promise, set_decided_index,
-                                set_accepted_round>;
+using storage_op = std::variant<append_entries, append_on_prefix, set_promise, set_decided_index, set_accepted_round>;
 
 class write_error : public std::system_error {
 public:
@@ -119,8 +118,7 @@ public:
 };
 
 template <typename S>
-concept storage = requires(S& s, const S& cs, std::span<const storage_op> ops, std::uint64_t from,
-                           std::uint64_t to) {
+concept storage = requires(S& s, const S& cs, std::span<const storage_op> ops, std::uint64_t from, std::uint64_t to) {
     { s.write_atomically(ops) } -> std::same_as<std::expected<void, std::error_code>>;
     { cs.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
     { cs.get_log_len() } -> std::same_as<std::expected<std::uint64_t, std::error_code>>;

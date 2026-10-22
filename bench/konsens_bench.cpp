@@ -170,8 +170,8 @@ struct counting_storage {
         return {};
     }
 
-    std::expected<std::vector<konsens::entry>, std::error_code> get_entries([[maybe_unused]] const std::uint64_t from,
-                                                                            [[maybe_unused]] const std::uint64_t to) const
+    std::expected<std::vector<konsens::entry>, std::error_code>
+    get_entries([[maybe_unused]] const std::uint64_t from, [[maybe_unused]] const std::uint64_t to) const
     {
         return std::vector<konsens::entry>{};
     }
@@ -411,7 +411,8 @@ struct cluster {
         return reply->front().session;
     }
 
-    std::expected<konsens::client_reply, std::error_code> send_request(const std::size_t at, const std::uint64_t session,
+    std::expected<konsens::client_reply, std::error_code> send_request(const std::size_t at,
+                                                                       const std::uint64_t session,
                                                                        const std::uint64_t request_number,
                                                                        std::vector<std::byte> payload)
     {
@@ -529,8 +530,7 @@ case_outcome measure_encode(const run_settings& s, const T& body)
             encoded.push_back(konsens::encode(m));
         }
         const auto end = std::chrono::steady_clock::now();
-        if (!std::ranges::all_of(encoded, [&reference](const auto& e) { return e && *e == *reference; }))
-            [[unlikely]] {
+        if (!std::ranges::all_of(encoded, [&reference](const auto& e) { return e && *e == *reference; })) [[unlikely]] {
             return std::unexpected(failure{"compare each encoded message with the first", check_failed()});
         }
         if (sample >= warm_up_samples) {
@@ -685,8 +685,8 @@ case_outcome measure_handle_accept_decide(const run_settings& s)
             counter_of_message += 1;
             auto r = received_of(konsens::paxos_message{
                 from, to,
-                konsens::accept_decide{f->first.n, {f->first.seq_num.session, counter_of_message},
-                                       f->first.decided_idx, entries}});
+                konsens::accept_decide{
+                    f->first.n, {f->first.seq_num.session, counter_of_message}, f->first.decided_idx, entries}});
             if (!r) [[unlikely]] {
                 return std::unexpected(failure{"pass an AcceptDecide through the wire", r.error()});
             }
@@ -736,8 +736,8 @@ case_outcome measure_handle_decide(const run_settings& s)
         counter_of_message += 1;
         auto filled = received_of(konsens::paxos_message{
             from, to,
-            konsens::accept_decide{f->first.n, {f->first.seq_num.session, counter_of_message}, decided,
-                                   entries_of(s.ops, 0)}});
+            konsens::accept_decide{
+                f->first.n, {f->first.seq_num.session, counter_of_message}, decided, entries_of(s.ops, 0)}});
         if (!filled) [[unlikely]] {
             return std::unexpected(
                 failure{"pass the AcceptDecide of the empty entries through the wire", filled.error()});
@@ -951,8 +951,8 @@ std::expected<void, failure> put_record_like_storage(const lmdb_store& store, co
     const auto key_bytes = big_endian_key_of(index);
     MDB_val key = value_of(key_bytes);
     MDB_val data{record.size(), nullptr};
-    if (const int status = mdb_put(txn->get(), store.dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
-        status != MDB_SUCCESS) [[unlikely]] {
+    if (const int status = mdb_put(txn->get(), store.dbi, &key, &data, MDB_APPEND | MDB_RESERVE); status != MDB_SUCCESS)
+        [[unlikely]] {
         return std::unexpected(failure{"mdb_put", error_code_of(status)});
     }
     std::ranges::copy(record, std::span(static_cast<std::byte*>(data.mv_data), data.mv_size).begin());
@@ -979,7 +979,8 @@ case_outcome measure_lmdb_puts(const run_settings& s, const std::span<const std:
 {
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        auto store = open_lmdb_store(s.directory / std::format("sample-{}", sample), map_bytes_for(s.ops, s.payload_bytes));
+        auto store =
+            open_lmdb_store(s.directory / std::format("sample-{}", sample), map_bytes_for(s.ops, s.payload_bytes));
         if (!store) [[unlikely]] {
             return std::unexpected(store.error());
         }
@@ -1107,8 +1108,8 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op)
     return [map_bytes, &s](const konsens::node_id pid) {
         const auto directory = s.directory / std::format("node-{}", pid);
         std::filesystem::create_directories(directory);
-        return konsens::persistent_storage::open(directory, map_bytes, geteuid()).transform(
-            spy_of<konsens::persistent_storage>);
+        return konsens::persistent_storage::open(directory, map_bytes, geteuid())
+            .transform(spy_of<konsens::persistent_storage>);
     };
 }
 
@@ -1344,10 +1345,10 @@ struct threaded_cluster {
     {
         std::unique_lock lock(replies.mutex);
         const auto arrived = [this, first_call, count] {
-            return replies.failed ||
-                   static_cast<std::uint64_t>(std::ranges::count_if(replies.replies, [first_call, count](const auto& r) {
-                       return is_reply_of(r, first_call, count);
-                   })) == count;
+            return replies.failed || static_cast<std::uint64_t>(
+                                         std::ranges::count_if(replies.replies, [first_call, count](const auto& r) {
+                                             return is_reply_of(r, first_call, count);
+                                         })) == count;
         };
         if (!replies.ready.wait_for(lock, reply_timeout, arrived)) [[unlikely]] {
             return std::unexpected(std::make_error_code(std::errc::timed_out));
@@ -1366,7 +1367,8 @@ struct threaded_cluster {
         return taken;
     }
 
-    std::expected<konsens::client_reply, std::error_code> send_request(const std::size_t at, const std::uint64_t session,
+    std::expected<konsens::client_reply, std::error_code> send_request(const std::size_t at,
+                                                                       const std::uint64_t session,
                                                                        const std::uint64_t request_number,
                                                                        std::vector<std::byte> payload)
     {
@@ -1388,8 +1390,8 @@ struct threaded_cluster {
         const auto first_call = next_call;
         std::vector<inbox_element> calls;
         for (auto& payload : payloads) {
-            calls.emplace_back(client_request_call{next_call, session, first_request + (next_call - first_call),
-                                                   std::move(payload)});
+            calls.emplace_back(
+                client_request_call{next_call, session, first_request + (next_call - first_call), std::move(payload)});
             next_call += 1;
         }
         put_calls(at, std::move(calls));
@@ -1616,7 +1618,8 @@ constexpr auto time_write_batches = [](const run_settings& s, auto& c, const std
         for (std::size_t b = 0; b < payloads.size(); b += batch_size) {
             const auto first_call = c.next_call;
             const auto first_request = request_number + 1;
-            const auto replies = c.send_requests(at, session, first_request, std::span(payloads).subspan(b, batch_size));
+            const auto replies =
+                c.send_requests(at, session, first_request, std::span(payloads).subspan(b, batch_size));
             if (!replies) [[unlikely]] {
                 return std::unexpected(failure{"write one batch", replies.error()});
             }
@@ -1844,7 +1847,8 @@ int run(const std::vector<std::string_view>& args)
         return EXIT_FAILURE;
     }
     const run_settings settings{*samples, *ops, *payload_bytes,
-                                has_directory ? std::filesystem::path(args.at(directory_argument)) : std::filesystem::path{}};
+                                has_directory ? std::filesystem::path(args.at(directory_argument))
+                                              : std::filesystem::path{}};
     auto outcome = c->measure(settings);
     if (!outcome) [[unlikely]] {
         return fail(name, outcome.error());

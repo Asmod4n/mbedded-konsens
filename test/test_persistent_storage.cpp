@@ -40,17 +40,20 @@ constexpr std::size_t map_size = std::size_t{16} << 20;
 constexpr std::size_t tiny_map_size = std::size_t{64} << 10;
 constexpr std::size_t large_entry_size = std::size_t{64} << 10;
 
-std::vector<std::byte> bytes_of(const std::string_view text) {
+std::vector<std::byte> bytes_of(const std::string_view text)
+{
     std::vector<std::byte> result;
     std::ranges::transform(text, std::back_inserter(result), [](const char c) { return static_cast<std::byte>(c); });
     return result;
 }
 
-konsens::entry normal_entry(const std::string_view text) {
+konsens::entry normal_entry(const std::string_view text)
+{
     return {konsens::entry_kind::normal, bytes_of(text)};
 }
 
-konsens::persistent_storage open_storage(const std::filesystem::path& directory) {
+konsens::persistent_storage open_storage(const std::filesystem::path& directory)
+{
     auto opened = konsens::persistent_storage::open(directory, map_size, non_root_user_id);
     REQUIRE(opened.has_value());
     return std::move(*opened);
@@ -60,10 +63,11 @@ konsens::persistent_storage open_storage(const std::filesystem::path& directory)
 
 // The durable state must survive a close and a reopen. This is what Crash in
 // the model assumes, and the model does not check it.
-TEST_CASE("entries and meta values survive a close and a reopen") {
+TEST_CASE("entries and meta values survive a close and a reopen")
+{
     const temporary_directory dir;
-    const std::vector<konsens::entry> written{normal_entry("first"), normal_entry("second"),
-                                              {konsens::entry_kind::stop_sign, {}}};
+    const std::vector<konsens::entry> written{
+        normal_entry("first"), normal_entry("second"), {konsens::entry_kind::stop_sign, {}}};
     const konsens::ballot promise{1, 7, 3, 2};
     const konsens::ballot accepted{1, 6, 3, 1};
     {
@@ -83,7 +87,8 @@ TEST_CASE("entries and meta values survive a close and a reopen") {
 
 // A user opens a new directory and reads first. A new storage has an empty
 // log and the zero values of the meta data.
-TEST_CASE("a new storage has an empty log and zero meta values") {
+TEST_CASE("a new storage has an empty log and zero meta values")
+{
     const temporary_directory dir;
     const auto storage = open_storage(dir.path());
     CHECK(storage.get_log_len() == 0u);
@@ -96,7 +101,8 @@ TEST_CASE("a new storage has an empty log and zero meta values") {
 // append_on_prefix replaces the suffix of a follower log that the leader does
 // not have. The entries from from_idx on must go, and the new entries follow
 // the prefix.
-TEST_CASE("append_on_prefix truncates the log and appends") {
+TEST_CASE("append_on_prefix truncates the log and appends")
+{
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const std::vector four{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")};
@@ -107,8 +113,8 @@ TEST_CASE("append_on_prefix truncates the log and appends") {
     REQUIRE(storage.write_atomically(second).has_value());
     CHECK(storage.get_log_len() == 5u);
     CHECK(storage.get_entries(0, 5) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b"),
-                                                                    normal_entry("x"), normal_entry("y"),
-                                                                    normal_entry("z")});
+                                                                   normal_entry("x"), normal_entry("y"),
+                                                                   normal_entry("z")});
     CHECK(storage.get_entries(1, 3) == std::vector<konsens::entry>{normal_entry("b"), normal_entry("x")});
 }
 
@@ -116,7 +122,8 @@ TEST_CASE("append_on_prefix truncates the log and appends") {
 // Paxos reads the same entries from each. A range that reaches past the
 // log gives the stored part of it. A start at or past the end gives no
 // entries. A start after the end of the range is a wrong use.
-TEST_CASE("get_entries returns the stored part of the range") {
+TEST_CASE("get_entries returns the stored part of the range")
+{
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const std::vector written{normal_entry("a"), normal_entry("b")};
@@ -134,7 +141,8 @@ TEST_CASE("get_entries returns the stored part of the range") {
 
 // A byte that changes on the disk must not reach the protocol as a valid
 // entry. The CRC32C finds it, and the error names the index of the entry.
-TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index") {
+TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index")
+{
     const temporary_directory dir;
     constexpr std::string_view marked = "konsens-marked-payload";
     {
@@ -180,7 +188,8 @@ TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index") {
 // written from the record format: the index in 8 bytes little endian, the
 // kind in one byte, the fields of the kind in 8 bytes little endian each,
 // then the payload.
-TEST_CASE("both storages give the same CRC32C of the last entry") {
+TEST_CASE("both storages give the same CRC32C of the last entry")
+{
     const temporary_directory dir;
     auto lmdb = open_storage(dir.path());
     konsens::memory_storage memory;
@@ -201,8 +210,8 @@ TEST_CASE("both storages give the same CRC32C of the last entry") {
         REQUIRE(from_lmdb.has_value());
         CHECK(from_lmdb == memory.get_last_entry_crc());
     }
-    const std::array<unsigned char, 26> last_record{4, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0,
-                                                   2, 0, 0, 0, 0, 0, 0, 0, 'x'};
+    const std::array<unsigned char, 26> last_record{4, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0,
+                                                    0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'};
     std::vector<std::byte> bytes;
     std::ranges::transform(last_record, std::back_inserter(bytes), [](const unsigned char c) { return std::byte{c}; });
     CHECK(lmdb.get_last_entry_crc() == crc32c::Crc32c(bytes.data(), bytes.size()));
@@ -211,7 +220,8 @@ TEST_CASE("both storages give the same CRC32C of the last entry") {
 // A full map is an error value of write_atomically, which the node raises
 // as write_error (test_group_commit.cpp). The failed write must leave
 // nothing behind, because write_atomically is one transaction.
-TEST_CASE("a full map gives no_space_on_device and writes nothing") {
+TEST_CASE("a full map gives no_space_on_device and writes nothing")
+{
     const temporary_directory dir;
     auto opened = konsens::persistent_storage::open(dir.path(), tiny_map_size, non_root_user_id);
     REQUIRE(opened.has_value());
@@ -237,7 +247,8 @@ TEST_CASE("a full map gives no_space_on_device and writes nothing") {
 // file makes the commit fail, because the pages of a write transaction
 // reach the file only in mdb_txn_commit. The limit holds this test process,
 // and the test sets it back before it checks anything.
-TEST_CASE("a failed LMDB commit throws sync_error and writes nothing") {
+TEST_CASE("a failed LMDB commit throws sync_error and writes nothing")
+{
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     rlimit unlimited{};
@@ -265,7 +276,8 @@ TEST_CASE("a failed LMDB commit throws sync_error and writes nothing") {
 }
 
 // The owner decided that a start as root is refused.
-TEST_CASE("open refuses the root user") {
+TEST_CASE("open refuses the root user")
+{
     const temporary_directory dir;
     const auto opened = konsens::persistent_storage::open(dir.path(), map_size, root_user_id);
     REQUIRE_FALSE(opened.has_value());
@@ -274,7 +286,8 @@ TEST_CASE("open refuses the root user") {
 
 // A user gives a directory that does not exist. The error is a value that
 // says so, and not a crash.
-TEST_CASE("open of a missing directory gives no_such_file_or_directory") {
+TEST_CASE("open of a missing directory gives no_such_file_or_directory")
+{
     const temporary_directory dir;
     const auto opened = konsens::persistent_storage::open(dir.path() / "missing", map_size, non_root_user_id);
     REQUIRE_FALSE(opened.has_value());
@@ -283,7 +296,8 @@ TEST_CASE("open of a missing directory gives no_such_file_or_directory") {
 
 // A storage that was moved from has no environment. A use of it is a wrong
 // use, and a wrong use fails loudly and reads no memory that is not alive.
-TEST_CASE("a moved-from storage throws logic_error") {
+TEST_CASE("a moved-from storage throws logic_error")
+{
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const auto moved = std::move(storage);
@@ -296,7 +310,8 @@ namespace {
 // One entry of each kind, each with every field that its kind carries set
 // to a value that is not zero, so that a field the encoding drops or moves
 // shows in the comparison.
-std::vector<konsens::entry> entries_of_each_kind() {
+std::vector<konsens::entry> entries_of_each_kind()
+{
     return {normal_entry("normal"),
             {konsens::entry_kind::stop_sign, {}},
             {.kind = konsens::entry_kind::register_client, .client_id = 0x0102030405060708, .pid = 3},
@@ -310,7 +325,8 @@ std::vector<konsens::entry> entries_of_each_kind() {
 // The client entries carry a session, a request number, a client id and a
 // pid beside the payload. Each kind must come back from the disk with the
 // same fields after a close and a reopen, and the CRC must cover them.
-TEST_CASE("an entry of each kind survives a close and a reopen") {
+TEST_CASE("an entry of each kind survives a close and a reopen")
+{
     const temporary_directory dir;
     const auto written = entries_of_each_kind();
     {
@@ -327,7 +343,8 @@ TEST_CASE("an entry of each kind survives a close and a reopen") {
 // A field that the kind of an entry does not carry is not stored. Such an
 // entry would come back different from the disk, so the write is a wrong
 // use and writes nothing.
-TEST_CASE("an entry with a field of another kind is a wrong use") {
+TEST_CASE("an entry with a field of another kind is a wrong use")
+{
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const std::vector<konsens::entry> wrong{
@@ -415,13 +432,16 @@ void check_one_batch_equals_the_ops_one_by_one(S& batched, S& single)
 // before. The store must apply the ops of one call in order, an
 // append_on_prefix after an append_entries of the same call included, so
 // that one batch leaves the store as the same ops one by one do.
-TEST_CASE("one write of the ops of a batch leaves the store as the ops one by one do") {
-    SUBCASE("memory_storage") {
+TEST_CASE("one write of the ops of a batch leaves the store as the ops one by one do")
+{
+    SUBCASE("memory_storage")
+    {
         konsens::memory_storage batched;
         konsens::memory_storage single;
         check_one_batch_equals_the_ops_one_by_one(batched, single);
     }
-    SUBCASE("persistent_storage") {
+    SUBCASE("persistent_storage")
+    {
         const temporary_directory batched_dir;
         const temporary_directory single_dir;
         auto batched = open_storage(batched_dir.path());

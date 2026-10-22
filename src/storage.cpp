@@ -21,7 +21,8 @@ constexpr std::size_t max_field_count = 2;
 
 using entry_fields = std::array<std::uint64_t, max_field_count>;
 
-entry_fields fields_of(const entry& e) noexcept {
+entry_fields fields_of(const entry& e) noexcept
+{
     switch (e.kind) {
     case entry_kind::register_client:
         return {e.client_id, e.pid};
@@ -36,7 +37,8 @@ entry_fields fields_of(const entry& e) noexcept {
     return {};
 }
 
-entry entry_of(const entry_kind kind, const entry_fields& fields, const std::span<const std::byte> payload) {
+entry entry_of(const entry_kind kind, const entry_fields& fields, const std::span<const std::byte> payload)
+{
     entry e{kind, std::vector<std::byte>(payload.begin(), payload.end())};
     switch (kind) {
     case entry_kind::register_client:
@@ -59,12 +61,14 @@ entry entry_of(const entry_kind kind, const entry_fields& fields, const std::spa
 
 }
 
-std::size_t encoded_size_of(const entry& e) {
+std::size_t encoded_size_of(const entry& e)
+{
     throw_if_entry_has_a_field_of_another_kind(e);
     return kind_size + field_size * field_count_of(e.kind).value() + e.payload.size();
 }
 
-void encode_entry(const entry& e, const std::span<std::byte> out) noexcept {
+void encode_entry(const entry& e, const std::span<std::byte> out) noexcept
+{
     out.front() = std::byte{std::to_underlying(e.kind)};
     auto next = std::next(out.begin(), kind_size);
     const auto fields = fields_of(e);
@@ -74,7 +78,8 @@ void encode_entry(const entry& e, const std::span<std::byte> out) noexcept {
     std::ranges::copy(e.payload, next);
 }
 
-std::optional<entry> decode_entry(const std::span<const std::byte> encoded_entry) {
+std::optional<entry> decode_entry(const std::span<const std::byte> encoded_entry)
+{
     if (encoded_entry.size() < kind_size) [[unlikely]] {
         return std::nullopt;
     }
@@ -92,19 +97,22 @@ std::optional<entry> decode_entry(const std::span<const std::byte> encoded_entry
     return entry_of(kind, fields, rest);
 }
 
-std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const std::byte> encoded_entry) noexcept {
+std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const std::byte> encoded_entry) noexcept
+{
     const auto index_bytes = to_little_endian(index);
     return crc32c::Extend(crc32c::Crc32c(index_bytes.data(), index_bytes.size()),
                           reinterpret_cast<const std::uint8_t*>(encoded_entry.data()), encoded_entry.size());
 }
 
-std::uint32_t compute_entry_crc(const std::uint64_t index, const entry& e) {
+std::uint32_t compute_entry_crc(const std::uint64_t index, const entry& e)
+{
     std::vector<std::byte> encoded(encoded_size_of(e));
     encode_entry(e, encoded);
     return compute_entry_crc(index, encoded);
 }
 
-bool can_use_crc32c_instruction() noexcept {
+bool can_use_crc32c_instruction() noexcept
+{
 #if HAVE_SSE42 && (defined(_M_X64) || defined(__x86_64__))
     return crc32c::CanUseSse42();
 #elif HAVE_ARM64_CRC32C

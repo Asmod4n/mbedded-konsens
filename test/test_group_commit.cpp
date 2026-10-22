@@ -17,10 +17,10 @@
 #include <variant>
 #include <vector>
 
+#include "batches.hpp"
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
 #include "konsens/sequence_paxos.hpp"
-#include "batches.hpp"
 
 namespace {
 
@@ -109,7 +109,10 @@ konsens::node_config config_of(const node_id pid)
     return {config_id, pid, peers, 0, election_ticks, resend_ticks};
 }
 
-entry make_entry(const std::uint8_t v) { return {konsens::entry_kind::normal, {std::byte{v}}}; }
+entry make_entry(const std::uint8_t v)
+{
+    return {konsens::entry_kind::normal, {std::byte{v}}};
+}
 
 template <typename T>
 bool holds(const message& m)
@@ -118,7 +121,10 @@ bool holds(const message& m)
     return p != nullptr && std::holds_alternative<T>(p->msg);
 }
 
-std::size_t once(const message&) { return 1; }
+std::size_t once(const message&)
+{
+    return 1;
+}
 
 struct cluster {
     std::array<std::shared_ptr<disk>, node_count> disks{std::make_shared<disk>(), std::make_shared<disk>(),
@@ -199,11 +205,20 @@ std::vector<message> messages_to(std::vector<message>& out, const node_id to)
     return taken;
 }
 
-std::size_t first_follower(const std::size_t leader) { return leader == 0 ? 1 : 0; }
+std::size_t first_follower(const std::size_t leader)
+{
+    return leader == 0 ? 1 : 0;
+}
 
-std::size_t second_follower(const std::size_t leader) { return leader == 2 ? 1 : 2; }
+std::size_t second_follower(const std::size_t leader)
+{
+    return leader == 2 ? 1 : 2;
+}
 
-node_id pid_of(const std::size_t i) { return static_cast<node_id>(i + 1); }
+node_id pid_of(const std::size_t i)
+{
+    return static_cast<node_id>(i + 1);
+}
 
 template <typename T>
 T value_of(const std::expected<T, std::error_code>& r)
@@ -221,7 +236,8 @@ T value_of(const std::expected<T, std::error_code>& r)
 // of its one AcceptDecide in one call. The test adds the 64 transactions
 // into one, commits each node once in each pass, and counts the calls of
 // write_atomically around each commit.
-TEST_CASE("64 requests make one write_atomically on each node in each pass") {
+TEST_CASE("64 requests make one write_atomically on each node in each pass")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto s = registered(c, l, client_a);
@@ -273,7 +289,8 @@ TEST_CASE("64 requests make one write_atomically on each node in each pass") {
 // After the restart the client sends the request again with the same
 // request number. The session executes it once and gives one reply to the
 // call that is still open.
-TEST_CASE("a crash between the batch and the commit sends nothing, and the retry executes once") {
+TEST_CASE("a crash between the batch and the commit sends nothing, and the retry executes once")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto s = registered(c, l, client_a);
@@ -312,7 +329,8 @@ TEST_CASE("a crash between the batch and the commit sends nothing, and the retry
 // The same crash at a follower: it handles the AcceptDecide and ends before
 // its commit. No Accepted left the follower, so the leader cannot count an
 // entry that the disk of the follower does not hold.
-TEST_CASE("a follower that ends before its commit sends no Accepted") {
+TEST_CASE("a follower that ends before its commit sends no Accepted")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto f = first_follower(l);
@@ -331,7 +349,8 @@ TEST_CASE("a follower that ends before its commit sends no Accepted") {
 // follower decides the entries in memory while it handles the batch, but
 // the state machine applies them only after the commit wrote them, so a
 // reply never stands on an entry that a crash can lose.
-TEST_CASE("AcceptDecide and Decide in one batch apply the entries after the commit") {
+TEST_CASE("AcceptDecide and Decide in one batch apply the entries after the commit")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto slow = first_follower(l);
@@ -360,7 +379,8 @@ TEST_CASE("AcceptDecide and Decide in one batch apply the entries after the comm
 // Promise carries the log from the decided index of the Prepare, and that
 // log holds the entry of the AcceptDecide only if the ops were written
 // before the read.
-TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the AcceptDecide") {
+TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the AcceptDecide")
+{
     using sp_t = konsens::sequence_paxos<disk_storage>;
     const auto d = std::make_shared<disk>();
     auto sp = *sp_t::with({1, {2, 3}}, disk_storage{d}, 1);
@@ -376,9 +396,8 @@ TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the A
     REQUIRE(sp.commit());
     CHECK(d->writes - writes == 2);
     const auto out = sp.take_outgoing_messages();
-    const auto it = std::ranges::find_if(out, [](const paxos_message& m) {
-        return m.to == 2 && std::holds_alternative<konsens::promise>(m.msg);
-    });
+    const auto it = std::ranges::find_if(
+        out, [](const paxos_message& m) { return m.to == 2 && std::holds_alternative<konsens::promise>(m.msg); });
     REQUIRE(it != out.end());
     const auto& p = std::get<konsens::promise>(it->msg);
     REQUIRE(p.log_sync);
@@ -392,7 +411,8 @@ TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the A
 // replies of the transaction leaves the node, because each of them depends
 // on the write that did not happen. The program does not repeat the
 // commit, so a later commit is a wrong use.
-TEST_CASE("a store that fails at the commit throws write_error and releases nothing") {
+TEST_CASE("a store that fails at the commit throws write_error and releases nothing")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto s = registered(c, l, client_a);
@@ -420,7 +440,8 @@ TEST_CASE("a store that fails at the commit throws write_error and releases noth
 // the transaction leaves the node. The test disk throws as
 // persistent_storage does; test_persistent_storage.cpp makes a real LMDB
 // commit fail.
-TEST_CASE("a failed sync at the commit throws sync_error and releases nothing") {
+TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto s = registered(c, l, client_a);
@@ -438,7 +459,8 @@ TEST_CASE("a failed sync at the commit throws sync_error and releases nothing") 
 // ones that write nothing. A reply to a read depends on the applied state,
 // and a BLE reply carries the promise, which the batch may have changed in
 // memory only.
-TEST_CASE("a read reply and a BLE reply wait for the commit") {
+TEST_CASE("a read reply and a BLE reply wait for the commit")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto f = first_follower(l);
@@ -472,7 +494,8 @@ TEST_CASE("a read reply and a BLE reply wait for the commit") {
 // Form B of the owner: the transactions of several calls add up to one, and
 // one commit of the sum releases the work of every call. Until that commit,
 // nothing leaves the node, however many calls collect.
-TEST_CASE("the sum of the transactions of several calls commits all of them at once") {
+TEST_CASE("the sum of the transactions of several calls commits all of them at once")
+{
     auto c = elected();
     const auto l = c.leader();
     auto t = value_of(c.nodes.at(l).append(make_entry(1)));
@@ -490,7 +513,8 @@ TEST_CASE("the sum of the transactions of several calls commits all of them at o
 // that is not yet committed. Anything else is a wrong use and throws: a
 // second commit of the same transaction, a commit of a transaction of
 // another node, and the sum of transactions of two nodes or of two commits.
-TEST_CASE("a transaction of another node or of a done commit is a wrong use") {
+TEST_CASE("a transaction of another node or of a done commit is a wrong use")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto f = first_follower(l);
@@ -510,7 +534,8 @@ TEST_CASE("a transaction of another node or of a done commit is a wrong use") {
 // R4 of the review: a read of the storage from outside while ops wait
 // would see a state that the node has not written. It is a wrong use and
 // throws, so that it cannot pass unseen.
-TEST_CASE("a storage read from outside while ops wait is a wrong use") {
+TEST_CASE("a storage read from outside while ops wait is a wrong use")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto f = first_follower(l);
@@ -528,7 +553,8 @@ TEST_CASE("a storage read from outside while ops wait is a wrong use") {
 // max_batch_size. A batch that would pass it is a wrong use, also when it
 // is the second batch before one commit, because the node keeps every
 // message of the batches until the commit.
-TEST_CASE("more messages than max_batch_size before a commit are a wrong use") {
+TEST_CASE("more messages than max_batch_size before a commit are a wrong use")
+{
     auto c = elected();
     const auto l = c.leader();
     const auto f = first_follower(l);
@@ -547,7 +573,8 @@ TEST_CASE("more messages than max_batch_size before a commit are a wrong use") {
 // A node that starts after a crash asks every peer with Recovery before it
 // has a transaction to commit. Recovery carries only the nonce of the start
 // and depends on no write, so node::with releases it at once.
-TEST_CASE("a node releases the Recovery messages of its start with no commit") {
+TEST_CASE("a node releases the Recovery messages of its start with no commit")
+{
     auto c = elected();
     const auto f = first_follower(c.leader());
     c.restart(f);

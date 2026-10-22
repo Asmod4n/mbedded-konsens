@@ -122,7 +122,8 @@ constexpr std::size_t entry_kind_count = 5;
 std::string head(const std::uint8_t major, const std::uint64_t argument)
 {
     const auto initial = [major](const std::uint64_t info) {
-        return static_cast<char>(static_cast<std::uint8_t>(major << major_type_shift) | static_cast<std::uint8_t>(info));
+        return static_cast<char>(static_cast<std::uint8_t>(major << major_type_shift) |
+                                 static_cast<std::uint8_t>(info));
     };
     if (argument < one_byte_argument) {
         return std::string(1, initial(argument));
@@ -146,11 +147,20 @@ std::string head(const std::uint8_t major, const std::uint64_t argument)
     return out;
 }
 
-std::string integer(const std::uint64_t v) { return head(unsigned_integer, v); }
+std::string integer(const std::uint64_t v)
+{
+    return head(unsigned_integer, v);
+}
 
-std::string text(const std::string_view s) { return head(text_string, s.size()) + std::string(s); }
+std::string text(const std::string_view s)
+{
+    return head(text_string, s.size()) + std::string(s);
+}
 
-std::string boolean(const bool v) { return head(simple_or_float, v ? simple_true : simple_false); }
+std::string boolean(const bool v)
+{
+    return head(simple_or_float, v ? simple_true : simple_false);
+}
 
 std::string bytes_tagged(const std::uint64_t t, const std::string_view content)
 {
@@ -172,8 +182,8 @@ std::string little_endian(const std::uint64_t v)
 std::string header_bytes(const std::string& method, const std::string& kind, const konsens::node_id from,
                          const konsens::node_id to)
 {
-    return head(map, 4) + text("to") + integer(to) + text("from") + integer(from) + text("kind") + kind + text("method") +
-           method;
+    return head(map, 4) + text("to") + integer(to) + text("from") + integer(from) + text("kind") + kind +
+           text("method") + method;
 }
 
 std::string header_bytes(const std::uint64_t kind, const konsens::node_id from, const konsens::node_id to)
@@ -183,8 +193,8 @@ std::string header_bytes(const std::uint64_t kind, const konsens::node_id from, 
 
 std::string ballot_bytes(const ballot& b)
 {
-    return head(map, 4) + text("n") + integer(b.n) + text("pid") + integer(b.pid) + text("priority") + integer(b.priority) +
-           text("config_id") + integer(b.config_id);
+    return head(map, 4) + text("n") + integer(b.n) + text("pid") + integer(b.pid) + text("priority") +
+           integer(b.priority) + text("config_id") + integer(b.config_id);
 }
 
 std::string entry_bytes(const std::uint64_t kind, const std::string_view payload, const std::uint64_t session,
@@ -225,9 +235,15 @@ std::vector<entry> five_entries()
     };
 }
 
-message paxos(konsens::paxos_msg m) { return konsens::paxos_message{paxos_from, paxos_to, std::move(m)}; }
+message paxos(konsens::paxos_msg m)
+{
+    return konsens::paxos_message{paxos_from, paxos_to, std::move(m)};
+}
 
-message ble(konsens::heartbeat_msg m) { return konsens::ble_message{ble_from, ble_to, std::move(m)}; }
+message ble(konsens::heartbeat_msg m)
+{
+    return konsens::ble_message{ble_from, ble_to, std::move(m)};
+}
 
 std::vector<message> every_kind()
 {
@@ -243,8 +259,10 @@ std::vector<message> every_kind()
         paxos(konsens::not_accepted{ballot_from(10)}),
         paxos(konsens::proposal_forward{five_entries()}),
         paxos(konsens::recovery{10}),
-        paxos(konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40, false, 41, 42}),
-        paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40, true, 41, 42}),
+        paxos(
+            konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40, false, 41, 42}),
+        paxos(
+            konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40, true, 41, 42}),
         paxos(konsens::get_state{10, ballot_from(20), 30, 31}),
         paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, five_entries()}),
         paxos(konsens::read_index_request{10}),
@@ -357,14 +375,14 @@ TEST_CASE("each kind of message has its fixed kind byte")
 TEST_CASE("an accept_decide with a payload has the bytes of RFC 8949 and RFC 8746")
 {
     constexpr std::uint64_t accept_decide_kind = 4;
-    const auto m = paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22,
-                                                {entry{entry_kind::client_request, payload_of({0xaa}), 23, 24}}});
+    const auto m = paxos(konsens::accept_decide{
+        ballot_from(10), {20, 21}, 22, {entry{entry_kind::client_request, payload_of({0xaa}), 23, 24}}});
     const auto n = ballot_from(10);
-    const auto expected =
-        header_bytes(accept_decide_kind, paxos_from, paxos_to) + head(map, 4) + text("n") + ballot_bytes(n) +
-        text("entries") + head(array, 1) +
-        entry_bytes(std::to_underlying(entry_kind::client_request), "\xaa", 23, 24, 0, 0) + text("seq_num") +
-        head(map, 2) + text("counter") + integer(21) + text("session") + integer(20) + text("decided_idx") + integer(22);
+    const auto expected = header_bytes(accept_decide_kind, paxos_from, paxos_to) + head(map, 4) + text("n") +
+                          ballot_bytes(n) + text("entries") + head(array, 1) +
+                          entry_bytes(std::to_underlying(entry_kind::client_request), "\xaa", 23, 24, 0, 0) +
+                          text("seq_num") + head(map, 2) + text("counter") + integer(21) + text("session") +
+                          integer(20) + text("decided_idx") + integer(22);
     CHECK(konsens::kind_of(m) == accept_decide_kind);
     CHECK(konsens::encode(m) == expected);
     CHECK(decoded_message(expected) == m);
@@ -378,10 +396,10 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
     constexpr std::uint64_t first_read = 1;
     constexpr std::uint64_t second_read = 258;
     const auto m = paxos(konsens::read_index_reply{{first_read, second_read}, 30});
-    const auto expected = header_bytes(read_index_reply_kind, paxos_from, paxos_to) + head(map, 2) + text("reads") +
-                          bytes_tagged(typed_array_uint64_little_endian,
-                                       little_endian(first_read) + little_endian(second_read)) +
-                          text("read_index") + integer(30);
+    const auto expected =
+        header_bytes(read_index_reply_kind, paxos_from, paxos_to) + head(map, 2) + text("reads") +
+        bytes_tagged(typed_array_uint64_little_endian, little_endian(first_read) + little_endian(second_read)) +
+        text("read_index") + integer(30);
     CHECK(konsens::kind_of(m) == read_index_reply_kind);
     CHECK(konsens::encode(m) == expected);
     CHECK(decoded_message(expected) == m);

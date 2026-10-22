@@ -126,8 +126,7 @@ struct leader_state {
         return s;
     }
 
-    bool set_promise(const promise_meta_data& meta, const std::optional<konsens::log_sync>& sync,
-                     bool check_max_prom)
+    bool set_promise(const promise_meta_data& meta, const std::optional<konsens::log_sync>& sync, bool check_max_prom)
     {
         const auto& mm = max_promise_meta;
         const bool greater = meta.n_accepted > mm.n_accepted ||
@@ -137,9 +136,8 @@ struct leader_state {
             max_promise_sync = sync;
         }
         promises_meta[pid_to_idx(meta.pid)] = meta;
-        const auto promised = std::ranges::count_if(promises_meta, [](const promise_state& p) {
-            return std::holds_alternative<promise_meta_data>(p);
-        });
+        const auto promised = std::ranges::count_if(
+            promises_meta, [](const promise_state& p) { return std::holds_alternative<promise_meta_data>(p); });
         return static_cast<std::size_t>(promised) >= majority();
     }
 
@@ -171,20 +169,16 @@ struct leader_state {
 
     auto get_promised_followers() const
     {
-        return std::views::iota(std::size_t{0}, nodes.size()) |
-               std::views::filter([this](std::size_t i) {
-                   return std::holds_alternative<promise_meta_data>(promises_meta[i]) &&
-                          nodes[i] != n_leader.pid;
+        return std::views::iota(std::size_t{0}, nodes.size()) | std::views::filter([this](std::size_t i) {
+                   return std::holds_alternative<promise_meta_data>(promises_meta[i]) && nodes[i] != n_leader.pid;
                }) |
                std::views::transform([this](std::size_t i) { return nodes[i]; });
     }
 
     auto get_preparable_peers(node_id own_pid) const
     {
-        return std::views::iota(std::size_t{0}, nodes.size()) |
-               std::views::filter([this, own_pid](std::size_t i) {
-                   return std::holds_alternative<not_promised>(promises_meta[i]) &&
-                          nodes[i] != own_pid;
+        return std::views::iota(std::size_t{0}, nodes.size()) | std::views::filter([this, own_pid](std::size_t i) {
+                   return std::holds_alternative<not_promised>(promises_meta[i]) && nodes[i] != own_pid;
                }) |
                std::views::transform([this](std::size_t i) { return nodes[i]; });
     }
@@ -244,8 +238,8 @@ class sequence_paxos {
 public:
     using result = std::expected<void, std::error_code>;
 
-    static std::expected<sequence_paxos, std::error_code> with(const sequence_paxos_config& config,
-                                                               S internal_storage, const std::uint64_t nonce)
+    static std::expected<sequence_paxos, std::error_code> with(const sequence_paxos_config& config, S internal_storage,
+                                                               const std::uint64_t nonce)
     {
         validate_cluster(config.pid, config.peers);
         const auto p = internal_storage.get_promise();
@@ -521,8 +515,7 @@ public:
         return internal_storage_;
     }
 
-    std::expected<bool, std::error_code> log_or_buffered_proposals_contain(const std::uint64_t from_idx,
-                                                                         const entry& e)
+    std::expected<bool, std::error_code> log_or_buffered_proposals_contain(const std::uint64_t from_idx, const entry& e)
     {
         if (std::ranges::contains(buffered_proposals_, e)) {
             return true;
@@ -639,8 +632,7 @@ private:
 
     void send_prepare(node_id to)
     {
-        outgoing_.push_back(
-            {pid_, to, prepare{leader_state_.n_leader, decided_idx_, accepted_round_, accepted_idx_}});
+        outgoing_.push_back({pid_, to, prepare{leader_state_.n_leader, decided_idx_, accepted_round_, accepted_idx_}});
     }
 
     void send_decide(const node_id to, const std::uint64_t decided_idx)
@@ -694,8 +686,10 @@ private:
         leader_state_.set_accepted_idx(pid_, accepted_idx_);
         for (const auto f : leader_state_.get_promised_followers()) {
             outgoing_.push_back({pid_, f,
-                                 accept_decide{leader_state_.n_leader, leader_state_.next_seq_num(f),
-                                               decided_idx_, {entries.begin(), entries.end()}}});
+                                 accept_decide{leader_state_.n_leader,
+                                               leader_state_.next_seq_num(f),
+                                               decided_idx_,
+                                               {entries.begin(), entries.end()}}});
         }
     }
 
@@ -766,9 +760,9 @@ private:
         auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
         auto proposals = std::exchange(buffered_proposals_, {});
         const auto accepted_idx = std::min(sync_idx, accepted_idx_) + suffix.size() + proposals.size();
-        waiting_ops_.insert(waiting_ops_.end(), {append_on_prefix{sync_idx, suffix}, append_entries{proposals},
-                                                 set_accepted_round{leader_state_.n_leader},
-                                                 set_decided_index{decided_idx}});
+        waiting_ops_.insert(waiting_ops_.end(),
+                            {append_on_prefix{sync_idx, suffix}, append_entries{proposals},
+                             set_accepted_round{leader_state_.n_leader}, set_decided_index{decided_idx}});
         write_waiting_ops_or_throw();
         accepted_round_ = leader_state_.n_leader;
         decided_idx_ = decided_idx;
@@ -797,8 +791,7 @@ private:
         }
         leader_state_.increment_seq_num_session(to);
         const auto seq_num = leader_state_.next_seq_num(to);
-        outgoing_.push_back(
-            {pid_, to, accept_sync{leader_state_.n_leader, seq_num, decided_idx_, std::move(*sync)}});
+        outgoing_.push_back({pid_, to, accept_sync{leader_state_.n_leader, seq_num, decided_idx_, std::move(*sync)}});
         return {};
     }
 
@@ -938,8 +931,9 @@ private:
             return stop_voting(last_crc.error());
         }
         auto all = recovery_responses_;
-        all.emplace_back(pid_, recovery_response{nonce_, promise_, false, accepted_round_, {}, decided_idx_, true,
-                                                 accepted_idx_, *last_crc});
+        all.emplace_back(
+            pid_, recovery_response{
+                      nonce_, promise_, false, accepted_round_, {}, decided_idx_, true, accepted_idx_, *last_crc});
         if (const auto fault = find_hardware_fault(all)) [[unlikely]] {
             return stop_voting(*fault);
         }
@@ -1014,8 +1008,15 @@ private:
         if (ns.n_accepted != req.n_accepted || ns.accepted_idx != req.accepted_idx) {
             const auto old = std::ranges::find(recovery_responses_, from, [](const auto& r) { return r.first; });
             const bool source_recovering = old == recovery_responses_.end() || old->second.recovering;
-            keep_recovery_response(from, recovery_response{nonce_, ns.promise, false, ns.n_accepted, {}, ns.decided_idx,
-                                                           source_recovering, ns.accepted_idx, ns.last_crc});
+            keep_recovery_response(from, recovery_response{nonce_,
+                                                           ns.promise,
+                                                           false,
+                                                           ns.n_accepted,
+                                                           {},
+                                                           ns.decided_idx,
+                                                           source_recovering,
+                                                           ns.accepted_idx,
+                                                           ns.last_crc});
             return select_recovery_source();
         }
         if (ns.entries.empty() && ns.from_idx < ns.accepted_idx) {
@@ -1111,8 +1112,8 @@ private:
             (!read_round_.reads.empty() && read_round_.n == leader_state_.n_leader)) {
             return;
         }
-        read_round_ = {leader_state_.n_leader, read_round_.id + 1, std::exchange(read_pending_, {}), accepted_idx_,
-                       {pid_}};
+        read_round_ = {
+            leader_state_.n_leader, read_round_.id + 1, std::exchange(read_pending_, {}), accepted_idx_, {pid_}};
         for (const auto peer : peers_) {
             outgoing_.push_back({pid_, peer, heartbeat{read_round_.n, read_round_.id}});
         }
@@ -1137,8 +1138,8 @@ private:
     void handle_heartbeat_ack(const heartbeat_ack& ack, const node_id from)
     {
         auto& rd = read_round_;
-        if (state_ != std::pair{role::leader, phase::accept} || rd.reads.empty() || rd.n != ack.n ||
-            rd.id != ack.id || leader_state_.n_leader != ack.n) {
+        if (state_ != std::pair{role::leader, phase::accept} || rd.reads.empty() || rd.n != ack.n || rd.id != ack.id ||
+            leader_state_.n_leader != ack.n) {
             return;
         }
         if (!std::ranges::contains(rd.acks, from)) {

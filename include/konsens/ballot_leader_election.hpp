@@ -117,9 +117,8 @@ private:
             happy_ = true;
             return;
         }
-        happy_ = std::ranges::any_of(heartbeat_replies_, [this](const heartbeat_reply& r) {
-            return r.leader > current_ballot_ && r.happy;
-        });
+        happy_ = std::ranges::any_of(
+            heartbeat_replies_, [this](const heartbeat_reply& r) { return r.leader > current_ballot_ && r.happy; });
     }
 
     void check_takeover()

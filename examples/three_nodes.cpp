@@ -6,11 +6,11 @@
 #include <cstdlib>
 #include <exception>
 #include <expected>
-#include <iterator>
 #include <filesystem>
-#include <iostream>
-#include <optional>
 #include <format>
+#include <iostream>
+#include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -106,7 +106,10 @@ std::vector<std::byte> bytes_of(const std::string_view text)
     return bytes;
 }
 
-konsens::entry entry_of(const std::string_view text) { return {konsens::entry_kind::normal, bytes_of(text)}; }
+konsens::entry entry_of(const std::string_view text)
+{
+    return {konsens::entry_kind::normal, bytes_of(text)};
+}
 
 std::string text_of(const std::span<const std::byte> bytes)
 {
@@ -235,7 +238,10 @@ struct cluster {
         return std::nullopt;
     }
 
-    std::uint64_t decided_count(const std::size_t i) const { return nodes.at(i)->get_sequence_paxos().get_decided_idx(); }
+    std::uint64_t decided_count(const std::size_t i) const
+    {
+        return nodes.at(i)->get_sequence_paxos().get_decided_idx();
+    }
 
     bool all_decided_the_same() const
     {
@@ -321,17 +327,18 @@ std::expected<void, std::error_code> append_at_leader(cluster& c, const int firs
 }
 
 std::expected<konsens::client_reply, std::error_code> call_and_wait(cluster& c, const std::size_t at,
-                                                                   const std::uint64_t call, const auto give)
+                                                                    const std::uint64_t call, const auto give)
 {
     if (auto r = c.commit(at, give(*c.nodes.at(at))); !r) [[unlikely]] {
         return std::unexpected(r.error());
     }
     c.collect();
     std::optional<konsens::client_reply> reply;
-    if (auto r = run_until(c, [&c, &reply, call] {
-            reply = c.take_reply(call);
-            return reply.has_value();
-        });
+    if (auto r = run_until(c,
+                           [&c, &reply, call] {
+                               reply = c.take_reply(call);
+                               return reply.has_value();
+                           });
         !r) [[unlikely]] {
         return std::unexpected(r.error());
     }
@@ -400,7 +407,8 @@ int run(const std::span<const std::string_view> args)
         }
     }
     if (!given.empty() && given.size() != node_count) [[unlikely]] {
-        std::cerr << std::format("Usage: three_nodes [{}] [directory-1 directory-2 directory-3]", allow_root_flag) << '\n';
+        std::cerr << std::format("Usage: three_nodes [{}] [directory-1 directory-2 directory-3]", allow_root_flag)
+                  << '\n';
         return EXIT_FAILURE;
     }
     uid_t user_id = geteuid();
@@ -410,7 +418,8 @@ int run(const std::span<const std::string_view> args)
             return exit_refused_root;
         }
         std::cout << std::format("The process runs as root. The flag {} gives the library user id {}.", allow_root_flag,
-                     test_user_id) << '\n';
+                                 test_user_id)
+                  << '\n';
         user_id = test_user_id;
     }
     temporary_directories temporary;
@@ -433,8 +442,7 @@ int run(const std::span<const std::string_view> args)
         return fail("append the first entries", r.error());
     }
     const auto first_target = base + first_entry_count;
-    if (auto r = run_until(c, [&c, first_target] { return c.all_running_decided(first_target); }); !r)
-        [[unlikely]] {
+    if (auto r = run_until(c, [&c, first_target] { return c.all_running_decided(first_target); }); !r) [[unlikely]] {
         return fail("decide the first entries", r.error());
     }
     for (std::size_t i = 0; i < node_count; ++i) {
@@ -452,18 +460,17 @@ int run(const std::span<const std::string_view> args)
         return fail("append with two nodes", r.error());
     }
     const auto second_target = first_target + second_entry_count;
-    if (auto r = run_until(c, [&c, second_target] { return c.all_running_decided(second_target); }); !r)
-        [[unlikely]] {
+    if (auto r = run_until(c, [&c, second_target] { return c.all_running_decided(second_target); }); !r) [[unlikely]] {
         return fail("decide with two nodes", r.error());
     }
     std::cout << std::format("The two running nodes decided {} entries.", second_target) << '\n';
     if (auto r = c.start(stopped_node); !r) [[unlikely]] {
         return fail("reopen the stopped node", r.error());
     }
-    std::cout << std::format("Node {} is open again from its directory. It has {} decided entries from disk.", stopped_node + 1,
-                 c.decided_count(stopped_node)) << '\n';
-    if (auto r = run_until(c, [&c, second_target] { return c.all_running_decided(second_target); }); !r)
-        [[unlikely]] {
+    std::cout << std::format("Node {} is open again from its directory. It has {} decided entries from disk.",
+                             stopped_node + 1, c.decided_count(stopped_node))
+              << '\n';
+    if (auto r = run_until(c, [&c, second_target] { return c.all_running_decided(second_target); }); !r) [[unlikely]] {
         return fail("let the reopened node catch up", r.error());
     }
     std::cout << std::format("Node {} caught up.", stopped_node + 1) << '\n';

@@ -14,10 +14,10 @@
 #include <variant>
 #include <vector>
 
+#include "batches.hpp"
 #include "konsens/client.hpp"
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
-#include "batches.hpp"
 
 namespace {
 
@@ -91,7 +91,10 @@ bool failed_with(const std::expected<T, std::error_code>& r, const konsens::clie
     return !r.has_value() && r.error() == e;
 }
 
-std::size_t once([[maybe_unused]] const message& m) { return 1; }
+std::size_t once([[maybe_unused]] const message& m)
+{
+    return 1;
+}
 
 // Three nodes on FIFO channels. deliver() hands each message to its
 // receiver as often as `copies` says: 0 is a loss, 2 a duplicate. A
@@ -156,7 +159,8 @@ std::uint64_t registered(cluster& c, const node_id at, const std::uint64_t clien
 // F11: a start applies the decided log from index 0, so a new machine
 // reaches the state of the decided prefix and the client table comes back
 // with it. A start answers no call, because no caller waits on a new node.
-TEST_CASE("a start applies the decided log from index 0") {
+TEST_CASE("a start applies the decided log from index 0")
+{
     auto c = elected();
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
@@ -175,7 +179,8 @@ TEST_CASE("a start applies the decided log from index 0") {
 // F11: the library keeps the client table, and only the payload of a
 // ClientRequest reaches the state machine. A normal entry and a
 // registration change no state of the user.
-TEST_CASE("only the payload of a client request reaches the state machine") {
+TEST_CASE("only the payload of a client request reaches the state machine")
+{
     auto c = elected();
     batches::commit(c.at(3), c.at(3).append({entry_kind::normal, bytes_of("n")}));
     const auto s = registered(c, 3, client_a);
@@ -192,7 +197,8 @@ TEST_CASE("only the payload of a client request reaches the state machine") {
 // call. Two clients get two sessions. A client that calls at two nodes
 // gets from each node the session of the entry of that node, so each
 // answer belongs to the call that was made there.
-TEST_CASE("each registration gives the session of its own entry") {
+TEST_CASE("each registration gives the session of its own entry")
+{
     auto c = elected();
     batches::commit(c.at(1), c.at(1).register_client(client_a));
     batches::commit(c.at(2), c.at(2).register_client(client_a));
@@ -220,7 +226,8 @@ TEST_CASE("each registration gives the session of its own entry") {
 // the kept reply, and a lower one gives stale_request. The failure of
 // earlier work: a test without loss, duplicates and resends does not fail
 // when a session guard is removed.
-TEST_CASE("two clients: a loss, a resend and a duplicate execute each request once") {
+TEST_CASE("two clients: a loss, a resend and a duplicate execute each request once")
+{
     auto c = elected();
     const auto sa = registered(c, 1, client_a);
     const auto sb = registered(c, 2, client_b);
@@ -268,7 +275,8 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
 // appends ExpireSession, only for an open session, and only once. A
 // request of an expired session is not executed (Raft 6.3,
 // SESSION_EXPIRED).
-TEST_CASE("expire_session closes a session at the leader once") {
+TEST_CASE("expire_session closes a session at the leader once")
+{
     auto c = elected();
     const auto s = registered(c, 2, client_b);
     CHECK(failed_with(c.at(1).expire_session(client_b, s), client_errc::retry));
@@ -303,7 +311,8 @@ TEST_CASE("expire_session closes a session at the leader once") {
 // misses the first AcceptSync of node 2, so node 2 cannot decide "a" yet.
 // A read at node 1 must still see "a": the read index is the accepted_idx
 // of node 2, and node 1 answers only when it has applied up to that index.
-TEST_CASE("a read after a change of leader sees a request that the old leader decided") {
+TEST_CASE("a read after a change of leader sees a request that the old leader decided")
+{
     auto c = elected();
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
@@ -342,7 +351,8 @@ TEST_CASE("a read after a change of leader sees a request that the old leader de
 // 3 and has not applied up to it. Then node 1 promises a new leader. The
 // read is dropped with retry, because the confirmation of leader 3 no
 // longer says that no higher ballot decided an entry.
-TEST_CASE("a read is dropped with retry when the promise changes before the answer") {
+TEST_CASE("a read is dropped with retry when the promise changes before the answer")
+{
     auto c = elected();
     const auto s = registered(c, 3, client_a);
     const auto lost_to_1 = [](const message& m) -> std::size_t {
@@ -369,7 +379,8 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
 // A lost ReadIndex request would leave the read open for good. The resend
 // timeout of the node sends each read without an index again to the leader
 // of its promise.
-TEST_CASE("a follower sends a lost read index request again") {
+TEST_CASE("a follower sends a lost read index request again")
+{
     auto c = elected();
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
@@ -385,7 +396,8 @@ TEST_CASE("a follower sends a lost read index request again") {
 
 // A read at the leader goes through the same round: the leader keeps its
 // own reads and answers them from its state when the round has a majority.
-TEST_CASE("a read at the leader is answered after one round") {
+TEST_CASE("a read at the leader is answered after one round")
+{
     auto c = elected();
     const auto s = registered(c, 2, client_a);
     batches::commit(c.at(2), c.at(2).client_request(client_a, s, 1, bytes_of("a")));
@@ -402,7 +414,8 @@ TEST_CASE("a read at the leader is answered after one round") {
 
 // A lost Heartbeat would stop the round and every later read. The resend
 // timeout of the leader sends the heartbeat of the round again.
-TEST_CASE("a leader sends a lost heartbeat again") {
+TEST_CASE("a leader sends a lost heartbeat again")
+{
     auto c = elected();
     batches::commit(c.at(3), c.at(3).client_query(client_b, {}));
     c.deliver([](const message& m) -> std::size_t { return holds<konsens::heartbeat>(m) ? 0 : 1; });

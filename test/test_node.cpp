@@ -16,10 +16,10 @@
 #include <variant>
 #include <vector>
 
-#include "konsens/memory_storage.hpp"
-#include "konsens/node.hpp"
 #include "batches.hpp"
 #include "echo.hpp"
+#include "konsens/memory_storage.hpp"
+#include "konsens/node.hpp"
 
 namespace {
 
@@ -42,7 +42,10 @@ konsens::node_config config_of(node_id pid)
     return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
-konsens::entry make_entry(std::uint8_t v) { return {konsens::entry_kind::normal, {std::byte{v}}}; }
+konsens::entry make_entry(std::uint8_t v)
+{
+    return {konsens::entry_kind::normal, {std::byte{v}}};
+}
 
 void step(std::vector<node_t>& nodes, const std::array<bool, 3>& alive)
 {
@@ -64,7 +67,8 @@ void step(std::vector<node_t>& nodes, const std::array<bool, 3>& alive)
 // decided by the two nodes that remain. The entry is appended after the
 // new election: an entry forwarded to a stopped leader is lost, as in
 // mod.rs:371-384 forward_proposals.
-TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
+TEST_CASE("three nodes elect, decide and survive the loss of the leader")
+{
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
         nodes.push_back(*node_t::with(config_of(p), memory_storage{}, echo{}, 0));
@@ -97,7 +101,8 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader") {
 
 // Each tick timeout of 0 would never fire: a wrong use that fails loudly,
 // as ServerConfig::validate in omni_paxos.rs:189-200.
-TEST_CASE("a tick timeout of 0 is a wrong use") {
+TEST_CASE("a tick timeout of 0 is a wrong use")
+{
     auto c = config_of(1);
     c.election_tick_timeout = 0;
     CHECK_THROWS_AS(static_cast<void>(node_t::with(c, memory_storage{}, echo{}, 0)), std::logic_error);
@@ -105,7 +110,8 @@ TEST_CASE("a tick timeout of 0 is a wrong use") {
 
 // Each error value has a message of its own, because a log or a client
 // reads the message and not the number.
-TEST_CASE("each client error has its own message") {
+TEST_CASE("each client error has its own message")
+{
     const std::array codes{konsens::client_errc::recovering, konsens::client_errc::session_expired,
                            konsens::client_errc::stale_request, konsens::client_errc::retry};
     std::vector<std::string> messages;
@@ -127,7 +133,8 @@ TEST_CASE("each client error has its own message") {
 // waited forever. Since the power-loss path, the answers of both peers with
 // no primary also complete the recovery, so the test no longer checks which
 // node leads afterwards; it checks that the cluster decides again.
-TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
+TEST_CASE("a restarted leader answers no heartbeat while it recovers")
+{
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
         nodes.push_back(*node_t::with(config_of(p), memory_storage{}, echo{}, 0));
@@ -140,8 +147,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers") {
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    REQUIRE(nodes[2].get_sequence_paxos().get_state() ==
-            std::pair{konsens::role::leader, konsens::phase::accept});
+    REQUIRE(nodes[2].get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept});
     const memory_storage kept = nodes[2].get_sequence_paxos().get_internal_storage();
     nodes[2] = *node_t::with(config_of(3), kept, echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
@@ -269,7 +275,8 @@ void check_resynced(const std::vector<konsens::paxos_message>& seen)
 // caller reports the dropped connection with reconnected, as
 // OmniPaxos::reconnected in omni_paxos.rs:394-398, and the follower
 // catches up through PrepareReq and AcceptSync.
-TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
+TEST_CASE("a follower that lost the last Decide catches up after reconnected")
+{
     auto nodes = lose_the_last_decide();
     REQUIRE(nodes[behind - 1].commit(nodes[behind - 1].reconnected(elected)));
     const std::array<bool, 3> all{true, true, true};
@@ -286,7 +293,8 @@ TEST_CASE("a follower that lost the last Decide catches up after reconnected") {
 // goes to Recover and catches up through PrepareReq, Prepare, Promise and
 // AcceptSync. Without the Decide at the resend timeout, no later message
 // shows the gap and the follower stays one entry behind.
-TEST_CASE("a follower that lost the last Decide catches up after a resend timeout") {
+TEST_CASE("a follower that lost the last Decide catches up after a resend timeout")
+{
     auto nodes = lose_the_last_decide();
     std::vector<konsens::paxos_message> seen;
     for (int i = 0; i < rounds; ++i) {
@@ -300,15 +308,16 @@ TEST_CASE("a follower that lost the last Decide catches up after a resend timeou
 // The lost messages carry an entry: the AcceptDecide with entry 2 and the
 // Decide after it. The follower lacks the entry itself, not only the
 // decided index, so the AcceptSync must carry the entry.
-TEST_CASE("a follower that lost an AcceptDecide with an entry catches up after a resend timeout") {
+TEST_CASE("a follower that lost an AcceptDecide with an entry catches up after a resend timeout")
+{
     auto nodes = elect_three();
     batches::commit(nodes[elected - 1], nodes[elected - 1].append(make_entry(1)));
     deliver_all(nodes);
     REQUIRE(nodes[behind - 1].get_sequence_paxos().get_decided_idx() == 1);
     batches::commit(nodes[elected - 1], nodes[elected - 1].append(make_entry(2)));
     const bool lost = deliver_losing(nodes, [](const konsens::paxos_message& p) {
-        return p.to == behind &&
-               (std::holds_alternative<konsens::accept_decide>(p.msg) || std::holds_alternative<konsens::decide>(p.msg));
+        return p.to == behind && (std::holds_alternative<konsens::accept_decide>(p.msg) ||
+                                  std::holds_alternative<konsens::decide>(p.msg));
     });
     REQUIRE(lost);
     REQUIRE(nodes[elected - 1].get_sequence_paxos().get_decided_idx() == 2);
@@ -353,14 +362,17 @@ struct recording_storage {
 // in the wire bytes, because decode copies each payload into its entry.
 // The follower must be in (Follower, Accept) with the next sequence
 // number, or the handler writes nothing.
-TEST_CASE("a decoded AcceptDecide reaches the storage with no copy") {
+TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
+{
     using recording_node = konsens::node<recording_storage, echo>;
     std::array<std::vector<const konsens::entry*>, 3> appended;
     std::vector<recording_node> nodes;
     for (node_id p = 1; p <= 3; ++p) {
         nodes.push_back(*recording_node::with(config_of(p), recording_storage{{}, &appended.at(p - 1)}, echo{}, 0));
     }
-    const auto deliver = [&nodes] { batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; }); };
+    const auto deliver = [&nodes] {
+        batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; });
+    };
     for (int i = 0; i < rounds; ++i) {
         deliver();
         for (auto& n : nodes) {

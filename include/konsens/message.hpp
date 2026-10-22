@@ -17,8 +17,8 @@ using node_id = std::uint64_t;
 
 inline void validate_cluster(node_id pid, std::span<const node_id> peers)
 {
-    if (pid == 0 || peers.empty() || std::ranges::contains(peers, node_id{0}) ||
-        std::ranges::contains(peers, pid)) [[unlikely]] {
+    if (pid == 0 || peers.empty() || std::ranges::contains(peers, node_id{0}) || std::ranges::contains(peers, pid))
+        [[unlikely]] {
         throw std::logic_error("konsens: a pid is 0, the peers are empty or contain the own pid");
     }
     std::vector<node_id> sorted(peers.begin(), peers.end());
@@ -176,9 +176,9 @@ struct read_index_reply {
     friend bool operator==(const read_index_reply&, const read_index_reply&) = default;
 };
 
-using paxos_msg = std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted,
-                               decide, not_accepted, proposal_forward, recovery, recovery_response, get_state,
-                               new_state, read_index_request, heartbeat, heartbeat_ack, read_index_reply>;
+using paxos_msg = std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide,
+                               not_accepted, proposal_forward, recovery, recovery_response, get_state, new_state,
+                               read_index_request, heartbeat, heartbeat_ack, read_index_reply>;
 
 struct paxos_message {
     node_id from;

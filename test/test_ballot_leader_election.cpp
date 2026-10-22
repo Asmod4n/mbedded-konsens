@@ -63,7 +63,8 @@ std::array<std::optional<ballot>, 3> run_round(cluster& c, const std::array<bool
 // replies, every node takes the highest ballot as leader. The ballot with
 // n = 1 orders by priority first, so the node with the highest priority is
 // elected, whatever its pid.
-TEST_CASE("the highest priority is elected") {
+TEST_CASE("the highest priority is elected")
+{
     cluster c{make(1, 5), make(2, 0), make(3, 0)};
     const auto r = run_round(c, {true, true, true});
     const ballot expected{config_id, 1, 5, 1};
@@ -76,7 +77,8 @@ TEST_CASE("the highest priority is elected") {
 }
 
 // Equal priorities: the pid decides the order of Ballot (n, priority, pid).
-TEST_CASE("with equal priority the highest pid is elected") {
+TEST_CASE("with equal priority the highest pid is elected")
+{
     cluster c{make(1, 0), make(2, 0), make(3, 0)};
     const auto r = run_round(c, {true, true, true});
     CHECK(r[2] == ballot{config_id, 1, 0, 3});
@@ -87,7 +89,8 @@ TEST_CASE("with equal priority the highest pid is elected") {
 // of unhappy nodes takes over with n of the leader plus one. This is what
 // the owner sees when the leader stops. Both followers can take over in
 // the same round; one more round lets both agree on the higher ballot.
-TEST_CASE("a silent leader is replaced with a higher n") {
+TEST_CASE("a silent leader is replaced with a higher n")
+{
     cluster c{make(1, 5), make(2, 0), make(3, 0)};
     run_round(c, {true, true, true});
     std::optional<ballot> elected;
@@ -105,7 +108,8 @@ TEST_CASE("a silent leader is replaced with a higher n") {
 // ballot_leader_election.rs:103-117 `with`: a node that restarts with a
 // promise takes that ballot as leader and uses n = 0 for its own ballot, so
 // that it does not keep the leadership of the ballot it had.
-TEST_CASE("a restarted node does not keep its old ballot") {
+TEST_CASE("a restarted node does not keep its old ballot")
+{
     const ballot old{config_id, 1, 5, 1};
     const auto b = make(1, 5, old);
     CHECK(b.get_leader() == old);
@@ -115,7 +119,8 @@ TEST_CASE("a restarted node does not keep its old ballot") {
 // ballot_leader_election.rs:206-214: a promise of Sequence Paxos above the
 // leader of BLE is taken as leader, so that BLE does not elect a ballot
 // that Sequence Paxos has passed.
-TEST_CASE("hb_timeout follows a higher paxos promise") {
+TEST_CASE("hb_timeout follows a higher paxos promise")
+{
     auto b = make(1, 0);
     const ballot higher{config_id, 7, 0, 2};
     CHECK(!b.hb_timeout(higher));
@@ -151,7 +156,8 @@ std::vector<konsens::ble_message> replies_to(ballot_leader_election& b, node_id 
 // A heartbeat is for the node that `to` names, and from one of its peers.
 // Another node, or a pid outside the cluster, gets no reply, so that a
 // message that reached the wrong node changes no state there.
-TEST_CASE("a heartbeat to another node or from an unknown pid is dropped") {
+TEST_CASE("a heartbeat to another node or from an unknown pid is dropped")
+{
     auto b = make(1, 0);
     static_cast<void>(b.take_outgoing_messages());
     b.handle({2, 3, konsens::heartbeat_request{1}});
@@ -165,7 +171,8 @@ TEST_CASE("a heartbeat to another node or from an unknown pid is dropped") {
 // The quorum of a round counts nodes, not messages. A reply that arrives
 // twice from the same peer is counted once; otherwise one peer of five
 // would give the leader a quorum of three.
-TEST_CASE("a reply that arrives twice counts once") {
+TEST_CASE("a reply that arrives twice counts once")
+{
     for (const bool second_peer : {false, true}) {
         CAPTURE(second_peer);
         auto b = make_of_five(1, 5);

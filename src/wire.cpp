@@ -73,19 +73,34 @@ std::error_code check_entries_of(const promise& p) noexcept
     return check_entries(p.log_sync->suffix);
 }
 
-std::error_code check_entries_of(const accept_sync& a) noexcept { return check_entries(a.log_sync.suffix); }
+std::error_code check_entries_of(const accept_sync& a) noexcept
+{
+    return check_entries(a.log_sync.suffix);
+}
 
-std::error_code check_entries_of(const accept_decide& a) noexcept { return check_entries(a.entries); }
+std::error_code check_entries_of(const accept_decide& a) noexcept
+{
+    return check_entries(a.entries);
+}
 
-std::error_code check_entries_of(const proposal_forward& p) noexcept { return check_entries(p.entries); }
+std::error_code check_entries_of(const proposal_forward& p) noexcept
+{
+    return check_entries(p.entries);
+}
 
-std::error_code check_entries_of(const recovery_response& r) noexcept { return check_entries(r.log); }
+std::error_code check_entries_of(const recovery_response& r) noexcept
+{
+    return check_entries(r.log);
+}
 
-std::error_code check_entries_of(const new_state& n) noexcept { return check_entries(n.entries); }
+std::error_code check_entries_of(const new_state& n) noexcept
+{
+    return check_entries(n.entries);
+}
 
 template <std::size_t I>
 std::expected<received, std::error_code> decode_body(const std::shared_ptr<const std::string>& owner,
-                                                    const std::string_view body, const header& h)
+                                                     const std::string_view body, const header& h)
 {
     using body_type = body_of_kind<I>;
     auto decoded = cbor::structs<body_type>::decode(owner, body);
@@ -100,8 +115,8 @@ std::expected<received, std::error_code> decode_body(const std::shared_ptr<const
 
 template <std::size_t... I>
 std::expected<received, std::error_code> decode_body_of_kind(const std::shared_ptr<const std::string>& owner,
-                                                            const std::string_view body, const header& h,
-                                                            std::index_sequence<I...>)
+                                                             const std::string_view body, const header& h,
+                                                             std::index_sequence<I...>)
 {
     std::expected<received, std::error_code> result = std::unexpected(make_error_code(wire_errc::unknown_kind));
     static_cast<void>(((h.kind == I && (result = decode_body<I>(owner, body, h), true)) || ...));
@@ -129,7 +144,10 @@ const std::error_category& wire_category() noexcept
     return category;
 }
 
-std::error_code make_error_code(const wire_errc code) noexcept { return {static_cast<int>(code), wire_category()}; }
+std::error_code make_error_code(const wire_errc code) noexcept
+{
+    return {static_cast<int>(code), wire_category()};
+}
 
 std::uint8_t kind_of(const message& m) noexcept
 {
@@ -149,13 +167,16 @@ std::expected<std::string, std::error_code> encode(const message& m)
 {
     return std::visit(
         [kind = kind_of(m)](const auto& x) {
-            return std::visit([&x, kind](const auto& body) { return encode_parts(header{post, kind, x.from, x.to}, body); },
-                              x.msg);
+            return std::visit(
+                [&x, kind](const auto& body) { return encode_parts(header{post, kind, x.from, x.to}, body); }, x.msg);
         },
         m);
 }
 
-std::uint8_t kind_of(const received& r) noexcept { return static_cast<std::uint8_t>(r.msg.index()); }
+std::uint8_t kind_of(const received& r) noexcept
+{
+    return static_cast<std::uint8_t>(r.msg.index());
+}
 
 std::expected<received, std::error_code> decode(std::string bytes)
 {

@@ -33,7 +33,10 @@ struct lmdb_cluster {
 
     std::array<temporary_directory, simulation::node_count> directories;
 
-    std::monostate stop(const konsens::node<konsens::persistent_storage, simulation::concatenation>&) const { return {}; }
+    std::monostate stop(const konsens::node<konsens::persistent_storage, simulation::concatenation>&) const
+    {
+        return {};
+    }
 
     konsens::persistent_storage start(const std::size_t i, std::monostate) const
     {
@@ -53,7 +56,8 @@ struct lmdb_cluster {
 // entry kind. LMDB storage cannot be copied, so this run has no rollback.
 // Each delivery is a batch of random size, so one LMDB transaction holds
 // the writes of several messages.
-TEST_CASE("simulation on LMDB with FIFO channels and two clients keeps the safety properties") {
+TEST_CASE("simulation on LMDB with FIFO channels and two clients keeps the safety properties")
+{
     simulation::run_seeds<lmdb_cluster>(simulation::delivery::fifo, seed_count, simulation::rollback::none,
                                         simulation::clients::two);
 }

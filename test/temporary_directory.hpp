@@ -10,7 +10,8 @@
 // and the directory must go when the test ends, also when a check fails.
 class temporary_directory {
 public:
-    temporary_directory() {
+    temporary_directory()
+    {
         std::string name = (std::filesystem::temp_directory_path() / "konsens-test-XXXXXX").string();
         if (mkdtemp(name.data()) == nullptr) [[unlikely]] {
             throw std::system_error(errno, std::generic_category(), "mkdtemp");

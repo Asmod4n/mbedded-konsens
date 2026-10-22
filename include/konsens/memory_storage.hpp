@@ -23,8 +23,7 @@ public:
         return {};
     }
 
-    std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from,
-                                                                   std::uint64_t to) const
+    std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from, std::uint64_t to) const
     {
         throw_if_from_after_to(from, to);
         if (from >= log_.size()) {
