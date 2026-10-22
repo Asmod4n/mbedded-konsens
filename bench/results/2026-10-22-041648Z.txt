@@ -1,0 +1,172 @@
+# Bench: CRC32C forms, one file outside the tree
+
+What: the CRC32C of one payload, taken in turn from 16 buffers, in ns
+per operation. One binary per arm, from one source file outside the
+tree, built with the flags below:
+- table: src/crc32c.cpp at 466f26e (one table of 256 values).
+- hw, hw_aa: _mm_crc32_u64 over 8 bytes, then _mm_crc32_u8, in a
+  function with target("sse4.2"); built twice (A/A).
+- absl: absl::ExtendCrc32c of libabsl-dev.
+- google: crc32c::Extend of Google crc32c (github.com/google/crc32c at
+  2bbb3be, static library, CMake Release, HAVE_SSE42 1).
+- google_portable: crc32c::ExtendPortable of the same library.
+Each process checks the CRC of "123456789" against e3069283, takes one
+warm-up sample and 31 samples, and prints their median. 7 rounds; the
+order of the arms turns around each second round. Each process runs as
+the user bench through setpriv, not pinned. Sizes: 64, 1024, 65536 B.
+
+## Context
+
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# flags -O2 -DNDEBUG -march=x86-64 -std=c++23 -Wall -Wextra -Werror
+# absl 20260526.0-2ubuntu2
+# google crc32c 2bbb3be
+#define HAVE_SSE42 1
+#define HAVE_ARM64_CRC32C 0
+# kernel 6.18.44-fc-v140
+# processor  Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user bench uid 1001 setpriv, nice 0, not pinned
+# loadavg start 0.47 0.22 0.09 1/134 341
+# loadavg end 0.59 0.25 0.11 1/132 468
+
+## Result
+
+ns per operation: the median of the 7 round medians. A/A: hw_aa against hw.
+
+| payload B | table | hw | hw_aa | absl | google | google_portable | A/A |
+|---|---|---|---|---|---|---|---|
+| 64 | 92.6 | 2.8 | 2.8 | 27.5 | 2.8 | 21.8 | +0.0 % |
+| 1024 | 2105.6 | 50.8 | 50.7 | 247.0 | 33.5 | 219.9 | -0.1 % |
+| 65536 | 137283.0 | 6257.6 | 6326.7 | 15682.5 | 2661.7 | 14359.1 | +1.1 % |
+
+Failed checks: 0.
+
+## Raw lines
+
+round=1 bin=table arm=0 size=64 ops=78125 median=92.61 min=91.85 max=153.04 fold=00000000
+round=1 bin=hw arm=1 size=64 ops=78125 median=6.44 min=5.34 max=7.89 fold=00000000
+round=1 bin=hw_aa arm=1 size=64 ops=78125 median=2.77 min=2.77 max=3.49 fold=00000000
+round=1 bin=absl arm=2 size=64 ops=78125 median=27.96 min=26.69 max=30.88 fold=00000000
+round=1 bin=google arm=3 size=64 ops=78125 median=7.16 min=6.09 max=7.65 fold=00000000
+round=1 bin=google_portable arm=4 size=64 ops=78125 median=21.78 min=21.37 max=37.56 fold=00000000
+round=1 bin=table arm=0 size=1024 ops=9191 median=2115.40 min=2087.01 max=2254.61 fold=00000000
+round=1 bin=hw arm=1 size=1024 ops=9191 median=51.07 min=50.23 max=57.39 fold=00000000
+round=1 bin=hw_aa arm=1 size=1024 ops=9191 median=50.59 min=49.80 max=56.68 fold=00000000
+round=1 bin=absl arm=2 size=1024 ops=9191 median=247.28 min=240.85 max=255.57 fold=00000000
+round=1 bin=google arm=3 size=1024 ops=9191 median=33.48 min=33.47 max=38.44 fold=00000000
+round=1 bin=google_portable arm=4 size=1024 ops=9191 median=221.13 min=214.56 max=310.44 fold=00000000
+round=1 bin=table arm=0 size=65536 ops=152 median=137282.99 min=136561.81 max=141412.72 fold=00000000
+round=1 bin=hw arm=1 size=65536 ops=152 median=6403.13 min=6238.45 max=6841.96 fold=00000000
+round=1 bin=hw_aa arm=1 size=65536 ops=152 median=6253.24 min=6238.75 max=6633.80 fold=00000000
+round=1 bin=absl arm=2 size=65536 ops=152 median=16101.82 min=15172.48 max=19578.22 fold=00000000
+round=1 bin=google arm=3 size=65536 ops=152 median=3412.22 min=2130.04 max=3783.55 fold=00000000
+round=1 bin=google_portable arm=4 size=65536 ops=152 median=14359.14 min=13763.72 max=15822.91 fold=00000000
+round=2 bin=google_portable arm=4 size=64 ops=78125 median=21.83 min=21.46 max=22.52 fold=00000000
+round=2 bin=google arm=3 size=64 ops=78125 median=2.90 min=2.84 max=3.44 fold=00000000
+round=2 bin=absl arm=2 size=64 ops=78125 median=27.48 min=26.58 max=29.65 fold=00000000
+round=2 bin=hw_aa arm=1 size=64 ops=78125 median=2.80 min=2.77 max=3.44 fold=00000000
+round=2 bin=hw arm=1 size=64 ops=78125 median=2.77 min=2.77 max=3.60 fold=00000000
+round=2 bin=table arm=0 size=64 ops=78125 median=92.19 min=91.43 max=95.42 fold=00000000
+round=2 bin=google_portable arm=4 size=1024 ops=9191 median=219.97 min=215.88 max=225.42 fold=00000000
+round=2 bin=google arm=3 size=1024 ops=9191 median=33.48 min=33.47 max=37.13 fold=00000000
+round=2 bin=absl arm=2 size=1024 ops=9191 median=245.38 min=240.68 max=264.40 fold=00000000
+round=2 bin=hw_aa arm=1 size=1024 ops=9191 median=50.78 min=50.06 max=55.43 fold=00000000
+round=2 bin=hw arm=1 size=1024 ops=9191 median=50.74 min=50.22 max=56.24 fold=00000000
+round=2 bin=table arm=0 size=1024 ops=9191 median=2118.96 min=2091.11 max=2249.38 fold=00000000
+round=2 bin=google_portable arm=4 size=65536 ops=152 median=14340.00 min=13419.20 max=15074.51 fold=00000000
+round=2 bin=google arm=3 size=65536 ops=152 median=3813.56 min=2192.86 max=5299.66 fold=00000000
+round=2 bin=absl arm=2 size=65536 ops=152 median=21858.89 min=15507.97 max=23466.73 fold=00000000
+round=2 bin=hw_aa arm=1 size=65536 ops=152 median=6269.75 min=6238.69 max=6873.97 fold=00000000
+round=2 bin=hw arm=1 size=65536 ops=152 median=6979.59 min=6246.55 max=7737.13 fold=00000000
+round=2 bin=table arm=0 size=65536 ops=152 median=136660.80 min=136159.28 max=137877.74 fold=00000000
+round=3 bin=table arm=0 size=64 ops=78125 median=92.74 min=91.67 max=116.51 fold=00000000
+round=3 bin=hw arm=1 size=64 ops=78125 median=2.83 min=2.77 max=3.31 fold=00000000
+round=3 bin=hw_aa arm=1 size=64 ops=78125 median=2.77 min=2.73 max=3.29 fold=00000000
+round=3 bin=absl arm=2 size=64 ops=78125 median=27.49 min=26.46 max=29.06 fold=00000000
+round=3 bin=google arm=3 size=64 ops=78125 median=2.84 min=2.84 max=3.62 fold=00000000
+round=3 bin=google_portable arm=4 size=64 ops=78125 median=21.55 min=20.90 max=22.30 fold=00000000
+round=3 bin=table arm=0 size=1024 ops=9191 median=2090.03 min=2084.24 max=2108.68 fold=00000000
+round=3 bin=hw arm=1 size=1024 ops=9191 median=51.04 min=49.81 max=55.22 fold=00000000
+round=3 bin=hw_aa arm=1 size=1024 ops=9191 median=50.52 min=49.99 max=61.17 fold=00000000
+round=3 bin=absl arm=2 size=1024 ops=9191 median=244.18 min=240.78 max=250.12 fold=00000000
+round=3 bin=google arm=3 size=1024 ops=9191 median=33.48 min=33.47 max=39.08 fold=00000000
+round=3 bin=google_portable arm=4 size=1024 ops=9191 median=218.94 min=216.00 max=237.34 fold=00000000
+round=3 bin=table arm=0 size=65536 ops=152 median=138022.82 min=136886.55 max=161762.29 fold=00000000
+round=3 bin=hw arm=1 size=65536 ops=152 median=6239.14 min=6238.49 max=7109.68 fold=00000000
+round=3 bin=hw_aa arm=1 size=65536 ops=152 median=6364.77 min=6238.45 max=6720.62 fold=00000000
+round=3 bin=absl arm=2 size=65536 ops=152 median=15503.32 min=15165.18 max=16011.59 fold=00000000
+round=3 bin=google arm=3 size=65536 ops=152 median=2661.74 min=2133.33 max=2969.62 fold=00000000
+round=3 bin=google_portable arm=4 size=65536 ops=152 median=15142.62 min=13588.25 max=15537.76 fold=00000000
+round=4 bin=google_portable arm=4 size=64 ops=78125 median=29.96 min=21.28 max=45.33 fold=00000000
+round=4 bin=google arm=3 size=64 ops=78125 median=2.84 min=2.84 max=3.37 fold=00000000
+round=4 bin=absl arm=2 size=64 ops=78125 median=27.37 min=26.21 max=28.23 fold=00000000
+round=4 bin=hw_aa arm=1 size=64 ops=78125 median=2.77 min=2.76 max=3.22 fold=00000000
+round=4 bin=hw arm=1 size=64 ops=78125 median=2.77 min=2.73 max=3.46 fold=00000000
+round=4 bin=table arm=0 size=64 ops=78125 median=92.86 min=92.17 max=94.91 fold=00000000
+round=4 bin=google_portable arm=4 size=1024 ops=9191 median=219.31 min=215.24 max=242.69 fold=00000000
+round=4 bin=google arm=3 size=1024 ops=9191 median=33.48 min=33.47 max=38.38 fold=00000000
+round=4 bin=absl arm=2 size=1024 ops=9191 median=248.93 min=242.06 max=273.88 fold=00000000
+round=4 bin=hw_aa arm=1 size=1024 ops=9191 median=50.27 min=50.04 max=54.72 fold=00000000
+round=4 bin=hw arm=1 size=1024 ops=9191 median=50.76 min=50.23 max=79.08 fold=00000000
+round=4 bin=table arm=0 size=1024 ops=9191 median=2106.05 min=2087.55 max=2178.41 fold=00000000
+round=4 bin=google_portable arm=4 size=65536 ops=152 median=19153.61 min=13705.69 max=19984.47 fold=00000000
+round=4 bin=google arm=3 size=65536 ops=152 median=2365.32 min=2134.23 max=2913.91 fold=00000000
+round=4 bin=absl arm=2 size=65536 ops=152 median=17077.22 min=15015.19 max=18549.99 fold=00000000
+round=4 bin=hw_aa arm=1 size=65536 ops=152 median=6325.13 min=6238.70 max=6649.09 fold=00000000
+round=4 bin=hw arm=1 size=65536 ops=152 median=6238.98 min=6238.34 max=6622.58 fold=00000000
+round=4 bin=table arm=0 size=65536 ops=152 median=136975.80 min=136363.87 max=147733.05 fold=00000000
+round=5 bin=table arm=0 size=64 ops=78125 median=93.08 min=91.93 max=95.04 fold=00000000
+round=5 bin=hw arm=1 size=64 ops=78125 median=2.77 min=2.75 max=3.34 fold=00000000
+round=5 bin=hw_aa arm=1 size=64 ops=78125 median=2.77 min=2.75 max=3.10 fold=00000000
+round=5 bin=absl arm=2 size=64 ops=78125 median=27.50 min=26.28 max=28.60 fold=00000000
+round=5 bin=google arm=3 size=64 ops=78125 median=2.84 min=2.84 max=3.35 fold=00000000
+round=5 bin=google_portable arm=4 size=64 ops=78125 median=21.51 min=20.91 max=22.59 fold=00000000
+round=5 bin=table arm=0 size=1024 ops=9191 median=2105.55 min=2086.94 max=2226.53 fold=00000000
+round=5 bin=hw arm=1 size=1024 ops=9191 median=50.54 min=50.21 max=55.58 fold=00000000
+round=5 bin=hw_aa arm=1 size=1024 ops=9191 median=50.70 min=50.05 max=58.59 fold=00000000
+round=5 bin=absl arm=2 size=1024 ops=9191 median=249.56 min=240.63 max=259.43 fold=00000000
+round=5 bin=google arm=3 size=1024 ops=9191 median=33.87 min=33.47 max=38.77 fold=00000000
+round=5 bin=google_portable arm=4 size=1024 ops=9191 median=220.41 min=215.27 max=234.85 fold=00000000
+round=5 bin=table arm=0 size=65536 ops=152 median=137522.18 min=136690.54 max=156334.74 fold=00000000
+round=5 bin=hw arm=1 size=65536 ops=152 median=6257.61 min=6238.38 max=6646.94 fold=00000000
+round=5 bin=hw_aa arm=1 size=65536 ops=152 median=6326.71 min=6238.54 max=6747.61 fold=00000000
+round=5 bin=absl arm=2 size=65536 ops=152 median=15682.51 min=15173.98 max=16478.00 fold=00000000
+round=5 bin=google arm=3 size=65536 ops=152 median=5889.30 min=4923.95 max=12971.76 fold=00000000
+round=5 bin=google_portable arm=4 size=65536 ops=152 median=14170.80 min=13558.76 max=14878.10 fold=00000000
+round=6 bin=google_portable arm=4 size=64 ops=78125 median=22.03 min=21.42 max=37.23 fold=00000000
+round=6 bin=google arm=3 size=64 ops=78125 median=2.84 min=2.84 max=3.35 fold=00000000
+round=6 bin=absl arm=2 size=64 ops=78125 median=27.82 min=26.51 max=66.43 fold=00000000
+round=6 bin=hw_aa arm=1 size=64 ops=78125 median=2.77 min=2.76 max=3.32 fold=00000000
+round=6 bin=hw arm=1 size=64 ops=78125 median=2.77 min=2.73 max=3.29 fold=00000000
+round=6 bin=table arm=0 size=64 ops=78125 median=92.40 min=91.62 max=94.07 fold=00000000
+round=6 bin=google_portable arm=4 size=1024 ops=9191 median=219.88 min=215.36 max=229.32 fold=00000000
+round=6 bin=google arm=3 size=1024 ops=9191 median=33.48 min=33.47 max=38.29 fold=00000000
+round=6 bin=absl arm=2 size=1024 ops=9191 median=246.97 min=241.41 max=255.12 fold=00000000
+round=6 bin=hw_aa arm=1 size=1024 ops=9191 median=50.74 min=50.04 max=56.15 fold=00000000
+round=6 bin=hw arm=1 size=1024 ops=9191 median=50.75 min=50.03 max=56.62 fold=00000000
+round=6 bin=table arm=0 size=1024 ops=9191 median=2093.31 min=2086.76 max=2207.59 fold=00000000
+round=6 bin=google_portable arm=4 size=65536 ops=152 median=18254.37 min=17540.46 max=21528.22 fold=00000000
+round=6 bin=google arm=3 size=65536 ops=152 median=2524.88 min=2320.34 max=3330.44 fold=00000000
+round=6 bin=absl arm=2 size=65536 ops=152 median=14851.48 min=14102.11 max=15218.03 fold=00000000
+round=6 bin=hw_aa arm=1 size=65536 ops=152 median=6388.38 min=6238.61 max=7065.95 fold=00000000
+round=6 bin=hw arm=1 size=65536 ops=152 median=6253.61 min=6238.61 max=6665.56 fold=00000000
+round=6 bin=table arm=0 size=65536 ops=152 median=137224.53 min=136666.80 max=138824.53 fold=00000000
+round=7 bin=table arm=0 size=64 ops=78125 median=92.00 min=91.17 max=93.96 fold=00000000
+round=7 bin=hw arm=1 size=64 ops=78125 median=2.77 min=2.73 max=3.29 fold=00000000
+round=7 bin=hw_aa arm=1 size=64 ops=78125 median=2.77 min=2.73 max=3.44 fold=00000000
+round=7 bin=absl arm=2 size=64 ops=78125 median=27.85 min=26.63 max=29.19 fold=00000000
+round=7 bin=google arm=3 size=64 ops=78125 median=2.84 min=2.84 max=3.33 fold=00000000
+round=7 bin=google_portable arm=4 size=64 ops=78125 median=21.98 min=21.51 max=22.81 fold=00000000
+round=7 bin=table arm=0 size=1024 ops=9191 median=2091.30 min=2087.25 max=2105.25 fold=00000000
+round=7 bin=hw arm=1 size=1024 ops=9191 median=50.28 min=50.01 max=56.96 fold=00000000
+round=7 bin=hw_aa arm=1 size=1024 ops=9191 median=50.82 min=50.11 max=55.45 fold=00000000
+round=7 bin=absl arm=2 size=1024 ops=9191 median=245.16 min=240.48 max=255.73 fold=00000000
+round=7 bin=google arm=3 size=1024 ops=9191 median=33.49 min=33.47 max=43.32 fold=00000000
+round=7 bin=google_portable arm=4 size=1024 ops=9191 median=219.55 min=216.57 max=223.88 fold=00000000
+round=7 bin=table arm=0 size=65536 ops=152 median=137383.89 min=136447.34 max=138484.89 fold=00000000
+round=7 bin=hw arm=1 size=65536 ops=152 median=6278.77 min=6238.69 max=6710.23 fold=00000000
+round=7 bin=hw_aa arm=1 size=65536 ops=152 median=6346.17 min=6238.48 max=6825.46 fold=00000000
+round=7 bin=absl arm=2 size=65536 ops=152 median=15314.55 min=14302.31 max=15913.12 fold=00000000
+round=7 bin=google arm=3 size=65536 ops=152 median=2176.14 min=2132.50 max=2488.60 fold=00000000
+round=7 bin=google_portable arm=4 size=65536 ops=152 median=14045.73 min=13370.03 max=14396.57 fold=00000000
