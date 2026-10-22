@@ -75,3 +75,35 @@ The log sink. The browser and WASM build.
 2. Submodule, CMake, calls; tests.
 3. The function of 2.4; README.
 4. Measurement.
+
+## 7. Changes after the review
+
+The review (approve with changes, 9 findings) is applied as follows.
+
+- R1: the vectors are those of RFC 7143 A.4 (refs/rfc7143.txt).
+- R2: no wrapper. persistent_storage.cpp calls
+  `crc32c::Crc32c(const std::byte*, size_t)` of Google's header;
+  storage.cpp:93 calls `crc32c::Extend` with one cast from `std::byte*`
+  to `const std::uint8_t*`.
+- R3: the bench uses Google's function too; test_crc32c and the two
+  bench targets link `crc32c`. These are the only targets outside
+  `src/` that see Google's header.
+- R4: the check of the CPU exists once: the public function calls
+  Google's `CanUseSse42()` or `CanUseArm64Crc32()` under the same
+  condition as crc32c.cc:19-25 and gives false otherwise. Name
+  provisional: `can_use_crc32c_instruction` (after Google's
+  `CanUse...`). deps/crc32c/src and the generated include directory of
+  crc32c are PRIVATE include directories of konsens.
+- R5: `add_subdirectory(deps/crc32c EXCLUDE_FROM_ALL)`; static targets
+  with POSITION_INDEPENDENT_CODE; a test reads `HAVE_SSE42` of the
+  build and fails on x86-64 when it is 0.
+- R6: README: `CC=gcc-16`, `git submodule update --init deps/crc32c`
+  (provisional: not recursive, so the submodules of Google's tests are
+  not fetched; the owner decides against "A clone is recursive"), a row
+  for crc32c and its BSD-3 license in Requirements.
+- R7: the agreement test includes `crc32c_internal.h` from
+  deps/crc32c/src; only test_crc32c uses it.
+- R8: the CPU test compares the function with Google's check, not with
+  this machine.
+- R9: the measurement shows HAVE_SSE42, has an A/A for each arm, the
+  old arm is 466f26e, and runs Release with g++ 16.
