@@ -78,29 +78,41 @@ entries after its own from that source.
 
 ## Performance
 
-Each part of a write, one at a time. Three nodes in one process, the
-network a queue, each message through `encode` and `decode`. g++ 16
-`-O2`, x86-64, a Firecracker VM with 4 cpus, ext4. ns or µs per
-operation, median of 7 rounds of 31 samples, payload 1 KiB:
+Each part of a write, one at a time. Three nodes in one process, each
+with its own LMDB environment, each message through `encode` and
+`decode`. In the serial form the nodes run one after the other; in the
+threaded form each node runs on its own thread. g++ 16 `-O2`, x86-64, a
+Firecracker VM with 4 cpus, ext4. ns or µs per operation, median of 7
+rounds of 31 samples, payload 1 KiB:
 
 | Operation | Time |
 |---|---|
-| CRC32C | 2.1 µs |
-| LMDB commit of one entry | 329 µs |
-| Write, memory | 10.2 µs |
-| Write, LMDB | 1.8 ms |
-| 64 writes at once, LMDB, per write | 69 µs |
-| Read, LMDB | 7.4 µs |
+| CRC32C | 34 ns |
+| LMDB alone, put and commit | 338 µs |
+| LMDB alone, get | 76 ns |
+| Write, serial | 1.9 ms |
+| Write, threaded | 1.6 ms |
+| 64 writes at once, threaded, per write | 49 µs |
+| Read, serial | 8.2 µs |
+| Read, threaded | 91 µs |
+
+A write makes 6 synchronous LMDB commits, two on each node. A read
+reads no LMDB: it answers from the state in memory after one read-index
+round.
 
 | Message | Encode | Decode | Handle |
 |---|---|---|---|
-| AcceptDecide, 64 × 1 KiB | 45 µs | 56 µs | 5.3 µs |
-| Decide | 66 ns | 261 ns | 66 ns |
+| AcceptDecide, 64 × 1 KiB | 45 µs | 55 µs | 4.8 µs |
+| Decide | 65 ns | 277 ns | 61 ns |
 
-The largest difference between two builds of the same source is 16.7 %.
+The largest difference between two builds of the same source is 30.3 %,
+in the case of 64 writes of 64 KiB at once; in the cases of this table
+it is 2.8 % or less.
 All cases, the payloads of 64 B and 64 KiB and the context of the run:
-[bench/results/2026-10-21-193700Z.txt](bench/results/2026-10-21-193700Z.txt).
+[bench/results/2026-10-22-052032Z.txt](bench/results/2026-10-22-052032Z.txt).
 `bench/run.sh` runs the bench; the option `-DKONSENS_BENCH=ON` builds it.
+CRC32C of Google crc32c against a byte table:
+[bench/results/2026-10-22-053257Z.txt](bench/results/2026-10-22-053257Z.txt).
 The cost of the checksum against a MAC:
 [bench/results/2026-10-21-092557Z.txt](bench/results/2026-10-21-092557Z.txt).
 
