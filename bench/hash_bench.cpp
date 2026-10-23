@@ -65,7 +65,7 @@ std::uint32_t crc32c_incremental(const std::span<const std::byte> bytes)
     std::uint32_t crc = 0;
     for (std::size_t offset = 0; offset < bytes.size(); offset += chunk_bytes) {
         const auto count = std::min(chunk_bytes, bytes.size() - offset);
-        crc = crc32c::Extend(crc, bytes.data() + offset, count);
+        crc = crc32c::Extend(crc, reinterpret_cast<const std::uint8_t*>(bytes.data() + offset), count);
     }
     return crc;
 }
