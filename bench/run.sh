@@ -66,7 +66,7 @@ build() {
         -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_C_COMPILER=$c_compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
         > "/work/cmake-$stamp.log" 2>&1 || { tail -n 40 "/work/cmake-$stamp.log" >&2; exit 1; }
-    cmake --build /work/build --target "${binaries[@]}" -j $build_jobs \
+    cmake --build /work/build --target "${binaries[@]}" konsens_hash_bench -j $build_jobs \
         > "/work/build-$stamp.log" 2>&1 || { tail -n 40 "/work/build-$stamp.log" >&2; exit 1; }
 }
 
@@ -361,6 +361,7 @@ inside() {
     chown "$bench_uid:$bench_uid" /lmdb
     context "$commit" "$dirty" "$stamp" > "/work/context-$stamp.txt"
     rounds "$samples" "$rounds" > "/work/raw-$stamp.txt"
+    setpriv --reuid="$bench_user" --regid="$bench_user" --clear-groups "/work/build/konsens_hash_bench" > "/work/hash-$stamp.txt"
     echo "# loadavg at end $(cat /proc/loadavg)" >> "/work/context-$stamp.txt"
     {
         header "$samples" "$rounds"
@@ -369,6 +370,10 @@ inside() {
         cat "/work/context-$stamp.txt"
         echo ""
         summary < "/work/raw-$stamp.txt"
+        echo ""
+        echo "## Incremental SHA-256 vs CRC32C"
+        echo ""
+        cat "/work/hash-$stamp.txt"
         echo ""
         echo "## Raw lines"
         echo ""
