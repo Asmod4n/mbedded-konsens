@@ -307,8 +307,13 @@ Line numbers are at commit 06a52bf.
    checksum and no read-back: +19 % to +246 %. mincore found no value
    page in memory after the drop. A page that another live transaction
    holds in the same chunk is not checked again in that transaction.
-   Open: the file offset from `/proc/self/maps` would let the drop take
-   only the value pages; not measured.
+   The drop of only the value pages, with the file offset from
+   `/proc/self/maps`, is not faster across the table
+   (bench/results/2026-10-24-203303Z-lmdb-read-back-remap-maps.txt,
+   noise floor 11.2 %): against the whole file, 64 B with 1 message
+   +34 %, 1024 B with 16 and 256 messages -14 % and -15 %, the rest
+   within the noise. It also left one value page in memory in 6 of 84
+   runs. The drop of the whole file stays.
 
 ### 2.5 Execute-Verify and nested transactions
 
@@ -494,7 +499,6 @@ decides the names.
    reads. The owner chose this form, 2026-10-24 19:45: page checksums
    with `MDB_REMAP_CHUNKS`, beside the CRC of each entry and the chain
    CRC. The read-back in this form is 2.4 item 8.
-7. The one pointer subtraction of 2.4 item 6. In the form that the
-   owner chose (item 6), 2.4 item 6 does not apply (2.4 item 8); the question stays only if
-   the drop takes the file offset from `/proc/self/maps`.
+7. The one pointer subtraction of 2.4 item 6: gone. In the form that
+   the owner chose (item 6), 2.4 item 6 does not apply (2.4 item 8).
 8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
