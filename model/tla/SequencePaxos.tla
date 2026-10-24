@@ -1521,11 +1521,32 @@ RunningStorageFault(i, kind) ==
                /\ log' = [log EXCEPT ![i] = d.log]
                /\ decided_idx' = [decided_idx EXCEPT ![i] = d.decided_idx]
                /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(d.log)]
+               /\ leader_state' = [leader_state EXCEPT ![i].accepted_indexes[i] =
+                                      IF @ > Len(d.log) THEN Len(d.log) ELSE @]
                /\ UNCHANGED <<refused, role, phase, current_seq_num, cached_promise_message,
-                              buffered_proposals, leader_state, chan, wiped, crashes, wipes,
+                              buffered_proposals, chan, wiped, crashes, wipes,
                               losses, duplicates, timeouts, elections, proposed, rolled_back,
                               recovery, client, readvars, buffered_stopsign, reconfig, leasevars>>
                /\ GhostUpdate
+
+\* The read at the next step of a running node finds a durable state that
+\* the checks find, also one that its own step wrote after an undetected
+\* damage. The node may take one more step before it: the model allows
+\* more than the code, which checks before each step.
+StepCheck(i) ==
+  /\ RunningFaults /\ StepChecks
+  /\ i \in Nodes
+  /\ ChecksFind(DurableOf(i))
+  /\ running' = running \ {i}
+  /\ refused' = refused \cup {i}
+  /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
+                                       THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
+                                       ELSE stage1_ghost[j]]
+  /\ UNCHANGED <<storage_faults, durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
+                 timeouts, elections, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, first_log, reconfigurations, force_single,
+                 read_only, deactivated, halts, read_only_entries, build_source,
+                 leasevars, leaseghost>>
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
 \* resend_messages_leader, follower.rs:240-282 resend_messages_follower.
@@ -2167,6 +2188,7 @@ Next ==
   \/ \E i \in running : Halt(i)
   \/ \E i \in running, kind \in StorageFaultKind : StorageFault(i, kind)
   \/ \E i \in running, kind \in StorageFaultKind : RunningStorageFault(i, kind)
+  \/ \E i \in running : StepCheck(i)
   \/ \E i \in Nodes \ running : Resume(i)
   \/ Tick
   \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
