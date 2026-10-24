@@ -447,5 +447,9 @@ decides the names.
    as it is; but LMDB then checks no page on a read (section 1).
 7. The one pointer subtraction of 2.4 item 6.
 8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
-   Next: measure the form with `MDB_REMAP_CHUNKS`, in which LMDB checks
-   a page on its first load, and give the numbers to the owner.
+   Measured with `MDB_REMAP_CHUNKS`
+   (bench/results/2026-10-24-194139Z-lmdb-page-checksum-remap.txt,
+   noise floor 11.0 %): the step costs no more; a read of the step after
+   it costs +15 % (64 B) and +12 % (1024 B) with 256 messages per step,
+   and nothing above the noise with 1 and 16. LMDB then checks pages on
+   reads. A card asks the owner to decide.
