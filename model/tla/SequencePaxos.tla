@@ -80,6 +80,7 @@ CONSTANTS
   StepChecks,
   \* @type: Bool;
   VerifyCrc,
+  ChainCheck,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -1518,7 +1519,10 @@ StorageFault(i, kind) ==
 \* last entry: LMDB drops the key and the count, so the stored log stays
 \* consistent and one entry shorter. With StepChecks, the read of the next
 \* step finds what the checks find, and the node leaves running, as
-\* stop_voting does. Every other damage is the new state of the node.
+\* stop_voting does. With ChainCheck, each entry carries the CRC over the
+\* CRC of its predecessor and its own bytes, and the meta record holds the
+\* last index and its chain CRC; so the step check also finds a lost last
+\* entry. Every other damage is the new state of the node.
 \* @type: (Int, Str) => Bool;
 RunningStorageFault(i, kind) ==
   /\ RunningFaults
@@ -1529,7 +1533,7 @@ RunningStorageFault(i, kind) ==
   /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
-       /\ IF StepChecks /\ (\/ kind = "missing_entry" /\ k < Len(log[i])
+       /\ IF StepChecks /\ (\/ kind = "missing_entry" /\ (k < Len(log[i]) \/ ChainCheck)
                             \/ ChecksFind(d))
           THEN /\ running' = running \ {i}
                /\ refused' = refused \cup {i}
@@ -2313,6 +2317,7 @@ ASSUME StartChecks \in BOOLEAN
 ASSUME RunningFaults \in BOOLEAN
 ASSUME StepChecks \in BOOLEAN
 ASSUME VerifyCrc \in BOOLEAN
+ASSUME ChainCheck \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided"}
 ASSUME StaleReadNode \in BOOLEAN
