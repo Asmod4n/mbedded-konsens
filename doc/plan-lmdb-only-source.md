@@ -1,45 +1,46 @@
 # Plan: LMDB is the only source of the durable values
 
-Source: the owner, 2026-10-24 14:44 and 14:45: "unsere einzige quelle
-für daten ist lmdb", "wir antworten nie aus dem speicher", "wir sind
-ein distributed log, nur das log kennt das log". The owner decided at
-14:46 that this change comes before the start checks
+Source: the owner, 2026-10-24 14:44 and 14:45: the only source of data
+is LMDB; no answer comes from memory; only the log knows the log. The
+owner decided at 14:46 that this change comes before the start checks
 (doc/plan-start-checks.md on branch start-checks).
 
 Order of the work: this plan, then the model of section 3 and its TLC
 runs, then one review of plan and model by a second agent, then the
 go of the owner, then the code of section 2.
 
-The owner, 19:38: "nur während eine transaction wissen wir was im log
-existiert. Nen node hat nur seine FSM die sagt was gerade los ist im
-ram." So outside a transaction, a node knows only the state of its
-state machine (role, phase); every fact about the log is read in a
-transaction.
+The owner, 19:38: outside a transaction, a node knows only the state
+of its state machine (role, phase); every fact about the log is read
+in a transaction.
 
-The owner, 14:49: "wir nutzen die modi, in denen lmdb schnell und
-sicher ist". So a step runs in one LMDB write transaction (section 2).
+The owner, 14:49: LMDB runs in its fast and safe modes. So a step runs
+in one LMDB write transaction (section 2).
 
-The form of a client work, from the owner, 15:27 to 15:39 and 15:55:
+The owner, 20:48 and 20:50: nothing is read from LMDB except through
+LMDB. LMDB has page checksums and a sync, and that is enough. So the
+node reads no page back from the disk itself.
+
+The form of a client work, from the owner, 15:27 to 15:39, 15:55, 20:29
+and 20:47:
 
 - A client sends work to any node. That node forwards it to the
   leader.
 - The leader appends one entry with the state "in work". There is one
   entry, not two: its state changes to "committed" later.
-- Each client work is one transaction with nested transactions.
-- A follower reports the CRC and the result that it read back after
-  its commit. The leader sets "committed" only when a majority reports
-  the same values. The decided index goes through the same check.
-- The disk can lie. The read-back finds a write that the disk did not
-  keep.
-- A step takes all the work that waits, so a batch costs what the
-  check costs (group commit, no fixed wait).
+- A follower reports the CRC of the entry and of its result. The leader
+  sets "committed" only when a majority reports the same values. The
+  decided index goes through the same check.
+- The state of the state machine changes only after the decide, from
+  the replicated log. There is no second log.
+- A step takes all the work that waits (group commit, no fixed wait).
 - A node finds an entry that is lost after its report through a chain
   CRC at each step (card, 15:55).
 - The README names the offsite node.
 
 ## 1. Facts checked in this session
 
-Line numbers are at commit 06a52bf.
+Line numbers are at commit 06a52bf. `git diff 06a52bf HEAD -- include
+src` is empty, so they apply to the head of this branch.
 
 - `sequence_paxos` keeps four durable values as fields: `promise_`,
   `accepted_round_`, `decided_idx_`, `accepted_idx_`
@@ -62,24 +63,34 @@ Line numbers are at commit 06a52bf.
   decided update (`:834`, `:853`, `:870`), the recovery
   (`:922`, `:940`, `:954-956`, `:986`, `:1046`, `:1067-1068`), and the
   leader of a forward (`:475`, `:541`, `:669`).
+- `handle_majority_promises` sets the decided index from
+  `get_max_decided_idx` of the promises (`:758`, `:768`), with no CRC.
 - The read ranges use `accepted_idx_` as their end (`:501`, `:524`,
   `:612`, `:891`, `:987`).
 - `node` reads `get_promise()` between steps (`node.hpp:127`, `:221`,
   `:374`, `:466`).
+- `node` keeps the client table and the applied index in memory and
+  applies a decided entry to `machine_` in memory (`node.hpp:435-450`).
+  It answers a read from `machine_` (`:476-485`). The `state_machine`
+  concept has no transaction (`state_machine.hpp:11-14`).
 - One step is the calls of `handle` for a batch and then `commit`
-  (`sequence_paxos.hpp:276-301`). `commit` writes the waiting ops in one transaction
-  (`:295`). Messages leave through `take_outgoing_messages`, which
-  throws while ops wait (`:459-463`). Some handlers write the waiting
-  ops in the middle of a step before they read
+  (`sequence_paxos.hpp:276-301`). `commit` writes the waiting ops in one
+  transaction (`:295`). Messages leave through `take_outgoing_messages`,
+  which throws while ops wait (`:459-463`). Some handlers write the
+  waiting ops in the middle of a step before they read
   (`get_storage_after_writing_waiting_ops`, `:591-595`;
   `handle_majority_promises` `:766`; `complete_recovery` `:1071`).
 - `persistent_storage` opens one read transaction for each getter
   (`src/persistent_storage.cpp:454`, `:499`, `:515`, `:538`). The four
   values and the last CRC are read in separate transactions.
 - `get_log_len` is the count of entries (`read_log_len`, `:192-200`),
-  not the last key plus one.
-- The environment opens with no flags (`src/persistent_storage.cpp:403`),
-  so it has no `MDB_WRITEMAP`.
+  not the last key plus one. Keys count from 0, so the decided index `d`
+  means that the entries with the keys 0 to `d - 1` are decided.
+- The environment opens with no flags (`src/persistent_storage.cpp:403`):
+  no `MDB_WRITEMAP`, no `MDB_NOTLS`.
+- A thread uses one transaction at a time, plus its child transactions
+  (`lmdb.h:98`). More than one read transaction in one thread needs
+  `MDB_NOTLS` (`lmdb.h:668-672`).
 - A write transaction of LMDB reads its own changes: `mdb_page_get`
   looks in the dirty list of the transaction and of its parents first
   (`mdb.c`, `mdb_page_get`, LMDB_1.0.2).
@@ -90,53 +101,37 @@ Line numbers are at commit 06a52bf.
   it (`mdb_txn_commit`, `mdb.c:4606-4616`: `mdb_env_sync0`, then
   `mdb_env_write_meta`).
 - LMDB_1.0.2 has page checksums (`mdb_env_set_checksum`, `lmdb.h:1118`)
-  and page encryption (`mdb_env_set_encrypt`, `lmdb.h:1108`). The plan
-  does not use them: the owner decided on 2026-10-16 against
-  `mdb_env_set_checksum` and `MDB_REMAP_CHUNKS`, because they break the
-  views into the map. LMDB checks a
-  checksum only on the path of `MDB_REMAP_CHUNKS` (`mdb_rpage_encsum`,
-  `mdb.c:6860-6885`, called at `:7215-7233`), and only when a page first
-  enters that cache. With a checksum alone, `MDB_REMAP_CHUNKS` stays off
-  (`MDB_REMAPPING`, `mdb.c:2337`; only encryption sets it, `:12147`):
-  LMDB writes the checksum (`:4296`), checks its size at open (`:5646`),
-  and checks no page on a read. In one
-  bench, the checksum added no cost above the noise floor of 17.1 % to a
-  step or to a read after it, and the reads of a step called it zero
-  times (bench/results/2026-10-24-165345Z-lmdb-page-checksum.txt).
-- The page cache, tested on this machine (kernel 6.18, ext4), in small
-  programs outside the tree
-  (bench/results/2026-10-24-163112Z-page-cache-drop.txt):
-  - `fdatasync` keeps the pages in the cache.
-  - `posix_fadvise(POSIX_FADV_DONTNEED)` keeps the pages of a file
-    that is mapped.
-  - `madvise(MADV_PAGEOUT)` on the mapping takes the pages out of the
-    cache: `mincore` shows 0 of 64 pages, also through a new mapping
-    of the file. The kernel skips a page that another process maps.
-  - `madvise(MADV_PAGEOUT)` on one page of a file written with one
-    `pwrite` keeps that page: the page is part of a larger folio. Then
-    `posix_fadvise(POSIX_FADV_DONTNEED)` on the same page takes it out
-    of the cache. `MADV_DONTNEED` and then `POSIX_FADV_DONTNEED` keep
-    it. In an LMDB bench with values of 1024 bytes, `MADV_PAGEOUT` alone
-    left 360 of 527 value pages in the cache, and the pair left 0.
-- The read-back costs, against the same step with no read-back, in
-  one bench on this machine (g++ 16 -O2, ext4 on a virtio disk, noise
-  floor 16.2 %): +23 % to +24 % with 1 message per step, +29 % to
-  +35 % with 16, +95 % to +128 % with 256
-  (bench/results/2026-10-24-162320Z-lmdb-read-back.txt). The page-out
-  left one page in the cache in 19 of 84 runs.
-- A value that a read transaction gives points into the map of LMDB,
-  because `MDB_REMAP_CHUNKS` is off (`MDB_REMAPPING`, `mdb.c:2337`).
-  Encryption sets it (`:12147`); a checksum alone does not. With it, LMDB
-  maps chunks and, with encryption, decrypts into its own buffer; the
-  read-back of 2.4 then needs another form.
-- The model already has no copy of `promise`, `n_accepted` and
-  `decided_idx`: they are durable variables
-  (`model/tla/SequencePaxos.tla:210`). `accepted_idx` is a volatile
-  variable (`:211`), and the invariant `AcceptedIdxIsLogLength` says
-  that it equals the log length.
+  and page encryption (`mdb_env_set_encrypt`, `lmdb.h:1108`). LMDB checks
+  a checksum only on the path of `MDB_REMAP_CHUNKS` (`mdb_rpage_encsum`,
+  `mdb.c:6862-6886`, called at `:7215-7233`). Without that flag, LMDB
+  writes the checksum (`:4296`), checks its size at open (`:5646`), and
+  checks no page on a read.
+- With `MDB_REMAP_CHUNKS`, LMDB maps chunks of 16 pages, each with its
+  own `mmap`; `me_map` holds only the two meta pages (`mdb.c:5104-5127`).
+  It checks a page when the bit of its chunk in `muse` is clear, so once
+  in a transaction (`:6872`). `mdb_txn_end` clears the bit only at the
+  last reference to the chunk, and the chunk stays mapped (`:3773-3792`).
+  So a page that another live transaction holds is not checked again.
+  A failed check returns `MDB_BAD_CHECKSUM` (`lmdb.h:524`, `mdb.c:7367`).
+  Not checked: whether LMDB checks the two meta pages with a checksum.
+- The checksum with `MDB_REMAP_CHUNKS`, in one bench on this machine
+  (g++ 16 -O2, `MDB_NOTLS`, noise floor 11.0 %): the step costs no more;
+  a read of the step after it costs +15 % (64 B) and +12 % (1024 B) with
+  256 messages per step, and nothing above the noise with 1 and 16
+  (bench/results/2026-10-24-194139Z-lmdb-page-checksum-remap.txt). Other
+  builds: not measured.
+- The benches of a read-back from the disk (162320Z, 165704Z, 165906Z,
+  195244Z, 203303Z in bench/results/) and of the page cache (163112Z)
+  stay as records. The owner decided against the read-back at 20:50, so
+  the plan uses none of their numbers.
+- The model has no copy of `promise`, `n_accepted` and `decided_idx`:
+  they are durable variables (`model/tla/SequencePaxos.tla:238`).
+  `accepted_idx` is a volatile variable (`:239`). Two invariants say
+  that it equals the log length: `AcceptedIdxIsLogLength` (`:2481`) and
+  `AcceptedIdxIsLogLen` (`:2493`).
 - A key that is lost while the node runs is not found by the code at
   06a52bf: the node sends the value of its field
-  (doc/review-plan-start-checks-4.md, finding 1).
+  (doc/review-plan-start-checks-4.md, finding 1; not checked again).
 
 ## 2. Change of the code
 
@@ -156,45 +151,54 @@ Line numbers are at commit 06a52bf.
    `:221`, `:374`, `:466`) runs in a read transaction and calls the step
    check of item 5 first, so no value leaves the node without the
    check. The read transaction is kept and reused with `mdb_txn_reset`
-   and `mdb_txn_renew`, as LMDB documents for that use.
+   and `mdb_txn_renew`, as LMDB documents for that use. It is reset
+   before the write transaction of a step begins. The environment
+   opens with `MDB_NOTLS`, because a kept read transaction and the
+   write transaction stand in one thread.
 4. In one transaction, the storage gives the log length as the last
    key plus one, and compares it with the count of entries through the
    continuity function of the start-checks plan (its item 2.1). When
    they differ, the read returns `missing_entry`.
 5. The checks of `with` in the start-checks plan (its item 2.4), the
-   state check of 2.2 and the chain check of 2.3 run at the first read
-   of each step and again as its last read before the commit, not only
-   at the start. One function makes them. A damage that they find makes
-   the node stop voting. It then copies the whole durable state from a
-   peer that votes and does not recover, and runs the recovery of VR
-   Revisited, as at a start (owner, 2026-10-24 19:21). The model of this
-   is round 8.
-6. `cached_promise_message_` (`:728`) is built again from LMDB on a
+   state check of 2.2, the chain check of 2.3 and the mark of 2.3
+   item 7 run at the first read of each step and again as its last read
+   before the commit, not only at the start. One function makes them.
+   A damage that they find makes the node stop voting. It then repairs
+   its log from a peer (2.4) and runs the recovery of VR Revisited, as
+   at a start (owner, 2026-10-24 19:21). The model of this is round 8.
+6. A read that returns `MDB_BAD_CHECKSUM` is a damage of item 5
+   (provisional; open question 9). Every other read error of LMDB throws
+   a type derived from `std::system_error` (owner, 2026-10-24 14:39).
+7. `cached_promise_message_` (`:728`) is built again from LMDB on a
    resend (`:440`), not kept.
-7. The storage concept (`storage.hpp:121-129`) changes from
+8. The storage concept (`storage.hpp:121-129`) changes from
    `write_atomically(ops)` and separate getters to a transaction that
    reads and writes. Its members take their names from LMDB (commit,
    abort). The type is `storage::transaction` (owner, 2026-10-24 19:23);
    `konsens::transaction` (`node.hpp:70`) stays. No LMDB name leaves the
    library.
-8. A write error of a step throws `write_error`, as now. A read error
-   of LMDB throws a type derived from `std::system_error` (owner,
-   2026-10-24 14:39).
-9. Every new error branch is `[[unlikely]]`.
+9. A write error of a step throws `write_error`, as now.
+10. Every new error branch is `[[unlikely]]`.
+11. The environment sets the page checksum and `MDB_REMAP_CHUNKS`
+    (owner, 2026-10-24 19:45). The node reads no page back from the
+    disk itself (owner, 20:50).
 
 ### 2.2 The state of an entry
 
 1. An entry has a state field: `in_work` or `committed`. The names are
    provisional.
 2. An entry is appended with `in_work`. Each step that raises the
-   decided index from `o` to `d` sets `committed` on the entries
-   `o + 1` to `d`, in the same transaction. These are all the writers of
-   the decided index: the decide in `accept_decide`, `accept_sync` and
-   `decide`, the majority of promises (`handle_majority_promises`), the
-   end of recovery (`complete_recovery`), the build of a new node and
+   decided index from `o` to `d` sets `committed` on the entries with
+   the keys `o` to `d - 1`, in the same transaction. These are all the
+   writers of the decided index: the decide in `accept_decide`,
+   `accept_sync` and `decide`, the majority of promises
+   (`handle_majority_promises`), the end of recovery
+   (`complete_recovery`), the build of a new node, the repair of 2.4 and
    the start in single-node mode. Each has a test.
-3. The step check reads only the entries at the decided index and the
-   one after it: the first is `committed`, the second is `in_work`.
+3. The step check reads the entry with the key `d - 1`, which is
+   `committed`, and the entry with the key `d`, which is `in_work`. With
+   `d = 0` it reads only the second; with no entry at the key `d` it
+   reads only the first.
 4. The entry CRC covers the index, the kind, the payload and the
    result. The state has its own CRC, because it differs between nodes
    while the decided indexes differ.
@@ -208,164 +212,167 @@ Line numbers are at commit 06a52bf.
    the entry before it, the index, the kind, the payload and the
    result. The state is not in the chain, because it changes.
 2. One meta record holds the promise, the accepted round, the decided
-   index, the last index and its chain CRC, with one CRC over all of
-   them. Now these are three keys (`src/persistent_storage.cpp:31-33`).
-   The node writes the meta record when it is created: the seed node at
-   the first start, every other node at the end of its recovery. The
-   write of an entry and the write of the meta record are in one
-   transaction. A running node with no meta record, or with a meta
-   record whose CRC fails, is damaged. Round 3 of the model showed why:
-   a node with an empty log that loses its promise breaks S1, and no
-   other check finds it. The owner chose this form, 2026-10-24 19:19.
+   index, the log length and the chain CRC of the last entry, with one
+   CRC over all of them. Now these are three keys
+   (`src/persistent_storage.cpp:31-33`). The writers of the meta record
+   are: the seed node at its first start, a node at the end of its
+   recovery, a node built for a new configuration, the repair of 2.4,
+   and every step that changes one of its values. The write of an entry
+   and the write of the meta record are in one transaction. The check
+   "a node with no meta record is damaged" starts after the first write
+   of the node. A meta record whose CRC fails is a damage. Round 3 of
+   the model showed why: a node with an empty log that loses its
+   promise breaks S1, and no other check finds it. The owner chose this
+   form, 2026-10-24 19:19.
 3. The step check reads the last entry and the meta record in its
    transaction and compares the index and the chain CRC. This finds a
    lost last entry. A lost entry in the middle leaves both equal; the
    continuity check of 2.1 item 4 finds it.
 4. The chain CRC of entry `k` stands for the prefix up to `k`. The model
    compares the prefix itself (`PrefixAt`, `VerifyCrc`).
-5. What no local check finds: the disk gives back an older meta record
-   with a valid CRC while the log stays (`stale_meta`), or older
-   versions of the entries and the meta record together (`rollback`).
+5. What no local check finds:
+   - the disk gives back an older meta record with a valid CRC while
+     the log stays (`stale_meta`);
+   - older versions of the entries and the meta record together
+     (`rollback`);
+   - an older version of a leaf page in the middle of the log, with the
+     same keys, entries of an earlier ballot and a valid page checksum.
    LMDB writes a changed page to a new place and reuses freed pages, so
    an older version of a page can stand on the disk. Model round 5
-   checks both kinds. At a start, the recovery of VR Revisited covers
-   them; while the node runs, item 6 covers part of them.
+   checks the first two. At a start, the recovery of VR Revisited covers
+   them; while the node runs, items 6 and 7 cover part of the first two.
+   The third is not modelled. The README states all three (owner,
+   2026-10-24 19:19: the README warns).
 6. Each node keeps, for each peer, the highest promise and the highest
-   accepted index that the peer reported, in memory. A message of the
-   peer with a lower value makes the node refuse it and report the
-   proof. This finds only a step back that a peer saw. The README says
-   this, and recommends a drive with power-loss protection or with its
-   write cache off (owner, 2026-10-24 19:19). The model of this check is
-   round 7. It does not find the traces of round 5.
+   accepted index that the peer reported on its present connection, in
+   memory. The connection keeps the order (owner, 2026-10-20: the
+   election requires TCP). A new connection starts with no values. A
+   message of the peer with a lower value makes the node refuse it and
+   report the proof. This finds only a step back that a peer saw. The
+   README says this, and recommends a drive with power-loss protection
+   or with its write cache off (owner, 2026-10-24 19:19). The model of
+   this check is round 7. It holds only with no loss and no duplicate
+   (`ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0`). It does not
+   find the traces of round 5.
 7. The state machine of each node keeps, in memory, the highest
-   promise, the highest pair of accepted round and last index, and the
+   promise, the highest pair of accepted round and log length, and the
    highest decided index that its own transactions read or wrote (owner,
    2026-10-24 19:51). It is a check, not a source: each step reads LMDB
    and compares. A value below the mark is a damage (2.1 item 5). A
-   restart forgets the mark; the recovery covers that case. TigerBeetle
-   keeps the same values in memory (`op`, `commit_max`:
-   src/vsr/replica.zig:393-449 at 0450c32). The model
-   of this check is round 8. Provisional name: high-water mark.
+   restart forgets the mark; the recovery covers that case. The repair
+   of 2.4 sets the mark from the repaired state. A node of a new
+   configuration starts with no mark. TigerBeetle keeps `commit_max` in
+   memory with the invariant that it never decreases
+   (src/vsr/replica.zig:445 at 0450c32). The model of this check is
+   round 8, with no crash, wipe, resend, loss, reconfiguration, StopSign
+   or forced single node. Round 9 adds them.
 
-### 2.4 The read-back and the vote
+### 2.4 The repair from a peer
 
-1. After the commit of a step, the node reads back each entry that the
-   step wrote, the meta record, the pages on the path to them and the
-   two LMDB meta pages, from the disk and not from the cache:
-   - a read transaction gives the address of each value in the map;
-   - `madvise(MADV_PAGEOUT)` and then `posix_fadvise(POSIX_FADV_DONTNEED)`
-     on the same range take the pages out of the cache;
-   - a page that stays in the cache stays; the node does nothing more
-     about it and reports as usual (owner, 2026-10-24 19:28);
-   - a new read transaction reads the values from the disk;
-   - the node computes the CRC of each entry and the chain CRC.
-   Measured (bench/results/2026-10-24-165704Z-lmdb-read-back-full.txt,
-   noise floor 10.6 %): with the meta pages, +16 % to +120 % per
-   message against no read-back; with the whole used file, +31 % to
-   +156 %, and that cost grows with the file. In 34 of 84 runs with the
-   meta pages, two to six pages stayed in the cache over the whole run
-   of about 320 steps. In a separate test, the meta pages stayed after
-   the first attempt in 1 of 3400 steps, and a second attempt dropped
-   them (bench/results/2026-10-24-165906Z-lmdb-meta-page-drop.txt).
-2. A value that is not equal to what the step wrote is a lost write.
-   The node does not send its `accepted` and stops voting. The report of
-   the proof (node, index, expected and found CRC) is provisional: it
-   goes to the log sink of the library, as the logging decision of
-   2026-10-17 says for records.
-3. `accepted` carries the chain CRC of the accepted index, read back. A
-   `decide`, an `accept_decide` and an `accept_sync` carry the chain
-   CRC of the decided index of the leader. The recovery response and
-   `new_state` carry the chain CRC of their last index, and the node
-   compares it before it raises its decided index.
-4. The leader counts an `accepted` only when its chain CRC equals the
+This form is provisional (open question 10).
+
+1. A node that found a damage sends a recovery request, as at a start.
+2. A peer that votes and does not recover answers with its log length
+   and its chain CRC at each index that the requester asks for. It reads
+   them in one read transaction and runs the step check in it first. A
+   peer whose check fails does not answer and repairs itself.
+3. The requester finds the first index where its chain CRC differs, or
+   where its log ends. It asks for the entries from that index to the
+   end of the peer's log.
+4. The peer sends them from one read transaction, after the step check.
+5. The requester checks the chain CRC of each received entry against
+   the chain CRC of the entry before it, before it writes. In one write
+   transaction it cuts its log at the first differing index, writes the
+   entries, writes the meta record with the promise and the decided
+   index of the peer, and sets its mark from that state.
+6. Then it runs the recovery of VR Revisited and votes again only after
+   it.
+7. With no peer that answers, the node stays out of the vote.
+
+### 2.5 The vote
+
+1. `accepted` carries the chain CRC of the accepted index. A `decide`,
+   an `accept_decide` and an `accept_sync` carry the chain CRC of the
+   decided index of the leader. The recovery response, `new_state` and
+   `promise` carry the chain CRC of their last index and of their
+   decided index.
+2. The leader counts an `accepted` only when its chain CRC equals the
    chain CRC of its own log at that index. It decides only from such
    reports.
-5. A follower raises its decided index to `d` only when its own chain
-   CRC at `d` equals the one in the message. Otherwise it keeps its
-   decided index.
-6. The page range: `mdb_env_info` gives the map address and size; the
-   map is one `std::span`. The offset of a value is its address minus
-   the map address, rounded down to a named page size, and
-   `subspan` gives the range. The one pointer subtraction is open
-   (section 7). `std::align` does not fit: it rounds up.
-7. With the disk cache of the drive on, a read can come from that cache
-   and not from the medium. The read-back does not find a loss there.
-   The README says this, as it says for a volatile cache now.
-8. With the page checksums and `MDB_REMAP_CHUNKS` (owner, 2026-10-24
-   19:45), LMDB maps chunks of 16 pages, each with its own `mmap`, and
-   the map of `mdb_env_info` holds only the two meta pages. A value
-   address does not give its file offset, so item 6 does not apply in
-   this form. The read-back then works so:
-   - `madvise(MADV_PAGEOUT)` on the range of each value in its chunk;
-   - `posix_fadvise(POSIX_FADV_DONTNEED)` on the whole file;
-   - the read transaction ends, and a new one reads the values; LMDB
-     checks the page checksum of each page that it reads, once in each
-     transaction (mdb.c:6862-6886, :3773-3792).
-   Measured (bench/results/2026-10-24-195244Z-lmdb-read-back-remap.txt,
-   noise floor 16.8 %), against the same form with a read-back from the
-   cache: 64 B +17.5 % to +92 %, 1024 B +44 % to +121 %; against no
-   checksum and no read-back: +19 % to +246 %. mincore found no value
-   page in memory after the drop. A page that another live transaction
-   holds in the same chunk is not checked again in that transaction.
-   The drop of only the value pages, with the file offset from
-   `/proc/self/maps`, is not faster across the table
-   (bench/results/2026-10-24-203303Z-lmdb-read-back-remap-maps.txt,
-   noise floor 11.2 %): against the whole file, 64 B with 1 message
-   +34 %, 1024 B with 16 and 256 messages -14 % and -15 %, the rest
-   within the noise. It also left one value page in memory in 6 of 84
-   runs. The drop of the whole file stays.
+3. A follower raises its decided index to `d` only when its own chain
+   CRC at `d` equals the one in the message. What it does when they
+   differ is open (open question 8).
+4. `handle_majority_promises` raises the decided index to the highest
+   decided index of the promises only when the chain CRC at that index
+   in the promise equals its own after the sync.
+5. With the disk cache of the drive on, a read can come from that cache
+   and not from the medium. The README says this, as it says for a
+   volatile cache now.
 
-### 2.5 Execute-Verify and nested transactions
+### 2.6 The state machine in LMDB
 
-1. Each client work runs in a nested write transaction under the write
-   transaction of the step. A user error aborts only the nested
-   transaction, and the entry records the error as its result.
-2. The environment keeps no `MDB_WRITEMAP`, so nested write
+1. The state of the state machine and the client table stand in LMDB,
+   in their own environment (owner, 2026-10-24 20:47). The applied index
+   stands in the same environment.
+2. `apply` and `query` of the `state_machine` concept take a
+   `storage::transaction`. The node answers a read in a read transaction
+   of that environment.
+3. A decided entry changes the state in a write transaction of that
+   environment. It commits after the decide, so after the commit of the
+   step that raised the decided index (Jepsen decision of 2026-10-17
+   11:24, owner 20:29).
+4. Execute-Verify: the leader and each follower run the work of an
+   entry before the decide, in a write transaction of the state that
+   they do not commit. The entry carries the result and its CRC. A
+   user error aborts only a nested transaction, and the entry records
+   the error as its result.
+5. The state on which an entry runs before the decide is open (open
+   question 11). Provisional form: the leader proposes the next batch
+   only after the decide of the batch before it, so every entry runs on
+   the committed state. A step still takes all the work that waits.
+6. The client gets the result that stands in the decided entry. The run
+   after the decide gives the same result, because the entry ran on the
+   same state.
+7. A later `accept_sync` that cuts an entry (`sequence_paxos.hpp:804-810`)
+   leaves no effect. The node that sent the work sees that the leader is
+   gone and sends the work to the new leader again; the session and the
+   request number keep it from a second run (owner, 2026-10-17).
+8. Both environments keep no `MDB_WRITEMAP`, so nested write
    transactions stay possible.
-3. The result and its CRC go into the `accepted` of the follower, as
-   the read-back of 2.4 gives them.
-4. The state changes only after the decide, from the entry in the log
-   (owner, 2026-10-24 20:25 and 20:29). The replicated log is the
-   record of what is written; there is no second log. A follower runs
-   the work for Execute-Verify before the decide in a transaction of
-   the state that it does not commit; the entry carries the result and
-   its CRC. A later `accept_sync` that cuts the entry
-   (`sequence_paxos.hpp:804-810`) leaves no effect. The node that sent
-   the work sees that the leader is gone and sends the work to the new
-   leader again; the session and the request number keep it from a
-   second run (owner, 2026-10-17). This keeps the Jepsen decision of
-   2026-10-17 11:24: the state commits only after the decide.
 
-### 2.6 Group commit
+### 2.7 Group commit
 
 1. A step takes every request that waits when it begins. No step waits
    for more work.
 2. While one step syncs, new requests wait for the next step. So the
-   batch grows with the cost of the sync and the read-back.
+   batch grows with the cost of the sync.
 3. The bounded queue and the refusal of the backpressure decision stay
    as they are.
 
-### 2.7 The README
+### 2.8 The README
 
 The README names the offsite node: a node at a second site, so that
-one site that fails does not take a majority of the copies.
+one site that fails does not take a majority of the copies. It states
+the cases of 2.3 items 5 and 6 and of 2.5 item 5.
 
-### 2.8 Not in this change
+### 2.9 Not in this change
 
-No change to the wire beyond the CRC fields of 2.4 item 3. The file
-format changes through 2.2 and 2.3, so the format version goes up. No
-store of an older format exists outside the tests, so the library
-refuses an older format and does not convert it. Item 10 of the
-start-checks plan ("no change to the file format") changes with this.
+The wire changes in these places only: the CRC fields of 2.5 item 1,
+the result in `accepted` (2.6 item 4), and the messages of the repair
+(2.4). The file format changes through 2.2, 2.3 and 2.6, so the format
+version goes up. No store of an older format exists outside the tests,
+so the library refuses an older format and does not convert it. Item 10
+of the start-checks plan ("no change to the file format") changes with
+this.
 
 ## 3. Model
 
 ### 3.1 Change
 
-- `accepted_idx` leaves `volatile`. Every use reads `Len(log[i])`.
-  `AcceptedIdxIsLogLength` goes, because it holds by definition. Not
-  done yet: the runs keep the variable and cap it at the damaged log.
-  Round 8 removes it (owner rule of 19:38).
+- `accepted_idx` stays in `volatile` until round 9.
+  `AcceptedIdxIsLogLen` checks it in each run; round 8 found no
+  difference. After round 9, `accepted_idx` goes, every use reads
+  `Len(log[i])`, and both invariants go (owner rule of 19:38).
 - `RunningStorageFault(i, kind)`: the durable state of a running node
   changes, with the kinds of the start-checks model (`missing_entry`,
   `missing_accepted`, `missing_promise`, `missing_decided`) and two
@@ -374,8 +381,8 @@ start-checks plan ("no change to the file format") changes with this.
 - `StepChecks` (Bool): the checks of 2.1 items 4 and 5 at each step. A
   damage they find makes the node leave `running`, as `stop_voting`
   does.
-- `VerifyCrc` (Bool): the comparisons of 2.4 items 3 to 5, with the log
-  prefix in the field `last` as a stand-in for the chain CRC.
+- `VerifyCrc` (Bool): the comparisons of 2.5, with the log prefix in the
+  field `last` as a stand-in for the chain CRC.
 - `ChainCheck` (Bool): the chain check of 2.3 item 3. With it, the step
   check finds a lost last entry.
 - `MetaRecord` (Bool): the meta record of 2.3 item 2. With it, the step
@@ -383,49 +390,58 @@ start-checks plan ("no change to the file format") changes with this.
   `stale_meta` whose log differs from the present log. It does not find
   a `stale_meta` with the same log, nor a `rollback`.
 - The node takes its next step on the damaged state, because the model
-  has no copy of it. A fault that the checks find is found in the same
-  action: the model takes no step of the node between them. This holds
-  for the code only with 2.1 items 3 and 5. A damage that appears in
-  the middle of a step, after its first check, is caught by the last
-  check of the step; the model does not show it.
-- Not modelled: the state field of 2.2. The model treats it as a
-  function of the decided index; the tests of 2.2 item 2 check the
-  writers. The read-back of 2.4 item 1 is modelled as the fault that
-  the step check finds before the report.
+  has no copy of it. `StepCheck` lets the node take one more step before
+  the check finds the damage; the code checks before each step, so the
+  model allows more than the code.
+- Not modelled: the state field of 2.2, and the old leaf page of 2.3
+  item 5. The model treats the state field as a function of the decided
+  index; the tests of 2.2 item 2 check the writers.
 - `HighWater` (Bool): the mark of 2.3 item 7. `HighWaterHolds` checks
   that no step without a damage falls below the mark.
 - `RepairFromPeer` (Bool): a node that finds a damage while it runs
   takes the durable state of a node that votes and does not recover,
-  and restarts with the recovery (2.1 item 5). With no such node, it
-  leaves `running`.
-- `AcceptedIdxIsLogLen` checks that the copy `accepted_idx` equals the
-  log length in each run, as a step before its removal.
+  and restarts with the recovery. With no such node, it leaves
+  `running`. The model takes the whole state in one action; 2.4 takes
+  only the entries that differ. The model sets the mark from the copy.
+- `VerifyPromise` (Bool, round 9): the check of 2.5 item 4.
+- `StateInLmdb` (round 9): the client table and the applied index stand
+  in the durable tuple of a node, and the state changes only at a
+  decide. The details of this action follow the answer to open
+  question 11.
 
 ### 3.2 Questions for the model
 
 - Does a lost promise of a running node with an empty log break S2b?
   Round 1: yes (model/results/20261024T153400Z-lmdb-only-source-runs-1.md).
-- Does a lost last entry of a running node break S2? With `VerifyCrc`
-  and no `ChainCheck`: yes, when the node loses the entry after its
-  report and votes on.
-- Does `ChainCheck` with `VerifyCrc` keep S1 to S4 for every kind?
+- Does a lost last entry of a running node break a safety property?
+  Round 2: S1 breaks with `VerifyCrc` and no `ChainCheck` (`MC_r_entry`).
+- Do `ChainCheck` and `VerifyCrc` keep S1 to S4 for every kind? Round 3:
+  no, a lost promise with an empty log breaks S1. Round 4: yes, with
+  `MetaRecord`.
 - Is `VerifyCrc` still needed with `ChainCheck`? Round 4: no result
   changed; it stays for Execute-Verify.
 - Do `stale_meta` and `rollback` of a running node break S1 to S4 with
   every check on? Round 5.
 - Does a resend (`MaxTimeout = 1`) change round 4? Round 5.
-- Do the high-water mark and the repair from a peer keep S1 to S4
-  against `stale_meta` and `rollback`? Round 8: no violation in five
-  simulations of 15 min (model/results/20261024T195900Z-lmdb-only-source-runs-8.md).
+- Do the mark and the repair from a peer keep S1 to S4 against
+  `stale_meta` and `rollback`? Round 8: no violation in five simulations
+  of 15 min (model/results/20261024T195900Z-lmdb-only-source-runs-8.md).
+- Round 9: does `HighWaterHolds` hold, with `RunningFaults` FALSE, in
+  the configs of the full model: crash, wipe, resend, loss, duplicate,
+  a second `AcceptSync` in one ballot, reconfiguration, StopSign, forced
+  single node, client sessions?
+- Round 9: does a repair from a source with an undetected damage break
+  S1 to S4 (`MaxStorageFault = 2`)?
+- Round 9: does the decide at the majority of promises keep S1 to S4
+  with `VerifyPromise`?
 
 ### 3.3 Configurations and runs
 
-Nodes {1, 2, 3}, Values {v1, v2}, MaxBallot 2, MaxLog 2, one fault.
-With running faults, S5 and S2b do not hold by definition of the
-fault, so these runs check S1 S2 S3 S4 and the properties `S2Grows`
-`BuildOnlyFromRunning`. One config for each kind, with and without
-`VerifyCrc` and `ChainCheck`. Each run is a simulation of 15 min, at
-most three at a time. Results go to
+Nodes {1, 2, 3}, Values {v1, v2}, MaxBallot 2, MaxLog 2, one fault,
+except where round 9 names two. With running faults, S5 and S2b do not
+hold by definition of the fault, so these runs check S1 S2 S3 S4 and
+the properties `S2Grows` `BuildOnlyFromRunning`. Each run is a
+simulation of 15 min, at most three at a time. Results go to
 `model/results/<time>-lmdb-only-source-runs-<n>.md` and are pushed
 after each round.
 
@@ -433,8 +449,9 @@ after each round.
 
 - That the code reads LMDB as the model says. The tests of section 4
   show it.
-- That `MADV_PAGEOUT` makes the read go to the disk in every case. The
-  test of section 4 shows it for this machine only.
+- That LMDB checks every page that a step reads. Section 1 shows the
+  limit: a page in a chunk that another live transaction holds is not
+  checked again.
 - The cost of the reads. Section 5 measures it.
 
 ## 4. Tests
@@ -446,30 +463,37 @@ after each round.
 - "a read in a step sees the writes of the same step";
 - "no message leaves before the commit of its step";
 - "a resent promise carries the stored values";
-- "the read-back takes the pages of the step out of the cache";
-- "an entry that differs after the commit stops the vote";
+- "a page with a wrong checksum stops the vote";
 - "a user error aborts only its nested transaction";
-- "a leader does not decide on an accepted with another chain CRC".
+- "a leader does not decide on an accepted with another chain CRC";
 - "each writer of the decided index sets the state of its entries", one
   test for each writer of 2.2 item 2;
 - "a getter between two steps runs the step check";
-- "recovery compares the chain CRC, not the entry CRC".
+- "recovery compares the chain CRC, not the entry CRC";
+- "a value below the mark stops the vote";
+- "a repair takes only the entries that differ, and sets the mark";
+- "a repair refuses an entry whose chain CRC does not follow";
+- "the majority of promises does not decide on another chain CRC";
+- "a state change commits only after the decide";
+- "a read of the state comes from a read transaction".
 
 ## 5. Checks of the build
 
 - g++ 16, image localhost/cxx-matrix-fuse, Release, all tests.
 - counter_stress seeds 1 to 300 with `--cbor --power-loss 50`.
 - The cost, by the rules of a measurement, before and after, in every
-  build: the commit of a step, the read-back of a step, and the
-  throughput for batch sizes 1, 16 and 256. No number is written
-  before the run.
+  build: the commit of a step, a read after a step, and the throughput
+  for batch sizes 1, 16 and 256. No number is written before the run.
 
 ## 6. Provisional names
 
 `RunningStorageFault`, `StepChecks`, `VerifyCrc`, `ChainCheck`,
-`MetaRecord`,
-`in_work`, `committed`, the transaction type of 2.1 item 7. The owner
-decides the names.
+`MetaRecord`, `HighWater`, `RepairFromPeer`, `PeerCheck`,
+`VerifyPromise`, `StateInLmdb`, `stale_meta`, `rollback`, `in_work`,
+`committed`, meta record, chain CRC, step check, high-water mark. None
+has a source outside this tree. In Kafka, "high watermark" names the
+offset of the last committed record, so that word has another meaning
+there. The owner decides the names.
 
 ## 7. Open questions for the owner
 
@@ -478,27 +502,23 @@ decides the names.
    the node runs (2.3 item 5), the README warns, and the peers check
    (2.3 item 6).
 3. Decided, 2026-10-24 19:21: a node that stopped voting while it ran
-   recovers from a peer (2.1 item 5).
-4. Decided, 2026-10-24 19:28: a page that stays in the cache stays, and
-   the node does nothing about it. No O_DIRECT: it would need a second
-   reader of the LMDB pages.
-5. Decided, 2026-10-24 20:29: the state changes only after the
-   decide, from the log; no second log (2.5 item 4).
-6. The page checksums of LMDB were decided against on 2026-10-16
-   (section 1). Measured on 2026-10-24 at the owner's wish. The owner,
-   19:29 and 19:30, ends the reason of 2026-10-16: a value
-   from LMDB is used only inside its transaction and is never copied,
-   so it does not matter how LMDB hands out a page. With a checksum
-   alone, values still point into the map, so the read-back of 2.4 stays
-   as it is; but LMDB then checks no page on a read (section 1).
-   Measured with `MDB_REMAP_CHUNKS`
-   (bench/results/2026-10-24-194139Z-lmdb-page-checksum-remap.txt,
-   noise floor 11.0 %): the step costs no more; a read of the step after
-   it costs +15 % (64 B) and +12 % (1024 B) with 256 messages per step,
-   and nothing above the noise with 1 and 16. LMDB then checks pages on
-   reads. The owner chose this form, 2026-10-24 19:45: page checksums
-   with `MDB_REMAP_CHUNKS`, beside the CRC of each entry and the chain
-   CRC. The read-back in this form is 2.4 item 8.
-7. The one pointer subtraction of 2.4 item 6: gone. In the form that
-   the owner chose (item 6), 2.4 item 6 does not apply (2.4 item 8).
-8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
+   repairs from a peer (2.1 item 5).
+4. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 8).
+5. Decided, 2026-10-24 19:45: page checksums with `MDB_REMAP_CHUNKS`,
+   beside the CRC of each entry and the chain CRC (2.1 item 11).
+6. Decided, 2026-10-24 20:29: the state changes only after the decide,
+   from the log; no second log (2.6 item 3).
+7. Decided, 2026-10-24 20:47 and 20:50: the state machine and the client
+   table stand in LMDB (2.6); the node reads no page back from the disk
+   itself (2.1 item 11). With this, the pointer rounding of review 2,
+   finding 6, does not arise.
+8. Open, asked on a card: what a follower does when its chain CRC at `d`
+   differs from the leader's. Proposal: it is a damage of 2.1 item 5.
+9. Open: `MDB_BAD_CHECKSUM` is a damage that the repair of 2.4 fixes, or
+   a `std::system_error` that ends the process. Proposal: a damage.
+10. Open: the repair of 2.4. Proposal: the form of 2.4.
+11. Open: the state on which an entry runs before the decide (2.6
+    item 5). Proposal: one batch in flight, so every entry runs on the
+    committed state. The other form keeps the undecided entries in an
+    open write transaction of the state and runs them again after a
+    decide that covers only part of them.
