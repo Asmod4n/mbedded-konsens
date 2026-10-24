@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <fstream>
 #include <iterator>
 #include <span>
 #include <stdexcept>
@@ -16,19 +17,21 @@
 #include <variant>
 #include <vector>
 
-#include "konsens/memory_storage.hpp"
+#include <unistd.h>
+
 #include "konsens/sequence_paxos.hpp"
+#include "lmdb_storage.hpp"
 
 namespace {
 
 using konsens::ballot;
 using konsens::entry;
-using konsens::memory_storage;
 using konsens::node_id;
 using konsens::paxos_message;
+using konsens::persistent_storage;
 using konsens::phase;
 using konsens::role;
-using sp_t = konsens::sequence_paxos<memory_storage>;
+using sp_t = konsens::sequence_paxos<persistent_storage>;
 
 constexpr std::uint32_t config_id = 1;
 
@@ -71,7 +74,7 @@ std::vector<node_id> peers_of(node_id pid)
 
 constexpr std::uint64_t first_nonce = 1;
 
-sp_t make(node_id pid, memory_storage s = {}, std::uint64_t nonce = first_nonce)
+sp_t make(node_id pid, persistent_storage s = lmdb_storage::open_new(), std::uint64_t nonce = first_nonce)
 {
     return *sp_t::with({pid, peers_of(pid)}, std::move(s), nonce);
 }
@@ -111,9 +114,9 @@ void deliver_all(std::array<sp_t*, 3> nodes)
     }
 }
 
-memory_storage storage_with_promise(const ballot b)
+persistent_storage storage_with_promise(const ballot b)
 {
-    memory_storage s;
+    auto s = lmdb_storage::open_new();
     const std::array<konsens::storage_op, 1> ops{konsens::set_promise{b}};
     REQUIRE(s.write_atomically(ops));
     return s;
@@ -152,10 +155,10 @@ bool compatible(const std::vector<entry>& a, const std::vector<entry>& b)
     return std::ranges::equal(std::span(a).first(n), std::span(b).first(n));
 }
 
-memory_storage storage_of(const ballot promise, const ballot n_accepted, const std::vector<entry>& log,
-                          const std::uint64_t decided_idx)
+persistent_storage storage_of(const ballot promise, const ballot n_accepted, const std::vector<entry>& log,
+                              const std::uint64_t decided_idx)
 {
-    memory_storage s;
+    auto s = lmdb_storage::open_new();
     const std::array<konsens::storage_op, 4> ops{konsens::append_entries{log}, konsens::set_promise{promise},
                                                  konsens::set_accepted_round{n_accepted},
                                                  konsens::set_decided_index{decided_idx}};
@@ -192,31 +195,55 @@ std::vector<entry> log_of(sp_t& sp)
     return *l;
 }
 
-struct failing_storage {
-    memory_storage inner;
-    bool fail;
-    bool fail_reads{};
+constexpr std::size_t largest_map_pages = 64;
 
-    std::expected<void, std::error_code> write_atomically(std::span<const konsens::storage_op> ops)
-    {
-        if (fail) {
-            return std::unexpected(std::make_error_code(std::errc::no_space_on_device));
+// A storage whose map has no room for one more write. open takes the
+// smallest map in which LMDB can create the databases of the storage, so
+// the next write gives MDB_MAP_FULL, which the storage gives as
+// no_space_on_device. The fault comes from LMDB and not from a wrapper.
+persistent_storage storage_with_full_map()
+{
+    const auto directory = lmdb_storage::new_directory();
+    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    for (std::size_t pages = 1; pages <= largest_map_pages; ++pages) {
+        auto opened = persistent_storage::open(directory, pages * page, lmdb_storage::non_root_user_id);
+        if (opened) {
+            return std::move(*opened);
         }
-        return inner.write_atomically(ops);
     }
-    auto get_entries(std::uint64_t from, std::uint64_t to) const { return inner.get_entries(from, to); }
-    auto get_log_len() const { return inner.get_log_len(); }
-    auto get_promise() const { return inner.get_promise(); }
-    auto get_decided_idx() const { return inner.get_decided_idx(); }
-    auto get_accepted_round() const { return inner.get_accepted_round(); }
-    std::expected<std::uint32_t, std::error_code> get_last_entry_crc() const
+    FAIL("no map of up to largest_map_pages pages holds the databases");
+    return lmdb_storage::open_new();
+}
+
+// A storage whose last entry has a flipped byte on the disk, so that each
+// read of its CRC32C gives crc_mismatch. The fault is in the file that
+// LMDB reads and not in a wrapper.
+persistent_storage storage_with_flipped_last_entry()
+{
+    constexpr std::string_view marked = "konsens-flipped-entry";
+    const auto directory = lmdb_storage::new_directory();
     {
-        if (fail_reads) [[unlikely]] {
-            return std::unexpected(std::make_error_code(std::errc::io_error));
-        }
-        return inner.get_last_entry_crc();
+        auto storage = lmdb_storage::open_in(directory);
+        const auto bytes = std::as_bytes(std::span(marked));
+        const std::vector written{entry{konsens::entry_kind::normal, {bytes.begin(), bytes.end()}}};
+        const std::array<konsens::storage_op, 1> ops{konsens::append_entries{written}};
+        REQUIRE(storage.write_atomically(ops));
     }
-};
+    const auto data_file = directory / "data.mdb";
+    std::vector<char> contents;
+    {
+        std::ifstream in{data_file, std::ios::binary};
+        contents.assign(std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{});
+    }
+    const auto found = std::ranges::search(contents, marked);
+    REQUIRE_FALSE(found.empty());
+    found.front() = static_cast<char>(found.front() ^ 0x01);
+    {
+        std::ofstream out{data_file, std::ios::binary | std::ios::trunc};
+        out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    }
+    return lmdb_storage::open_in(directory);
+}
 
 }
 
@@ -393,7 +420,7 @@ TEST_CASE("update_decided caps the decided_idx at the accepted_idx")
 // later commit is a wrong use, and no message of the batch leaves.
 TEST_CASE("a failed write inside a batch throws write_error, and a later commit is a wrong use")
 {
-    auto sp = *konsens::sequence_paxos<failing_storage>::with({1, peers_of(1)}, failing_storage{{}, true}, first_nonce);
+    auto sp = make(1, storage_with_full_map());
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     try {
         static_cast<void>(sp.handle({2, 1, konsens::recovery{4}}));
@@ -410,7 +437,7 @@ TEST_CASE("a failed write inside a batch throws write_error, and a later commit 
 // second commit is a wrong use.
 TEST_CASE("a failed write at the commit throws write_error and sends nothing")
 {
-    auto sp = *konsens::sequence_paxos<failing_storage>::with({1, peers_of(1)}, failing_storage{{}, true}, first_nonce);
+    auto sp = make(1, storage_with_full_map());
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     try {
         static_cast<void>(sp.commit());
@@ -426,9 +453,9 @@ TEST_CASE("a failed write at the commit throws write_error and sends nothing")
 // a wrong use and must fail loudly.
 TEST_CASE("a pid of 0 is a wrong use")
 {
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({0, {1, 2}}, {}, first_nonce)), std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {1, 2}}, {}, first_nonce)), std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {2, 2}}, {}, first_nonce)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({0, {1, 2}}, lmdb_storage::open_new(), first_nonce)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {1, 2}}, lmdb_storage::open_new(), first_nonce)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {2, 2}}, lmdb_storage::open_new(), first_nonce)), std::logic_error);
 }
 
 // A message from a pid outside the cluster is dropped. The leader state
@@ -499,12 +526,12 @@ TEST_CASE("a recovering node drops messages, refuses proposals and resends recov
 // the last entry. The answer changes no state of the node.
 TEST_CASE("a recovering node answers recovery and changes no state")
 {
-    memory_storage s = storage_with_promise(ballot_of(3, 1));
+    persistent_storage s = storage_with_promise(ballot_of(3, 1));
     const std::vector two{make_entry(1), make_entry(2)};
     const std::array<konsens::storage_op, 3> ops{
         konsens::append_entries{two}, konsens::set_accepted_round{ballot_of(2, 2)}, konsens::set_decided_index{1}};
     REQUIRE(s.write_atomically(ops));
-    auto sp = make(1, s, 7);
+    auto sp = make(1, std::move(s), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1, konsens::recovery{9}}));
     const auto out = committed_messages_of(sp);
@@ -531,12 +558,12 @@ TEST_CASE("a recovering node answers recovery and changes no state")
 // counts only the answers with recovering = FALSE, so node 1 waits.
 TEST_CASE("the answer of a recovering node does not count in the normal recovery")
 {
-    memory_storage s = storage_with_promise(ballot_of(3, 3));
+    persistent_storage s = storage_with_promise(ballot_of(3, 3));
     const std::vector v1{make_entry(1)};
     const std::array<konsens::storage_op, 3> ops{
         konsens::append_entries{v1}, konsens::set_accepted_round{ballot_of(3, 3)}, konsens::set_decided_index{1}};
     REQUIRE(s.write_atomically(ops));
-    auto sp = make(1, s, 7);
+    auto sp = make(1, std::move(s), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1,
                        konsens::recovery_response{7,
@@ -608,12 +635,10 @@ TEST_CASE("handle_recovery: the primary sends its state and log, a follower its 
 
 // IfVotes in HandleRecovery: a node that does not vote does not answer.
 // Here the node stopped voting after a read of its storage failed inside a
-// batch.
+// batch: the CRC32C of its last entry does not match the bytes on the disk.
 TEST_CASE("handle_recovery: a node that does not vote does not answer")
 {
-    auto sp = *konsens::sequence_paxos<failing_storage>::with({1, peers_of(1)}, failing_storage{{}, false, true},
-                                                              first_nonce);
-    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    auto sp = make(1, storage_with_flipped_last_entry());
     REQUIRE(!sp.handle({2, 1, konsens::recovery{4}}));
     REQUIRE(!sp.votes());
     CHECK(!sp.handle({2, 1, konsens::recovery{5}}));
@@ -667,12 +692,12 @@ TEST_CASE("handle_recovery_response: only the primary of the highest ballot coun
 // sends PrepareReq with that promise to each peer (F4).
 TEST_CASE("handle_recovery_response: the node takes the state of the primary")
 {
-    memory_storage s = storage_with_promise(ballot_of(3, 1));
+    persistent_storage s = storage_with_promise(ballot_of(3, 1));
     const std::vector nines{make_entry(9), make_entry(9)};
     const std::array<konsens::storage_op, 2> ops{konsens::append_entries{nines},
                                                  konsens::set_accepted_round{ballot_of(1, 1)}};
     REQUIRE(s.write_atomically(ops));
-    auto sp = make(1, s, 7);
+    auto sp = make(1, std::move(s), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, 0}}));
     REQUIRE(sp.handle(
@@ -724,12 +749,12 @@ TEST_CASE("handle_recovery_response: the node takes a higher promise of the prim
 // stays within the log.
 TEST_CASE("handle_recovery_response: the decided index does not fall")
 {
-    memory_storage s = storage_with_promise(ballot_of(1, 3));
+    persistent_storage s = storage_with_promise(ballot_of(1, 3));
     const std::vector written{make_entry(1), make_entry(2)};
     const std::array<konsens::storage_op, 3> ops{
         konsens::append_entries{written}, konsens::set_accepted_round{ballot_of(1, 3)}, konsens::set_decided_index{2}};
     REQUIRE(s.write_atomically(ops));
-    auto sp = make(1, s, 7);
+    auto sp = make(1, std::move(s), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1,
                        konsens::recovery_response{7,
@@ -1120,7 +1145,7 @@ TEST_CASE("one node restarts while no peer is a primary, and the power-loss path
     deliver_all(nodes);
     REQUIRE(c.append(make_entry(1)));
     deliver_all(nodes);
-    c = make(3, committed_storage_of(c), 2);
+    c = make(3, lmdb_storage::open_copy_of(committed_storage_of(c)), 2);
     REQUIRE(c.recovering());
     deliver_all(nodes);
     CHECK(!c.recovering());
@@ -1154,12 +1179,12 @@ TEST_CASE("recovery after a rollback keeps S1")
     const std::array<sp_t*, 3> nodes{&a, &b, &c};
     REQUIRE(c.handle_leader(ballot_of(1, 3)));
     deliver_all(nodes);
-    const memory_storage before = committed_storage_of(b);
+    auto before = lmdb_storage::open_copy_of(committed_storage_of(b));
     REQUIRE(c.append(make_entry(1)));
     deliver_among(nodes, {false, true, true});
     REQUIRE(decided_of(c) == std::vector{make_entry(1)});
     REQUIRE(a.get_accepted_idx() == 0);
-    b = make(2, before, 2);
+    b = make(2, std::move(before), 2);
     deliver_among(nodes, {true, true, false}, cut::all_but_recovery);
     REQUIRE(a.handle_leader(ballot_of(2, 1)));
     deliver_among(nodes, {true, true, false});

@@ -11,19 +11,19 @@
 #include <vector>
 
 #include "konsens/client.hpp"
-#include "konsens/memory_storage.hpp"
 #include "konsens/sequence_paxos.hpp"
+#include "lmdb_storage.hpp"
 
 namespace {
 
 using konsens::ballot;
 using konsens::entry;
-using konsens::memory_storage;
 using konsens::node_id;
 using konsens::paxos_message;
+using konsens::persistent_storage;
 using konsens::phase;
 using konsens::role;
-using sp_t = konsens::sequence_paxos<memory_storage>;
+using sp_t = konsens::sequence_paxos<persistent_storage>;
 
 constexpr std::uint32_t config_id = 1;
 
@@ -56,7 +56,7 @@ constexpr std::uint64_t first_nonce = 1;
 
 sp_t make(const node_id pid, const node_id count = three)
 {
-    return *sp_t::with({pid, peers_of(pid, count)}, {}, first_nonce);
+    return *sp_t::with({pid, peers_of(pid, count)}, lmdb_storage::open_new(), first_nonce);
 }
 
 entry make_entry(const std::uint8_t v)

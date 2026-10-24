@@ -23,7 +23,6 @@
 
 #include <crc32c/crc32c.h>
 
-#include "konsens/memory_storage.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "temporary_directory.hpp"
 
@@ -181,40 +180,40 @@ TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index")
     CHECK(storage.get_entries(0, 1) == std::vector<konsens::entry>{normal_entry("zero")});
 }
 
-// Recovery after a power loss compares the CRC32C of the last entry of
-// two nodes, and one node may run on LMDB and the other in memory. So both
-// storages give the same value for the same log: an empty log gives 0, and
-// each kind of entry is tried. The expected value of the last entry is
-// written from the record format: the index in 8 bytes little endian, the
-// kind in one byte, the fields of the kind in 8 bytes little endian each,
-// then the payload.
-TEST_CASE("both storages give the same CRC32C of the last entry")
+// Recovery after a power loss compares the CRC32C of the last entry of two
+// nodes, so the value must follow the record format and nothing else: the
+// index in 8 bytes little endian, the kind in one byte, the fields of the
+// kind in 8 bytes little endian each, then the payload. An empty log gives
+// 0. Each kind is tried, and the expected records are written by hand from
+// that format, not from the encoder under test.
+TEST_CASE("the CRC32C of the last entry of each kind is the CRC32C of its record")
 {
     const temporary_directory dir;
-    auto lmdb = open_storage(dir.path());
-    konsens::memory_storage memory;
-    CHECK(lmdb.get_last_entry_crc() == 0u);
-    CHECK(memory.get_last_entry_crc() == 0u);
-    const std::vector<konsens::entry> each_kind{
-        normal_entry("first"),
-        {konsens::entry_kind::stop_sign, {}},
-        {.kind = konsens::entry_kind::register_client, .client_id = 7, .pid = 3},
-        {.kind = konsens::entry_kind::expire_session, .session = 1},
-        {konsens::entry_kind::client_request, bytes_of("x"), 1, 2}};
-    for (const auto& e : each_kind) {
+    auto storage = open_storage(dir.path());
+    CHECK(storage.get_last_entry_crc() == 0u);
+    struct kind_and_record {
+        konsens::entry e;
+        std::vector<unsigned char> record;
+    };
+    const std::vector<kind_and_record> each_kind{
+        {normal_entry("first"), {0, 0, 0, 0, 0, 0, 0, 0, 0, 'f', 'i', 'r', 's', 't'}},
+        {{konsens::entry_kind::stop_sign, {}}, {1, 0, 0, 0, 0, 0, 0, 0, 1}},
+        {{.kind = konsens::entry_kind::register_client, .client_id = 7, .pid = 3},
+         {2, 0, 0, 0, 0, 0, 0, 0, 2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0}},
+        {{.kind = konsens::entry_kind::expire_session, .session = 1},
+         {3, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0, 0}},
+        {{konsens::entry_kind::client_request, bytes_of("x"), 1, 2},
+         {4, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'}}};
+    std::uint64_t index = 0;
+    for (const auto& [e, record] : each_kind) {
         const std::vector<konsens::entry> one{e};
         const std::vector<konsens::storage_op> ops{konsens::append_entries{one}};
-        REQUIRE(lmdb.write_atomically(ops).has_value());
-        REQUIRE(memory.write_atomically(ops).has_value());
-        const auto from_lmdb = lmdb.get_last_entry_crc();
-        REQUIRE(from_lmdb.has_value());
-        CHECK(from_lmdb == memory.get_last_entry_crc());
+        REQUIRE(storage.write_atomically(ops).has_value());
+        const auto expected = crc32c::Crc32c(record.data(), record.size());
+        CHECK(storage.get_last_entry_crc() == expected);
+        CHECK(konsens::compute_entry_crc(index, e) == expected);
+        ++index;
     }
-    const std::array<unsigned char, 26> last_record{4, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0,
-                                                    0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'};
-    std::vector<std::byte> bytes;
-    std::ranges::transform(last_record, std::back_inserter(bytes), [](const unsigned char c) { return std::byte{c}; });
-    CHECK(lmdb.get_last_entry_crc() == crc32c::Crc32c(bytes.data(), bytes.size()));
 }
 
 // A full map is an error value of write_atomically, which the node raises
@@ -462,8 +461,8 @@ std::vector<konsens::storage_op> ops_of_one_batch(const std::vector<konsens::ent
             konsens::set_promise{{1, 4, 0, 1}}};
 }
 
-template <typename S>
-void check_one_batch_equals_the_ops_one_by_one(S& batched, S& single)
+void check_one_batch_equals_the_ops_one_by_one(konsens::persistent_storage& batched,
+                                               konsens::persistent_storage& single)
 {
     const std::vector<konsens::entry> first{normal_entry("a"), normal_entry("b"), normal_entry("c")};
     const std::vector<konsens::entry> replaced{normal_entry("x"), normal_entry("y")};
@@ -487,18 +486,9 @@ void check_one_batch_equals_the_ops_one_by_one(S& batched, S& single)
 // that one batch leaves the store as the same ops one by one do.
 TEST_CASE("one write of the ops of a batch leaves the store as the ops one by one do")
 {
-    SUBCASE("memory_storage")
-    {
-        konsens::memory_storage batched;
-        konsens::memory_storage single;
-        check_one_batch_equals_the_ops_one_by_one(batched, single);
-    }
-    SUBCASE("persistent_storage")
-    {
-        const temporary_directory batched_dir;
-        const temporary_directory single_dir;
-        auto batched = open_storage(batched_dir.path());
-        auto single = open_storage(single_dir.path());
-        check_one_batch_equals_the_ops_one_by_one(batched, single);
-    }
+    const temporary_directory batched_dir;
+    const temporary_directory single_dir;
+    auto batched = open_storage(batched_dir.path());
+    auto single = open_storage(single_dir.path());
+    check_one_batch_equals_the_ops_one_by_one(batched, single);
 }
