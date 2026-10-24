@@ -10,6 +10,12 @@ Order of the work: this plan, then the model of section 3 and its TLC
 runs, then one review of plan and model by a second agent, then the
 go of the owner, then the code of section 2.
 
+The owner, 19:38: "nur während eine transaction wissen wir was im log
+existiert. Nen node hat nur seine FSM die sagt was gerade los ist im
+ram." So outside a transaction, a node knows only the state of its
+state machine (role, phase); every fact about the log is read in a
+transaction.
+
 The owner, 14:49: "wir nutzen die modi, in denen lmdb schnell und
 sicher ist". So a step runs in one LMDB write transaction (section 2).
 
@@ -323,6 +329,7 @@ start-checks plan ("no change to the file format") changes with this.
 - `accepted_idx` leaves `volatile`. Every use reads `Len(log[i])`.
   `AcceptedIdxIsLogLength` goes, because it holds by definition. Not
   done yet: the runs keep the variable and cap it at the damaged log.
+  Round 8 removes it (owner rule of 19:38).
 - `RunningStorageFault(i, kind)`: the durable state of a running node
   changes, with the kinds of the start-checks model (`missing_entry`,
   `missing_accepted`, `missing_promise`, `missing_decided`) and two
