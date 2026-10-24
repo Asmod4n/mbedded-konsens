@@ -141,8 +141,22 @@ Line numbers are at commit 4c57d44.
    provisional. The full copy
    itself is outside this plan; until it exists, the recovery copies
    the log as it does now.
-7. Every new error branch is `[[unlikely]]`.
-8. No change to the protocol, to the wire or to the file format.
+7. Each read up to the accepted index or the decided index in
+   sequence_paxos compares the count of entries it got with `to - from`
+   (owner, 2026-10-24 14:03). When they differ, the node stops voting
+   with `missing_entry`. The reads: `create_log_sync` (`:612`),
+   `handle_recovery` (`:891`), `handle_get_state` (`:983`),
+   `read_decided_suffix` (`:501`) and the read in
+   `log_or_buffered_proposals_contain`. A correct state always gives
+   the full range, because the waiting ops are written before each
+   read. The continuity rule of item 2.2 also covers the key at which
+   the cursor stops: that key must equal `from + entries.size()`.
+8. The recovery checks that the log it receives from the primary has
+   the length of its accepted index (`complete_recovery` at `:922`).
+   When it differs, the node does not complete the recovery with that
+   answer.
+9. Every new error branch is `[[unlikely]]`.
+10. No change to the protocol, to the wire or to the file format.
 
 ## 3. Model
 
@@ -192,10 +206,18 @@ reduces to cases that the model has:
 - A lost meta value is read only at the next start: one of the kinds
   above.
 - A key lost below the last key is found by the next read that covers
-  it, or by the next append (MDB_KEYEXIST), or at the next start.
-- A lost last key is found by the next append (item 2.5). If the node
-  crashes first, it starts with a missing last entry: `missing_entry`
-  at the last position, which the recovery covers.
+  it (items 2.2 and 2.7), or by the next append (MDB_KEYEXIST), or at
+  the next start.
+- A lost last key is found by the next read up to the accepted index
+  (item 2.7) or by the next append (item 2.5), whichever comes first.
+  A Prepare answer and a recovery answer read before they send, so
+  neither sends a short log. If the node crashes first, it starts with
+  a missing last entry: `missing_entry` at the last position, which the
+  recovery covers.
+- A short log that a node receives in the recovery is refused by item
+  2.8.
+The model has no damage at run time. These code checks carry the
+argument alone.
 Without item 2.5, the next append writes at the old last index, and at
 the next start the node reads a log with no gap and a wrong entry. The
 checks at the start cannot find that; it is the case of the mutation
