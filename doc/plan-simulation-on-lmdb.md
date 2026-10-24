@@ -82,3 +82,43 @@ build.
 - No batching. Item 10 decides by measurement whether it is needed.
 - The browser demo (WASM), which named memory_storage as its storage
   (owner, 2026-10-17), needs a new decision when it starts.
+
+## 5. Review (second Claude agent, 2026-10-24) and changes
+
+Result: changes needed. The build takes these changes:
+
+1. The rollback copy is taken while the node runs (simulation.hpp:517-520,
+   :914-917), not at a stop. The copy is data.mdb of the open environment
+   between two write_atomically calls: the run has one thread, each
+   write_atomically is one committed transaction, open uses no WRITEMAP,
+   no read transaction stays open, and LMDB 1.0.2 locks only lock.mdb.
+   lock.mdb is not copied. The state equals the copy of memory_storage:
+   the state after the last write_atomically. Open for the owner: this
+   file copy in the tests, or a copy method of the library.
+2. Restore: destroy node i, copy the saved data.mdb over
+   directories[i]/data.mdb, then open. A later crash then reopens the
+   rolled-back state.
+3. Unit tests that copy a storage (test_sequence_paxos.cpp:1157,
+   test_node.cpp:74, :114, :151, :155) use one shared helper that opens a
+   storage and copies data.mdb. The wrappers failing_storage
+   (test_sequence_paxos.cpp:195), recording_storage (test_node.cpp:336)
+   and the disk of test_group_commit.cpp:48-60 wrap persistent_storage.
+   A failed write is a real MDB_MAP_FULL with a tiny map. Open for the
+   owner: fail_sync and fail_reads have no fault below LMDB on tmpfs.
+4. The counter_stress tests (CMakeLists.txt:106-107) get the TMPDIR
+   property and --allow-root-for-test.
+5. TMPDIR comes from a cache variable KONSENS_TEST_TMPDIR, empty by
+   default; the build of this session sets it to /dev/shm. The peak of
+   /dev/shm during ctest is measured.
+6. test_persistent_storage.cpp:437 loses only its memory_storage
+   subcase. :191 checks each of the five entry kinds against record bytes
+   from the specification and against compute_entry_crc.
+7. Bench: only memory_spy (:842), memory_nodes (:1101) and the seven
+   *_memory cases (:1758-1774) go away; counting_storage and storage_spy
+   stay. README.md:245-250 and bench/run.sh:264 change their text.
+8. temp_directory_path in temporary_directory.hpp is the one effect of
+   the fixture. No change.
+9. Three steps on three branches, each merged when green: (a) TMPDIR,
+   rollback on LMDB, one simulation test, the timing table; (b) the unit
+   tests with the helper of item 3; (c) examples, bench, removal of the
+   header, README.
