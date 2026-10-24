@@ -32,6 +32,7 @@ OVERRIDE_ChainCheck == FALSE
 OVERRIDE_MetaRecord == FALSE
 OVERRIDE_PeerCheck == FALSE
 OVERRIDE_HighWater == FALSE
+OVERRIDE_VerifyPromise == FALSE
 OVERRIDE_RepairFromPeer == FALSE
 OVERRIDE_StorageFaultKind == {}
 OVERRIDE_ClientSessions == FALSE

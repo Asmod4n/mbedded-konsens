@@ -288,6 +288,15 @@ This form is provisional (open question 10).
 6. Then it runs the recovery of VR Revisited and votes again only after
    it.
 7. With no peer that answers, the node stays out of the vote.
+8. A node repairs itself automatically once after a damage that the
+   checks of 2.1 item 5 find (owner, 2026-10-24 20:55 to 20:57). The
+   count is durable. The operator then gets a notice and can allow one
+   more automatic repair at the next damage. Without that, the node
+   stays out of the vote at the next damage, reports the proof and waits
+   for the operator. A restart, a crash, a sleep of the machine or a
+   lost network is no damage: the recovery after each start has no
+   limit. Not decided: whether a damage that the start checks find
+   counts too.
 
 ### 2.5 The vote
 
@@ -404,6 +413,10 @@ this.
   `running`. The model takes the whole state in one action; 2.4 takes
   only the entries that differ. The model sets the mark from the copy.
 - `VerifyPromise` (Bool, round 9): the check of 2.5 item 4.
+- `repairs` and `AutoRepairs` (round 9): the durable count of automatic
+  repairs of 2.4 item 8, and its limit 1. `OperatorAllowsRepair(i)`
+  resets the count. The cover `NoRepairLimitReached` must fail with two
+  faults.
 - `StateInLmdb` (round 9): the client table and the applied index stand
   in the durable tuple of a node, and the state changes only at a
   decide. The details of this action follow the answer to open
@@ -489,7 +502,8 @@ after each round.
 
 `RunningStorageFault`, `StepChecks`, `VerifyCrc`, `ChainCheck`,
 `MetaRecord`, `HighWater`, `RepairFromPeer`, `PeerCheck`,
-`VerifyPromise`, `StateInLmdb`, `stale_meta`, `rollback`, `in_work`,
+`VerifyPromise`, `StateInLmdb`, `repairs`, `AutoRepairs`,
+`OperatorAllowsRepair`, `stale_meta`, `rollback`, `in_work`,
 `committed`, meta record, chain CRC, step check, high-water mark. None
 has a source outside this tree. In Kafka, "high watermark" names the
 offset of the last committed record, so that word has another meaning
@@ -516,7 +530,9 @@ there. The owner decides the names.
    differs from the leader's. Proposal: it is a damage of 2.1 item 5.
 9. Open: `MDB_BAD_CHECKSUM` is a damage that the repair of 2.4 fixes, or
    a `std::system_error` that ends the process. Proposal: a damage.
-10. Open: the repair of 2.4. Proposal: the form of 2.4.
+10. Open: the form of the repair of 2.4 (only the entries that differ,
+    or the whole state). Proposal: the form of 2.4. Decided, 20:55 to
+    20:57: one automatic repair, then the operator (2.4 item 8).
 11. Open: the state on which an entry runs before the decide (2.6
     item 5). Proposal: one batch in flight, so every entry runs on the
     committed state. The other form keeps the undecided entries in an

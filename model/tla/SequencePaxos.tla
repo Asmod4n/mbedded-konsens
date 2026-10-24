@@ -15,8 +15,10 @@ CONSTANTS
   \*   entries: Seq($entry), nonce: Int, promise: Int, primary: Bool,
   \*   log: Seq($entry), read: Int, id: Int, reads: Set(Int), read_index: Int,
   \*   recovering: Bool, last: Seq($entry)};
-  \* @typeAlias: promiseMeta = {state: Str, n_accepted: Int, accepted_idx: Int, decided_idx: Int};
-  \* @typeAlias: maxMeta = {n_accepted: Int, accepted_idx: Int, decided_idx: Int, pid: Int};
+  \* @typeAlias: promiseMeta = {state: Str, n_accepted: Int, accepted_idx: Int, decided_idx: Int,
+  \*   last: Seq($entry)};
+  \* @typeAlias: maxMeta = {n_accepted: Int, accepted_idx: Int, decided_idx: Int, pid: Int,
+  \*   last: Seq($entry)};
   \* @typeAlias: leaderState = {n_leader: Int, promises_meta: Int -> $promiseMeta,
   \*   follower_seq_nums: Int -> $seqNum, accepted_indexes: Int -> Int,
   \*   max_promise_meta: $maxMeta, max_promise_sync: Seq($logSync)};
@@ -88,6 +90,8 @@ CONSTANTS
   HighWater,
   \* @type: Bool;
   RepairFromPeer,
+  \* @type: Bool;
+  VerifyPromise,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -233,7 +237,9 @@ VARIABLES
   \* @type: Int -> (Int -> {n: Int, idx: Int});
   peer_seen,
   \* @type: Int -> $mark;
-  high_water
+  high_water,
+  \* @type: Int -> Int;
+  repairs
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -242,7 +248,7 @@ env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections,
               storage_faults, refused>>
 ghost    == <<proposed, decided_history, decided_ballot>>
 recovery == <<recovering, nonce, recovery_responses, power_loss_completed>>
-rollback == <<rolled_back, past_durable, peer_seen, high_water>>
+rollback == <<rolled_back, past_durable, peer_seen, high_water, repairs>>
 readvars == <<reads, read_pending, read_round>>
 reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
               halts, read_only_entries, stage1_ghost, build_source>>
@@ -307,11 +313,13 @@ Compatible(a, b) == IsPrefix(a, b) \/ IsPrefix(b, a)
 
 \* util.rs:62-71 PromiseState, util.rs:27-34 PromiseMetaData
 \* @type: $promiseMeta;
-NotPromised == [state |-> "NotPromised", n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0]
+NotPromised == [state |-> "NotPromised", n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0,
+                last |-> <<>>]
 \* @type: $promiseMeta;
-PromisedHigher == [state |-> "PromisedHigher", n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0]
+PromisedHigher == [state |-> "PromisedHigher", n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0,
+                   last |-> <<>>]
 \* @type: $maxMeta;
-DefaultMeta == [n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0, pid |-> 0]
+DefaultMeta == [n_accepted |-> 0, accepted_idx |-> 0, decided_idx |-> 0, pid |-> 0, last |-> <<>>]
 
 \* Each message has every field, so that all messages have one type. A field
 \* that a message type does not carry keeps its value of EmptyMessage. The
@@ -399,7 +407,8 @@ SetPromise(ls, meta, sync, from, check, replace) ==
                 !.promises_meta[from] = [state |-> "Promised",
                                          n_accepted |-> meta.n_accepted,
                                          accepted_idx |-> meta.accepted_idx,
-                                         decided_idx |-> meta.decided_idx]]
+                                         decided_idx |-> meta.decided_idx,
+                                         last |-> meta.last]]
 
 \* util.rs:252-259 is_chosen
 \* @type: ($leaderState, Int) => Bool;
@@ -411,6 +420,18 @@ IsChosen(ls, idx) ==
 MaxDecided(ls) ==
   LET ds == {ls.promises_meta[k].decided_idx : k \in Promised(ls)}
   IN IF ds = {} THEN 0 ELSE CHOOSE d \in ds : \A e \in ds : d >= e
+
+\* VerifyPromise (doc/plan-lmdb-only-source.md 2.5 item 4). The leader takes
+\* the decided index of a promise only when the promise carries the same
+\* prefix up to that index as the synced log of the leader. With no such
+\* promise, it keeps its own decided index.
+\* @type: ($leaderState, Seq($entry), Int) => Int;
+MaxDecidedVerified(ls, lg, own) ==
+  LET ds == {ls.promises_meta[k].decided_idx :
+               k \in {x \in Promised(ls) :
+                      LET d == ls.promises_meta[x].decided_idx
+                      IN d <= Len(lg) /\ PrefixAt(lg, d) = ls.promises_meta[x].last}}
+  IN IF ds = {} THEN own ELSE CHOOSE d \in ds : \A e \in ds : d >= e
 
 \* util.rs:121-125 next_seq_num, applied to a set of followers
 \* @type: ($leaderState, Set(Int)) => $leaderState;
@@ -649,6 +670,7 @@ Init ==
   /\ chan = [p \in Pairs |-> <<>>]
   /\ peer_seen = [i \in Servers |-> [j \in Servers |-> NothingSeen]]
   /\ high_water = [i \in Servers |-> NoMark]
+  /\ repairs = [i \in Servers |-> 0]
   /\ wiped = [i \in Servers |-> FALSE]
   /\ crashes = 0
   /\ wipes = 0
@@ -804,6 +826,7 @@ HandlePrepare(i, j, m, c) ==
            pr  == [EmptyMessage EXCEPT !.type = "Promise", !.n = m.n,
                    !.n_accepted = IF blind THEN DefaultBallot ELSE na,
                    !.decided_idx = decided_idx[i],
+                   !.last = IF VerifyPromise THEN PrefixAt(log[i], decided_idx[i]) ELSE <<>>,
                    !.accepted_idx = IF blind THEN 0 ELSE acc,
                    !.log_sync = IF blind THEN <<>> ELSE ls]
        IN /\ promise' = [promise EXCEPT ![i] = m.n]
@@ -822,7 +845,6 @@ HandlePrepare(i, j, m, c) ==
 \* @type: (Int, $leaderState, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleMajorityPromises(i, ls1, c) ==
   LET sync == ls1.max_promise_sync
-      dec  == MaxDecided(ls1)
       skip == sync = <<>> \/ Mutation = "SyncIgnored"
       lg1  == IF skip THEN log[i]
               ELSE AppendOnPrefix(log[i], sync[1].sync_idx, sync[1].suffix)
@@ -833,6 +855,8 @@ HandleMajorityPromises(i, ls1, c) ==
       bss  == IF stop THEN <<>> ELSE buffered_stopsign[i]
       lg2  == lg1 \o bp \o bss
       acc2 == acc1 + Len(bp) + Len(bss)
+      dec  == IF VerifyPromise THEN MaxDecidedVerified(ls1, lg1, decided_idx[i])
+              ELSE MaxDecided(ls1)
       ls2  == [ls1 EXCEPT !.max_promise_sync = <<>>,
                           !.accepted_indexes[i] = IF Votes(i) THEN acc2 ELSE @]
       fs   == PromisedFollowers(ls2)
@@ -855,7 +879,7 @@ HandleMajorityPromises(i, ls1, c) ==
 HandlePromise(i, j, m, c) ==
   LET ls   == leader_state[i]
       meta == [n_accepted |-> m.n_accepted, accepted_idx |-> m.accepted_idx,
-               decided_idx |-> m.decided_idx, pid |-> j]
+               decided_idx |-> m.decided_idx, pid |-> j, last |-> m.last]
   IN
   IF role[i] = "Leader" /\ phase[i] = "Prepare" /\ m.n = ls.n_leader
   THEN \E replace \in BOOLEAN :
@@ -1279,8 +1303,13 @@ HighWaterUpdate(R) ==
        ELSE MaxMark(high_water[i], Mark(DurableOfP(i)))]
 
 \* @type: Set(Int) => Bool;
-GhostUpdateR(R) ==
-  HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate /\ PeerSeenUpdate /\ HighWaterUpdate(R)
+\* The nodes of P count one more automatic repair. The count is durable.
+\* @type: (Set(Int), Set(Int)) => Bool;
+GhostUpdateRP(R, P) ==
+  /\ HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate /\ PeerSeenUpdate /\ HighWaterUpdate(R)
+  /\ repairs' = [k \in Servers |-> IF k \in P THEN repairs[k] + 1 ELSE repairs[k]]
+\* @type: Set(Int) => Bool;
+GhostUpdateR(R) == GhostUpdateRP(R, {})
 GhostUpdate == GhostUpdateR({})
 
 ----------------------------------------------------------------------------
@@ -1358,7 +1387,8 @@ HandleLeader(i, k) ==
       dec == decided_idx[i]
       acc == accepted_idx[i]
       ls0 == LeaderStateWith(n)
-      me  == [n_accepted |-> na, accepted_idx |-> acc, decided_idx |-> dec, pid |-> i]
+      me  == [n_accepted |-> na, accepted_idx |-> acc, decided_idx |-> dec, pid |-> i,
+              last |-> IF VerifyPromise THEN PrefixAt(log[i], dec) ELSE <<>>]
   IN /\ ~recovering[i]
      /\ ~read_only[i]
      /\ ~deactivated[i]
@@ -1629,16 +1659,34 @@ StorageFault(i, kind) ==
 \* takes the durable state of a node that votes and does not recover, and
 \* restarts with the recovery, as StorageFault does for a node with no
 \* promise. With no such node, it leaves running. The step does not change
-\* storage_faults.
+\* storage_faults. A node repairs itself automatically at most AutoRepairs
+\* times; after that it leaves running, and the operator acts (owner,
+\* 2026-10-24 20:55). This counts only a damage that the checks find, not
+\* a restart.
+AutoRepairs == 1
+
+\* After an automatic repair, the operator gets a notice. The operator can
+\* allow one more automatic repair at the next damage (owner, 2026-10-24
+\* 20:57). Without that, the node repairs no more by itself.
+\* @type: Int => Bool;
+OperatorAllowsRepair(i) ==
+  /\ RepairFromPeer
+  /\ repairs[i] = AutoRepairs
+  /\ repairs' = [repairs EXCEPT ![i] = 0]
+  /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rolled_back, past_durable,
+                 peer_seen, high_water, client, readvars, buffered_stopsign, reconfig,
+                 leasevars, leaseghost>>
+
 \* @type: Int => Bool;
 DamageFound(i) ==
-  IF RepairFromPeer /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
+  IF RepairFromPeer /\ repairs[i] < AutoRepairs
+     /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
   THEN \E src \in running \ {i} :
          /\ Votes(src) /\ ~recovering[src]
          /\ Restart({i}, [j \in {i} |-> DurableOf(src)], {j \in {i} : Quiet(j)}, Recovery)
          /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
                         elections, proposed, rolled_back, client, reconfig>>
-         /\ GhostUpdateR({i})
+         /\ GhostUpdateRP({i}, {i})
   ELSE /\ running' = running \ {i}
        /\ refused' = refused \cup {i}
        /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
@@ -2354,6 +2402,7 @@ Next ==
   \/ \E i \in running, kind \in StorageFaultKind : StorageFault(i, kind)
   \/ \E i \in running, kind \in StorageFaultKind : RunningStorageFault(i, kind)
   \/ \E i \in running : StepCheck(i)
+  \/ \E i \in Nodes : OperatorAllowsRepair(i)
   \/ \E i \in Nodes \ running : Resume(i)
   \/ Tick
   \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
@@ -2454,6 +2503,7 @@ ASSUME MetaRecord \in BOOLEAN
 ASSUME PeerCheck \in BOOLEAN
 ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0
 ASSUME HighWater \in BOOLEAN
+ASSUME VerifyPromise \in BOOLEAN
 ASSUME RepairFromPeer \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided", "stale_meta", "rollback"}
@@ -2491,6 +2541,11 @@ HighWaterHolds ==
 \* log length that LMDB holds. Where this holds, the model can read the
 \* log length in place of the copy.
 AcceptedIdxIsLogLen == \A i \in running : accepted_idx[i] = Len(log[i])
+
+\* Cover of the repair limit (owner, 2026-10-24 20:55): a node that used its
+\* automatic repair and then found a second damage leaves running. A run
+\* with two faults must violate it.
+NoRepairLimitReached == ~\E i \in Servers : repairs[i] = AutoRepairs /\ i \in refused
 
 S1 == \A i, j \in Servers : Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i), DecidedPrefix(j))
 
