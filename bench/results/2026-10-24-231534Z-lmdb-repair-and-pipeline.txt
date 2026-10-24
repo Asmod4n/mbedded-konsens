@@ -1,0 +1,1067 @@
+# LMDB repair from a peer, and the pipeline before the decide
+#
+# Run 2026-10-24 23:15:34 UTC in podman localhost/cxx-matrix on the session machine.
+# The code of the bench is not in the tree. It stands at the end of this file.
+# Commit of the plan: lmdb-only-source 90fbc9c, clean.
+#
+# What is measured.
+# Bench "repair": one LMDB env of n entries, 8-byte big-endian keys, 1 KiB values,
+#   checksum 8 bytes, MDB_NOTLS | MDB_REMAP_CHUNKS. The second branch page is damaged.
+#   Arm copy: mdb_env_copyfd2 without flag on the peer over a socketpair, fdatasync,
+#     read of every entry, rename. bytes = bytes on the socket.
+#   Arm rebuild: new env from the own readable entries plus the missing range from the
+#     peer (binary search for the next readable index), fdatasync, rename.
+#   seconds = wall time of the whole repair, peer and receiver in one process.
+# Bench "pipeline": two envs (log, state), each with checksum, REMAP_CHUNKS, NOTLS.
+#   Requests arrive open loop at rate per second for 2 s. The decide of a batch is
+#   simulated as send time + rtt_us. Each batch is one sync commit of the log.
+#   Every arm executes each request in a child txn of one open state txn.
+#   Arm 1: one batch in flight before the decide.
+#   Arm 2: up to 64 batches in flight. On a decide that covers only part of the
+#     batches: abort the state txn, execute the decided batches again, commit, then
+#     execute the batches that are not decided again (one replay).
+#   Arm 3: up to 2 batches in flight; the state commits only when every executed
+#     batch is decided.
+#   The execution of a request is one put of 8 bytes. A replay costs more where the
+#   execution costs more; that is not measured here.
+#   latency = arrival to reply, reply after the decide and the state commit.
+# Each arm is its own binary, built twice (copy a, copy b) as the A/A pair. The A/A
+# difference is the noise floor. 5 rounds, order of builds, arms and copies reversed
+# in every second round. Medians are per binary.
+# Builds: gcc-16 / g++-16 16.2.0 -O2 -DNDEBUG, clang-22 / clang++-22 22.1.8 -O2 -DNDEBUG,
+#   -std=c++26 -Wall -Wextra -Werror, mdb.c and midl.c as C objects of the same compiler.
+# Run as uid 1001 through setpriv, nice 0, one thread, not pinned, 3 of 4 cpus free.
+#   Priority over the other processes of the user: the user had no other process
+#   (other_processes_of_user=0 in each row).
+# os Ubuntu Stonking Stingray (development branch)
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# compiler Ubuntu clang version 22.1.8 (1ubuntu1)
+# instruction set -march=x86-64 -mtune=generic 
+# lmdb 1 0 2 from the submodule deps/lmdb
+# libraries linux-vdso.so.1 ; libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6; libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1; libc.so.6 /usr/lib/x86_64-linux-gnu/libc.so.6; libm.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6; /lib64/ld-linux-x86-64.so.2 ; 
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1; 
+# binary sha256 8cda3c1fbfc8cd5a pipe_clang_1_a
+# binary sha256 8cda3c1fbfc8cd5a pipe_clang_1_b
+# binary sha256 f324f80a1fa392dd pipe_clang_2_a
+# binary sha256 f324f80a1fa392dd pipe_clang_2_b
+# binary sha256 57f53e136e362bf1 pipe_clang_3_a
+# binary sha256 57f53e136e362bf1 pipe_clang_3_b
+# binary sha256 a68640dc8dc5967a pipe_gcc_1_a
+# binary sha256 a68640dc8dc5967a pipe_gcc_1_b
+# binary sha256 5abefd1f84e3a19c pipe_gcc_2_a
+# binary sha256 5abefd1f84e3a19c pipe_gcc_2_b
+# binary sha256 ecd47ca9f9e92425 pipe_gcc_3_a
+# binary sha256 ecd47ca9f9e92425 pipe_gcc_3_b
+# binary sha256 d5266e42c40e43fd repair_clang_0_a
+# binary sha256 d5266e42c40e43fd repair_clang_0_b
+# binary sha256 5af2ee213521d09e repair_clang_1_a
+# binary sha256 5af2ee213521d09e repair_clang_1_b
+# binary sha256 80d9ce9977f1fce3 repair_gcc_0_a
+# binary sha256 80d9ce9977f1fce3 repair_gcc_0_b
+# binary sha256 7dae781e9013eef7 repair_gcc_1_a
+# binary sha256 7dae781e9013eef7 repair_gcc_1_b
+# kernel 6.18.44-fc-v153 #1 SMP PREEMPT_DYNAMIC @0
+# scheduler no /sys/kernel/sched_ext
+# virtual machine hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user uid 1001 through setpriv, nice 0, one thread, not pinned
+# lmdb mount /dev/vda /lmdb ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# loadavg at start 0.66 0.92 1.20 1/133 50
+# loadavg at end 0.72 0.63 0.84 1/132 4091
+
+## Pipeline: median over 5 rounds per binary
+build rate_per_s rtt_us arm copy throughput_per_s latency_median_us(spread) latency_p99_us replays_median
+clang 1000 1000 1 a 998 3614.4(214.2) 5619.6 0
+clang 1000 1000 1 b 999 3661.1(278.0) 5701.2 0
+clang 1000 1000 2 a 999 2730.4(104.9) 4326.9 1967
+clang 1000 1000 2 b 999 2748.3(65.1) 4166.9 1956
+clang 1000 1000 3 a 998 3608.8(130.5) 5451.4 0
+clang 1000 1000 3 b 998 3616.4(108.7) 5546.8 0
+clang 1000 20000 1 a 982 33750.7(820.0) 45118.0 0
+clang 1000 20000 1 b 982 33487.2(1157.6) 45045.6 0
+clang 1000 20000 2 a 990 21734.8(107.1) 23207.1 1950
+clang 1000 20000 2 b 990 21703.3(49.6) 23002.5 1958
+clang 1000 20000 3 a 986 33452.3(956.0) 45166.3 0
+clang 1000 20000 3 b 980 33367.2(597.7) 44720.4 0
+clang 10000 1000 1 a 9987 2871.1(148.8) 4738.1 0
+clang 10000 1000 1 b 9986 2871.6(136.2) 5059.1 0
+clang 10000 1000 2 a 9990 2201.2(44.0) 3870.5 3059
+clang 10000 1000 2 b 9990 2229.9(187.5) 4011.5 3015
+clang 10000 1000 3 a 9986 3050.4(190.3) 6649.4 0
+clang 10000 1000 3 b 9988 2951.6(179.0) 5163.7 0
+clang 10000 20000 1 a 9838 33511.1(940.9) 44989.4 0
+clang 10000 20000 1 b 9813 33541.5(960.5) 45357.5 0
+clang 10000 20000 2 a 9886 21486.7(113.1) 30142.6 2298
+clang 10000 20000 2 b 9888 21473.3(230.4) 31619.6 2336
+clang 10000 20000 3 a 9873 32878.3(841.2) 44662.6 0
+clang 10000 20000 3 b 9844 33174.4(217.4) 44904.6 0
+clang 100000 1000 1 a 99870 3502.8(456.9) 6096.7 0
+clang 100000 1000 1 b 99834 3499.7(411.2) 5898.7 0
+clang 100000 1000 2 a 99890 2751.4(294.5) 5185.9 1652
+clang 100000 1000 2 b 99912 2740.7(127.3) 4747.9 1658
+clang 100000 1000 3 a 99874 3408.3(378.3) 6282.6 0
+clang 100000 1000 3 b 99854 3521.3(302.9) 5975.0 0
+clang 100000 20000 1 a 98622 36082.0(1731.3) 48524.1 0
+clang 100000 20000 1 b 98406 36088.1(1001.9) 48533.1 0
+clang 100000 20000 2 a 98763 23973.2(1147.2) 42263.2 754
+clang 100000 20000 2 b 98855 23969.2(883.2) 43177.6 790
+clang 100000 20000 3 a 98253 34583.9(1921.7) 47507.8 0
+clang 100000 20000 3 b 98336 34294.9(1112.5) 47502.2 0
+gcc 1000 1000 1 a 998 3619.8(318.7) 5685.2 0
+gcc 1000 1000 1 b 998 3587.0(172.4) 5616.2 0
+gcc 1000 1000 2 a 999 2699.8(93.3) 4057.7 1971
+gcc 1000 1000 2 b 998 2675.9(124.2) 4283.7 1968
+gcc 1000 1000 3 a 998 3594.8(143.0) 5534.1 0
+gcc 1000 1000 3 b 998 3623.8(89.5) 5801.7 0
+gcc 1000 20000 1 a 982 34066.1(979.8) 45886.0 0
+gcc 1000 20000 1 b 983 33884.1(912.1) 45370.8 0
+gcc 1000 20000 2 a 990 21739.2(98.3) 23074.6 1950
+gcc 1000 20000 2 b 990 21708.0(110.5) 23146.7 1948
+gcc 1000 20000 3 a 982 33680.7(522.2) 45154.3 0
+gcc 1000 20000 3 b 986 33214.9(430.2) 44908.3 0
+gcc 10000 1000 1 a 9987 2940.9(223.9) 5247.1 0
+gcc 10000 1000 1 b 9988 2927.6(307.1) 5678.6 0
+gcc 10000 1000 2 a 9990 2233.3(151.1) 4199.4 2996
+gcc 10000 1000 2 b 9990 2262.3(273.3) 4179.9 2883
+gcc 10000 1000 3 a 9988 2975.1(253.4) 5251.2 0
+gcc 10000 1000 3 b 9986 2895.8(251.8) 5680.8 0
+gcc 10000 20000 1 a 9799 33867.8(937.8) 45522.6 0
+gcc 10000 20000 1 b 9822 33899.7(1232.0) 45688.4 0
+gcc 10000 20000 2 a 9886 21574.9(101.0) 32947.5 2247
+gcc 10000 20000 2 b 9896 21456.3(204.8) 28916.7 2353
+gcc 10000 20000 3 a 9811 33113.7(379.9) 44837.5 0
+gcc 10000 20000 3 b 9823 33135.7(1030.9) 44863.4 0
+gcc 100000 1000 1 a 99870 3491.9(321.0) 6244.3 0
+gcc 100000 1000 1 b 99882 3422.5(296.9) 6161.3 0
+gcc 100000 1000 2 a 99888 2850.6(152.1) 5605.2 1430
+gcc 100000 1000 2 b 99894 2826.2(292.6) 5390.7 1646
+gcc 100000 1000 3 a 99853 3595.5(412.6) 6939.0 0
+gcc 100000 1000 3 b 99850 3568.9(378.8) 6353.3 0
+gcc 100000 20000 1 a 98352 36429.7(837.9) 49074.6 0
+gcc 100000 20000 1 b 98496 36084.7(782.7) 48806.1 0
+gcc 100000 20000 2 a 98906 24065.8(825.0) 42338.7 777
+gcc 100000 20000 2 b 98813 24044.6(362.0) 43792.6 814
+gcc 100000 20000 3 a 98572 34730.8(1899.3) 47779.8 0
+gcc 100000 20000 3 b 98033 34598.7(2469.4) 47853.5 0
+
+## Repair: median over 5 rounds per binary
+build n arm copy seconds(spread) bytes_sent
+clang 10000 copy a 0.0507(0.0075) 13729792
+clang 10000 copy b 0.049(0.0033) 13729792
+clang 10000 rebuild a 0.0836(0.0048) 696600
+clang 10000 rebuild b 0.0847(0.0101) 696600
+clang 100000 copy a 0.7047(0.3484) 137158656
+clang 100000 copy b 0.6522(0.4679) 137158656
+clang 100000 rebuild a 0.8348(0.0791) 696600
+clang 100000 rebuild b 0.8069(0.0976) 696600
+gcc 10000 copy a 0.0516(0.0126) 13729792
+gcc 10000 copy b 0.0505(0.0037) 13729792
+gcc 10000 rebuild a 0.0865(0.0048) 696600
+gcc 10000 rebuild b 0.0852(0.0053) 696600
+gcc 100000 copy a 0.5795(0.3944) 137158656
+gcc 100000 copy b 0.618(0.5333) 137158656
+gcc 100000 rebuild a 0.7789(0.0843) 696600
+gcc 100000 rebuild b 0.8124(0.081) 696600
+
+## Raw rows
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3619.8 latency_p99_us=5685.2 batches=1138 commits=1137 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3624.0 latency_p99_us=5616.2 batches=1142 commits=1141 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2768.8 latency_p99_us=4727.9 batches=1965 commits=1958 replays=1927
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=2763.5 latency_p99_us=4747.9 batches=1965 commits=1958 replays=1928
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3704.8 latency_p99_us=5953.3 batches=1783 commits=891 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3692.4 latency_p99_us=6137.2 batches=1742 commits=870 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1960 offered=2000 throughput_per_s=980 latency_median_us=34394.7 latency_p99_us=46126.9 batches=90 commits=89 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1966 offered=2000 throughput_per_s=983 latency_median_us=33734.6 latency_p99_us=45005.9 batches=92 commits=91 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21754.6 latency_p99_us=23454.1 batches=1961 commits=1931 replays=1931
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21784.5 latency_p99_us=23696.4 batches=1935 commits=1886 replays=1886
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1961 offered=2000 throughput_per_s=980 latency_median_us=33251.9 latency_p99_us=44777.5 batches=180 commits=89 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=20000 replied=1972 offered=2000 throughput_per_s=986 latency_median_us=33111.8 latency_p99_us=44908.3 batches=182 commits=90 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19974 offered=20000 throughput_per_s=9987 latency_median_us=2940.9 latency_p99_us=5247.1 batches=1052 commits=1051 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19975 offered=20000 throughput_per_s=9988 latency_median_us=3116.3 latency_p99_us=14329.7 batches=980 commits=979 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19981 offered=20000 throughput_per_s=9990 latency_median_us=2233.3 latency_p99_us=3959.8 batches=3318 commits=3125 replays=2996
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19978 offered=20000 throughput_per_s=9989 latency_median_us=2330.6 latency_p99_us=4863.2 batches=3141 commits=2885 replays=2668
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19977 offered=20000 throughput_per_s=9988 latency_median_us=3103.2 latency_p99_us=5798.2 batches=1720 commits=859 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19978 offered=20000 throughput_per_s=9989 latency_median_us=3082.0 latency_p99_us=6310.6 batches=1733 commits=866 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19596 offered=20000 throughput_per_s=9798 latency_median_us=33486.3 latency_p99_us=45168.9 batches=90 commits=89 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=20000 replied=19604 offered=20000 throughput_per_s=9802 latency_median_us=33899.7 latency_p99_us=45688.4 batches=89 commits=88 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=2 rate=10000 rtt_us=20000 replied=19768 offered=20000 throughput_per_s=9884 latency_median_us=21574.9 latency_p99_us=32877.6 batches=3279 commits=2321 replays=2321
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19793 offered=20000 throughput_per_s=9896 latency_median_us=21394.4 latency_p99_us=26809.7 batches=3404 commits=2442 replays=2442
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19622 offered=20000 throughput_per_s=9811 latency_median_us=33113.7 latency_p99_us=44837.5 batches=176 commits=87 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19716 offered=20000 throughput_per_s=9858 latency_median_us=33185.2 latency_p99_us=44796.2 batches=178 commits=88 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199537 offered=200000 throughput_per_s=99768 latency_median_us=3789.9 latency_p99_us=6795.3 batches=791 commits=790 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199763 offered=200000 throughput_per_s=99882 latency_median_us=3614.1 latency_p99_us=6161.3 batches=831 commits=830 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199775 offered=200000 throughput_per_s=99888 latency_median_us=2814.1 latency_p99_us=6848.7 batches=2217 commits=1864 replays=1415
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199839 offered=200000 throughput_per_s=99920 latency_median_us=2669.8 latency_p99_us=5594.6 batches=2315 commits=2077 replays=1719
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199636 offered=200000 throughput_per_s=99818 latency_median_us=3701.7 latency_p99_us=7761.4 batches=1330 commits=664 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199644 offered=200000 throughput_per_s=99822 latency_median_us=3625.5 latency_p99_us=6353.3 batches=1356 commits=677 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=196036 offered=200000 throughput_per_s=98018 latency_median_us=35861.7 latency_p99_us=48255.9 batches=84 commits=83 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=197292 offered=200000 throughput_per_s=98646 latency_median_us=36084.7 latency_p99_us=48806.1 batches=84 commits=83 replays=0
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=100000 rtt_us=20000 replied=197852 offered=200000 throughput_per_s=98926 latency_median_us=23584.6 latency_p99_us=42338.7 batches=1980 commits=783 replays=777
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=20000 replied=197866 offered=200000 throughput_per_s=98933 latency_median_us=24326.5 latency_p99_us=44420.0 batches=2104 commits=905 replays=879
+bench=pipeline round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=197304 offered=200000 throughput_per_s=98652 latency_median_us=34408.6 latency_p99_us=47259.2 batches=164 commits=81 replays=0
+bench=pipeline round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196004 offered=200000 throughput_per_s=98002 latency_median_us=34598.7 latency_p99_us=47853.5 batches=162 commits=80 replays=0
+bench=repair round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.062690 bytes=13729792
+bench=repair round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.052559 bytes=13729792
+bench=repair round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.085334 bytes=696600
+bench=repair round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.083465 bytes=696600
+bench=repair round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.849578 bytes=137158656
+bench=repair round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.906276 bytes=137158656
+bench=repair round=1 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.794362 bytes=696600
+bench=repair round=1 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.801090 bytes=696600
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3614.4 latency_p99_us=5619.6 batches=1140 commits=1140 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1996 offered=2000 throughput_per_s=998 latency_median_us=3597.3 latency_p99_us=7049.6 batches=1146 commits=1145 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2752.3 latency_p99_us=4690.7 batches=1966 commits=1957 replays=1909
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2788.4 latency_p99_us=7258.8 batches=1959 commits=1950 replays=1926
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3608.8 latency_p99_us=5545.1 batches=1809 commits=904 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3718.1 latency_p99_us=6005.9 batches=1751 commits=875 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1971 offered=2000 throughput_per_s=986 latency_median_us=34158.8 latency_p99_us=45689.2 batches=91 commits=90 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1964 offered=2000 throughput_per_s=982 latency_median_us=34094.7 latency_p99_us=45469.5 batches=91 commits=90 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21758.9 latency_p99_us=23962.0 batches=1967 commits=1927 replays=1927
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21733.3 latency_p99_us=23002.5 batches=1982 commits=1953 replays=1953
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=32929.8 latency_p99_us=44040.4 batches=182 commits=91 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1975 offered=2000 throughput_per_s=988 latency_median_us=33903.9 latency_p99_us=51199.9 batches=178 commits=88 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19970 offered=20000 throughput_per_s=9985 latency_median_us=2916.0 latency_p99_us=4715.0 batches=1062 commits=1061 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19971 offered=20000 throughput_per_s=9986 latency_median_us=2923.7 latency_p99_us=5683.2 batches=1056 commits=1055 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19976 offered=20000 throughput_per_s=9988 latency_median_us=2171.6 latency_p99_us=3874.5 batches=3557 commits=3308 replays=3059
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19984 offered=20000 throughput_per_s=9992 latency_median_us=2287.5 latency_p99_us=4080.5 batches=3121 commits=2937 replays=2872
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19968 offered=20000 throughput_per_s=9984 latency_median_us=2947.6 latency_p99_us=6710.3 batches=1822 commits=910 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19972 offered=20000 throughput_per_s=9986 latency_median_us=2889.1 latency_p99_us=5051.0 batches=1870 commits=934 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=20000 replied=19675 offered=20000 throughput_per_s=9838 latency_median_us=33999.9 latency_p99_us=48825.4 batches=89 commits=88 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=20000 replied=19612 offered=20000 throughput_per_s=9806 latency_median_us=33529.2 latency_p99_us=45519.4 batches=90 commits=89 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=20000 replied=19768 offered=20000 throughput_per_s=9884 latency_median_us=21559.1 latency_p99_us=30142.6 batches=3035 commits=2170 replays=2170
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19747 offered=20000 throughput_per_s=9874 latency_median_us=21380.1 latency_p99_us=27660.8 batches=3443 commits=2449 replays=2449
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19611 offered=20000 throughput_per_s=9806 latency_median_us=33474.4 latency_p99_us=45744.3 batches=174 commits=86 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=20000 replied=19582 offered=20000 throughput_per_s=9791 latency_median_us=33174.4 latency_p99_us=44904.6 batches=176 commits=87 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199816 offered=200000 throughput_per_s=99908 latency_median_us=3220.8 latency_p99_us=5046.9 batches=933 commits=933 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=3 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199801 offered=200000 throughput_per_s=99900 latency_median_us=3228.2 latency_p99_us=5053.3 batches=931 commits=931 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199749 offered=200000 throughput_per_s=99874 latency_median_us=2770.6 latency_p99_us=5177.9 batches=2126 commits=1928 replays=1637
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=1000 replied=199824 offered=200000 throughput_per_s=99912 latency_median_us=2740.7 latency_p99_us=4464.8 batches=2087 commits=1944 replays=1754
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199834 offered=200000 throughput_per_s=99917 latency_median_us=3408.3 latency_p99_us=6798.9 batches=1454 commits=727 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=3 rate=100000 rtt_us=1000 replied=199626 offered=200000 throughput_per_s=99813 latency_median_us=3684.4 latency_p99_us=8161.8 batches=1334 commits=666 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=196517 offered=200000 throughput_per_s=98258 latency_median_us=35931.4 latency_p99_us=48974.3 batches=84 commits=83 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=196812 offered=200000 throughput_per_s=98406 latency_median_us=36452.0 latency_p99_us=51206.2 batches=83 commits=82 replays=0
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197730 offered=200000 throughput_per_s=98865 latency_median_us=24455.2 latency_p99_us=42263.2 batches=1401 commits=655 replays=650
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197195 offered=200000 throughput_per_s=98598 latency_median_us=23969.2 latency_p99_us=41526.1 batches=1738 commits=720 replays=716
+bench=pipeline round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196527 offered=200000 throughput_per_s=98264 latency_median_us=33611.9 latency_p99_us=45761.6 batches=168 commits=83 replays=0
+bench=pipeline round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=197190 offered=200000 throughput_per_s=98595 latency_median_us=34414.6 latency_p99_us=47720.4 batches=164 commits=81 replays=0
+bench=repair round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.049251 bytes=13729792
+bench=repair round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.051067 bytes=13729792
+bench=repair round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.083326 bytes=696600
+bench=repair round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.088977 bytes=696600
+bench=repair round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.704691 bytes=137158656
+bench=repair round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.911453 bytes=137158656
+bench=repair round=1 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=rebuild n=100000 seconds=0.858229 bytes=696600
+bench=repair round=1 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=rebuild n=100000 seconds=0.792947 bytes=696600
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3609.4 latency_p99_us=5546.8 batches=1869 commits=934 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3673.6 latency_p99_us=5451.4 batches=1844 commits=921 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2775.7 latency_p99_us=3903.1 batches=1988 commits=1986 replays=1967
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=2757.2 latency_p99_us=3934.8 batches=1988 commits=1985 replays=1972
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3725.6 latency_p99_us=5701.2 batches=1096 commits=1095 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3526.7 latency_p99_us=4930.6 batches=1182 commits=1181 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1963 offered=2000 throughput_per_s=982 latency_median_us=33367.2 latency_p99_us=44517.7 batches=180 commits=89 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1975 offered=2000 throughput_per_s=988 latency_median_us=33885.8 latency_p99_us=45687.8 batches=178 commits=88 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21685.9 latency_p99_us=22815.1 batches=1990 commits=1961 replays=1961
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21651.8 latency_p99_us=22668.1 batches=1993 commits=1968 replays=1968
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1974 offered=2000 throughput_per_s=987 latency_median_us=33487.2 latency_p99_us=44801.8 batches=93 commits=92 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1963 offered=2000 throughput_per_s=982 latency_median_us=33685.3 latency_p99_us=45118.0 batches=92 commits=91 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19965 offered=20000 throughput_per_s=9982 latency_median_us=2999.0 latency_p99_us=5163.7 batches=1796 commits=897 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=10000 rtt_us=1000 replied=19966 offered=20000 throughput_per_s=9983 latency_median_us=3050.4 latency_p99_us=6837.7 batches=1758 commits=878 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19981 offered=20000 throughput_per_s=9990 latency_median_us=2100.0 latency_p99_us=3852.0 batches=3772 commits=3488 replays=3297
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19970 offered=20000 throughput_per_s=9985 latency_median_us=2201.2 latency_p99_us=3870.5 batches=3548 commits=3343 replays=3158
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19981 offered=20000 throughput_per_s=9990 latency_median_us=2787.5 latency_p99_us=4760.7 batches=1112 commits=1112 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19969 offered=20000 throughput_per_s=9984 latency_median_us=2773.4 latency_p99_us=4899.0 batches=1117 commits=1116 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19687 offered=20000 throughput_per_s=9844 latency_median_us=33024.1 latency_p99_us=44724.8 batches=178 commits=88 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19746 offered=20000 throughput_per_s=9873 latency_median_us=32633.2 latency_p99_us=44254.5 batches=182 commits=90 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19793 offered=20000 throughput_per_s=9896 latency_median_us=21494.7 latency_p99_us=28941.2 batches=3137 commits=2276 replays=2276
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=20000 replied=19791 offered=20000 throughput_per_s=9896 latency_median_us=21446.0 latency_p99_us=28148.7 batches=3440 commits=2374 replays=2374
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19716 offered=20000 throughput_per_s=9858 latency_median_us=33705.3 latency_p99_us=45357.5 batches=90 commits=89 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19693 offered=20000 throughput_per_s=9846 latency_median_us=33273.2 latency_p99_us=44504.4 batches=91 commits=90 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=100000 rtt_us=1000 replied=199617 offered=200000 throughput_per_s=99808 latency_median_us=3381.5 latency_p99_us=5673.3 batches=1470 commits=734 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199747 offered=200000 throughput_per_s=99874 latency_median_us=3378.0 latency_p99_us=6282.6 batches=1472 commits=735 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199827 offered=200000 throughput_per_s=99914 latency_median_us=2687.4 latency_p99_us=4747.9 batches=2283 commits=1948 replays=1547
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=100000 rtt_us=1000 replied=199744 offered=200000 throughput_per_s=99872 latency_median_us=2694.8 latency_p99_us=5185.9 batches=2200 commits=2013 replays=1744
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199736 offered=200000 throughput_per_s=99868 latency_median_us=3639.4 latency_p99_us=6881.5 batches=822 commits=821 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199780 offered=200000 throughput_per_s=99890 latency_median_us=3677.7 latency_p99_us=7818.6 batches=811 commits=810 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196671 offered=200000 throughput_per_s=98336 latency_median_us=34294.9 latency_p99_us=47889.9 batches=164 commits=81 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196854 offered=200000 throughput_per_s=98427 latency_median_us=35533.6 latency_p99_us=49294.8 batches=158 commits=78 replays=0
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197830 offered=200000 throughput_per_s=98915 latency_median_us=24132.6 latency_p99_us=44198.5 batches=2359 commits=985 replays=960
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=196786 offered=200000 throughput_per_s=98393 latency_median_us=24009.0 latency_p99_us=43929.8 batches=1895 commits=839 replays=823
+bench=pipeline round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=197297 offered=200000 throughput_per_s=98648 latency_median_us=36088.1 latency_p99_us=48533.1 batches=84 commits=83 replays=0
+bench=pipeline round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=5 arm=1 rate=100000 rtt_us=20000 replied=197262 offered=200000 throughput_per_s=98631 latency_median_us=37057.9 latency_p99_us=84686.4 batches=81 commits=80 replays=0
+bench=repair round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=10000 seconds=0.084697 bytes=696600
+bench=repair round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.083625 bytes=696600
+bench=repair round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.049026 bytes=13729792
+bench=repair round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.048459 bytes=13729792
+bench=repair round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=rebuild n=100000 seconds=0.746195 bytes=696600
+bench=repair round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=100000 seconds=0.779167 bytes=696600
+bench=repair round=2 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.652236 bytes=137158656
+bench=repair round=2 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.908548 bytes=137158656
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3618.3 latency_p99_us=5801.7 batches=1839 commits=919 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1996 offered=2000 throughput_per_s=998 latency_median_us=3686.0 latency_p99_us=5426.7 batches=1742 commits=870 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=2689.4 latency_p99_us=3707.6 batches=1997 commits=1994 replays=1983
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2677.5 latency_p99_us=3587.0 batches=1995 commits=1994 replays=1991
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3645.7 latency_p99_us=5762.7 batches=1130 commits=1129 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3580.5 latency_p99_us=5080.3 batches=1168 commits=1167 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1972 offered=2000 throughput_per_s=986 latency_median_us=33166.5 latency_p99_us=44862.5 batches=182 commits=90 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=20000 replied=1965 offered=2000 throughput_per_s=982 latency_median_us=33689.9 latency_p99_us=45154.3 batches=178 commits=88 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21692.9 latency_p99_us=22786.7 batches=1988 commits=1963 replays=1963
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21739.2 latency_p99_us=23074.6 batches=1986 commits=1951 replays=1951
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=20000 replied=1974 offered=2000 throughput_per_s=987 latency_median_us=33884.1 latency_p99_us=45370.8 batches=92 commits=91 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1962 offered=2000 throughput_per_s=981 latency_median_us=34381.8 latency_p99_us=46100.2 batches=90 commits=89 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19971 offered=20000 throughput_per_s=9986 latency_median_us=2854.2 latency_p99_us=5521.0 batches=1896 commits=947 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19983 offered=20000 throughput_per_s=9992 latency_median_us=3014.3 latency_p99_us=5251.2 batches=1784 commits=892 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19985 offered=20000 throughput_per_s=9992 latency_median_us=2105.6 latency_p99_us=3880.7 batches=3688 commits=3448 replays=3261
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19972 offered=20000 throughput_per_s=9986 latency_median_us=2265.0 latency_p99_us=4175.9 batches=3224 commits=3025 replays=2882
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=1 rate=10000 rtt_us=1000 replied=19974 offered=20000 throughput_per_s=9987 latency_median_us=3198.7 latency_p99_us=5678.6 batches=964 commits=963 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19983 offered=20000 throughput_per_s=9992 latency_median_us=2812.5 latency_p99_us=4801.4 batches=1103 commits=1102 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19646 offered=20000 throughput_per_s=9823 latency_median_us=33537.1 latency_p99_us=46226.1 batches=174 commits=86 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=20000 replied=19671 offered=20000 throughput_per_s=9836 latency_median_us=32959.5 latency_p99_us=44535.6 batches=178 commits=88 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19779 offered=20000 throughput_per_s=9890 latency_median_us=21590.5 latency_p99_us=28475.0 batches=3011 commits=2160 replays=2160
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19764 offered=20000 throughput_per_s=9882 latency_median_us=21592.9 latency_p99_us=34789.0 batches=3153 commits=2214 replays=2212
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19704 offered=20000 throughput_per_s=9852 latency_median_us=34072.9 latency_p99_us=45836.3 batches=89 commits=88 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19598 offered=20000 throughput_per_s=9799 latency_median_us=33867.8 latency_p99_us=45522.6 batches=89 commits=88 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199666 offered=200000 throughput_per_s=99833 latency_median_us=3568.9 latency_p99_us=6673.9 batches=1380 commits=689 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199748 offered=200000 throughput_per_s=99874 latency_median_us=3837.4 latency_p99_us=6965.5 batches=1275 commits=637 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199750 offered=200000 throughput_per_s=99875 latency_median_us=2842.6 latency_p99_us=5390.7 batches=2007 commits=1857 replays=1555
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=1000 replied=199802 offered=200000 throughput_per_s=99901 latency_median_us=2850.6 latency_p99_us=4755.5 batches=1998 commits=1787 replays=1430
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199799 offered=200000 throughput_per_s=99900 latency_median_us=3406.9 latency_p99_us=5789.9 batches=879 commits=879 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199699 offered=200000 throughput_per_s=99850 latency_median_us=3491.9 latency_p99_us=5709.3 batches=860 commits=859 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=20000 replied=196066 offered=200000 throughput_per_s=98033 latency_median_us=34900.5 latency_p99_us=48453.1 batches=160 commits=79 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=197439 offered=200000 throughput_per_s=98720 latency_median_us=34730.8 latency_p99_us=48097.7 batches=162 commits=80 replays=0
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=20000 replied=197847 offered=200000 throughput_per_s=98924 latency_median_us=23964.5 latency_p99_us=42294.8 batches=1694 commits=721 replays=718
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197783 offered=200000 throughput_per_s=98892 latency_median_us=24110.2 latency_p99_us=44141.9 batches=1891 commits=947 replays=932
+bench=pipeline round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=197244 offered=200000 throughput_per_s=98622 latency_median_us=36518.4 latency_p99_us=49023.2 batches=83 commits=82 replays=0
+bench=pipeline round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=195819 offered=200000 throughput_per_s=97910 latency_median_us=36699.6 latency_p99_us=50506.5 batches=82 commits=81 replays=0
+bench=repair round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.088737 bytes=696600
+bench=repair round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.086451 bytes=696600
+bench=repair round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.051827 bytes=13729792
+bench=repair round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.051640 bytes=13729792
+bench=repair round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.812419 bytes=696600
+bench=repair round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=100000 seconds=0.778945 bytes=696600
+bench=repair round=2 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.618016 bytes=137158656
+bench=repair round=2 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.455224 bytes=137158656
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3740.2 latency_p99_us=5885.1 batches=1096 commits=1096 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3473.3 latency_p99_us=4942.0 batches=1212 commits=1211 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2699.8 latency_p99_us=3951.7 batches=1989 commits=1987 replays=1975
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=2675.9 latency_p99_us=6928.2 batches=1970 commits=1966 replays=1954
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3594.8 latency_p99_us=5608.2 batches=1808 commits=903 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=3 rate=1000 rtt_us=1000 replied=1996 offered=2000 throughput_per_s=998 latency_median_us=3650.4 latency_p99_us=10982.4 batches=1727 commits=863 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1971 offered=2000 throughput_per_s=986 latency_median_us=33414.9 latency_p99_us=44997.2 batches=93 commits=92 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1971 offered=2000 throughput_per_s=986 latency_median_us=33422.8 latency_p99_us=44519.9 batches=93 commits=92 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21741.1 latency_p99_us=23722.3 batches=1959 commits=1910 replays=1910
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21763.2 latency_p99_us=23358.2 batches=1978 commits=1948 replays=1948
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1971 offered=2000 throughput_per_s=986 latency_median_us=33774.1 latency_p99_us=45582.1 batches=178 commits=88 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1960 offered=2000 throughput_per_s=980 latency_median_us=33214.9 latency_p99_us=44519.9 batches=180 commits=89 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19974 offered=20000 throughput_per_s=9987 latency_median_us=3036.4 latency_p99_us=9250.7 batches=1011 commits=1010 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19977 offered=20000 throughput_per_s=9988 latency_median_us=2891.6 latency_p99_us=4943.9 batches=1073 commits=1072 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=10000 rtt_us=1000 replied=19983 offered=20000 throughput_per_s=9992 latency_median_us=2139.2 latency_p99_us=4199.4 batches=3668 commits=3393 replays=3262
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19980 offered=20000 throughput_per_s=9990 latency_median_us=2262.3 latency_p99_us=3803.2 batches=3272 commits=3035 replays=2883
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19975 offered=20000 throughput_per_s=9988 latency_median_us=2854.2 latency_p99_us=5347.0 batches=1894 commits=946 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19960 offered=20000 throughput_per_s=9980 latency_median_us=3106.0 latency_p99_us=5680.8 batches=1716 commits=857 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19641 offered=20000 throughput_per_s=9820 latency_median_us=33936.6 latency_p99_us=45707.0 batches=89 commits=88 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19606 offered=20000 throughput_per_s=9803 latency_median_us=33880.8 latency_p99_us=45440.4 batches=89 commits=88 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=6 arm=2 rate=10000 rtt_us=20000 replied=19795 offered=20000 throughput_per_s=9898 latency_median_us=21542.4 latency_p99_us=41800.6 batches=3240 commits=2248 replays=2247
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=4 arm=2 rate=10000 rtt_us=20000 replied=19793 offered=20000 throughput_per_s=9896 latency_median_us=21501.8 latency_p99_us=32892.1 batches=3334 commits=2328 replays=2328
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=10000 rtt_us=20000 replied=19615 offered=20000 throughput_per_s=9808 latency_median_us=33275.6 latency_p99_us=50923.3 batches=176 commits=87 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19626 offered=20000 throughput_per_s=9813 latency_median_us=33045.3 latency_p99_us=44863.4 batches=178 commits=88 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199811 offered=200000 throughput_per_s=99906 latency_median_us=3490.8 latency_p99_us=5969.5 batches=859 commits=859 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199591 offered=200000 throughput_per_s=99796 latency_median_us=3426.2 latency_p99_us=6440.3 batches=874 commits=873 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199779 offered=200000 throughput_per_s=99890 latency_median_us=2772.5 latency_p99_us=5196.8 batches=2076 commits=1922 replays=1708
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199773 offered=200000 throughput_per_s=99886 latency_median_us=2826.2 latency_p99_us=4899.9 batches=1918 commits=1806 replays=1646
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199706 offered=200000 throughput_per_s=99853 latency_median_us=3569.2 latency_p99_us=6014.2 batches=1386 commits=692 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=100000 rtt_us=1000 replied=199826 offered=200000 throughput_per_s=99913 latency_median_us=3645.6 latency_p99_us=6964.4 batches=1350 commits=675 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=197503 offered=200000 throughput_per_s=98752 latency_median_us=36570.7 latency_p99_us=49180.2 batches=83 commits=82 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=195322 offered=200000 throughput_per_s=97661 latency_median_us=36632.3 latency_p99_us=49624.6 batches=82 commits=81 replays=0
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197813 offered=200000 throughput_per_s=98906 latency_median_us=24409.6 latency_p99_us=44569.5 batches=1651 commits=811 replays=789
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197626 offered=200000 throughput_per_s=98813 latency_median_us=24312.8 latency_p99_us=41839.0 batches=1447 commits=670 replays=666
+bench=pipeline round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=197144 offered=200000 throughput_per_s=98572 latency_median_us=35860.1 latency_p99_us=49908.6 batches=156 commits=77 replays=0
+bench=pipeline round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=197259 offered=200000 throughput_per_s=98630 latency_median_us=36358.3 latency_p99_us=50578.3 batches=152 commits=75 replays=0
+bench=repair round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.055442 bytes=13729792
+bench=repair round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=10000 seconds=0.049893 bytes=13729792
+bench=repair round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.088153 bytes=696600
+bench=repair round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.085063 bytes=696600
+bench=repair round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.696275 bytes=137158656
+bench=repair round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=copy n=100000 seconds=0.990989 bytes=137158656
+bench=repair round=3 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.777906 bytes=696600
+bench=repair round=3 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=rebuild n=100000 seconds=0.869376 bytes=696600
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3693.7 latency_p99_us=6211.1 batches=1107 commits=1106 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3663.6 latency_p99_us=5654.5 batches=1120 commits=1119 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2719.9 latency_p99_us=6960.2 batches=1958 commits=1953 replays=1916
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2748.3 latency_p99_us=4128.4 batches=1984 commits=1980 replays=1956
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3586.9 latency_p99_us=5039.4 batches=1908 commits=953 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3616.4 latency_p99_us=5255.9 batches=1873 commits=936 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1961 offered=2000 throughput_per_s=980 latency_median_us=33338.8 latency_p99_us=44231.5 batches=93 commits=92 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1962 offered=2000 throughput_per_s=981 latency_median_us=33450.1 latency_p99_us=45478.7 batches=93 commits=92 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21738.5 latency_p99_us=25189.8 batches=1978 commits=1941 replays=1941
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21732.2 latency_p99_us=23385.8 batches=1982 commits=1952 replays=1952
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=20000 replied=1960 offered=2000 throughput_per_s=980 latency_median_us=33349.0 latency_p99_us=45166.3 batches=180 commits=89 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1958 offered=2000 throughput_per_s=979 latency_median_us=33306.2 latency_p99_us=44507.9 batches=180 commits=89 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19976 offered=20000 throughput_per_s=9988 latency_median_us=2871.1 latency_p99_us=5196.5 batches=1078 commits=1077 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19970 offered=20000 throughput_per_s=9985 latency_median_us=2898.2 latency_p99_us=4921.3 batches=1067 commits=1066 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19980 offered=20000 throughput_per_s=9990 latency_median_us=2173.9 latency_p99_us=3836.4 batches=3584 commits=3300 replays=3111
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=10000 rtt_us=1000 replied=19975 offered=20000 throughput_per_s=9988 latency_median_us=2248.2 latency_p99_us=4686.0 batches=3444 commits=3127 replays=2938
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19981 offered=20000 throughput_per_s=9990 latency_median_us=3061.3 latency_p99_us=6103.7 batches=1740 commits=870 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=10000 rtt_us=1000 replied=19985 offered=20000 throughput_per_s=9992 latency_median_us=2951.6 latency_p99_us=5351.6 batches=1818 commits=909 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19760 offered=20000 throughput_per_s=9880 latency_median_us=33368.4 latency_p99_us=44858.6 batches=91 commits=90 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=1 rate=10000 rtt_us=20000 replied=19726 offered=20000 throughput_per_s=9863 latency_median_us=32964.1 latency_p99_us=44705.4 batches=92 commits=91 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19771 offered=20000 throughput_per_s=9886 latency_median_us=21558.4 latency_p99_us=31816.5 batches=3087 commits=2165 replays=2165
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=10000 rtt_us=20000 replied=19777 offered=20000 throughput_per_s=9888 latency_median_us=21610.5 latency_p99_us=32809.6 batches=3065 commits=2199 replays=2199
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19776 offered=20000 throughput_per_s=9888 latency_median_us=32878.3 latency_p99_us=44662.6 batches=178 commits=89 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19785 offered=20000 throughput_per_s=9892 latency_median_us=33239.7 latency_p99_us=45006.9 batches=176 commits=88 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199582 offered=200000 throughput_per_s=99791 latency_median_us=3530.8 latency_p99_us=6096.7 batches=850 commits=849 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199642 offered=200000 throughput_per_s=99821 latency_median_us=3451.1 latency_p99_us=5809.9 batches=870 commits=869 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199780 offered=200000 throughput_per_s=99890 latency_median_us=2751.4 latency_p99_us=5232.8 batches=2060 commits=1896 replays=1652
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=1000 replied=199654 offered=200000 throughput_per_s=99827 latency_median_us=2814.7 latency_p99_us=5465.9 batches=2010 commits=1863 replays=1637
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199777 offered=200000 throughput_per_s=99888 latency_median_us=3617.8 latency_p99_us=6230.9 batches=1367 commits=683 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199772 offered=200000 throughput_per_s=99886 latency_median_us=3429.4 latency_p99_us=5728.4 batches=1453 commits=726 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=197438 offered=200000 throughput_per_s=98719 latency_median_us=36133.1 latency_p99_us=48458.2 batches=84 commits=83 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=197159 offered=200000 throughput_per_s=98580 latency_median_us=36505.8 latency_p99_us=48900.2 batches=83 commits=82 replays=0
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197526 offered=200000 throughput_per_s=98763 latency_median_us=23758.5 latency_p99_us=39514.7 batches=1828 commits=757 replays=754
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=2 rate=100000 rtt_us=20000 replied=196549 offered=200000 throughput_per_s=98274 latency_median_us=24199.9 latency_p99_us=43177.6 batches=1900 commits=798 replays=790
+bench=pipeline round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196217 offered=200000 throughput_per_s=98108 latency_median_us=34583.9 latency_p99_us=47395.6 batches=162 commits=80 replays=0
+bench=pipeline round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196403 offered=200000 throughput_per_s=98202 latency_median_us=34764.3 latency_p99_us=47502.2 batches=162 commits=80 replays=0
+bench=repair round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.050658 bytes=13729792
+bench=repair round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.049662 bytes=13729792
+bench=repair round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=10000 seconds=0.084391 bytes=696600
+bench=repair round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.092107 bytes=696600
+bench=repair round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.605918 bytes=137158656
+bench=repair round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.443592 bytes=137158656
+bench=repair round=3 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=100000 seconds=0.790659 bytes=696600
+bench=repair round=3 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.836047 bytes=696600
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1996 offered=2000 throughput_per_s=998 latency_median_us=3613.3 latency_p99_us=5495.5 batches=1826 commits=912 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3592.2 latency_p99_us=5121.4 batches=1912 commits=955 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2746.2 latency_p99_us=4166.9 batches=1982 commits=1975 replays=1950
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2730.4 latency_p99_us=3752.2 batches=1991 commits=1989 replays=1981
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3447.6 latency_p99_us=4945.7 batches=1217 commits=1217 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3606.8 latency_p99_us=5401.1 batches=1139 commits=1138 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1960 offered=2000 throughput_per_s=980 latency_median_us=33329.6 latency_p99_us=44720.4 batches=180 commits=89 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1973 offered=2000 throughput_per_s=986 latency_median_us=33452.3 latency_p99_us=44972.2 batches=180 commits=89 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21683.7 latency_p99_us=23008.1 batches=1984 commits=1958 replays=1958
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21734.8 latency_p99_us=23207.1 batches=1978 commits=1950 replays=1950
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=20000 replied=1971 offered=2000 throughput_per_s=986 latency_median_us=33554.2 latency_p99_us=45045.6 batches=93 commits=92 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1963 offered=2000 throughput_per_s=982 latency_median_us=34027.1 latency_p99_us=45453.2 batches=91 commits=90 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19977 offered=20000 throughput_per_s=9988 latency_median_us=2999.5 latency_p99_us=6029.5 batches=1801 commits=900 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=10000 rtt_us=1000 replied=19980 offered=20000 throughput_per_s=9990 latency_median_us=3085.1 latency_p99_us=6649.4 batches=1727 commits=863 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19977 offered=20000 throughput_per_s=9988 latency_median_us=2229.9 latency_p99_us=4011.5 batches=3390 commits=3107 replays=3015
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19984 offered=20000 throughput_per_s=9992 latency_median_us=2213.8 latency_p99_us=3804.6 batches=3405 commits=3162 replays=3033
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19962 offered=20000 throughput_per_s=9981 latency_median_us=2871.3 latency_p99_us=5059.1 batches=1078 commits=1077 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19984 offered=20000 throughput_per_s=9992 latency_median_us=2825.4 latency_p99_us=4647.0 batches=1097 commits=1097 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=3 rate=10000 rtt_us=20000 replied=19646 offered=20000 throughput_per_s=9823 latency_median_us=33241.5 latency_p99_us=49423.9 batches=176 commits=87 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19621 offered=20000 throughput_per_s=9810 latency_median_us=32829.0 latency_p99_us=44585.1 batches=178 commits=88 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=20000 replied=19776 offered=20000 throughput_per_s=9888 latency_median_us=21409.1 latency_p99_us=31619.6 batches=3498 commits=2431 replays=2431
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=20000 replied=19790 offered=20000 throughput_per_s=9895 latency_median_us=21486.7 latency_p99_us=30808.3 batches=3146 commits=2298 replays=2298
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19626 offered=20000 throughput_per_s=9813 latency_median_us=33924.6 latency_p99_us=45615.0 batches=89 commits=88 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19564 offered=20000 throughput_per_s=9782 latency_median_us=34214.1 latency_p99_us=46074.8 batches=88 commits=87 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199763 offered=200000 throughput_per_s=99882 latency_median_us=3521.3 latency_p99_us=5975.0 batches=1419 commits=709 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199706 offered=200000 throughput_per_s=99853 latency_median_us=3386.9 latency_p99_us=5840.1 batches=1488 commits=743 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199721 offered=200000 throughput_per_s=99860 latency_median_us=2697.3 latency_p99_us=4618.2 batches=2201 commits=2048 replays=1840
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=1000 replied=199815 offered=200000 throughput_per_s=99908 latency_median_us=2594.8 latency_p99_us=4573.9 batches=2420 commits=2192 replays=1808
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=1 rate=100000 rtt_us=1000 replied=199650 offered=200000 throughput_per_s=99825 latency_median_us=3499.7 latency_p99_us=5898.7 batches=857 commits=856 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199692 offered=200000 throughput_per_s=99846 latency_median_us=3502.8 latency_p99_us=6522.4 batches=855 commits=854 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=197737 offered=200000 throughput_per_s=98868 latency_median_us=34146.7 latency_p99_us=47003.0 batches=165 commits=82 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196506 offered=200000 throughput_per_s=98253 latency_median_us=34736.6 latency_p99_us=49648.7 batches=162 commits=80 replays=0
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=100000 rtt_us=20000 replied=197710 offered=200000 throughput_per_s=98855 latency_median_us=23509.4 latency_p99_us=35733.8 batches=2022 commits=750 replays=750
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197545 offered=200000 throughput_per_s=98772 latency_median_us=23308.0 latency_p99_us=34779.9 batches=1750 commits=743 replays=741
+bench=pipeline round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=196400 offered=200000 throughput_per_s=98200 latency_median_us=35925.6 latency_p99_us=48169.8 batches=84 commits=83 replays=0
+bench=pipeline round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=197243 offered=200000 throughput_per_s=98622 latency_median_us=36082.0 latency_p99_us=48524.1 batches=84 commits=83 replays=0
+bench=repair round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.082004 bytes=696600
+bench=repair round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.081434 bytes=696600
+bench=repair round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.047772 bytes=13729792
+bench=repair round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=10000 seconds=0.052945 bytes=13729792
+bench=repair round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=rebuild n=100000 seconds=0.806930 bytes=696600
+bench=repair round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.838215 bytes=696600
+bench=repair round=4 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.547444 bytes=137158656
+bench=repair round=4 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.862672 bytes=137158656
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3623.8 latency_p99_us=5463.2 batches=1845 commits=922 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3561.8 latency_p99_us=5534.1 batches=1925 commits=962 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2668.9 latency_p99_us=3720.6 batches=1993 commits=1991 replays=1984
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2675.5 latency_p99_us=4057.7 batches=1984 commits=1983 replays=1968
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3587.0 latency_p99_us=5976.2 batches=1150 commits=1150 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3685.7 latency_p99_us=7409.2 batches=1108 commits=1107 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=20000 replied=1967 offered=2000 throughput_per_s=984 latency_median_us=33456.6 latency_p99_us=45246.6 batches=180 commits=89 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1965 offered=2000 throughput_per_s=982 latency_median_us=33479.0 latency_p99_us=44923.4 batches=180 commits=89 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21708.0 latency_p99_us=22972.9 batches=1979 commits=1956 replays=1956
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21719.3 latency_p99_us=22919.9 batches=1978 commits=1950 replays=1950
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1962 offered=2000 throughput_per_s=981 latency_median_us=34085.5 latency_p99_us=45564.5 batches=91 commits=90 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1977 offered=2000 throughput_per_s=988 latency_median_us=33911.9 latency_p99_us=45135.9 batches=92 commits=91 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19961 offered=20000 throughput_per_s=9980 latency_median_us=2895.8 latency_p99_us=5986.6 batches=1848 commits=923 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19973 offered=20000 throughput_per_s=9986 latency_median_us=2975.1 latency_p99_us=5094.3 batches=1816 commits=907 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19979 offered=20000 throughput_per_s=9990 latency_median_us=2057.3 latency_p99_us=6029.8 batches=3967 commits=3625 replays=3430
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19971 offered=20000 throughput_per_s=9986 latency_median_us=2290.3 latency_p99_us=4308.3 batches=3268 commits=2971 replays=2752
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19977 offered=20000 throughput_per_s=9988 latency_median_us=2903.5 latency_p99_us=6759.4 batches=1061 commits=1060 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19969 offered=20000 throughput_per_s=9984 latency_median_us=2846.6 latency_p99_us=15159.3 batches=1079 commits=1078 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19761 offered=20000 throughput_per_s=9880 latency_median_us=32506.2 latency_p99_us=43771.7 batches=182 commits=90 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=20000 replied=19600 offered=20000 throughput_per_s=9800 latency_median_us=32947.1 latency_p99_us=44523.6 batches=178 commits=88 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=10000 rtt_us=20000 replied=19710 offered=20000 throughput_per_s=9855 latency_median_us=21456.3 latency_p99_us=35957.6 batches=3383 commits=2353 replays=2353
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19792 offered=20000 throughput_per_s=9896 latency_median_us=21494.6 latency_p99_us=29864.4 batches=3271 commits=2292 replays=2292
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19644 offered=20000 throughput_per_s=9822 latency_median_us=32840.9 latency_p99_us=43741.3 batches=92 commits=91 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19586 offered=20000 throughput_per_s=9793 latency_median_us=33086.5 latency_p99_us=44170.9 batches=91 commits=90 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199718 offered=200000 throughput_per_s=99859 latency_median_us=3451.2 latency_p99_us=6030.5 batches=1439 commits=719 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199624 offered=200000 throughput_per_s=99812 latency_median_us=3424.8 latency_p99_us=5752.2 batches=1466 commits=732 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199823 offered=200000 throughput_per_s=99912 latency_median_us=2951.9 latency_p99_us=5785.4 batches=1893 commits=1694 replays=1349
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=1000 replied=199755 offered=200000 throughput_per_s=99878 latency_median_us=2921.9 latency_p99_us=5605.2 batches=2130 commits=1766 replays=1254
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199746 offered=200000 throughput_per_s=99873 latency_median_us=3422.5 latency_p99_us=5658.4 batches=877 commits=877 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199804 offered=200000 throughput_per_s=99902 latency_median_us=3610.8 latency_p99_us=6331.3 batches=831 commits=831 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=196533 offered=200000 throughput_per_s=98266 latency_median_us=34328.2 latency_p99_us=47333.1 batches=164 commits=81 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=195982 offered=200000 throughput_per_s=97991 latency_median_us=34732.2 latency_p99_us=47779.8 batches=160 commits=79 replays=0
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197205 offered=200000 throughput_per_s=98602 latency_median_us=24041.4 latency_p99_us=44029.6 batches=2016 commits=1018 replays=999
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=20000 replied=197752 offered=200000 throughput_per_s=98876 latency_median_us=23719.5 latency_p99_us=39396.7 batches=1770 commits=718 replays=715
+bench=pipeline round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=196022 offered=200000 throughput_per_s=98011 latency_median_us=35849.6 latency_p99_us=48296.7 batches=84 commits=83 replays=0
+bench=pipeline round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=196703 offered=200000 throughput_per_s=98352 latency_median_us=36429.7 latency_p99_us=49074.6 batches=83 commits=82 replays=0
+bench=repair round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.085153 bytes=696600
+bench=repair round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.087731 bytes=696600
+bench=repair round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.048889 bytes=13729792
+bench=repair round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.050080 bytes=13729792
+bench=repair round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.845345 bytes=696600
+bench=repair round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=100000 seconds=0.854076 bytes=696600
+bench=repair round=4 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.584079 bytes=137158656
+bench=repair round=4 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.459068 bytes=137158656
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3421.5 latency_p99_us=4967.0 batches=1227 commits=1226 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3489.3 latency_p99_us=4896.7 batches=1206 commits=1205 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2710.2 latency_p99_us=4071.4 batches=1985 commits=1984 replays=1971
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2639.3 latency_p99_us=4283.7 batches=1980 commits=1977 replays=1968
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1997 offered=2000 throughput_per_s=998 latency_median_us=3590.4 latency_p99_us=4949.6 batches=1894 commits=946 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3602.9 latency_p99_us=5308.4 batches=1861 commits=930 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1964 offered=2000 throughput_per_s=982 latency_median_us=34066.1 latency_p99_us=45886.0 batches=91 commits=90 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=20000 replied=1965 offered=2000 throughput_per_s=982 latency_median_us=34334.9 latency_p99_us=45926.0 batches=90 commits=89 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21656.3 latency_p99_us=23060.9 batches=1982 commits=1957 replays=1957
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21674.0 latency_p99_us=23146.7 batches=1977 commits=1947 replays=1947
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=20000 replied=1961 offered=2000 throughput_per_s=980 latency_median_us=33680.7 latency_p99_us=47146.0 batches=178 commits=88 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1976 offered=2000 throughput_per_s=988 latency_median_us=33542.0 latency_p99_us=45246.9 batches=180 commits=89 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19974 offered=20000 throughput_per_s=9987 latency_median_us=2951.2 latency_p99_us=5200.2 batches=1048 commits=1047 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=1000 replied=19979 offered=20000 throughput_per_s=9990 latency_median_us=2927.6 latency_p99_us=4937.9 batches=1057 commits=1056 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19985 offered=20000 throughput_per_s=9992 latency_median_us=2166.0 latency_p99_us=4696.2 batches=3608 commits=3353 replays=3176
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=1000 replied=19981 offered=20000 throughput_per_s=9990 latency_median_us=2286.1 latency_p99_us=4179.9 batches=3173 commits=2973 replays=2835
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=1000 replied=19977 offered=20000 throughput_per_s=9988 latency_median_us=2849.8 latency_p99_us=4597.9 batches=1907 commits=953 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19979 offered=20000 throughput_per_s=9990 latency_median_us=2886.2 latency_p99_us=5049.6 batches=1871 commits=935 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=20000 replied=19684 offered=20000 throughput_per_s=9842 latency_median_us=34024.3 latency_p99_us=46242.8 batches=89 commits=88 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19651 offered=20000 throughput_per_s=9826 latency_median_us=33972.4 latency_p99_us=46035.0 batches=89 commits=88 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19773 offered=20000 throughput_per_s=9886 latency_median_us=21595.6 latency_p99_us=32947.5 batches=3080 commits=2134 replays=2133
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=10000 rtt_us=20000 replied=19792 offered=20000 throughput_per_s=9896 latency_median_us=21385.7 latency_p99_us=28916.7 batches=3533 commits=2484 replays=2484
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=20000 replied=19704 offered=20000 throughput_per_s=9852 latency_median_us=33327.0 latency_p99_us=50927.5 batches=176 commits=87 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=20000 replied=19610 offered=20000 throughput_per_s=9805 latency_median_us=33135.7 latency_p99_us=45963.6 batches=176 commits=87 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199741 offered=200000 throughput_per_s=99870 latency_median_us=3468.9 latency_p99_us=6244.3 batches=863 commits=862 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199814 offered=200000 throughput_per_s=99907 latency_median_us=3317.2 latency_p99_us=6510.2 batches=900 commits=900 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199763 offered=200000 throughput_per_s=99882 latency_median_us=2924.6 latency_p99_us=5711.7 batches=1865 commits=1749 replays=1607
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=1000 replied=199787 offered=200000 throughput_per_s=99894 latency_median_us=2659.3 latency_p99_us=4853.9 batches=2166 commits=2073 replays=1917
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=100000 rtt_us=1000 replied=199834 offered=200000 throughput_per_s=99917 latency_median_us=3595.5 latency_p99_us=6939.0 batches=1364 commits=682 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199699 offered=200000 throughput_per_s=99850 latency_median_us=3266.8 latency_p99_us=5710.1 batches=1527 commits=763 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=197500 offered=200000 throughput_per_s=98750 latency_median_us=36117.5 latency_p99_us=48753.5 batches=84 commits=83 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=196991 offered=200000 throughput_per_s=98496 latency_median_us=36052.4 latency_p99_us=48660.1 batches=84 commits=83 replays=0
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=4 arm=2 rate=100000 rtt_us=20000 replied=197885 offered=200000 throughput_per_s=98942 latency_median_us=24065.8 latency_p99_us=41665.5 batches=1745 commits=772 replays=769
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197457 offered=200000 throughput_per_s=98728 latency_median_us=24044.6 latency_p99_us=43792.6 batches=1841 commits=828 replays=814
+bench=pipeline round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=195861 offered=200000 throughput_per_s=97930 latency_median_us=33960.8 latency_p99_us=47465.7 batches=166 commits=82 replays=0
+bench=pipeline round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=195826 offered=200000 throughput_per_s=97913 latency_median_us=33888.9 latency_p99_us=46523.2 batches=166 commits=82 replays=0
+bench=repair round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.050851 bytes=13729792
+bench=repair round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.050492 bytes=13729792
+bench=repair round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.083378 bytes=696600
+bench=repair round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=10000 seconds=0.086068 bytes=696600
+bench=repair round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=100000 seconds=0.579500 bytes=137158656
+bench=repair round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.457693 bytes=137158656
+bench=repair round=5 build=gcc copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.769788 bytes=696600
+bench=repair round=5 build=gcc copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.788389 bytes=696600
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=1000 replied=1995 offered=2000 throughput_per_s=998 latency_median_us=3740.9 latency_p99_us=5670.9 batches=1098 commits=1097 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3661.1 latency_p99_us=6839.3 batches=1111 commits=1111 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2652.3 latency_p99_us=4326.9 batches=1980 commits=1978 replays=1967
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=2723.3 latency_p99_us=4629.5 batches=1981 commits=1977 replays=1968
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=1000 replied=1998 offered=2000 throughput_per_s=999 latency_median_us=3717.4 latency_p99_us=5920.9 batches=1705 commits=852 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=1000 rtt_us=1000 replied=1996 offered=2000 throughput_per_s=998 latency_median_us=3712.3 latency_p99_us=5730.6 batches=1692 commits=845 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1965 offered=2000 throughput_per_s=982 latency_median_us=33750.7 latency_p99_us=44939.1 batches=92 commits=91 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=1000 rtt_us=20000 replied=1960 offered=2000 throughput_per_s=980 latency_median_us=32937.1 latency_p99_us=43620.7 batches=94 commits=93 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21702.8 latency_p99_us=22622.2 batches=1991 commits=1968 replays=1968
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=1000 rtt_us=20000 replied=1979 offered=2000 throughput_per_s=990 latency_median_us=21703.3 latency_p99_us=22735.9 batches=1988 commits=1961 replays=1961
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1963 offered=2000 throughput_per_s=982 latency_median_us=33639.8 latency_p99_us=45477.3 batches=178 commits=88 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=1000 rtt_us=20000 replied=1960 offered=2000 throughput_per_s=980 latency_median_us=33739.4 latency_p99_us=45608.6 batches=178 commits=88 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=10000 rtt_us=1000 replied=19974 offered=20000 throughput_per_s=9987 latency_median_us=2922.2 latency_p99_us=4738.1 batches=1062 commits=1061 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=3 arm=1 rate=10000 rtt_us=1000 replied=19976 offered=20000 throughput_per_s=9988 latency_median_us=2871.6 latency_p99_us=7497.4 batches=1072 commits=1071 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19979 offered=20000 throughput_per_s=9990 latency_median_us=2215.6 latency_p99_us=4357.3 batches=3450 commits=3180 replays=3021
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=1000 replied=19982 offered=20000 throughput_per_s=9991 latency_median_us=2217.3 latency_p99_us=3680.8 batches=3373 commits=3168 replays=3032
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19971 offered=20000 throughput_per_s=9986 latency_median_us=2894.8 latency_p99_us=5002.5 batches=1876 commits=937 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=1000 replied=19980 offered=20000 throughput_per_s=9990 latency_median_us=2820.5 latency_p99_us=5008.9 batches=1921 commits=960 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19602 offered=20000 throughput_per_s=9801 latency_median_us=33511.1 latency_p99_us=44989.4 batches=90 commits=89 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=10000 rtt_us=20000 replied=19622 offered=20000 throughput_per_s=9811 latency_median_us=33541.5 latency_p99_us=45152.9 batches=90 commits=89 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=10000 rtt_us=20000 replied=19763 offered=20000 throughput_per_s=9882 latency_median_us=21448.8 latency_p99_us=29365.4 batches=3385 commits=2334 replays=2334
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=10000 rtt_us=20000 replied=19748 offered=20000 throughput_per_s=9874 latency_median_us=21473.3 latency_p99_us=33427.9 batches=3450 commits=2336 replays=2336
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=3 rate=10000 rtt_us=20000 replied=19794 offered=20000 throughput_per_s=9897 latency_median_us=33178.6 latency_p99_us=44802.9 batches=176 commits=88 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=10000 rtt_us=20000 replied=19705 offered=20000 throughput_per_s=9852 latency_median_us=33135.0 latency_p99_us=44711.4 batches=178 commits=88 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=1000 replied=199741 offered=200000 throughput_per_s=99870 latency_median_us=3487.0 latency_p99_us=5576.4 batches=862 commits=861 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=2 steal_ticks=1 arm=1 rate=100000 rtt_us=1000 replied=199669 offered=200000 throughput_per_s=99834 latency_median_us=3505.5 latency_p99_us=6193.7 batches=855 commits=854 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=100000 rtt_us=1000 replied=199799 offered=200000 throughput_per_s=99900 latency_median_us=2889.3 latency_p99_us=10934.2 batches=1887 commits=1779 replays=1512
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=2 rate=100000 rtt_us=1000 replied=199865 offered=200000 throughput_per_s=99932 latency_median_us=2792.0 latency_p99_us=6310.8 batches=2050 commits=1892 replays=1658
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=100000 rtt_us=1000 replied=199657 offered=200000 throughput_per_s=99828 latency_median_us=3756.3 latency_p99_us=7396.3 batches=1311 commits=655 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=1000 replied=199708 offered=200000 throughput_per_s=99854 latency_median_us=3605.9 latency_p99_us=6632.0 batches=1362 commits=680 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 rate=100000 rtt_us=20000 replied=195569 offered=200000 throughput_per_s=97784 latency_median_us=35326.6 latency_p99_us=47544.3 batches=85 commits=84 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 rate=100000 rtt_us=20000 replied=196692 offered=200000 throughput_per_s=98346 latency_median_us=35503.9 latency_p99_us=47647.3 batches=85 commits=84 replays=0
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=2 rate=100000 rtt_us=20000 replied=197205 offered=200000 throughput_per_s=98602 latency_median_us=23973.2 latency_p99_us=43324.4 batches=1750 commits=904 replays=898
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=2 rate=100000 rtt_us=20000 replied=197933 offered=200000 throughput_per_s=98966 latency_median_us=23316.7 latency_p99_us=43604.3 batches=2355 commits=892 replays=877
+bench=pipeline round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=3 rate=100000 rtt_us=20000 replied=195945 offered=200000 throughput_per_s=97972 latency_median_us=34053.3 latency_p99_us=47507.8 batches=164 commits=81 replays=0
+bench=pipeline round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=3 rate=100000 rtt_us=20000 replied=195571 offered=200000 throughput_per_s=97786 latency_median_us=33651.8 latency_p99_us=45842.8 batches=166 commits=82 replays=0
+bench=repair round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.055923 bytes=13729792
+bench=repair round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=copy n=10000 seconds=0.049030 bytes=13729792
+bench=repair round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.086227 bytes=696600
+bench=repair round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=rebuild n=10000 seconds=0.084580 bytes=696600
+bench=repair round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.560186 bytes=137158656
+bench=repair round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=copy n=100000 seconds=0.695453 bytes=137158656
+bench=repair round=5 build=clang copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=rebuild n=100000 seconds=0.834762 bytes=696600
+bench=repair round=5 build=clang copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=rebuild n=100000 seconds=0.843844 bytes=696600
+
+## Source build.sh
+#!/bin/bash
+set -euo pipefail
+L=/lmdbsrc
+cd /work
+gcc-16 -O2 -DNDEBUG -c $L/mdb.c -o mdb_gcc.o; gcc-16 -O2 -DNDEBUG -c $L/midl.c -o midl_gcc.o
+clang-22 -O2 -DNDEBUG -c $L/mdb.c -o mdb_clang.o; clang-22 -O2 -DNDEBUG -c $L/midl.c -o midl_clang.o
+for copy in a b; do
+  for arm in 1 2 3; do
+    g++-16 -std=c++26 -O2 -DNDEBUG -Wall -Wextra -Werror -DARM=$arm -I$L /bench/bench_pipeline.cpp mdb_gcc.o midl_gcc.o -o pipe_gcc_${arm}_$copy
+    clang++-22 -std=c++26 -O2 -DNDEBUG -Wall -Wextra -Werror -DARM=$arm -I$L /bench/bench_pipeline.cpp mdb_clang.o midl_clang.o -o pipe_clang_${arm}_$copy
+  done
+  for arm in 1 0; do
+    g++-16 -std=c++26 -O2 -DNDEBUG -Wall -Wextra -Werror -DARM_COPY=$arm -I$L /bench/repair_bench.cpp mdb_gcc.o midl_gcc.o -o repair_gcc_${arm}_$copy
+    clang++-22 -std=c++26 -O2 -DNDEBUG -Wall -Wextra -Werror -DARM_COPY=$arm -I$L /bench/repair_bench.cpp mdb_clang.o midl_clang.o -o repair_clang_${arm}_$copy
+  done
+done
+sha256sum pipe_* repair_* | awk '{print substr($1,1,16), $2}' > /work/sha.txt
+
+## Source run.sh
+#!/bin/bash
+set -euo pipefail
+rounds=5
+bash /run/context.sh /work/pipe_gcc_1_a
+run_one() {
+  local d=$1; shift
+  mkdir -p $d; chown 1001:1001 $d
+  local other running sb sa line
+  other=$(pgrep -c -u 1001 || true); running=$(awk '$1 == "procs_running" {print $2}' /proc/stat)
+  sb=$(awk '$1 == "cpu" {print $9}' /proc/stat)
+  line=$(setpriv --reuid=1001 --regid=1001 --clear-groups "$@")
+  sa=$(awk '$1 == "cpu" {print $9}' /proc/stat)
+  echo "other_processes_of_user=$other procs_running=$running steal_ticks=$((sa - sb)) $line"
+  rm -rf $d
+}
+for ((r = 1; r <= rounds; r++)); do
+  if ((r % 2 == 0)); then arms=(3 2 1); copies=(b a); builds=(clang gcc); rarms=(0 1); else arms=(1 2 3); copies=(a b); builds=(gcc clang); rarms=(1 0); fi
+  for b in "${builds[@]}"; do
+    for rate in 1000 10000 100000; do for rtt in 1000 20000; do for arm in "${arms[@]}"; do for c in "${copies[@]}"; do
+      echo -n "bench=pipeline round=$r build=$b copy=$c "
+      run_one /lmdb/p-$r-$b-$arm-$c /work/pipe_${b}_${arm}_$c $rate $rtt 2 /lmdb/p-$r-$b-$arm-$c
+    done; done; done; done
+    for n in 10000 100000; do for arm in "${rarms[@]}"; do for c in "${copies[@]}"; do
+      echo -n "bench=repair round=$r build=$b copy=$c "
+      run_one /lmdb/r-$r-$b-$arm-$c /work/repair_${b}_${arm}_$c $n /lmdb/r-$r-$b-$arm-$c
+    done; done; done
+  done
+done
+echo "# loadavg at end $(cat /proc/loadavg)"
+
+## Source context.sh
+echo "# os $(. /etc/os-release && echo "$PRETTY_NAME")"
+for c in g++-16 clang++-22; do echo "# compiler $($c --version | head -n 1)"; done
+echo "# instruction set $(g++-16 -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
+echo "# lmdb $(grep -E '^#define MDB_VERSION_(MAJOR|MINOR|PATCH)' /lmdbsrc/lmdb.h | awk '{printf "%s ", $3}')from the submodule deps/lmdb"
+echo "# libraries $(ldd $1 | awk '{printf "%s %s; ", $1, $3}')"
+echo "# packages $(dpkg-query -W -f='${Package} ${Version}; ' libstdc++6 libc6 libc++1-22 2>/dev/null || true)"
+sed 's/^/# binary sha256 /' /work/sha.txt
+echo "# kernel $(uname -r) $(uname -v)"
+if [[ -r /sys/kernel/sched_ext/state ]]; then echo "# scheduler sched_ext $(cat /sys/kernel/sched_ext/state)"; else echo "# scheduler no /sys/kernel/sched_ext"; fi
+echo "# virtual machine hypervisor flag $(grep -m 1 -cw hypervisor /proc/cpuinfo || true)"
+echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') nproc $(nproc)"
+echo "# cpu flags sha256 $(grep -m 1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)"
+echo "# user uid 1001 through setpriv, nice $(nice), one thread, not pinned"
+echo "# lmdb mount $(awk '$2 == "/lmdb"' /proc/mounts)"
+echo "# loadavg at start $(cat /proc/loadavg)"
+
+## Source go.sh
+#!/bin/bash
+S=/tmp/claude-0/-home-claude/64e53525-a4cd-52b2-b5cd-548b48dafcc6/scratchpad
+TS=$(date -u +%Y-%m-%d-%H%M%SZ)
+podman run --rm -v /home/claude/mbedded-konsens/deps/lmdb/libraries/liblmdb:/lmdbsrc:ro -v $S/benchrun/src:/bench:ro -v $S/benchrun/work:/work -v $S/benchrun:/run:ro -v $S/benchrun/lmdb:/lmdb localhost/cxx-matrix bash /run/run.sh > $S/benchrun/raw-$TS.txt 2>&1
+echo $S/benchrun/raw-$TS.txt
+
+## Source src/repair_bench.cpp
+#include <lmdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+static void fnv(const MDB_val* src, MDB_val* dst, const MDB_val*)
+{
+    std::uint64_t h = 1469598103934665603ull;
+    auto p = static_cast<const unsigned char*>(src->mv_data);
+    for (std::size_t i = 0; i < src->mv_size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    std::memcpy(dst->mv_data, &h, 8);
+}
+
+constexpr unsigned page_size = 4096;
+constexpr unsigned flags_offset = 18;
+constexpr std::size_t val_size = 1024;
+constexpr std::size_t map_size = 1ull << 30;
+
+static void die(const char* what, int rc) { std::fprintf(stderr, "%s: %s\n", what, mdb_strerror(rc)); std::exit(1); }
+
+static MDB_env* open_env(const std::string& dir)
+{
+    MDB_env* env; mdb_env_create(&env);
+    mdb_env_set_checksum(env, fnv, 8);
+    mdb_env_set_mapsize(env, map_size);
+    if (int rc = mdb_env_open(env, dir.c_str(), MDB_NOTLS | MDB_REMAP_CHUNKS, 0644)) die("open", rc);
+    return env;
+}
+
+static void be64(std::uint64_t v, unsigned char* out) { for (int i = 7; i >= 0; --i) { out[i] = v & 0xff; v >>= 8; } }
+static std::uint64_t rd64(const unsigned char* p) { std::uint64_t v = 0; for (int i = 0; i < 8; ++i) v = (v << 8) | p[i]; return v; }
+
+static void fill(const std::string& dir, std::uint64_t n)
+{
+    std::filesystem::remove_all(dir); std::filesystem::create_directory(dir);
+    MDB_env* env = open_env(dir);
+    MDB_txn* t; mdb_txn_begin(env, nullptr, 0, &t);
+    MDB_dbi d; mdb_dbi_open(t, nullptr, 0, &d);
+    std::vector<unsigned char> v(val_size, 'x'); unsigned char k[8];
+    for (std::uint64_t i = 0; i < n; ++i) {
+        be64(i, k); std::memcpy(v.data(), k, 8);
+        MDB_val kk{8, k}, vv{v.size(), v.data()};
+        if (int rc = mdb_put(t, d, &kk, &vv, MDB_APPEND)) die("put", rc);
+    }
+    if (int rc = mdb_txn_commit(t)) die("commit", rc);
+    mdb_env_close(env);
+}
+
+static void damage_branch(const std::string& file)
+{
+    std::fstream f(file, std::ios::in | std::ios::out | std::ios::binary);
+    std::vector<char> pg(page_size);
+    std::size_t branch = 0, seen = 0;
+    for (std::size_t p = 2;; ++p) {
+        f.seekg(p * page_size); if (!f.read(pg.data(), page_size)) break;
+        std::uint16_t fl; std::memcpy(&fl, pg.data() + flags_offset, 2);
+        if (fl & 1) { ++seen; if (seen == 2) { branch = p; break; } }
+    }
+    std::size_t off = branch * page_size + page_size / 2;
+    f.clear(); f.seekg(off); char c; f.read(&c, 1); c ^= 0x5a; f.seekp(off); f.write(&c, 1);
+}
+
+[[maybe_unused]] static int get_fresh(MDB_env* env, MDB_dbi d, std::uint64_t i)
+{
+    MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+    unsigned char k[8]; be64(i, k); MDB_val kk{8, k}, vv;
+    int rc = mdb_get(r, d, &kk, &vv);
+    mdb_txn_abort(r);
+    return rc;
+}
+
+static std::uint64_t verify(MDB_env* env, std::uint64_t n)
+{
+    MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+    MDB_dbi d; mdb_dbi_open(r, nullptr, 0, &d);
+    MDB_cursor* c; mdb_cursor_open(r, d, &c);
+    MDB_val k, v; std::uint64_t cnt = 0;
+    int rc = mdb_cursor_get(c, &k, &v, MDB_FIRST);
+    while (rc == 0) {
+        if (rd64(static_cast<unsigned char*>(k.mv_data)) != cnt) { std::fprintf(stderr, "gap at %llu\n", (unsigned long long)cnt); std::exit(1); }
+        ++cnt; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT);
+    }
+    if (rc != MDB_NOTFOUND) die("verify", rc);
+    mdb_cursor_close(c); mdb_txn_abort(r);
+    if (cnt != n) { std::fprintf(stderr, "count %llu\n", (unsigned long long)cnt); std::exit(1); }
+    return cnt;
+}
+
+[[maybe_unused]] static std::size_t read_all(int fd, std::vector<unsigned char>& out)
+{
+    unsigned char b[1 << 16]; std::size_t total = 0; ssize_t r;
+    while ((r = read(fd, b, sizeof b)) > 0) { out.insert(out.end(), b, b + r); total += r; }
+    return total;
+}
+
+struct result { double seconds; std::size_t bytes; };
+
+[[maybe_unused]] static result arm_copy(MDB_env* peer, const std::string& dir, std::uint64_t n)
+{
+    auto t0 = std::chrono::steady_clock::now();
+    int sv[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+    std::thread sender([&] { if (int rc = mdb_env_copyfd2(peer, sv[0], 0)) die("copyfd2", rc); close(sv[0]); });
+    std::string ndir = dir + "-new"; std::filesystem::remove_all(ndir); std::filesystem::create_directory(ndir);
+    std::FILE* out = std::fopen((ndir + "/data.mdb").c_str(), "wb");
+    unsigned char b[1 << 16]; std::size_t bytes = 0; ssize_t r;
+    while ((r = read(sv[1], b, sizeof b)) > 0) { std::fwrite(b, 1, r, out); bytes += r; }
+    std::fflush(out); fdatasync(fileno(out)); std::fclose(out); close(sv[1]); sender.join();
+    MDB_env* e = open_env(ndir);
+    verify(e, n);
+    mdb_env_close(e);
+    std::filesystem::rename(ndir + "/data.mdb", dir + "/data.mdb");
+    auto t1 = std::chrono::steady_clock::now();
+    return {std::chrono::duration<double>(t1 - t0).count(), bytes};
+}
+
+[[maybe_unused]] static void send_range(MDB_env* peer, int fd, std::uint64_t from, std::uint64_t to)
+{
+    MDB_txn* r; mdb_txn_begin(peer, nullptr, MDB_RDONLY, &r);
+    MDB_dbi d; mdb_dbi_open(r, nullptr, 0, &d);
+    MDB_cursor* c; mdb_cursor_open(r, d, &c);
+    unsigned char k0[8]; be64(from, k0); MDB_val k{8, k0}, v;
+    int rc = mdb_cursor_get(c, &k, &v, MDB_SET_RANGE);
+    while (rc == 0 && rd64(static_cast<unsigned char*>(k.mv_data)) < to) {
+        if (write(fd, k.mv_data, 8) != 8 || write(fd, v.mv_data, v.mv_size) != static_cast<ssize_t>(v.mv_size)) std::exit(1);
+        rc = mdb_cursor_get(c, &k, &v, MDB_NEXT);
+    }
+    mdb_cursor_close(c); mdb_txn_abort(r);
+}
+
+[[maybe_unused]] static result arm_rebuild(MDB_env* peer, const std::string& dir, std::uint64_t n)
+{
+    auto t0 = std::chrono::steady_clock::now();
+    MDB_env* own = open_env(dir);
+    MDB_dbi od;
+    { MDB_txn* r; mdb_txn_begin(own, nullptr, MDB_RDONLY, &r); mdb_dbi_open(r, nullptr, 0, &od); mdb_txn_abort(r); }
+    std::string ndir = dir + "-new"; std::filesystem::remove_all(ndir); std::filesystem::create_directory(ndir);
+    MDB_env* ne = open_env(ndir);
+    MDB_txn* w; mdb_txn_begin(ne, nullptr, 0, &w);
+    MDB_dbi nd; mdb_dbi_open(w, nullptr, 0, &nd);
+    std::size_t bytes = 0;
+    std::uint64_t next = 0;
+    while (next < n) {
+        MDB_txn* r; mdb_txn_begin(own, nullptr, MDB_RDONLY, &r);
+        MDB_cursor* c; mdb_cursor_open(r, od, &c);
+        unsigned char k0[8]; be64(next, k0); MDB_val k{8, k0}, v;
+        int rc = mdb_cursor_get(c, &k, &v, MDB_SET_RANGE);
+        while (rc == 0) {
+            std::uint64_t idx = rd64(static_cast<unsigned char*>(k.mv_data));
+            if (idx != next) break;
+            if (int prc = mdb_put(w, nd, &k, &v, MDB_APPEND)) die("rebuild put", prc);
+            ++next; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT);
+        }
+        mdb_cursor_close(c); mdb_txn_abort(r);
+        if (next >= n) break;
+        std::uint64_t lo = next, hi = n;
+        while (lo < hi) {
+            std::uint64_t mid = lo + (hi - lo) / 2;
+            bool ok = get_fresh(own, od, mid) == 0;
+            bool prev_ok = mid == next ? false : get_fresh(own, od, mid - 1) == 0;
+            if (ok && !prev_ok) { lo = mid; break; }
+            if (ok) hi = mid; else lo = mid + 1;
+        }
+        std::uint64_t until = lo;
+        int sv[2]; socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+        std::thread sender([&] { send_range(peer, sv[0], next, until); close(sv[0]); });
+        std::vector<unsigned char> buf; bytes += read_all(sv[1], buf); close(sv[1]); sender.join();
+        for (std::size_t o = 0; o + 8 + val_size <= buf.size(); o += 8 + val_size) {
+            MDB_val k2{8, buf.data() + o}, v2{val_size, buf.data() + o + 8};
+            if (int prc = mdb_put(w, nd, &k2, &v2, MDB_APPEND)) die("peer put", prc);
+        }
+        next = until;
+    }
+    if (int rc = mdb_txn_commit(w)) die("rebuild commit", rc);
+    mdb_env_close(own);
+    verify(ne, n);
+    mdb_env_close(ne);
+    std::filesystem::rename(ndir + "/data.mdb", dir + "/data.mdb");
+    auto t1 = std::chrono::steady_clock::now();
+    return {std::chrono::duration<double>(t1 - t0).count(), bytes};
+}
+
+int main(int, char** argv)
+{
+    std::uint64_t n = std::strtoull(argv[1], nullptr, 10);
+    std::string base = argv[2];
+    std::string peerdir = base + "/peer", owndir = base + "/own";
+    if (!std::filesystem::exists(peerdir + "/data.mdb")) fill(peerdir, n);
+    fill(owndir, n);
+    damage_branch(owndir + "/data.mdb");
+    MDB_env* peer = open_env(peerdir);
+#if ARM_COPY
+    auto r = arm_copy(peer, owndir, n);
+    const char* arm = "copy";
+#else
+    auto r = arm_rebuild(peer, owndir, n);
+    const char* arm = "rebuild";
+#endif
+    mdb_env_close(peer);
+    std::printf("arm=%s n=%llu seconds=%.6f bytes=%zu\n", arm, (unsigned long long)n, r.seconds, r.bytes);
+}
+
+## Source src/bench_pipeline.cpp
+#include <lmdb.h>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <filesystem>
+#include <string>
+#include <thread>
+#include <vector>
+
+using clk = std::chrono::steady_clock;
+
+constexpr std::size_t map_size = 1ull << 32;
+constexpr std::size_t log_entry_bytes = 64;
+constexpr std::uint32_t state_keys = 1024;
+constexpr std::size_t window_batches = 2;
+constexpr std::size_t max_in_flight = 64;
+
+static void fnv(const MDB_val* src, MDB_val* dst, const MDB_val*)
+{
+    std::uint64_t h = 1469598103934665603ull;
+    auto p = static_cast<const unsigned char*>(src->mv_data);
+    for (std::size_t i = 0; i < src->mv_size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    std::memcpy(dst->mv_data, &h, 8);
+}
+
+static void check(int rc, const char* what) { if (rc) { std::fprintf(stderr, "%s: %s\n", what, mdb_strerror(rc)); std::exit(1); } }
+
+static MDB_env* open_env(const std::string& dir)
+{
+    std::filesystem::create_directories(dir);
+    MDB_env* env; check(mdb_env_create(&env), "create");
+    check(mdb_env_set_checksum(env, fnv, 8), "checksum");
+    check(mdb_env_set_mapsize(env, map_size), "mapsize");
+    check(mdb_env_open(env, dir.c_str(), MDB_NOTLS | MDB_REMAP_CHUNKS, 0644), "open");
+    return env;
+}
+
+struct batch { std::uint64_t first; std::uint64_t count; clk::time_point ack; };
+
+struct node {
+    MDB_env* log_env;
+    MDB_env* state_env;
+    MDB_dbi log_dbi;
+    MDB_dbi state_dbi;
+    std::uint64_t log_len = 0;
+    MDB_txn* state_txn = nullptr;
+};
+
+static void append_log(node& n, const batch& b)
+{
+    MDB_txn* t; check(mdb_txn_begin(n.log_env, nullptr, 0, &t), "log begin");
+    unsigned char k[8], v[log_entry_bytes] = {};
+    for (std::uint64_t i = 0; i < b.count; ++i) {
+        std::uint64_t idx = n.log_len++;
+        for (int j = 7; j >= 0; --j) k[7 - j] = static_cast<unsigned char>(idx >> (8 * j));
+        std::memcpy(v, &idx, 8);
+        MDB_val kk{8, k}, vv{sizeof v, v};
+        check(mdb_put(t, n.log_dbi, &kk, &vv, MDB_APPEND), "log put");
+    }
+    check(mdb_txn_commit(t), "log commit");
+}
+
+static void execute(node& n, const batch& b)
+{
+    for (std::uint64_t i = 0; i < b.count; ++i) {
+        std::uint32_t key = static_cast<std::uint32_t>((b.first + i) % state_keys);
+        MDB_txn* c; check(mdb_txn_begin(n.state_env, n.state_txn, 0, &c), "child begin");
+        MDB_val kk{4, &key}, vv;
+        std::uint64_t counter = 0;
+        int rc = mdb_get(c, n.state_dbi, &kk, &vv);
+        if (rc == 0) std::memcpy(&counter, vv.mv_data, 8); else if (rc != MDB_NOTFOUND) check(rc, "get");
+        ++counter;
+        MDB_val nv{8, &counter};
+        check(mdb_put(c, n.state_dbi, &kk, &nv, 0), "state put");
+        check(mdb_txn_commit(c), "child commit");
+    }
+}
+
+static void begin_state(node& n) { check(mdb_txn_begin(n.state_env, nullptr, 0, &n.state_txn), "state begin"); }
+static void commit_state(node& n) { check(mdb_txn_commit(n.state_txn), "state commit"); n.state_txn = nullptr; }
+static void abort_state(node& n) { mdb_txn_abort(n.state_txn); n.state_txn = nullptr; }
+
+int main(int, char** argv)
+{
+    const int arm = ARM;
+    const double rate = std::strtod(argv[1], nullptr);
+    const auto rtt = std::chrono::microseconds(std::strtoll(argv[2], nullptr, 10));
+    const double seconds = std::strtod(argv[3], nullptr);
+    const std::string dir = argv[4];
+    node n;
+    n.log_env = open_env(dir + "/log");
+    n.state_env = open_env(dir + "/state");
+    {
+        MDB_txn* t; check(mdb_txn_begin(n.log_env, nullptr, 0, &t), "b"); check(mdb_dbi_open(t, nullptr, 0, &n.log_dbi), "dbi"); check(mdb_txn_commit(t), "c");
+        check(mdb_txn_begin(n.state_env, nullptr, 0, &t), "b"); check(mdb_dbi_open(t, nullptr, 0, &n.state_dbi), "dbi"); check(mdb_txn_commit(t), "c");
+    }
+    const auto start = clk::now();
+    const auto deadline = start + std::chrono::duration_cast<clk::duration>(std::chrono::duration<double>(seconds));
+    auto arrival = [&](std::uint64_t i) { return start + std::chrono::duration_cast<clk::duration>(std::chrono::duration<double>(i / rate)); };
+    auto arrived = [&](clk::time_point t) { return static_cast<std::uint64_t>(std::chrono::duration<double>(t - start).count() * rate); };
+
+    std::uint64_t taken = 0;
+    std::deque<batch> executed;
+    std::size_t decided_batches = 0;
+    std::vector<double> latency_us;
+    std::uint64_t replays = 0, commits = 0, batches = 0;
+    auto reply = [&](const batch& b, clk::time_point now) {
+        for (std::uint64_t i = 0; i < b.count; ++i)
+            latency_us.push_back(std::chrono::duration<double, std::micro>(now - arrival(b.first + i)).count());
+    };
+    auto propose = [&](clk::time_point now) {
+        std::uint64_t upto = arrived(now);
+        batch b{taken, upto - taken, {}};
+        taken = upto;
+        append_log(n, b);
+        if (!n.state_txn) begin_state(n);
+        execute(n, b);
+        b.ack = clk::now() + rtt;
+        executed.push_back(b);
+        ++batches;
+    };
+
+    while (clk::now() < deadline) {
+        auto now = clk::now();
+        std::size_t acked = decided_batches;
+        while (acked < executed.size() && executed[acked].ack <= now) ++acked;
+        if (acked > decided_batches) {
+            if (arm == 2 && acked < executed.size()) {
+                abort_state(n);
+                begin_state(n);
+                for (std::size_t i = 0; i < acked; ++i) execute(n, executed[i]);
+                commit_state(n);
+                ++commits; ++replays;
+                auto t = clk::now();
+                for (std::size_t i = 0; i < acked; ++i) reply(executed[i], t);
+                executed.erase(executed.begin(), executed.begin() + acked);
+                begin_state(n);
+                for (auto& b : executed) execute(n, b);
+                decided_batches = 0;
+            } else if (arm != 3 || acked == executed.size()) {
+                commit_state(n);
+                ++commits;
+                auto t = clk::now();
+                for (std::size_t i = 0; i < acked; ++i) reply(executed[i], t);
+                executed.erase(executed.begin(), executed.begin() + acked);
+                decided_batches = 0;
+            } else {
+                decided_batches = acked;
+            }
+            continue;
+        }
+        bool work = arrived(now) > taken;
+        bool room = arm == 1 ? executed.empty() : arm == 2 ? executed.size() < max_in_flight : executed.size() < window_batches;
+        if (work && room) { propose(now); continue; }
+        auto wake = deadline;
+        if (decided_batches < executed.size()) wake = std::min(wake, executed[decided_batches].ack);
+        if (room) wake = std::min(wake, arrival(taken + 1));
+        std::this_thread::sleep_until(wake);
+    }
+    if (n.state_txn) abort_state(n);
+    std::sort(latency_us.begin(), latency_us.end());
+    double med = latency_us.empty() ? 0 : latency_us[latency_us.size() / 2];
+    double p99 = latency_us.empty() ? 0 : latency_us[latency_us.size() * 99 / 100];
+    std::printf("arm=%d rate=%.0f rtt_us=%lld replied=%zu offered=%llu throughput_per_s=%.0f latency_median_us=%.1f latency_p99_us=%.1f batches=%llu commits=%llu replays=%llu\n",
+                arm, rate, static_cast<long long>(rtt.count()), latency_us.size(), static_cast<unsigned long long>(arrived(deadline)),
+                latency_us.size() / seconds, med, p99, static_cast<unsigned long long>(batches), static_cast<unsigned long long>(commits),
+                static_cast<unsigned long long>(replays));
+    mdb_env_close(n.log_env);
+    mdb_env_close(n.state_env);
+}
