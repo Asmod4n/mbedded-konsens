@@ -16,10 +16,28 @@ plan (2026-10-24, 13 findings) is applied below; section 8 lists where.
 
 Line numbers are at commit 4c57d44.
 
-- `read_entries` reads with MDB_SET_RANGE from `from` and stops at the
-  first key at or above `to` (`src/persistent_storage.cpp:449-488`). A
-  missing index is skipped, and the entries after it move down by one
-  position.
+- `read_entries` reads by key, with MDB_SET_RANGE from `from`, and
+  stops at the first key at or above `to`
+  (`src/persistent_storage.cpp:449-488`). A missing key is skipped. A
+  caller reads up to the count of entries, so after a missing key k
+  below the last key, a range read returns one entry less, and the last
+  key is never read. A read of one index other than k returns the true
+  entry.
+- After a missing key below the last key, the next append with
+  MDB_APPEND at the count meets the existing last key and fails with
+  MDB_KEYEXIST (`put_entry` `:207`; `lmdb.h:1572-1575`).
+- The meta values are read once, in `with` (`sequence_paxos.hpp:262-266`),
+  and then kept in memory. A meta value that is lost while the node runs
+  is read only at the next start.
+- `write_atomically` appends at the count that it reads
+  (`read_log_len`, `:436`), not at the accepted index in memory. A last
+  key that is lost while the node runs is not found: the next append
+  succeeds at the old last index, and the stored log differs from the
+  log in memory. Owner question 2 of 2026-10-24.
+- A node that reads `ballot{}` as its promise starts as a new node,
+  (follower, none), with no recovery (`sequence_paxos.hpp:268-271`).
+  So a lost promise with an empty log is found by no check of this
+  plan. Owner question 1 of 2026-10-24.
 - `get_log_len` (`:496-504`) calls `read_log_len` (`:192-200`), which
   returns the count of entries. It does not read the last index.
 - A missing meta value reads as `ballot{}` or 0 (`:262`, `:327-329`,
@@ -105,58 +123,75 @@ and without the checks. It is a change of
 
 - `MaxStorageFault` (Int): the number of storage faults in one run.
 - `StartChecks` (Bool): TRUE models the checks of section 2.
-- `storage_faults` (Int): a counter, part of `env`.
+- `StorageFaultKind` (Set of strings): the kinds a run can damage.
+- `storage_faults` (Int) and `refused` (set of nodes), both in `env`.
+- `NoFalseRefusal`: an invariant. A node that is not refused passes the
+  checks with its durable state.
 
 ### 3.2 New action `StorageFault(i, kind)`
 
-A node restarts after a crash and reads a damaged durable state. The
+A node of `Nodes` restarts after a crash and reads a damaged durable
+state. A node of the next configuration gets no storage fault. The
 kinds:
 
-- `"missing_entry"`: one index k of the log is missing. Without the
-  checks, the node reads the log with entry k removed and the later
-  entries one position lower, as `read_entries` does now.
+- `"missing_entry"`: the key of one position k is missing. Without the
+  checks, the node reads the log with entry k removed (`LogWithout`).
+  This is an approximation of the code (section 1), and only the
+  mutation uses it. With the checks, each k below the last position is
+  found.
 - `"missing_accepted"`: the log is not empty and the accepted round
   reads as `DefaultBallot`.
-- `"missing_promise"`: the log is not empty and the promise reads as
-  `DefaultBallot`.
+- `"missing_promise"`: the promise reads as `DefaultBallot`, with or
+  without entries.
 - `"missing_decided"`: the decided index reads as 0.
 
-With `StartChecks`, the node finds each kind except `missing_decided`.
-It leaves `running` and does not vote again, as `stop_voting` does in
-the code. With `missing_decided`, and without `StartChecks`, the node
-restarts through `Restart` with the damaged state.
+A damage that the checks find makes the node leave `running`. It keeps
+its state and takes no further step, as `Halt` does. This is what
+`stop_voting` does in the code. Every damage that the checks do not
+find restarts the node: through `Restart` with the recovery, or, when
+the promise reads as `DefaultBallot`, as a new node in phase "None"
+with no recovery and no message (`RestartInPhase`).
 
-The damage of a running node between two reads is the same action:
-`read_entries` finds it at the next read, and the node stops voting.
+The model has no damage of a running node. Section 1 names what the
+code does with it.
 
 ### 3.3 Mutation
 
-`Mutation = "StartCheckMissing"` sets `StartChecks` to FALSE in effect.
-Its target is S2 (the decided logs agree). Each kind except
-`missing_decided` must break S2 or S2b alone; the plan names the run
-that shows each.
+`Mutation = "StartCheckMissing"` turns the checks off. Each kind runs
+alone. The model shows a need for a check when the kind breaks S2 or
+S2b without that check.
 
 ### 3.4 Configurations and runs
 
-All runs: Nodes {1, 2, 3}, `Recovery = TRUE`, `MaxStorageFault = 1`,
-the invariants of `MC_c_crash.cfg`
-(`AcceptedIdxIsLogLength S1 S2 S2b S3 S4 S5 S6`, properties `S2Grows`
-`BuildOnlyFromRunning`).
+All runs: Nodes {1, 2, 3}, Values {v1, v2}, MaxBallot 2, MaxLog 2,
+`MaxStorageFault = 1`, invariants
+`AcceptedIdxIsLogLength S1 S2 S2b S3 S4 S5 S6`, properties `S2Grows`
+`BuildOnlyFromRunning`. No reconfiguration (NextConfigNodes {}), so S6
+and `BuildOnlyFromRunning` hold with no content. MaxLoss, MaxTimeout,
+MaxDuplicate and MaxHalt are 0. Every config with the checks adds
+`NoFalseRefusal`.
 
-| Run | Config | Bounds | Expected |
-|---|---|---|---|
-| s1 | MC_s.cfg | MaxBallot 2, MaxLog 2 | no violation |
-| s2 | MC_s_nocheck.cfg | as s1, mutation | S2 or S2b breaks |
-| s3 | MC_s_rollback.cfg | as s1, MaxRollback 1 | no violation |
+| Config | Change from MC_s | Kinds |
+|---|---|---|
+| MC_s | Recovery TRUE, checks | entry, accepted, decided |
+| MC_s_entry | as MC_s | entry |
+| MC_s_promise | as MC_s | promise |
+| MC_s_crash | MaxCrash 1 | entry, accepted, decided |
+| MC_s_powerloss | power-loss/MC_p.sim.cfg with the checks | entry, accepted |
+| MC_s_rollback | MaxRollback 1 | entry, accepted, decided |
+| MC_s_norec | Recovery FALSE | entry, accepted, decided |
+| MC_s_nocheck_missing_* | mutation, one kind each | one |
+| MC_s_nocheck_*_norec | mutation, Recovery FALSE | accepted or promise |
 
-- s2 runs once for each kind (`StorageFaultKind` restricts the kind),
-  so each kind shows its own counterexample.
-- Each run: a simulation of 15 min first. Breadth-first only when the
-  state count of the simulation shows that it can finish.
-- One TLC at a time, at most 4 workers. No run in parallel with a
+- MC_s_powerloss has no `missing_decided`: a lower decided index
+  breaks S7 by its definition.
+- Each run is a simulation of 15 min. Breadth-first only when the state
+  count of the simulation shows that it can finish.
+- At most three TLC runs at a time, one worker and one GC thread each,
+  so the load stays below the 4 processors. No run in parallel with a
   build.
-- Results go to `model/results/<time>-start-checks-<run>.md` and are
-  pushed after each run.
+- Results go to `model/results/<time>-start-checks-runs-<n>.md` and are
+  pushed after each round.
 
 ### 3.5 Results
 
@@ -181,7 +216,15 @@ FALSE) and second seeds.
 - That the code reads the damage as the model says. The tests of
   section 4 show it.
 - A lost write at the end of the log. The continuity check cannot find
-  it (row 2.6 of the matrix).
+  it (row 2.6 of the matrix). Only the recovery after each start
+  protects against it.
+- A lost promise with an empty log. No check of this plan finds it
+  (owner question 1).
+- Damage while the node runs (owner question 2).
+- A build of a new node: `BuildForServer` and `ForceSingle` give the
+  node a log with no accepted round. No code path does this yet. The
+  future build path must set the accepted round, or check 2.4 refuses
+  the node.
 
 ## 4. Tests
 
