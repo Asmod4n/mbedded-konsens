@@ -33,15 +33,16 @@ cases=(
 )
 
 usage() {
-    echo "Usage: bench/run.sh <work_dir> <ccache_dir> [<samples> [<rounds> [<result_dir>]]]" >&2
+    echo "Usage: bench/run.sh <work_dir> <ccache_dir> [<samples> [<rounds> [<result_dir> [<prefixes>]]]]" >&2
     echo "The work directory holds the build, the LMDB stores and the logs." >&2
     echo "The result file goes to <result_dir>, by default bench/results." >&2
+    echo "<prefixes>: a comma-separated list. Only a case whose name starts with one of them runs." >&2
     exit 1
 }
 
 host() {
-    (($# >= 2 && $# <= 5)) || usage
-    local work ccache samples=${3:-$default_samples} rounds=${4:-$default_rounds} repo results stamp commit dirty
+    (($# >= 2 && $# <= 6)) || usage
+    local work ccache samples=${3:-$default_samples} rounds=${4:-$default_rounds} prefixes=${6:-} repo results stamp commit dirty
     work=$(realpath -m "$1")
     ccache=$(realpath -m "$2")
     repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -55,7 +56,7 @@ host() {
     podman --version > "$work/podman-version-$stamp.txt"
     podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
     podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/lmdb:/lmdb" -v "$ccache:/ccache" \
-        -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp"
+        -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" "$prefixes"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
     echo "$results/$stamp.txt"
 }
@@ -63,6 +64,7 @@ host() {
 build() {
     local stamp=$1
     cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" \
+        "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" \
         -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_C_COMPILER=$c_compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
         > "/work/cmake-$stamp.log" 2>&1 || { tail -n 40 "/work/cmake-$stamp.log" >&2; exit 1; }
@@ -79,6 +81,7 @@ context() {
     echo "# os $(. /etc/os-release && echo "$PRETTY_NAME")"
     echo "# compiler $($compiler --version | head -n 1)"
     echo "# build type Release, CMAKE_CXX_FLAGS_RELEASE $(grep -E '^CMAKE_CXX_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
+    echo "# build type Release, CMAKE_C_FLAGS_RELEASE $(grep -E '^CMAKE_C_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/bench/konsens_bench.cpp')"
     echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
@@ -354,12 +357,31 @@ of /proc/stat during the process.
 EOF
 }
 
+select_cases() {
+    local prefixes=$1 item prefix
+    local -a chosen=() wanted
+    [[ -n $prefixes ]] || return 0
+    IFS=, read -r -a wanted <<< "$prefixes"
+    for item in "${cases[@]}"; do
+        for prefix in "${wanted[@]}"; do
+            if [[ $item == "$prefix"* ]]; then
+                chosen+=("$item")
+                break
+            fi
+        done
+    done
+    ((${#chosen[@]} > 0)) || { echo "no case starts with one of: $prefixes" >&2; exit 1; }
+    cases=("${chosen[@]}")
+}
+
 inside() {
-    local samples=$1 rounds=$2 commit=$3 dirty=$4 stamp=$5
+    local samples=$1 rounds=$2 commit=$3 dirty=$4 stamp=$5 prefixes=${6:-}
+    select_cases "$prefixes"
     build "$stamp"
     getent passwd "$bench_user" > /dev/null || useradd -u "$bench_uid" -M "$bench_user"
     chown "$bench_uid:$bench_uid" /lmdb
     context "$commit" "$dirty" "$stamp" > "/work/context-$stamp.txt"
+    echo "# cases chosen by the prefixes '${prefixes:-all}': ${#cases[@]}" >> "/work/context-$stamp.txt"
     rounds "$samples" "$rounds" > "/work/raw-$stamp.txt"
     echo "# loadavg at end $(cat /proc/loadavg)" >> "/work/context-$stamp.txt"
     {
