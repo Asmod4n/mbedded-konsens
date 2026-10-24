@@ -235,7 +235,8 @@ Line numbers are at commit 06a52bf.
    - a read transaction gives the address of each value in the map;
    - `madvise(MADV_PAGEOUT)` and then `posix_fadvise(POSIX_FADV_DONTNEED)`
      on the same range take the pages out of the cache;
-   - `mincore` shows that no page of the range stays in the cache;
+   - a page that stays in the cache stays; the node does nothing more
+     about it and reports as usual (owner, 2026-10-24 19:28);
    - a new read transaction reads the values from the disk;
    - the node computes the CRC of each entry and the chain CRC.
    Measured (bench/results/2026-10-24-165704Z-lmdb-read-back-full.txt,
@@ -388,8 +389,7 @@ after each round.
 - "a read in a step sees the writes of the same step";
 - "no message leaves before the commit of its step";
 - "a resent promise carries the stored values";
-- "the read-back reads from the disk": `mincore` shows the pages out
-  of the cache before the second read;
+- "the read-back takes the pages of the step out of the cache";
 - "an entry that differs after the commit stops the vote";
 - "a user error aborts only its nested transaction";
 - "a leader does not decide on an accepted with another chain CRC".
@@ -422,8 +422,9 @@ decides the names.
    (2.3 item 6).
 3. Decided, 2026-10-24 19:21: a node that stopped voting while it ran
    recovers from a peer (2.1 item 5).
-4. A page that stays in the cache after the page-out (2.4 item 1): the
-   node tries again, or does not report.
+4. Decided, 2026-10-24 19:28: a page that stays in the cache stays, and
+   the node does nothing about it. No O_DIRECT: it would need a second
+   reader of the LMDB pages.
 5. The effects of a work whose entry is cut (2.5 item 4).
 6. The page checksums of LMDB were decided against on 2026-10-16
    (section 1). Measured on 2026-10-24 at the owner's wish; a card asks
