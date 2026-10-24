@@ -566,4 +566,14 @@ std::expected<std::uint32_t, std::error_code> persistent_storage::get_last_entry
     return from_little_endian<std::uint32_t>(as_bytes(data).last<crc_size>());
 }
 
+std::expected<void, std::error_code> persistent_storage::copy(const std::filesystem::path& directory) const
+{
+    throw_if_moved_from();
+    const int copied = mdb_env_copy2(env_->handle.get(), directory.c_str(), MDB_CP_COMPACT);
+    if (copied != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(copied));
+    }
+    return {};
+}
+
 }

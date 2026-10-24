@@ -243,14 +243,25 @@ of the node reaches the read index.
 ## Testing
 
 The unit tests cover each message of Sequence Paxos and Ballot Leader
-Election, both stores, the wire form and the clients. `test_simulation`
-runs three nodes in memory for 2000 seeds with message loss, duplicate
-messages, a crash and a restart from an earlier copy of the store, and
-checks the safety properties of the model after each step.
-`test_simulation_lmdb` runs the same on LMDB. `counter_stress` runs
-many clients against three nodes on a network that loses and repeats
-messages. The tests run with g++ 16, with AddressSanitizer and
-UndefinedBehaviorSanitizer.
+Election, both stores, the wire form and the clients. `test_simulation`,
+`test_simulation_rollback` and `test_simulation_clients` run three nodes
+on LMDB for 2000 seeds with message loss, duplicate messages, a crash
+and a restart from an earlier copy of the store. They check the safety
+properties of the model after each step.
+`counter_stress` runs many clients against three nodes on a network
+that loses and repeats messages. The tests run with g++ 16, with
+AddressSanitizer and UndefinedBehaviorSanitizer.
+
+The tests open their LMDB environments in `TMPDIR`. The cache variable
+`KONSENS_TEST_TMPDIR` sets `TMPDIR` for each test, for example to a
+tmpfs:
+
+```sh
+cmake -S . -B build -DKONSENS_TEST_TMPDIR=/dev/shm
+```
+
+All tests pass with a tmpfs of 64 MiB. A build with AddressSanitizer runs
+200 seeds of each simulation instead of 2000.
 
 The TLA+ model of the protocol is checked with TLC for each fault: lost
 and duplicate messages, crashes, a disk that loses writes, and a

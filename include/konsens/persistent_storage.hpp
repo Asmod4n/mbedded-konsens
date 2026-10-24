@@ -47,6 +47,7 @@ public:
     [[nodiscard]] std::expected<std::uint64_t, std::error_code> get_decided_idx() const;
     [[nodiscard]] std::expected<ballot, std::error_code> get_accepted_round() const;
     [[nodiscard]] std::expected<std::uint32_t, std::error_code> get_last_entry_crc() const;
+    [[nodiscard]] std::expected<void, std::error_code> copy(const std::filesystem::path& directory) const;
 
     persistent_storage(persistent_storage&&) noexcept;
     persistent_storage& operator=(persistent_storage&&) noexcept;
