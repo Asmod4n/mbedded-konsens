@@ -574,5 +574,8 @@ there. The owner decides the names.
 The owner, 21:27 and 21:30, left these four to the session: take what
 LMDB gives, and where LMDB gives no direct form, work out three
 proposals and test which is best. Items 9 and 10 take the form of LMDB.
-For item 11 LMDB gives no form; three forms were measured. Item 8
-waits for round 11 of the model.
+For item 11 LMDB gives no form; three forms were measured. For item 8
+the model compared three forms (keep, damage, stop) in rounds 10 and 11:
+none changes safety, and the high-water mark keeps agreement after a
+rollback (model/results/20261025T000000Z-lmdb-only-source-runs-11.md).
+"damage" stays, because it uses the repair of 2.4.
