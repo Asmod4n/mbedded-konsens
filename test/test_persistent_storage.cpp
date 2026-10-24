@@ -117,9 +117,21 @@ TEST_CASE("append_on_prefix truncates the log and appends")
     CHECK(storage.get_entries(1, 3) == std::vector<konsens::entry>{normal_entry("b"), normal_entry("x")});
 }
 
-// The two storages follow one rule for get_entries, so that Sequence
-// Paxos reads the same entries from each. A range that reaches past the
-// log gives the stored part of it. A start at or past the end gives no
+// AppendOnPrefix with k at or beyond the log length keeps the whole log,
+// as Vec::truncate does.
+TEST_CASE("append_on_prefix beyond the log keeps the log")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector one{normal_entry("a")};
+    const std::vector two{normal_entry("b")};
+    const std::vector<konsens::storage_op> ops{konsens::append_entries{one}, konsens::append_on_prefix{5, two}};
+    REQUIRE(storage.write_atomically(ops).has_value());
+    CHECK(storage.get_entries(0, 3) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b")});
+}
+
+// Sequence Paxos reads the entries through one rule for get_entries. A
+// range that reaches past the log gives the stored part of it. A start at or past the end gives no
 // entries. A start after the end of the range is a wrong use.
 TEST_CASE("get_entries returns the stored part of the range")
 {

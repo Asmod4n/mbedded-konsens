@@ -23,6 +23,7 @@
 
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
+#include "root_for_test.hpp"
 #include "temporary_directories.hpp"
 
 namespace {
@@ -54,10 +55,6 @@ constexpr std::uint64_t register_call = 1;
 constexpr std::uint64_t request_call = 2;
 constexpr std::uint64_t query_call = 3;
 constexpr std::uint64_t first_request_number = 1;
-constexpr uid_t root_user_id = 0;
-constexpr uid_t test_user_id = 65534;
-constexpr int exit_refused_root = 2;
-constexpr std::string_view allow_root_flag = "--allow-root-for-test";
 
 konsens::node_config config_of(const konsens::node_id pid)
 {
@@ -384,17 +381,18 @@ int run(const std::span<const std::string_view> args)
                   << '\n';
         return EXIT_FAILURE;
     }
-    uid_t user_id = geteuid();
-    if (user_id == root_user_id) [[unlikely]] {
-        if (!allow_root) {
-            std::cerr << std::format("The library refuses to run as root. Start the example as another user.") << '\n';
-            return exit_refused_root;
-        }
-        std::cout << std::format("The process runs as root. The flag {} gives the library user id {}.", allow_root_flag,
-                                 test_user_id)
-                  << '\n';
-        user_id = test_user_id;
+    const uid_t effective_user_id = geteuid();
+    const auto chosen = choose_the_user_id(effective_user_id, allow_root);
+    if (!chosen) [[unlikely]] {
+        std::cerr << std::format("The library refuses to run as root. Start the example as another user.") << '\n';
+        return exit_refused_root;
     }
+    if (*chosen != effective_user_id) {
+        std::cout << std::format("The process runs as root. The flag {} gives the library user id {}.", allow_root_flag,
+                                 *chosen)
+                  << '\n';
+    }
+    const uid_t user_id = *chosen;
     temporary_directories temporary;
     cluster c{{}, user_id, {}, {}};
     for (std::size_t i = 0; i < node_count; ++i) {

@@ -188,3 +188,22 @@ the middle of a run use error_fs, switched through a control file.
   no fault makes both node tests of test_device_faults fail.
 - g++ 16, image localhost/cxx-matrix with libfuse3-dev and fuse3,
   KONSENS_FUSE_TESTS=ON: 20 of 20 tests green in Release and with ASan.
+
+## 8. Result of step (c)
+
+- examples/counter.cpp runs on persistent_storage in temporary
+  directories. examples/counter_stress.cpp has no memory variant and no
+  flag --lmdb; it takes --allow-root-for-test. examples/root_for_test.hpp
+  holds the choice of the user id for counter, counter_stress and
+  three_nodes.
+- The bench has no memory case. bench/run.sh lists and describes only
+  the LMDB cases.
+- include/konsens/memory_storage.hpp and test/test_memory_storage.cpp
+  are gone. "append_on_prefix beyond the log keeps the log" moved to
+  test_persistent_storage; the other cases of test_memory_storage have a
+  case there.
+- `grep -rn memory_storage include src test examples bench README.md
+  CMakeLists.txt` gives no hit.
+- g++ 16, KONSENS_BENCH=ON, KONSENS_FUSE_TESTS=ON: 19 of 19 tests green
+  in Release. counter_stress, seeds 1 to 300 with --cbor and
+  --power-loss 50, as user 1001 with TMPDIR on a tmpfs: 300 of 300 green.

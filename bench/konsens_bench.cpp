@@ -34,7 +34,6 @@
 
 #include "lmdb_category.hpp"
 
-#include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "konsens/storage.hpp"
@@ -822,14 +821,6 @@ case_outcome measure_commits(const run_settings& s, const auto& open_storage)
     return case_result{ns, std::string{}};
 }
 
-case_outcome measure_commit_memory(const run_settings& s)
-{
-    return measure_commits<konsens::memory_storage>(
-        s, []([[maybe_unused]] const std::uint64_t sample) -> std::expected<konsens::memory_storage, std::error_code> {
-            return konsens::memory_storage{};
-        });
-}
-
 case_outcome measure_commit_lmdb(const run_settings& s)
 {
     return measure_commits<konsens::persistent_storage>(s, [&s](const std::uint64_t sample) {
@@ -839,7 +830,6 @@ case_outcome measure_commit_lmdb(const run_settings& s)
     });
 }
 
-using memory_spy = storage_spy<konsens::memory_storage>;
 using lmdb_spy = storage_spy<konsens::persistent_storage>;
 
 struct env_close {
@@ -1094,13 +1084,6 @@ case_outcome measure_get_entries_lmdb(const run_settings& s)
         }
     }
     return case_result{ns, std::string{}};
-}
-
-auto memory_nodes()
-{
-    return []([[maybe_unused]] const konsens::node_id pid) -> std::expected<memory_spy, std::error_code> {
-        return spy_of(konsens::memory_storage{});
-    };
 }
 
 auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op)
@@ -1677,19 +1660,9 @@ case_outcome measure_threaded_cluster(const run_settings& s, const auto& open_st
     return outcome_of(std::move(*ns), first, traffic_of(c, p->at), s);
 }
 
-case_outcome measure_write_memory(const run_settings& s)
-{
-    return measure_cluster<memory_spy>(s, memory_nodes(), 0, time_writes);
-}
-
 case_outcome measure_write_lmdb(const run_settings& s)
 {
     return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_writes);
-}
-
-case_outcome measure_read_memory(const run_settings& s)
-{
-    return measure_cluster<memory_spy>(s, memory_nodes(), writes_before_read, time_reads);
 }
 
 case_outcome measure_read_lmdb(const run_settings& s)
@@ -1697,19 +1670,9 @@ case_outcome measure_read_lmdb(const run_settings& s)
     return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 0), writes_before_read, time_reads);
 }
 
-case_outcome measure_write_batch_memory(const run_settings& s)
-{
-    return measure_cluster<memory_spy>(s, memory_nodes(), 0, time_write_batches);
-}
-
 case_outcome measure_write_batch_lmdb(const run_settings& s)
 {
     return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_write_batches);
-}
-
-case_outcome measure_write_memory_threads(const run_settings& s)
-{
-    return measure_threaded_cluster<memory_spy>(s, memory_nodes(), 0, time_writes);
 }
 
 case_outcome measure_write_lmdb_threads(const run_settings& s)
@@ -1717,19 +1680,9 @@ case_outcome measure_write_lmdb_threads(const run_settings& s)
     return measure_threaded_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_writes);
 }
 
-case_outcome measure_read_memory_threads(const run_settings& s)
-{
-    return measure_threaded_cluster<memory_spy>(s, memory_nodes(), writes_before_read, time_reads);
-}
-
 case_outcome measure_read_lmdb_threads(const run_settings& s)
 {
     return measure_threaded_cluster<lmdb_spy>(s, lmdb_nodes(s, 0), writes_before_read, time_reads);
-}
-
-case_outcome measure_write_batch_memory_threads(const run_settings& s)
-{
-    return measure_threaded_cluster<memory_spy>(s, memory_nodes(), 0, time_write_batches);
 }
 
 case_outcome measure_write_batch_lmdb_threads(const run_settings& s)
@@ -1755,23 +1708,16 @@ constexpr auto cases = std::to_array<bench_case>({
     {"decode_decide", measure_decode_decide, {}, 40000, false},
     {"handle_accept_decide", measure_handle_accept_decide, {}, 4000, false},
     {"handle_decide", measure_handle_decide, {}, 400000, false},
-    {"commit_memory", measure_commit_memory, {200000, 24000, 300}, 0, false},
     {"commit_lmdb", measure_commit_lmdb, {30, 24, 16}, 0, true},
-    {"write_memory", measure_write_memory, {1700, 1100, 38}, 0, false},
     {"write_lmdb", measure_write_lmdb, {5, 5, 3}, 0, true},
-    {"read_memory", measure_read_memory, {}, 2200, false},
     {"read_lmdb", measure_read_lmdb, {}, 1700, true},
-    {"write_batch_memory", measure_write_batch_memory, {2048, 768, 64}, 0, false},
     {"write_batch_lmdb", measure_write_batch_lmdb, {64, 64, 64}, 0, true},
     {"lmdb_put", measure_lmdb_put, {30, 24, 16}, 0, true},
     {"lmdb_put_like_storage", measure_lmdb_put_like_storage, {30, 24, 16}, 0, true},
     {"lmdb_get", measure_lmdb_get, {140000, 130000, 8000}, 0, true},
     {"get_entries_lmdb", measure_get_entries_lmdb, {75000, 55000, 2000}, 0, true},
-    {"write_memory_threads", measure_write_memory_threads, {100, 95, 30}, 0, false},
     {"write_lmdb_threads", measure_write_lmdb_threads, {5, 5, 3}, 0, true},
-    {"read_memory_threads", measure_read_memory_threads, {}, 120, false},
     {"read_lmdb_threads", measure_read_lmdb_threads, {}, 115, true},
-    {"write_batch_memory_threads", measure_write_batch_memory_threads, {1280, 768, 64}, 0, false},
     {"write_batch_lmdb_threads", measure_write_batch_lmdb_threads, {192, 256, 64}, 0, true},
 });
 

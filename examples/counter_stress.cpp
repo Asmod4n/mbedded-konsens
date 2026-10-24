@@ -32,10 +32,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "konsens/wire.hpp"
+#include "root_for_test.hpp"
 #include "temporary_directories.hpp"
 
 namespace {
@@ -95,7 +95,7 @@ struct options {
     std::uint64_t power_loss{default_power_loss};
     bool calls_reconnected{true};
     bool cbor{false};
-    bool lmdb{false};
+    bool allow_root_for_test{false};
 };
 
 struct flag {
@@ -115,11 +115,10 @@ constexpr std::array flags{
 
 constexpr std::string_view no_reconnected_flag = "--no-reconnected";
 constexpr std::string_view cbor_flag = "--cbor";
-constexpr std::string_view lmdb_flag = "--lmdb";
 
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
                                    "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor] "
-                                   "[--lmdb]";
+                                   "[--allow-root-for-test]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
@@ -147,8 +146,8 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
             rest = rest.subspan(1);
             continue;
         }
-        if (name == lmdb_flag) {
-            o.lmdb = true;
+        if (name == allow_root_flag) {
+            o.allow_root_for_test = true;
             rest = rest.subspan(1);
             continue;
         }
@@ -194,20 +193,6 @@ std::uint64_t value_of(const std::span<const std::byte> bytes)
     std::ranges::copy(bytes, b.begin());
     return std::bit_cast<std::uint64_t>(b);
 }
-
-struct memory_cluster {
-    using storage_type = konsens::memory_storage;
-
-    konsens::memory_storage stop(const konsens::node<konsens::memory_storage, counter>& stopped) const
-    {
-        return stopped.get_sequence_paxos().get_internal_storage();
-    }
-
-    std::expected<konsens::memory_storage, std::error_code> start(const std::size_t, konsens::memory_storage kept) const
-    {
-        return kept;
-    }
-};
 
 struct lmdb_cluster {
     using storage_type = konsens::persistent_storage;
@@ -1058,8 +1043,13 @@ int run(const options& given, Cluster storage)
 
 int run_on_lmdb(const options& given)
 {
+    const auto user_id = choose_the_user_id(geteuid(), given.allow_root_for_test);
+    if (!user_id) [[unlikely]] {
+        std::cerr << "The library refuses to run as root. Start the program as another user." << '\n';
+        return exit_refused_root;
+    }
     temporary_directories temporary;
-    lmdb_cluster storage{{}, geteuid()};
+    lmdb_cluster storage{{}, *user_id};
     for (auto& d : storage.directories) {
         d = temporary.create();
     }
@@ -1076,7 +1066,7 @@ int main(const int argc, char** const argv)
             std::cerr << std::format("{}.\n{}", given.error(), usage) << '\n';
             return usage_exit_code;
         }
-        return given->lmdb ? run_on_lmdb(*given) : run(*given, memory_cluster{});
+        return run_on_lmdb(*given);
     } catch (const std::exception& e) {
         std::cerr << std::format("The program ended with an exception: {}", e.what()) << '\n';
         return EXIT_FAILURE;
