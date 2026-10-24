@@ -2607,6 +2607,21 @@ S1 == \A i, j \in Servers : Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i),
 
 S2 == \A i \in Servers : Votes(i) => IsPrefix(DecidedPrefix(i), decided_history)
 
+\* doc/plan-lmdb-only-source.md 2.6 item 5: an entry runs on the state of
+\* the entries before it in the log. Each node that holds a decided entry
+\* holds it at the same index, after the same entries, so its run gives
+\* the result that the decided entry carries.
+EntryRunsOnOnePrefix ==
+  \A i, j \in Servers :
+    Votes(i) /\ Votes(j) =>
+      \A k \in 1..decided_idx[i], k2 \in 1..Len(log[j]) :
+        log[j][k2] = log[i][k] =>
+          /\ k2 = k
+          /\ SubSeq(log[j], 1, k - 1) = SubSeq(log[i], 1, k - 1)
+
+\* Cover: a leader holds two entries that are not decided.
+NoPipeline == \A i \in Servers : role[i] = "Leader" => Len(log[i]) < decided_idx[i] + 2
+
 S2Grows == [][IsPrefix(decided_history, decided_history')]_vars
 
 \* doc/plan-start-checks.md: an undamaged durable state passes the checks.
