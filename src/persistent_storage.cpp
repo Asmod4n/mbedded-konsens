@@ -17,6 +17,7 @@
 
 #include "byte_order.hpp"
 #include "konsens/entry_range.hpp"
+#include "lmdb_category.hpp"
 
 namespace konsens {
 
@@ -61,6 +62,10 @@ public:
     const char* name() const noexcept override { return "lmdb"; }
 
     std::string message(const int code) const override { return mdb_strerror(code); }
+};
+
+struct env_close {
+    void operator()(MDB_env* env) const noexcept { mdb_env_close(env); }
 };
 
 std::error_code to_error_code(const int lmdb_status) noexcept
@@ -353,12 +358,15 @@ std::string read_failure::message() const
     return std::format("The read of the log entry at index {} failed: {}", index, code.message());
 }
 
-void persistent_storage::env_close::operator()(MDB_env* env) const noexcept
-{
-    mdb_env_close(env);
-}
+struct persistent_storage::environment {
+    std::unique_ptr<MDB_env, env_close> handle;
+};
 
-persistent_storage::persistent_storage(std::unique_ptr<MDB_env, env_close> env, const unsigned int log_dbi,
+persistent_storage::persistent_storage(persistent_storage&&) noexcept = default;
+persistent_storage& persistent_storage::operator=(persistent_storage&&) noexcept = default;
+persistent_storage::~persistent_storage() = default;
+
+persistent_storage::persistent_storage(std::unique_ptr<environment> env, const unsigned int log_dbi,
                                        const unsigned int meta_dbi) noexcept
     : env_{std::move(env)}, log_dbi_{log_dbi}, meta_dbi_{meta_dbi}
 {
@@ -414,13 +422,13 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (!committed) [[unlikely]] {
         return std::unexpected(committed.error());
     }
-    return persistent_storage{std::move(env), log_dbi, meta_dbi};
+    return persistent_storage{std::make_unique<environment>(std::move(env)), log_dbi, meta_dbi};
 }
 
 std::expected<void, std::error_code> persistent_storage::write_atomically(const std::span<const storage_op> ops)
 {
     throw_if_moved_from();
-    auto txn = begin_transaction(env_.get(), 0);
+    auto txn = begin_transaction(env_->handle.get(), 0);
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
@@ -443,7 +451,7 @@ std::expected<std::vector<entry>, read_failure> persistent_storage::read_entries
 {
     throw_if_moved_from();
     throw_if_from_after_to(from, to);
-    const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
+    const auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
         return std::unexpected(read_failure{txn.error(), from, 0, 0});
     }
@@ -488,7 +496,7 @@ std::expected<std::vector<entry>, std::error_code> persistent_storage::get_entri
 std::expected<std::uint64_t, std::error_code> persistent_storage::get_log_len() const
 {
     throw_if_moved_from();
-    const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
+    const auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
@@ -498,13 +506,13 @@ std::expected<std::uint64_t, std::error_code> persistent_storage::get_log_len() 
 std::expected<ballot, std::error_code> persistent_storage::get_promise() const
 {
     throw_if_moved_from();
-    return read_ballot(env_.get(), meta_dbi_, promise_key);
+    return read_ballot(env_->handle.get(), meta_dbi_, promise_key);
 }
 
 std::expected<std::uint64_t, std::error_code> persistent_storage::get_decided_idx() const
 {
     throw_if_moved_from();
-    const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
+    const auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
@@ -521,13 +529,13 @@ std::expected<std::uint64_t, std::error_code> persistent_storage::get_decided_id
 std::expected<ballot, std::error_code> persistent_storage::get_accepted_round() const
 {
     throw_if_moved_from();
-    return read_ballot(env_.get(), meta_dbi_, accepted_round_key);
+    return read_ballot(env_->handle.get(), meta_dbi_, accepted_round_key);
 }
 
 std::expected<std::uint32_t, std::error_code> persistent_storage::get_last_entry_crc() const
 {
     throw_if_moved_from();
-    const auto txn = begin_transaction(env_.get(), MDB_RDONLY);
+    const auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
