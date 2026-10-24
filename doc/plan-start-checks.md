@@ -125,9 +125,12 @@ Line numbers are at commit 4c57d44.
    `missing_entry` and commits nothing. No caller in sequence_paxos
    holds a length other than the stored one (`:684`, `:764`, `:810`,
    `:836`, `:1069`, review 3). Storages other than persistent_storage
-   (for example `counting_storage` in the bench) ignore the field. What
-   the node does with `missing_entry` there is open (owner card of
-   2026-10-24, review 3 finding 2).
+   (for example `counting_storage` in the bench) ignore the field.
+   `write_waiting_ops_or_throw` (`sequence_paxos.hpp:577-589`) throws
+   `missing_entry` as `write_error`, as every other write error: errors
+   that the file system reports are exceptions (owner, 2026-10-24
+   14:06). No call site changes. The process ends, and the start checks
+   and the recovery handle the store at the next start.
 6. `sequence_paxos::with` starts the recovery also when the promise
    reads as `ballot{}` (owner, 2026-10-24 12:04: a node with an empty
    log gets a full copy and then runs the recovery). Only a seed node
