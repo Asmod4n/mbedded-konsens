@@ -281,7 +281,8 @@ MaxDuplicate and MaxHalt are 0. Every config with the checks adds
 ### 3.5 Results
 
 All runs are simulations of 15 min:
-`model/results/*-start-checks-runs-1.md` to `-4.md` and `-7.md`.
+`model/results/*-start-checks-runs-1.md` to `-4.md`, `-7.md` and
+`-9.md`.
 
 - In the model (`LogWithout`, an approximation of the code), a missing
   key below the last key breaks S5 and S2 without the checks. With the checks, no simulation found a violation.
@@ -346,7 +347,14 @@ this, as the bench does.
   - "an accepted round above the promise is inconsistent_storage";
   - "a decided index above the log is inconsistent_storage";
   - "a node that reads no promise starts the recovery";
-  - "a seed node at the first start starts with no recovery".
+  - "a Prepare after a lost last key makes the node stop voting"
+    (item 2.7; the child removes the last key while the store is open);
+  - "a read that ends at a missing key gives missing_entry" (item 2.2);
+  - "a recovery answer with a log shorter than its accepted index does
+    not complete the recovery" (item 2.8);
+  - "an append after a lost last key throws write_error" (item 2.5);
+  - "a seed node at the first start starts with no recovery";
+  - "a seed node with a used store starts the recovery".
 - Mutation, run once: each check removed. Each test fails.
 
 ## 5. Checks of the build
