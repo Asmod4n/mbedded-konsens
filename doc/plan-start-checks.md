@@ -226,19 +226,22 @@ MaxDuplicate and MaxHalt are 0. Every config with the checks adds
 
 ### 3.5 Results
 
-Rounds 1 to 3 ran as simulations only:
-`model/results/*-start-checks-runs-1.md`, `-2.md` and `-3.md`. The runs
-added after round 1: MC_s_nocheck_missing_entry_noS5,
-MC_s_nocheck_missing_entry_safety, the `_norec` configs (Recovery =
-FALSE) and second seeds.
+All runs are simulations of 15 min:
+`model/results/*-start-checks-runs-1.md` to `-4.md` and `-7.md`.
 
 - A missing key below the last key breaks S5 and S2 without the
-  checks. With the checks, no violation.
+  checks. With the checks, no simulation found a violation.
 - A missing accepted round or promise breaks S2b without the recovery
-  after the start. With the recovery and without the checks, no
-  simulation found a violation (2 seeds of 15 min each).
-- A missing last entry passes the checks. Without the recovery it
-  breaks S2b; with the recovery no violation was found.
+  after the start. With the recovery, no simulation found a violation.
+- A lost promise with an empty log breaks S2b when the node starts as
+  a new node (mutation StartAsNewNode, the code at 4c57d44). With the
+  recovery at that start (item 2.6), no simulation found a violation.
+- A missing last entry passes the checks when the decided index is
+  below the log length. Without the recovery it breaks S2b; with the
+  recovery no simulation found a violation.
+- With a crash of another node, with power loss and with a rollback,
+  no simulation found a violation.
+- NoFalseRefusal held in every run with the checks.
 - No breadth-first run: about 5 M states in 15 min, and the search did
   not end.
 
