@@ -22,7 +22,7 @@
 #     execute the batches that are not decided again (one replay).
 #   Arm 3: up to 2 batches in flight; the state commits only when every executed
 #     batch is decided.
-#   The execution of a request is one put of 8 bytes. A replay costs more where the
+#   The execution of a request is one get and one put of an 8-byte counter. A replay costs more where the
 #   execution costs more; that is not measured here.
 #   latency = arrival to reply, reply after the decide and the state commit.
 # Each arm is its own binary, built twice (copy a, copy b) as the A/A pair. The A/A
