@@ -17,11 +17,13 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -193,6 +195,19 @@ konsens::node_config config_of(const konsens::node_id pid)
 bool is_transient(const std::error_code& code)
 {
     return code == konsens::client_errc::recovering || code == konsens::client_errc::retry;
+}
+
+using entry_fields =
+    std::tuple<konsens::entry_kind, std::vector<std::byte>, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t>;
+
+entry_fields fields_of(const konsens::entry& e)
+{
+    return {e.kind, e.payload, e.session, e.request_number, e.client_id, e.pid};
+}
+
+bool compatible(const std::span<const konsens::entry> a, const std::span<const konsens::entry> b)
+{
+    return std::ranges::starts_with(a, b) || std::ranges::starts_with(b, a);
 }
 
 struct failure {
@@ -510,8 +525,11 @@ struct stress {
     std::uint64_t round;
     std::uint64_t last_progress_round;
     std::vector<konsens::entry> decided_history;
+    std::vector<konsens::ballot> decided_ballot;
     std::array<std::uint64_t, node_count> checked;
     std::array<std::uint64_t, node_count> last_decided;
+    std::set<entry_fields> proposed;
+    std::size_t proposed_checked;
 
     outcome check_decided_logs()
     {
@@ -530,6 +548,7 @@ struct stress {
                 const auto k = checked.at(i);
                 if (k == decided_history.size()) {
                     decided_history.push_back(e);
+                    decided_ballot.push_back(sp.get_accepted_round());
                 } else if (decided_history.at(k) != e) [[unlikely]] {
                     return std::unexpected(failure{"S1: two nodes decided different entries at one index", {}});
                 }
@@ -537,6 +556,101 @@ struct stress {
             }
         }
         return {};
+    }
+
+    outcome check_s2b() const
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            const auto& sp = net.at(i).get_sequence_paxos();
+            if (sp.get_state() != std::pair{konsens::role::leader, konsens::phase::accept}) {
+                continue;
+            }
+            const auto n_leader = sp.get_leader_state().n_leader;
+            const auto last = std::ranges::find_last_if(decided_ballot,
+                                                        [n_leader](const konsens::ballot b) { return b <= n_leader; });
+            const auto held = last.empty() ? 0 : decided_ballot.size() - last.size() + 1;
+            const auto from = checked.at(i);
+            if (from >= held) {
+                continue;
+            }
+            const auto& s = sp.get_internal_storage();
+            const auto len = s.get_log_len();
+            if (!len) [[unlikely]] {
+                return std::unexpected(failure{"read the log", len.error()});
+            }
+            if (*len < held) [[unlikely]] {
+                return std::unexpected(failure{"S2b: a leader misses a decided entry", {}});
+            }
+            const auto log = s.get_entries(from, held);
+            if (!log) [[unlikely]] {
+                return std::unexpected(failure{"read the log", log.error()});
+            }
+            if (!std::ranges::equal(*log, std::span(decided_history).subspan(from, held - from))) [[unlikely]] {
+                return std::unexpected(failure{"S2b: a leader misses a decided entry", {}});
+            }
+        }
+        return {};
+    }
+
+    outcome check_s3()
+    {
+        for (; proposed_checked < decided_history.size(); ++proposed_checked) {
+            if (!proposed.contains(fields_of(decided_history.at(proposed_checked)))) [[unlikely]] {
+                return std::unexpected(failure{"S3: a decided entry was not proposed", {}});
+            }
+        }
+        return {};
+    }
+
+    std::expected<std::vector<konsens::entry>, std::error_code> read_log_suffix(const std::size_t i,
+                                                                                const std::uint64_t from) const
+    {
+        const auto& s = net.at(i).get_sequence_paxos().get_internal_storage();
+        const auto len = s.get_log_len();
+        if (!len) [[unlikely]] {
+            return std::unexpected(len.error());
+        }
+        return s.get_entries(std::min(from, *len), *len);
+    }
+
+    outcome check_s5() const
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            for (std::size_t j = i + 1; j < node_count; ++j) {
+                const auto n_accepted = net.at(i).get_sequence_paxos().get_accepted_round();
+                if (n_accepted == konsens::ballot{} ||
+                    n_accepted != net.at(j).get_sequence_paxos().get_accepted_round()) {
+                    continue;
+                }
+                const auto from = std::min(checked.at(i), checked.at(j));
+                const auto a = read_log_suffix(i, from);
+                if (!a) [[unlikely]] {
+                    return std::unexpected(failure{"read the log", a.error()});
+                }
+                const auto b = read_log_suffix(j, from);
+                if (!b) [[unlikely]] {
+                    return std::unexpected(failure{"read the log", b.error()});
+                }
+                if (!compatible(*a, *b)) [[unlikely]] {
+                    return std::unexpected(failure{"S5: two logs with one accepted round differ", {}});
+                }
+            }
+        }
+        return {};
+    }
+
+    outcome check_invariants()
+    {
+        if (auto c = check_decided_logs(); !c) [[unlikely]] {
+            return c;
+        }
+        if (auto c = check_s2b(); !c) [[unlikely]] {
+            return c;
+        }
+        if (auto c = check_s3(); !c) [[unlikely]] {
+            return c;
+        }
+        return check_s5();
     }
 
     outcome send_due_calls()
@@ -552,6 +666,11 @@ struct stress {
             c.sent_round = round;
             c.waiting = true;
             const auto to = net.pick_node();
+            if (c.at == step::registering) {
+                proposed.insert(fields_of({konsens::entry_kind::register_client, {}, 0, 0, id, to + 1}));
+            } else if (c.at == step::incrementing) {
+                proposed.insert(fields_of({konsens::entry_kind::client_request, {}, c.session, c.request_number}));
+            }
             auto& n = net.at(to);
             const auto sent = [&n, &c, id] {
                 if (c.at == step::registering) {
@@ -651,7 +770,7 @@ struct stress {
             return std::unexpected(failure{"run a round", r.error()});
         }
         round += 1;
-        if (auto c = check_decided_logs(); !c) [[unlikely]] {
+        if (auto c = check_invariants(); !c) [[unlikely]] {
             return c;
         }
         return take_replies();
@@ -724,7 +843,7 @@ struct stress {
                 return std::unexpected(failure{"run a round", ran.error()});
             }
             round += 1;
-            if (auto c = check_decided_logs(); !c) [[unlikely]] {
+            if (auto c = check_invariants(); !c) [[unlikely]] {
                 return std::unexpected(c.error());
             }
             std::optional<std::uint64_t> value;
@@ -803,7 +922,10 @@ int run(const options& given)
              0,
              {},
              {},
-             {}};
+             {},
+             {},
+             {},
+             0};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
             return fail(given.seed, {"start the nodes", r.error()});
