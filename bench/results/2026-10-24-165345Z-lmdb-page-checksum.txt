@@ -1,0 +1,789 @@
+# What: the cost of the page checksums of LMDB 1.0
+# (mdb_env_set_checksum) for each message of a step, with and without a
+# read of the step's entries after the commit (from the cache, no
+# page-out). A message reads promise, accepted round, decided index, the
+# last log key and the count of entries, appends one entry with
+# MDB_APPEND and writes the decided index. A step is the given number
+# of messages in one write transaction and ends in a durable commit.
+# Each sample is 10 steps; the line gives the median of 31 samples in
+# ns per message.
+# Arms:
+#    1: the step, no checksum.
+#   10: as 1, with mdb_env_set_checksum: CRC32C through the SSE 4.2
+#       instruction (_mm_crc32_u64), 4 bytes per page.
+#    9: the step, then a read transaction reads each entry of the step
+#       and the decided value again (from the cache).
+#   12: as 9, with the checksum of arm 10.
+# sum_calls counts the calls of the checksum function in one run.
+# Why: owner card of 2026-10-24 (open): use the page checksums of LMDB
+# in place of the CRC of each entry, beside it, or not. Plan
+# doc/plan-lmdb-only-source.md section 7 item 6. Branch lmdb-only-source.
+# How: one source file outside the tree (at the end of this file), one
+# binary for each arm and an A/A copy (copy b) built the same way. 7
+# rounds; the order of the arms and of the copies turns round each even
+# round. Each binary runs in a fresh LMDB directory on ext4 (/dev/vda,
+# virtio disk of the VM), deleted after the run. The code is not in the
+# tree, so no commit holds it; the tree at the run: branch
+# lmdb-only-source e71e13d, not used by the bench.
+# Firecracker VM, 4 cpus, container image localhost/cxx-matrix in podman.
+# os Ubuntu Stonking Stingray (development branch)
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# flags g++-16 -std=c++26 -O2 -DNDEBUG -Wall -Wextra -Werror -DARM=<arm> -msse4.2; gcc-16 -O2 -DNDEBUG for mdb.c midl.c
+# instruction set -march=x86-64 -mtune=generic 
+# lmdb 1 0 2 from the submodule deps/lmdb
+# binary comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# libraries linux-vdso.so.1 ; libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6; libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1; libc.so.6 /usr/lib/x86_64-linux-gnu/libc.so.6; libm.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6; /lib64/ld-linux-x86-64.so.2 ; 
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1; 
+# binary sha256 400e79ebd1772a8f
+# binary sha256 400e79ebd1772a8f
+# binary sha256 17588fc378696ad9
+# binary sha256 17588fc378696ad9
+# binary sha256 8709534940f9d2fc
+# binary sha256 8709534940f9d2fc
+# binary sha256 b28815facd1da060
+# binary sha256 b28815facd1da060
+# kernel 6.18.44-fc-v153 #1 SMP PREEMPT_DYNAMIC @0
+# scheduler no /sys/kernel/sched_ext
+# virtual machine hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user uid 1001 through setpriv, nice 0, one thread, not pinned
+# lmdb mount /dev/vda /lmdb ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# loadavg at start 0.31 0.60 0.85 1/135 56
+# loadavg at end 0.90 0.73 0.88 1/132 3081
+#
+# Result (medians of the 7 round medians, us per message):
+# | arm | messages per step | payload B | us per message (a) | spread | us (b, A/A) | A/A |
+# |---|---|---|---|---|---|---|
+# | 1 | 1 | 64 | 295.0 | 279.9-307.5 | 244.4 | -17.1 % |
+# | 9 | 1 | 64 | 255.2 | 234.8-303.8 | 274.0 | +7.4 % |
+# | 10 | 1 | 64 | 263.2 | 239.7-301.8 | 250.7 | -4.7 % |
+# | 12 | 1 | 64 | 298.8 | 252.5-333.6 | 294.4 | -1.5 % |
+# | 1 | 16 | 64 | 20.2 | 12.9-22.3 | 20.4 | +1.0 % |
+# | 9 | 16 | 64 | 20.4 | 17.3-23.4 | 20.5 | +0.7 % |
+# | 10 | 16 | 64 | 18.9 | 18.1-24.7 | 21.1 | +11.7 % |
+# | 12 | 16 | 64 | 21.0 | 20.5-25.1 | 20.7 | -1.5 % |
+# | 1 | 256 | 64 | 2.0 | 1.9-2.1 | 2.1 | +2.7 % |
+# | 9 | 256 | 64 | 2.3 | 2.1-2.8 | 2.3 | +1.3 % |
+# | 10 | 256 | 64 | 2.1 | 1.8-2.2 | 2.1 | -0.9 % |
+# | 12 | 256 | 64 | 2.3 | 1.9-2.8 | 2.3 | -0.5 % |
+# | 1 | 1 | 1024 | 323.1 | 267.7-343.2 | 313.1 | -3.1 % |
+# | 9 | 1 | 1024 | 293.4 | 270.5-321.2 | 330.8 | +12.7 % |
+# | 10 | 1 | 1024 | 334.3 | 298.0-370.9 | 314.1 | -6.0 % |
+# | 12 | 1 | 1024 | 348.3 | 331.2-356.0 | 329.1 | -5.5 % |
+# | 1 | 16 | 1024 | 30.5 | 27.6-34.0 | 28.3 | -7.4 % |
+# | 9 | 16 | 1024 | 31.9 | 25.4-35.7 | 30.2 | -5.3 % |
+# | 10 | 16 | 1024 | 27.8 | 24.3-32.5 | 29.4 | +5.8 % |
+# | 12 | 16 | 1024 | 30.1 | 25.8-36.6 | 30.6 | +1.7 % |
+# | 1 | 256 | 1024 | 4.0 | 3.7-4.5 | 4.0 | +0.9 % |
+# | 9 | 256 | 1024 | 5.7 | 5.5-6.4 | 5.8 | +1.0 % |
+# | 10 | 256 | 1024 | 4.3 | 3.9-4.6 | 4.5 | +4.0 % |
+# | 12 | 256 | 1024 | 5.8 | 5.4-6.5 | 5.7 | -1.5 % |
+# 
+# Largest A/A difference: 17.1 %. This is the noise floor of the run.
+#
+# Arm 10 against arm 1 and arm 12 against arm 9, copy a: every
+# difference is under the noise floor of 17.1 %. This run shows no cost
+# of the page checksum.
+# The read of arm 12 adds no call of the checksum function (same
+# sum_calls as arm 10): LMDB checked no page on these reads. The pages
+# were written by the same process in the same run.
+#
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=283665.5 min=180505.3 max=398879.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=239432.8 min=220804.3 max=379943.0 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=265950.9 min=217960.9 max=342427.2 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=222745.0 min=183998.8 max=376662.9 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=240826.3 min=184179.6 max=379597.4 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=246092.9 min=222623.9 max=304069.5 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=298763.9 min=163161.7 max=425427.2 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=234207.7 min=212533.0 max=281149.1 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18908.6 min=15216.0 max=23975.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18823.0 min=16896.5 max=31109.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18636.5 min=16326.5 max=31073.4 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21069.0 min=20405.6 max=29033.9 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21197.9 min=20361.0 max=29784.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21551.2 min=20117.5 max=31938.7 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21275.9 min=16730.6 max=23366.6 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18093.1 min=16338.6 max=28445.9 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2024.6 min=1701.1 max=2504.1 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1963.3 min=1715.5 max=3693.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2102.7 min=1712.4 max=3256.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2062.6 min=1871.7 max=3235.0 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2786.9 min=2238.7 max=3757.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=2 steal_ticks=1 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2285.7 min=1894.9 max=3756.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2331.6 min=2077.5 max=4893.3 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2157.3 min=1904.7 max=3437.4 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=323081.0 min=263135.2 max=507548.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=354720.4 min=254386.3 max=421250.6 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=370874.4 min=321001.3 max=423569.0 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=283052.4 min=206006.9 max=556957.4 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=321158.5 min=259592.9 max=460760.5 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=330782.6 min=304076.2 max=379375.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=333568.2 min=262467.2 max=469615.8 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=334263.0 min=315996.2 max=753050.4 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=28047.7 min=25295.7 max=33580.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=28561.2 min=26964.5 max=38886.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=27837.8 min=23360.1 max=31391.7 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=29246.9 min=23970.0 max=30560.6 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=25363.5 min=24305.1 max=32539.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30173.2 min=28265.7 max=31467.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=26497.3 min=24638.2 max=32719.0 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=27021.5 min=25724.6 max=38932.2 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3956.0 min=3385.0 max=5308.3 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4052.6 min=3527.2 max=4408.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4206.2 min=3850.1 max=4837.9 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4101.5 min=3980.9 max=7592.5 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5631.5 min=5162.9 max=6484.1 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5476.3 min=4786.2 max=6560.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=1 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5513.8 min=4917.5 max=8912.8 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=1 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5224.9 min=4854.1 max=5788.2 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=294420.9 min=229242.0 max=403984.3 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=279609.7 min=244240.8 max=469814.0 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=274013.5 min=225007.0 max=392212.7 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=255241.2 min=232865.4 max=403925.6 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=238656.7 min=219789.7 max=341020.4 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=239717.4 min=210313.9 max=383195.5 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=291187.4 min=249604.4 max=312044.1 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=279906.9 min=178288.0 max=377859.0 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=19926.5 min=18249.1 max=31941.8 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21352.2 min=18399.9 max=128467.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20225.4 min=16867.2 max=25879.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20769.7 min=16878.2 max=25728.2 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20930.6 min=19398.1 max=24841.0 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20183.8 min=16632.1 max=33380.0 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=22483.5 min=20040.4 max=27354.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20205.6 min=19216.6 max=22186.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2409.9 min=2109.3 max=3886.6 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2078.0 min=1890.9 max=2725.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2640.1 min=2287.8 max=3477.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2063.8 min=1651.5 max=2523.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1903.3 min=1684.9 max=2181.3 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1754.4 min=1619.1 max=2292.7 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2052.3 min=1465.2 max=2557.3 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1961.1 min=1640.8 max=2470.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=340086.3 min=310236.0 max=664069.2 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=352585.2 min=317113.8 max=931322.7 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=315025.0 min=277159.4 max=432086.1 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=291597.1 min=231774.8 max=382346.5 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=314098.6 min=273305.2 max=1130102.2 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=298009.4 min=267107.2 max=368104.1 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=273492.3 min=205327.7 max=401413.7 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=332293.2 min=201439.9 max=452778.1 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=25689.1 min=22651.5 max=33896.2 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30108.2 min=20722.6 max=46805.8 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=29451.9 min=23091.8 max=58705.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=31533.7 min=25489.9 max=53889.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=28961.8 min=27041.0 max=40994.7 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=27019.6 min=23376.0 max=47865.6 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=28274.5 min=26138.6 max=42726.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=31330.3 min=27534.3 max=46974.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5789.0 min=4929.8 max=6984.6 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5813.9 min=4799.5 max=7034.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=6085.2 min=5152.9 max=7974.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5671.7 min=4741.2 max=6778.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=b other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4201.3 min=3586.5 max=6010.3 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4434.2 min=3618.7 max=5520.4 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=2 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3868.8 min=3574.9 max=4954.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=2 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3674.1 min=3498.2 max=4207.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=307496.8 min=224040.5 max=433084.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=311736.2 min=230747.1 max=402180.6 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=301803.0 min=278685.0 max=349311.1 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=300573.6 min=211264.7 max=373938.4 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=302336.8 min=217462.4 max=425711.4 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=302140.3 min=275821.4 max=420176.5 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=296549.1 min=245421.3 max=417038.2 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=294077.6 min=215239.4 max=451449.6 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21130.7 min=16473.4 max=64994.4 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20237.3 min=16168.1 max=23781.4 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21171.0 min=18617.5 max=25209.3 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=3 copy=b other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21506.9 min=18054.2 max=29177.3 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20245.9 min=17668.0 max=24162.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20539.5 min=16759.3 max=23751.9 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20548.9 min=18175.0 max=23053.6 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=23125.4 min=18849.4 max=32331.6 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1999.3 min=1711.9 max=2326.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2059.8 min=1665.0 max=2604.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2081.6 min=1678.7 max=2624.5 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2302.0 min=2022.9 max=2650.9 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2261.9 min=2054.5 max=4126.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2414.9 min=1948.6 max=4021.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2781.3 min=2293.6 max=4225.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2312.7 min=1879.2 max=3692.3 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=329815.2 min=299552.6 max=445805.0 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=313078.2 min=210944.0 max=492940.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=3 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=343521.0 min=293640.2 max=429920.5 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=315773.5 min=270465.2 max=634706.7 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=270549.6 min=240319.6 max=373918.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=348246.3 min=274533.0 max=446398.6 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=348269.9 min=277875.6 max=421459.4 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=236075.6 min=201473.7 max=392401.6 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=33977.4 min=24652.9 max=54901.9 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=25397.1 min=20190.9 max=40164.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30907.3 min=20503.3 max=34251.8 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=29439.8 min=26212.6 max=35389.8 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=33283.3 min=24799.3 max=43713.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=38380.3 min=31866.1 max=44419.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=33138.0 min=26884.9 max=59404.8 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=42644.3 min=34192.9 max=48846.6 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3975.9 min=3563.8 max=5406.7 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4204.0 min=3863.3 max=5471.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4411.9 min=3957.5 max=6165.7 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4581.3 min=3892.7 max=5888.7 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5951.4 min=5383.8 max=7659.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5771.5 min=4826.0 max=7217.5 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=3 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=6203.6 min=5384.8 max=8285.7 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=3 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=6979.6 min=5682.1 max=8282.0 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=295736.9 min=244186.3 max=454574.9 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=318782.9 min=282920.5 max=348464.4 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=261913.2 min=220556.7 max=360539.0 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=282390.5 min=225777.4 max=412597.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=266579.4 min=229821.9 max=341364.5 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=249057.7 min=214742.8 max=450114.3 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=239413.7 min=227672.8 max=414780.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=297023.9 min=249097.3 max=331280.7 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20722.0 min=16741.9 max=24918.8 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21011.0 min=16477.3 max=23393.4 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=17398.7 min=16462.5 max=27052.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=23444.7 min=17109.7 max=28076.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=22746.1 min=18677.5 max=30270.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18681.6 min=17917.5 max=21048.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20412.2 min=13954.2 max=186830.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20813.5 min=16478.7 max=28223.9 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2216.5 min=2140.1 max=2472.9 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1937.3 min=1808.3 max=3141.3 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2090.7 min=1894.4 max=2769.7 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2216.9 min=2093.5 max=4918.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2033.2 min=1660.0 max=2555.3 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2081.9 min=1741.5 max=2674.6 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2118.6 min=1879.4 max=2308.1 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2078.9 min=1955.3 max=2609.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=279123.0 min=210138.8 max=401494.2 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=332345.6 min=305637.3 max=595033.4 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=290768.6 min=260103.9 max=813467.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=275164.3 min=257678.8 max=453343.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=279201.7 min=261835.6 max=328735.9 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=331708.4 min=260773.0 max=455969.2 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=256662.6 min=195279.0 max=341640.0 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=267702.8 min=250308.7 max=364236.7 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=23800.0 min=20591.4 max=36309.1 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=25789.4 min=21379.4 max=149435.8 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30144.6 min=25255.0 max=47485.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30082.5 min=24270.1 max=43509.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=26235.0 min=23395.3 max=43982.9 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=24647.0 min=20289.0 max=29851.6 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=25197.7 min=19430.4 max=74262.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=28427.7 min=26017.8 max=60474.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5751.1 min=5059.6 max=8076.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=6532.9 min=5386.3 max=7737.4 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=6260.3 min=5159.2 max=8603.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5725.7 min=5112.4 max=7310.1 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4412.4 min=3973.4 max=13198.5 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3894.6 min=3597.7 max=5901.6 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=4 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4003.8 min=3397.5 max=4656.4 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=4 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4282.1 min=3542.6 max=6175.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=297951.5 min=273913.8 max=718942.0 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=240150.9 min=189160.6 max=300395.6 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=263187.4 min=213655.0 max=325502.0 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=341528.5 min=252054.8 max=405443.9 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=242024.4 min=222461.6 max=381873.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=324407.3 min=284995.4 max=366711.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=331011.5 min=266049.6 max=403463.2 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=302672.1 min=285592.0 max=334639.8 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18861.2 min=17296.2 max=24581.7 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20553.4 min=19575.8 max=43326.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=24672.8 min=20308.6 max=27933.2 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21622.7 min=20424.6 max=32994.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=17665.3 min=15266.0 max=27659.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20103.1 min=15786.8 max=24872.0 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=25107.7 min=17215.1 max=38600.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18564.4 min=16611.2 max=24799.6 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=5 copy=a other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1998.1 min=1654.1 max=2327.2 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1767.3 min=1617.7 max=2345.3 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2011.8 min=1675.4 max=5645.5 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1931.3 min=1825.3 max=2878.5 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2303.2 min=1866.0 max=3828.4 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2291.9 min=2141.9 max=3214.3 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2210.0 min=1819.0 max=2583.8 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2657.7 min=2195.4 max=3258.5 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=303607.0 min=223232.8 max=480230.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=335005.1 min=218085.1 max=426363.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=334280.8 min=306815.4 max=374128.4 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=330265.3 min=280271.4 max=468059.0 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=293411.6 min=266160.0 max=420333.5 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=300034.4 min=266616.0 max=425663.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=331194.4 min=273413.6 max=444749.2 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=354295.8 min=256458.1 max=554638.1 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=27568.4 min=21924.6 max=31253.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=25373.5 min=19884.3 max=29606.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=32516.4 min=21353.5 max=44815.0 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=33178.1 min=24090.1 max=44736.2 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=35710.5 min=29600.3 max=46282.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=33536.4 min=24162.5 max=41542.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=31112.1 min=24917.0 max=38291.1 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30634.8 min=29072.0 max=46457.4 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=2 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4039.6 min=3358.2 max=6753.6 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4011.3 min=3413.8 max=5884.4 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4153.2 min=3566.1 max=5020.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4569.0 min=3439.7 max=5698.9 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5699.5 min=5063.2 max=7846.5 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5755.4 min=4931.7 max=7492.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=5 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5916.3 min=5017.1 max=11981.0 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=5 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=6 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5668.0 min=4893.5 max=27169.0 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=275330.2 min=215236.9 max=689475.6 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=333565.8 min=242865.1 max=389470.0 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=294275.4 min=230145.3 max=347029.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=303827.0 min=270198.8 max=400578.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=240828.9 min=223083.8 max=354337.6 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=276778.3 min=211785.0 max=418836.5 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=244413.5 min=216631.3 max=358967.3 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=294965.2 min=150047.6 max=392335.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21245.5 min=16121.8 max=26644.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20694.1 min=15777.9 max=25822.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20494.2 min=17759.5 max=29806.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20353.0 min=14583.5 max=35847.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=14029.0 min=12570.5 max=25955.1 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18124.3 min=16210.7 max=32403.5 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=6 copy=b other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=16758.7 min=16167.6 max=24257.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=12907.4 min=12352.5 max=15866.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2213.2 min=2042.9 max=3891.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2511.1 min=1908.0 max=3129.3 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2341.3 min=1918.3 max=4408.7 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2596.7 min=2095.6 max=3442.8 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2089.6 min=1556.7 max=2626.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2059.4 min=1879.9 max=5191.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2085.8 min=1713.0 max=4570.9 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1938.4 min=1722.2 max=2341.7 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=328866.5 min=309810.6 max=363153.5 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=354599.6 min=298727.9 max=455755.5 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=333024.3 min=293085.8 max=470331.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=298869.9 min=253638.8 max=384521.6 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=333950.5 min=316944.9 max=411404.7 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=328252.6 min=310400.5 max=540017.1 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=312542.9 min=254288.4 max=344934.4 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=343199.5 min=312068.5 max=438231.9 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30656.7 min=27500.1 max=37043.7 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=29507.0 min=27493.7 max=33771.6 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=29795.2 min=25464.9 max=32429.4 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=31869.9 min=28581.0 max=38097.7 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30385.5 min=28663.0 max=42104.3 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=24271.4 min=22075.2 max=36625.0 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30137.8 min=24481.6 max=37098.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30520.7 min=25551.8 max=50677.7 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5725.9 min=5212.9 max=8625.4 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5423.8 min=4968.7 max=6572.4 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5470.3 min=5082.8 max=6827.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5451.4 min=5089.2 max=6541.7 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4461.1 min=3764.1 max=5793.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4291.3 min=3276.4 max=5028.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=6 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4633.3 min=3606.1 max=5983.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=6 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3895.0 min=3561.0 max=4803.1 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=290543.9 min=231573.3 max=381952.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=295817.6 min=259325.2 max=519431.3 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=259963.2 min=191952.1 max=357136.3 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=250744.4 min=210265.2 max=366113.2 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=234777.2 min=219872.2 max=329274.4 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=232564.7 min=215162.6 max=270887.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=252544.8 min=217734.6 max=674703.8 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=64 samples=31 ns_per_message_median=322548.7 min=220453.5 max=392365.9 log_len=311 resident_after_pageout=0/0 sum_calls=1513
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=22326.1 min=20501.0 max=25468.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=1 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21361.5 min=15817.7 max=27015.9 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=18870.0 min=15894.9 max=23517.7 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=19095.3 min=16311.0 max=26350.0 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=17254.0 min=15731.1 max=23322.9 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=20791.0 min=16446.6 max=23157.8 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=21047.7 min=20264.3 max=23709.9 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=64 samples=31 ns_per_message_median=23294.6 min=21655.1 max=28868.3 log_len=4976 resident_after_pageout=0/0 sum_calls=1654
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1968.3 min=1527.0 max=2677.3 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=1839.3 min=1620.7 max=2796.2 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2245.6 min=2068.7 max=2448.9 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2318.6 min=2135.4 max=2894.1 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2127.4 min=1713.7 max=3068.1 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2278.6 min=1915.0 max=2787.4 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2278.1 min=2108.2 max=2653.2 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=64 samples=31 ns_per_message_median=2265.9 min=1837.6 max=6862.5 log_len=79616 resident_after_pageout=0/0 sum_calls=3455
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=318132.3 min=293402.6 max=438616.2 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=2 steal_ticks=0 arm=1 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=337896.8 min=307047.1 max=370631.4 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=343414.8 min=310956.7 max=534338.9 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=297578.3 min=261998.0 max=519333.0 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=319387.3 min=287505.1 max=483960.8 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=370576.3 min=322187.7 max=834851.4 log_len=311 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=355995.3 min=281479.2 max=544598.6 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=1 payload_bytes=1024 samples=31 ns_per_message_median=329143.6 min=252138.7 max=357881.5 log_len=311 resident_after_pageout=0/0 sum_calls=1656
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=32522.5 min=30636.9 max=36729.6 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=31727.8 min=27018.2 max=41326.5 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=30134.4 min=25162.5 max=35905.4 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=31735.9 min=24269.1 max=38984.1 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=32718.0 min=31496.7 max=62877.3 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=32165.3 min=26286.3 max=40690.1 log_len=4976 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=36574.6 min=30151.2 max=54913.5 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=16 payload_bytes=1024 samples=31 ns_per_message_median=33416.4 min=30172.4 max=61347.6 log_len=4976 resident_after_pageout=0/0 sum_calls=3490
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4460.1 min=3892.5 max=5014.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=1 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=3999.7 min=3589.1 max=5409.4 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4615.2 min=3608.6 max=5452.5 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=10 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=4994.6 min=3833.8 max=6199.4 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=1 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=6420.2 min=5294.4 max=8395.0 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=9 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5690.8 min=5218.8 max=6529.5 log_len=79616 resident_after_pageout=0/0 sum_calls=0
+round=7 copy=a other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5540.6 min=5153.9 max=6041.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+round=7 copy=b other_processes_of_user=0 procs_running=1 steal_ticks=0 arm=12 messages_per_step=256 payload_bytes=1024 samples=31 ns_per_message_median=5367.4 min=5071.2 max=6714.1 log_len=79616 resident_after_pageout=0/0 sum_calls=28520
+#
+# ---- bench_sum.cpp ----
+# #include <algorithm>
+# #include <array>
+# #include <chrono>
+# #include <cstdint>
+# #include <cstdio>
+# #include <cstdlib>
+# #include <cstring>
+# #include <span>
+# #include <stdexcept>
+# #include <string>
+# #include <vector>
+# 
+# #include <lmdb.h>
+# #include <nmmintrin.h>
+# #include <sys/mman.h>
+# #include <unistd.h>
+# #include <fcntl.h>
+# 
+# #ifndef ARM
+# #error ARM
+# #endif
+# 
+# namespace {
+# 
+# constexpr int arm_step = 1;
+# constexpr int arm_message_sync = 2;
+# constexpr int arm_nested = 3;
+# constexpr int arm_nosync_then_env_sync = 4;
+# constexpr int arm_writemap_step = 5;
+# constexpr int arm_no_reads = 6;
+# constexpr int arm_nometasync_pipelined = 7;
+# constexpr int arm_read_back_pageout = 8;
+# constexpr int arm_read_back_cached = 9;
+# constexpr int arm_step_checksum = 10;
+# constexpr int arm_read_back_cached_checksum = 12;
+# constexpr bool page_checksum = ARM == arm_step_checksum || ARM == arm_read_back_cached_checksum;
+# constexpr int steps_per_sample = 10;
+# constexpr std::size_t map_size = std::size_t{8} << 30;
+# 
+# void check(int rc, const char* what)
+# {
+#     if (rc != 0) [[unlikely]] {
+#         std::fprintf(stderr, "%s: %s\n", what, mdb_strerror(rc));
+#         std::exit(1);
+#     }
+# }
+# 
+# struct stores {
+#     MDB_env* env;
+#     MDB_dbi log;
+#     MDB_dbi meta;
+# };
+# 
+# std::array<unsigned char, 8> big_endian(std::uint64_t v)
+# {
+#     std::array<unsigned char, 8> b{};
+#     for (int i = 7; i >= 0; --i) {
+#         b[static_cast<std::size_t>(i)] = static_cast<unsigned char>(v & 0xff);
+#         v >>= 8;
+#     }
+#     return b;
+# }
+# 
+# std::uint64_t from_big_endian(const MDB_val& v)
+# {
+#     std::uint64_t r = 0;
+#     const auto* p = static_cast<const unsigned char*>(v.mv_data);
+#     for (std::size_t i = 0; i < v.mv_size; ++i) {
+#         r = (r << 8) | p[i];
+#     }
+#     return r;
+# }
+# 
+# std::uint64_t read_u64(MDB_txn* txn, MDB_dbi dbi, const char* key)
+# {
+#     MDB_val k{std::strlen(key), const_cast<char*>(key)};
+#     MDB_val v;
+#     const int rc = mdb_get(txn, dbi, &k, &v);
+#     if (rc == MDB_NOTFOUND) {
+#         return 0;
+#     }
+#     check(rc, "mdb_get");
+#     return from_big_endian(v);
+# }
+# 
+# void write_u64(MDB_txn* txn, MDB_dbi dbi, const char* key, std::uint64_t value)
+# {
+#     auto b = big_endian(value);
+#     MDB_val k{std::strlen(key), const_cast<char*>(key)};
+#     MDB_val v{b.size(), b.data()};
+#     check(mdb_put(txn, dbi, &k, &v, 0), "mdb_put meta");
+# }
+# 
+# struct durable_values {
+#     std::uint64_t promise;
+#     std::uint64_t accepted_round;
+#     std::uint64_t decided;
+#     std::uint64_t log_len;
+# };
+# 
+# durable_values read_values(MDB_txn* txn, const stores& s)
+# {
+#     durable_values d{read_u64(txn, s.meta, "promise"), read_u64(txn, s.meta, "accepted_round"),
+#                      read_u64(txn, s.meta, "decided"), 0};
+#     MDB_cursor* c;
+#     check(mdb_cursor_open(txn, s.log, &c), "mdb_cursor_open");
+#     MDB_val k, v;
+#     const int rc = mdb_cursor_get(c, &k, &v, MDB_LAST);
+#     mdb_cursor_close(c);
+#     MDB_stat st;
+#     check(mdb_stat(txn, s.log, &st), "mdb_stat");
+#     if (rc == MDB_NOTFOUND) {
+#         d.log_len = 0;
+#     } else {
+#         check(rc, "mdb_cursor_get");
+#         d.log_len = from_big_endian(k) + 1;
+#     }
+#     if (d.log_len != st.ms_entries) [[unlikely]] {
+#         std::fprintf(stderr, "continuity\n");
+#         std::exit(1);
+#     }
+#     return d;
+# }
+# 
+# void handle_message(MDB_txn* txn, const stores& s, std::span<unsigned char> payload, durable_values& local)
+# {
+#     durable_values d = local;
+#     if constexpr (ARM != arm_no_reads) {
+#         d = read_values(txn, s);
+#     }
+#     if (d.promise < 1) {
+#         write_u64(txn, s.meta, "promise", 1);
+#         write_u64(txn, s.meta, "accepted_round", 1);
+#     }
+#     auto key = big_endian(d.log_len);
+#     MDB_val k{key.size(), key.data()};
+#     MDB_val v{payload.size(), payload.data()};
+#     check(mdb_put(txn, s.log, &k, &v, MDB_APPEND), "mdb_put log");
+#     write_u64(txn, s.meta, "decided", d.log_len);
+#     local = {1, 1, d.log_len, d.log_len + 1};
+# }
+# 
+# 
+# std::uint32_t sum_bytes(const MDB_val& v)
+# {
+#     std::uint32_t h = 2166136261u;
+#     const auto* p = static_cast<const unsigned char*>(v.mv_data);
+#     for (std::size_t i = 0; i < v.mv_size; ++i) {
+#         h = (h ^ p[i]) * 16777619u;
+#     }
+#     return h;
+# }
+# 
+# long resident_pages = 0;
+# long checked_pages = 0;
+# std::uint32_t sink = 0;
+# 
+# void read_back(const stores& s, std::uint64_t from, std::uint64_t to)
+# {
+#     MDB_txn* rt;
+#     check(mdb_txn_begin(s.env, nullptr, MDB_RDONLY, &rt), "begin ro");
+#     const auto page = static_cast<std::uintptr_t>(sysconf(_SC_PAGESIZE));
+#     MDB_envinfo info;
+#     check(mdb_env_info(s.env, &info), "mdb_env_info");
+#     const auto base = reinterpret_cast<std::uintptr_t>(info.me_mapaddr);
+#     mdb_filehandle_t fd;
+#     check(mdb_env_get_fd(s.env, &fd), "mdb_env_get_fd");
+#     std::vector<MDB_val> vals;
+#     for (std::uint64_t i = from; i < to; ++i) {
+#         auto key = big_endian(i);
+#         MDB_val k{key.size(), key.data()};
+#         MDB_val v;
+#         check(mdb_get(rt, s.log, &k, &v), "mdb_get back");
+#         vals.push_back(v);
+#     }
+#     MDB_val mk{7, const_cast<char*>("decided")};
+#     MDB_val mv;
+#     check(mdb_get(rt, s.meta, &mk, &mv), "mdb_get meta back");
+#     vals.push_back(mv);
+#     if constexpr (ARM == arm_read_back_pageout) {
+#         for (const auto& v : vals) {
+#             const auto a = reinterpret_cast<std::uintptr_t>(v.mv_data);
+#             const auto lo = a & ~(page - 1);
+#             const auto hi = (a + v.mv_size + page - 1) & ~(page - 1);
+#             check(madvise(reinterpret_cast<void*>(lo), hi - lo, MADV_PAGEOUT), "madvise");
+#             check(posix_fadvise(fd, static_cast<off_t>(lo - base), static_cast<off_t>(hi - lo),
+#                                 POSIX_FADV_DONTNEED),
+#                   "posix_fadvise");
+#             std::vector<unsigned char> inc((hi - lo) / page);
+#             check(mincore(reinterpret_cast<void*>(lo), hi - lo, inc.data()), "mincore");
+#             for (auto b : inc) {
+#                 resident_pages += b & 1;
+#                 ++checked_pages;
+#             }
+#         }
+#     }
+#     for (const auto& v : vals) {
+#         sink ^= sum_bytes(v);
+#     }
+#     mdb_txn_abort(rt);
+# }
+# 
+# void run_step(const stores& s, int messages, std::span<unsigned char> payload, durable_values& local)
+# {
+#     if constexpr (ARM == arm_message_sync || ARM == arm_nosync_then_env_sync) {
+#         for (int m = 0; m < messages; ++m) {
+#             MDB_txn* txn;
+#             check(mdb_txn_begin(s.env, nullptr, ARM == arm_nosync_then_env_sync ? MDB_NOSYNC : 0, &txn), "begin");
+#             handle_message(txn, s, payload, local);
+#             check(mdb_txn_commit(txn), "commit");
+#         }
+#         if constexpr (ARM == arm_nosync_then_env_sync) {
+#             check(mdb_env_sync(s.env, 1), "mdb_env_sync");
+#         }
+#     } else {
+#         MDB_txn* txn;
+#         check(mdb_txn_begin(s.env, nullptr, ARM == arm_nometasync_pipelined ? MDB_NOMETASYNC : 0, &txn), "begin");
+#         for (int m = 0; m < messages; ++m) {
+#             if constexpr (ARM == arm_nested) {
+#                 MDB_txn* child;
+#                 check(mdb_txn_begin(s.env, txn, 0, &child), "begin child");
+#                 handle_message(child, s, payload, local);
+#                 check(mdb_txn_commit(child), "commit child");
+#             } else {
+#                 handle_message(txn, s, payload, local);
+#             }
+#         }
+#         const auto end = local.log_len;
+#         check(mdb_txn_commit(txn), "commit");
+#         if constexpr (ARM == arm_read_back_pageout || ARM == arm_read_back_cached || ARM == arm_read_back_cached_checksum) {
+#             read_back(s, end - static_cast<std::uint64_t>(messages), end);
+#         }
+#     }
+# }
+# 
+# long sum_calls = 0;
+# 
+# void crc32c_sum(const MDB_val* src, MDB_val* dst, const MDB_val*)
+# {
+#     ++sum_calls;
+#     std::uint64_t c = 0xffffffffu;
+#     const auto* p = static_cast<const unsigned char*>(src->mv_data);
+#     std::size_t n = src->mv_size;
+#     while (n >= 8) {
+#         std::uint64_t w;
+#         std::memcpy(&w, p, 8);
+#         c = _mm_crc32_u64(c, w);
+#         p += 8;
+#         n -= 8;
+#     }
+#     while (n > 0) {
+#         c = _mm_crc32_u8(static_cast<std::uint32_t>(c), *p);
+#         ++p;
+#         --n;
+#     }
+#     const auto r = static_cast<std::uint32_t>(c) ^ 0xffffffffu;
+#     std::memcpy(dst->mv_data, &r, 4);
+# }
+# 
+# }
+# 
+# int main(int argc, char** argv)
+# {
+#     if (argc != 5) {
+#         std::fprintf(stderr, "usage: bench_txn <samples> <messages_per_step> <payload_bytes> <dir>\n");
+#         return 1;
+#     }
+#     const int samples = std::atoi(argv[1]);
+#     const int messages = std::atoi(argv[2]);
+#     const auto payload_bytes = static_cast<std::size_t>(std::atoi(argv[3]));
+#     stores s{};
+#     check(mdb_env_create(&s.env), "mdb_env_create");
+#     check(mdb_env_set_mapsize(s.env, map_size), "mapsize");
+#     check(mdb_env_set_maxdbs(s.env, 2), "maxdbs");
+#     if constexpr (page_checksum) {
+#         check(mdb_env_set_checksum(s.env, crc32c_sum, 4), "mdb_env_set_checksum");
+#     }
+#     const unsigned env_flags = MDB_NOTLS | (ARM == arm_writemap_step ? MDB_WRITEMAP : 0);
+#     check(mdb_env_open(s.env, argv[4], env_flags, 0600), "mdb_env_open");
+#     MDB_txn* txn;
+#     check(mdb_txn_begin(s.env, nullptr, 0, &txn), "begin");
+#     check(mdb_dbi_open(txn, "log", MDB_CREATE, &s.log), "dbi log");
+#     check(mdb_dbi_open(txn, "meta", MDB_CREATE, &s.meta), "dbi meta");
+#     check(mdb_txn_commit(txn), "commit");
+#     std::vector<unsigned char> payload(payload_bytes, 0x5a);
+#     durable_values local{};
+#     run_step(s, messages, payload, local);
+#     std::vector<double> ns;
+#     for (int i = 0; i < samples; ++i) {
+#         const auto t0 = std::chrono::steady_clock::now();
+#         for (int st = 0; st < steps_per_sample; ++st) {
+#             run_step(s, messages, payload, local);
+#         }
+#         if constexpr (ARM == arm_nometasync_pipelined) {
+#             check(mdb_env_sync(s.env, 1), "mdb_env_sync");
+#         }
+#         const auto t1 = std::chrono::steady_clock::now();
+#         ns.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() /
+#                      (static_cast<double>(steps_per_sample) * messages));
+#     }
+#     std::ranges::sort(ns);
+#     MDB_txn* rt;
+#     check(mdb_txn_begin(s.env, nullptr, MDB_RDONLY, &rt), "begin ro");
+#     const auto d = read_values(rt, s);
+#     mdb_txn_abort(rt);
+#     std::printf("arm=%d messages_per_step=%d payload_bytes=%zu samples=%d ns_per_message_median=%.1f min=%.1f max=%.1f "
+#                 "log_len=%llu resident_after_pageout=%ld/%ld sum_calls=%ld\n",
+#                 ARM, messages, payload_bytes, samples, ns[ns.size() / 2], ns.front(), ns.back(),
+#                 static_cast<unsigned long long>(d.log_len), resident_pages, checked_pages, sum_calls);
+#     if (sink == 1) std::printf("sink\n");
+#     mdb_env_close(s.env);
+# }
+# ---- build.sh ----
+# #!/bin/bash
+# set -euo pipefail
+# L=/lmdbsrc
+# cd /work
+# gcc-16 -O2 -DNDEBUG -c $L/mdb.c -o mdb.o
+# gcc-16 -O2 -DNDEBUG -c $L/midl.c -o midl.o
+# for arm in 1 10 9 12; do
+#   for copy in a b; do
+#     g++-16 -std=c++26 -O2 -msse4.2 -DNDEBUG -Wall -Wextra -Werror -DARM=$arm -I$L /bench/bench_sum.cpp mdb.o midl.o -o bench_arm${arm}_$copy
+#   done
+# done
+# sha256sum bench_arm* | cut -c1-16 > /work/sha.txt
+# ---- run.sh ----
+# #!/bin/bash
+# set -euo pipefail
+# samples=31; rounds=7
+# arms=(1 10 9 12); copies=(a b); ms=(1 16 256); payloads=(64 1024)
+# echo "# os $(. /etc/os-release && echo "$PRETTY_NAME")"
+# echo "# compiler $(g++-16 --version | head -n 1)"
+# echo "# flags g++-16 -std=c++26 -O2 -DNDEBUG -Wall -Wextra -Werror -DARM=<arm> -msse4.2; gcc-16 -O2 -DNDEBUG for mdb.c midl.c"
+# echo "# instruction set $(g++-16 -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
+# echo "# lmdb $(grep -E '^#define MDB_VERSION_(MAJOR|MINOR|PATCH)' /lmdbsrc/lmdb.h | awk '{printf "%s ", $3}')from the submodule deps/lmdb"
+# echo "# binary comment $(readelf -p .comment /work/bench_arm1_a | grep -oE 'GCC: .*' | sort -u | tr '\n' ' ')"
+# echo "# libraries $(ldd /work/bench_arm1_a | awk '{printf "%s %s; ", $1, $3}')"
+# echo "# packages $(dpkg-query -W -f='${Package} ${Version}; ' libstdc++6 libc6 || true)"
+# sed 's/^/# binary sha256 /' /work/sha.txt
+# echo "# kernel $(uname -r) $(uname -v)"
+# if [[ -r /sys/kernel/sched_ext/state ]]; then echo "# scheduler sched_ext $(cat /sys/kernel/sched_ext/state)"; else echo "# scheduler no /sys/kernel/sched_ext"; fi
+# echo "# virtual machine hypervisor flag $(grep -m 1 -cw hypervisor /proc/cpuinfo || true)"
+# echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') nproc $(nproc)"
+# echo "# cpu flags sha256 $(grep -m 1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)"
+# echo "# user uid 1001 through setpriv, nice $(nice), one thread, not pinned"
+# echo "# lmdb mount $(awk '$2 == "/lmdb"' /proc/mounts)"
+# echo "# loadavg at start $(cat /proc/loadavg)"
+# for ((r = 1; r <= rounds; r++)); do
+#   if ((r % 2 == 0)); then order_arms=(12 9 10 1); order_copies=(b a); else order_arms=("${arms[@]}"); order_copies=("${copies[@]}"); fi
+#   for p in "${payloads[@]}"; do for m in "${ms[@]}"; do for arm in "${order_arms[@]}"; do for c in "${order_copies[@]}"; do
+#     d=/lmdb/$r-$arm-$c-$m-$p; mkdir -p $d; chown 1001:1001 $d
+#     other=$(pgrep -c -u 1001 || true); running=$(awk '$1 == "procs_running" {print $2}' /proc/stat)
+#     sb=$(awk '$1 == "cpu" {print $9}' /proc/stat)
+#     line=$(setpriv --reuid=1001 --regid=1001 --clear-groups /work/bench_arm${arm}_$c $samples $m $p $d)
+#     sa=$(awk '$1 == "cpu" {print $9}' /proc/stat)
+#     echo "round=$r copy=$c other_processes_of_user=$other procs_running=$running steal_ticks=$((sa - sb)) $line"
+#     rm -rf $d
+#   done; done; done; done
+# done
+# echo "# loadavg at end $(cat /proc/loadavg)"
