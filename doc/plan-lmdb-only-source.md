@@ -154,15 +154,18 @@ Line numbers are at commit 06a52bf.
    state check of 2.2 and the chain check of 2.3 run at the first read
    of each step and again as its last read before the commit, not only
    at the start. One function makes them. A damage that they find makes
-   the node stop voting. What follows is open (section 7).
+   the node stop voting. It then copies the whole durable state from a
+   peer that votes and does not recover, and runs the recovery of VR
+   Revisited, as at a start (owner, 2026-10-24 19:21). The model of this
+   is round 8.
 6. `cached_promise_message_` (`:728`) is built again from LMDB on a
    resend (`:440`), not kept.
 7. The storage concept (`storage.hpp:121-129`) changes from
    `write_atomically(ops)` and separate getters to a transaction that
    reads and writes. Its members take their names from LMDB (commit,
-   abort). The type cannot be named `transaction`: `konsens::transaction`
-   exists (`node.hpp:70`). Its name is open (section 7). No LMDB name
-   leaves the library.
+   abort). The type is `storage::transaction` (owner, 2026-10-24 19:23);
+   `konsens::transaction` (`node.hpp:70`) stays. No LMDB name leaves the
+   library.
 8. A write error of a step throws `write_error`, as now. A read error
    of LMDB throws a type derived from `std::system_error` (owner,
    2026-10-24 14:39).
@@ -417,14 +420,14 @@ decides the names.
 2. Decided, 2026-10-24 19:19: for a `stale_meta` or a `rollback` while
    the node runs (2.3 item 5), the README warns, and the peers check
    (2.3 item 6).
-3. A node that stopped voting while it ran (2.1 item 5): it stays
-   stopped until the operator acts, or it starts the recovery of VR
-   Revisited from a peer.
+3. Decided, 2026-10-24 19:21: a node that stopped voting while it ran
+   recovers from a peer (2.1 item 5).
 4. A page that stays in the cache after the page-out (2.4 item 1): the
    node tries again, or does not report.
 5. The effects of a work whose entry is cut (2.5 item 4).
-6. Withdrawn: the page checksums of LMDB were decided against on
-   2026-10-16 (section 1).
+6. The page checksums of LMDB were decided against on 2026-10-16
+   (section 1). Measured on 2026-10-24 at the owner's wish; a card asks
+   whether the decision of 2026-10-16 stays.
 7. The one pointer subtraction of 2.4 item 6.
-8. The name of the storage transaction type (2.1 item 7).
+8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
 

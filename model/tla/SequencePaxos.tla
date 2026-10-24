@@ -82,6 +82,7 @@ CONSTANTS
   VerifyCrc,
   ChainCheck,
   MetaRecord,
+  PeerCheck,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -223,7 +224,9 @@ VARIABLES
   \* @type: Int;
   old_decided_max,
   \* @type: Bool;
-  old_decided_after_forced
+  old_decided_after_forced,
+  \* @type: Int -> (Int -> {n: Int, idx: Int});
+  peer_seen
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -232,7 +235,7 @@ env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections,
               storage_faults, refused>>
 ghost    == <<proposed, decided_history, decided_ballot>>
 recovery == <<recovering, nonce, recovery_responses, power_loss_completed>>
-rollback == <<rolled_back, past_durable>>
+rollback == <<rolled_back, past_durable, peer_seen>>
 readvars == <<reads, read_pending, read_round>>
 reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
               halts, read_only_entries, stage1_ghost, build_source>>
@@ -455,6 +458,27 @@ DurableOf(k) ==
 \* The kinds of RunningStorageFault that StorageFault at a start does not take.
 RunningOnlyKinds == {"stale_meta", "rollback"}
 
+NothingSeen == [n |-> DefaultBallot, idx |-> 0]
+
+\* The messages whose field n is a ballot that the sender holds or held.
+BallotTypes == {"Prepare", "Promise", "AcceptSync", "AcceptDecide", "Accepted", "Decide"}
+
+Raised(seen, m) ==
+  IF m.type \notin BallotTypes THEN seen
+  ELSE IF m.n > seen.n
+       THEN [n |-> m.n, idx |-> IF m.type = "Accepted" THEN m.accepted_idx ELSE 0]
+  ELSE IF m.n = seen.n /\ m.type = "Accepted" /\ m.accepted_idx > seen.idx
+       THEN [seen EXCEPT !.idx = m.accepted_idx]
+  ELSE seen
+
+\* A peer sends a lower ballot, or a lower accepted index in the same
+\* ballot, than it sent before: its disk went back.
+SteppedBack(i, j, m) ==
+  /\ PeerCheck
+  /\ m.type \in BallotTypes
+  /\ \/ m.n < peer_seen[i][j].n
+     \/ m.n = peer_seen[i][j].n /\ m.type = "Accepted" /\ m.accepted_idx < peer_seen[i][j].idx
+
 \* @type: Int => $msg;
 RecoveryMsg(x) == [EmptyMessage EXCEPT !.type = "Recovery", !.nonce = x]
 
@@ -589,6 +613,7 @@ Init ==
   /\ buffered_proposals = [i \in Servers |-> <<>>]
   /\ leader_state = [i \in Servers |-> LeaderStateWith(DefaultBallot)]
   /\ chan = [p \in Pairs |-> <<>>]
+  /\ peer_seen = [i \in Servers |-> [j \in Servers |-> NothingSeen]]
   /\ wiped = [i \in Servers |-> FALSE]
   /\ crashes = 0
   /\ wipes = 0
@@ -1193,7 +1218,23 @@ LeaseGhostUpdate ==
                THEN decided_idx'[CHOOSE s \in NextConfigNodes : s \in running']
                ELSE forced_decided_at_force
 
-GhostUpdate == HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate
+(* PeerCheck (owner, 2026-10-24 19:19; doc/plan-lmdb-only-source.md 2.3   *)
+(* item 6). Each node keeps, in memory, the highest ballot that a peer      *)
+(* sent it, and the highest accepted index of an Accepted of that ballot.  *)
+(* A received message is the head of a channel that shrinks by one; with   *)
+(* no loss and no duplicate, nothing else removes one head alone. A node   *)
+(* that leaves running forgets what it saw.                                *)
+PeerSeenUpdate ==
+  peer_seen' =
+    [i \in Servers |-> [j \in Servers |->
+       IF ~PeerCheck THEN peer_seen[i][j]
+       ELSE IF ~(i \in running /\ i \in running') THEN NothingSeen
+       ELSE IF <<j, i>> \in Pairs /\ chan[<<j, i>>] # <<>>
+               /\ chan'[<<j, i>>] = Tail(chan[<<j, i>>])
+       THEN Raised(peer_seen[i][j], Head(chan[<<j, i>>]))
+       ELSE peer_seen[i][j]]]
+
+GhostUpdate == HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate /\ PeerSeenUpdate
 
 ----------------------------------------------------------------------------
 (* Actions *)
@@ -1249,6 +1290,10 @@ Receive(j, i) ==
         /\ IF m.type = "Deactivated"
            THEN HandleDeactivated(i, c)
            ELSE IF deactivated[i] /\ Mutation # "DeactivatedStillVotes"
+           THEN /\ chan' = c
+                /\ UNCHANGED <<durable, volatile, recovery, readvars, buffered_stopsign,
+                               deactivated>>
+           ELSE IF SteppedBack(i, j, m)
            THEN /\ chan' = c
                 /\ UNCHANGED <<durable, volatile, recovery, readvars, buffered_stopsign,
                                deactivated>>
@@ -2349,6 +2394,8 @@ ASSUME StepChecks \in BOOLEAN
 ASSUME VerifyCrc \in BOOLEAN
 ASSUME ChainCheck \in BOOLEAN
 ASSUME MetaRecord \in BOOLEAN
+ASSUME PeerCheck \in BOOLEAN
+ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided", "stale_meta", "rollback"}
 ASSUME StaleReadNode \in BOOLEAN
