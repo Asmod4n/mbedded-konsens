@@ -155,8 +155,17 @@ Line numbers are at commit 06a52bf.
 1. Each entry also carries a chain CRC: the CRC over the chain CRC of
    the entry before it, the index, the kind and the payload. The state
    is not in the chain, because it changes.
-2. The meta record holds the last index and its chain CRC. The write of
-   an entry and the write of the meta record are in one transaction.
+2. One meta record holds the promise, the accepted round, the decided
+   index, the last index and its chain CRC, with one CRC over all of
+   them. Now these are three keys (`src/persistent_storage.cpp:31-33`).
+   The node writes the meta record when it is created: the seed node at
+   the first start, every other node at the end of its recovery. The
+   write of an entry and the write of the meta record are in one
+   transaction. A running node with no meta record, or with a meta
+   record whose CRC fails, is damaged. Round 3 of the model showed why:
+   a node with an empty log that loses its promise breaks S1, and no
+   other check finds it. This form is provisional; the owner decides
+   it.
 3. The step check reads the last entry and the meta record in its
    transaction and compares the index and the chain CRC. A lost last
    entry and a lost entry in the middle both make them differ.
@@ -242,6 +251,8 @@ format changes through 2.2 and 2.3, so the format version goes up.
   prefix in the field `last` as a stand-in for the chain CRC.
 - `ChainCheck` (Bool): the chain check of 2.3 item 3. With it, the step
   check finds a lost last entry.
+- `MetaRecord` (Bool): the meta record of 2.3 item 2. With it, the step
+  check finds a lost or changed promise, accepted round or decided index.
 - The node takes its next step on the damaged state, because the model
   has no copy of it.
 - Not modelled: the state field of 2.2. It is a function of the decided
@@ -305,5 +316,6 @@ after each round.
 ## 6. Provisional names
 
 `RunningStorageFault`, `StepChecks`, `VerifyCrc`, `ChainCheck`,
+`MetaRecord`,
 `in_work`, `committed`, the transaction type of 2.1 item 7. The owner
 decides the names.
