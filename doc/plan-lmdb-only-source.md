@@ -365,7 +365,7 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    new one, commits it, and runs the entries that are not decided again
    on top of it. A step still takes all the work that waits. Of three
    forms this one gave the lowest latency at the same throughput
-   (median 21.7 ms against 33.5 ms for one batch in flight, at 20 ms
+   (median 21.5 ms against 33.5 to 33.9 ms for one batch in flight, at 20 ms
    round trip and 10000 requests/s, g++ 16 and clang++ 22; at 1 ms round
    trip 2.2 ms against 2.9 ms; bench/results/2026-10-24-231534Z-lmdb-
    repair-and-pipeline.txt). The cost of the run again grows with the
