@@ -132,8 +132,10 @@ Line numbers are at commit 4c57d44.
    reads as `ballot{}` (owner, 2026-10-24 12:04: a node with an empty
    log gets a full copy and then runs the recovery). Only a seed node
    at the first start of a new cluster starts with no recovery (owner,
-   12:05). How the caller tells `with` that this is the first start of
-   a seed node is provisional: a field of the config. The full copy
+   12:05). A seed node starts with no recovery only when the config
+   says seed and the store is new: no meta key and no hidden identity
+   (owner, 14:01). A seed that gets a new disk loses the seed field
+   first. The name of the config field is provisional. The full copy
    itself is outside this plan; until it exists, the recovery copies
    the log as it does now.
 7. Every new error branch is `[[unlikely]]`.
