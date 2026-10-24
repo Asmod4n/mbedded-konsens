@@ -1,0 +1,168 @@
+# What: the time of one comparison of two equal std::byte spans,
+# std::equal(a.begin(), a.end(), b.begin(), b.end()) (arm std) against
+# std::ranges::equal(a, b) (arm ranges). Sizes 64 B, 1 KiB and 64 KiB.
+# Why: task 14127dd9 of Claude-state.
+# How: each arm is its own binary, built twice (copies a and b) for the
+# noise floor. The four binaries ran alternately, 7 rounds. Each binary
+# takes 31 samples of 64 MiB of comparisons per size and prints the
+# median ns per call. The compare function is noinline; an empty asm
+# with a memory clobber stands before each call.
+# The code is not in the tree. It stands at the end of this file.
+# Commit of the tree: b290c02 (clean); the code does not use the tree.
+# Build: g++-16 -std=c++26 -O2 -DARM_RANGES=0|1, x86-64 baseline ISA.
+# Compiler: GCC (Ubuntu 16.2.0-3ubuntu1) 16.2.0, read off the binary.
+# C++ library: libstdc++ of GCC 16 (highest symbol version GLIBCXX_3.4.19
+# used by the binary). C library: Ubuntu GLIBC 2.44-1ubuntu2.
+# Kernel: 6.18.44-fc-v153, default scheduler. Firecracker VM, 4 cpus,
+# container image localhost/cxx-matrix in podman.
+# Processor: Intel(R) Xeon(R) Processor, sha256 of flags 733bd6f8a6de28df.
+# User: uid 1001, not root, default priority, not pinned. One thread.
+# What the compiler did, read from g++-16 -O2 -S: arm std calls memcmp;
+# arm ranges is a loop of one byte per step. libstdc++
+# bits/ranges_algobase.h (__equal_fn) uses memcmp only for an integral
+# or pointer value type, and std::byte is an enumeration. g++-14 and
+# g++-15 give the same byte loop.
+#
+# round binary size_bytes ns_per_call
+1 arm0a 64 1.82
+1 arm0a 1024 11.25
+1 arm0a 65536 1143.06
+1 arm1a 64 26.45
+1 arm1a 1024 275.25
+1 arm1a 65536 18321.01
+1 arm0b 64 1.81
+1 arm0b 1024 11.17
+1 arm0b 65536 1144.48
+1 arm1b 64 26.51
+1 arm1b 1024 275.48
+1 arm1b 65536 17005.01
+2 arm0a 64 1.82
+2 arm0a 1024 11.21
+2 arm0a 65536 1144.20
+2 arm1a 64 26.58
+2 arm1a 1024 276.55
+2 arm1a 65536 17039.47
+2 arm0b 64 1.82
+2 arm0b 1024 11.26
+2 arm0b 65536 1145.25
+2 arm1b 64 26.59
+2 arm1b 1024 274.95
+2 arm1b 65536 16984.17
+3 arm0a 64 1.82
+3 arm0a 1024 11.20
+3 arm0a 65536 1144.40
+3 arm1a 64 26.43
+3 arm1a 1024 275.01
+3 arm1a 65536 16980.81
+3 arm0b 64 1.82
+3 arm0b 1024 11.30
+3 arm0b 65536 1144.05
+3 arm1b 64 26.47
+3 arm1b 1024 274.89
+3 arm1b 65536 16992.72
+4 arm0a 64 1.82
+4 arm0a 1024 11.32
+4 arm0a 65536 1146.61
+4 arm1a 64 26.47
+4 arm1a 1024 275.94
+4 arm1a 65536 17060.64
+4 arm0b 64 1.87
+4 arm0b 1024 11.23
+4 arm0b 65536 1142.41
+4 arm1b 64 26.55
+4 arm1b 1024 275.72
+4 arm1b 65536 17023.81
+5 arm0a 64 1.82
+5 arm0a 1024 11.25
+5 arm0a 65536 1143.53
+5 arm1a 64 26.53
+5 arm1a 1024 275.04
+5 arm1a 65536 16991.92
+5 arm0b 64 3.53
+5 arm0b 1024 16.06
+5 arm0b 65536 1321.93
+5 arm1b 64 26.46
+5 arm1b 1024 275.50
+5 arm1b 65536 16989.82
+6 arm0a 64 1.81
+6 arm0a 1024 11.17
+6 arm0a 65536 1142.28
+6 arm1a 64 26.51
+6 arm1a 1024 276.24
+6 arm1a 65536 17057.37
+6 arm0b 64 1.83
+6 arm0b 1024 11.30
+6 arm0b 65536 1148.27
+6 arm1b 64 26.55
+6 arm1b 1024 275.90
+6 arm1b 65536 17028.59
+7 arm0a 64 1.83
+7 arm0a 1024 11.17
+7 arm0a 65536 1141.24
+7 arm1a 64 26.59
+7 arm1a 1024 275.82
+7 arm1a 65536 17042.15
+7 arm0b 64 1.83
+7 arm0b 1024 11.41
+7 arm0b 65536 1142.79
+7 arm1b 64 26.73
+7 arm1b 1024 277.67
+7 arm1b 65536 17098.30
+#
+# Median of the 7 rounds, ns per call (spread = max - min of the rounds):
+# size     std a   std b   ranges a  ranges b
+# 64 B     1.82    1.83    26.51     26.55
+# 1 KiB    11.21   11.30   275.82    275.50
+# 64 KiB   1143.5  1144.5  17042.2   17005.0
+# Spread of std a: 0.02 / 0.15 / 5.37; std b has one slow round
+# (3.53 / 16.06 / 1321.93) in round 5. Noise floor between the copies
+# of one arm: under 1 % in the medians.
+# Result: ranges::equal is 14.6x (64 B), 24.6x (1 KiB) and 14.9x
+# (64 KiB) slower than std::equal on std::byte spans, medians of copy a.
+#
+# Code (bench.cpp):
+# #include <algorithm>
+# #include <array>
+# #include <chrono>
+# #include <cstddef>
+# #include <cstdio>
+# #include <span>
+# #include <vector>
+# 
+# #ifndef ARM_RANGES
+# #error "ARM_RANGES must be 0 or 1"
+# #endif
+# 
+# [[gnu::noinline]] bool compare(std::span<const std::byte> a, std::span<const std::byte> b)
+# {
+# #if ARM_RANGES
+#     return std::ranges::equal(a, b);
+# #else
+#     return std::equal(a.begin(), a.end(), b.begin(), b.end());
+# #endif
+# }
+# 
+# int main()
+# {
+#     constexpr std::array<std::size_t, 3> sizes{64, 1024, 65536};
+#     constexpr std::size_t samples = 31;
+#     constexpr std::size_t bytes_per_sample = std::size_t{64} << 20;
+#     for (const auto size : sizes) {
+#         std::vector<std::byte> a(size, std::byte{0x5a});
+#         std::vector<std::byte> b(size, std::byte{0x5a});
+#         const std::size_t calls = bytes_per_sample / size;
+#         std::vector<double> ns;
+#         std::size_t equal = 0;
+#         for (std::size_t s = 0; s < samples; ++s) {
+#             const auto t0 = std::chrono::steady_clock::now();
+#             for (std::size_t c = 0; c < calls; ++c) {
+#                 asm volatile("" : : "r"(a.data()), "r"(b.data()) : "memory");
+#                 equal += compare(a, b);
+#             }
+#             const auto t1 = std::chrono::steady_clock::now();
+#             ns.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() / static_cast<double>(calls));
+#         }
+#         std::ranges::sort(ns);
+#         std::printf("%zu %.2f %zu\n", size, ns[samples / 2], equal);
+#     }
+# }
