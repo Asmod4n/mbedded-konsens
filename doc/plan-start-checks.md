@@ -110,8 +110,23 @@ Line numbers are at commit 4c57d44.
    - the accepted round is above the promise;
    - the decided index is above the log length.
    The first two together also find a log with no promise.
-5. Every new error branch is `[[unlikely]]`.
-6. No change to the protocol, to the wire or to the file format.
+5. `persistent_storage::write_atomically` compares the count of stored
+   entries with the accepted index of the caller (owner, 2026-10-24
+   12:03). `append_entries` and `append_on_prefix` (`storage.hpp:87-94`)
+   each carry the accepted index that the caller holds. When the count
+   that `read_log_len` gives differs from it, `write_atomically`
+   returns `missing_entry` and commits nothing. The node then stops
+   voting, as at every other read error.
+6. `sequence_paxos::with` starts the recovery also when the promise
+   reads as `ballot{}` (owner, 2026-10-24 12:04: a node with an empty
+   log gets a full copy and then runs the recovery). Only a seed node
+   at the first start of a new cluster starts with no recovery (owner,
+   12:05). How the caller tells `with` that this is the first start of
+   a seed node is provisional: a field of the config. The full copy
+   itself is outside this plan; until it exists, the recovery copies
+   the log as it does now.
+7. Every new error branch is `[[unlikely]]`.
+8. No change to the protocol, to the wire or to the file format.
 
 ## 3. Model
 
@@ -152,14 +167,29 @@ find restarts the node: through `Restart` with the recovery, or, when
 the promise reads as `DefaultBallot`, as a new node in phase "None"
 with no recovery and no message (`RestartInPhase`).
 
-The model has no damage of a running node. Section 1 names what the
-code does with it.
+The model has no damage of a running node. With item 2.5 such damage
+reduces to cases that the model has:
+- A lost meta value is read only at the next start: one of the kinds
+  above.
+- A key lost below the last key is found by the next read that covers
+  it, or by the next append (MDB_KEYEXIST), or at the next start.
+- A lost last key is found by the next append (item 2.5). If the node
+  crashes first, it starts with a missing last entry: `missing_entry`
+  at the last position, which the recovery covers.
+Without item 2.5, the next append writes at the old last index, and at
+the next start the node reads a log with no gap and a wrong entry. The
+checks at the start cannot find that; it is the case of the mutation
+run MC_s_nocheck_missing_entry_safety, which breaks S2.
 
 ### 3.3 Mutation
 
 `Mutation = "StartCheckMissing"` turns the checks off. Each kind runs
 alone. The model shows a need for a check when the kind breaks S2 or
 S2b without that check.
+
+`Mutation = "StartAsNewNode"` is the start of the code at 4c57d44: a
+node that reads no promise starts as a new node, (follower, none), with
+no recovery. Its target is S2b.
 
 ### 3.4 Configurations and runs
 
@@ -173,12 +203,13 @@ MaxDuplicate and MaxHalt are 0. Every config with the checks adds
 
 | Config | Change from MC_s | Kinds |
 |---|---|---|
-| MC_s | Recovery TRUE, checks | entry, accepted, decided |
+| MC_s | Recovery TRUE, checks | all four |
 | MC_s_entry | as MC_s | entry |
 | MC_s_promise | as MC_s | promise |
-| MC_s_crash | MaxCrash 1 | entry, accepted, decided |
-| MC_s_powerloss | power-loss/MC_p.sim.cfg with the checks | entry, accepted |
-| MC_s_rollback | MaxRollback 1 | entry, accepted, decided |
+| MC_s_promise_asnew | mutation StartAsNewNode | promise |
+| MC_s_crash | MaxCrash 1 | all four |
+| MC_s_powerloss | power-loss/MC_p.sim.cfg with the checks | entry, accepted, promise |
+| MC_s_rollback | MaxRollback 1 | all four |
 | MC_s_norec | Recovery FALSE | entry, accepted, decided |
 | MC_s_nocheck_missing_* | mutation, one kind each | one |
 | MC_s_nocheck_*_norec | mutation, Recovery FALSE | accepted or promise |
@@ -218,9 +249,9 @@ FALSE) and second seeds.
 - A lost write at the end of the log. The continuity check cannot find
   it (row 2.6 of the matrix). Only the recovery after each start
   protects against it.
-- A lost promise with an empty log. No check of this plan finds it
-  (owner question 1).
-- Damage while the node runs (owner question 2).
+- The full copy for a node with an empty log. The model takes the copy
+  from the recovery.
+- The first start of a seed node other than Init.
 - A build of a new node: `BuildForServer` and `ForceSingle` give the
   node a log with no accepted round. No code path does this yet. The
   future build path must set the accepted round, or check 2.4 refuses
@@ -243,12 +274,18 @@ this, as the bench does.
   - "read_entries of a range with a missing entry gives missing_entry
     at its index" (the store is open; the child removes the entry);
   - "read_entries from a missing index gives missing_entry at that
-    index".
+    index";
+  - "an append after a lost last key is missing_entry and commits
+    nothing" (the store is open; the child removes the last key);
+  - "an append with an accepted index other than the count is
+    missing_entry".
 - test_sequence_paxos, with `write_atomically` through `storage_of`
   (`:158-166`), no raw LMDB and no CRC code:
   - "a log with no accepted round is inconsistent_storage";
   - "an accepted round above the promise is inconsistent_storage";
-  - "a decided index above the log is inconsistent_storage".
+  - "a decided index above the log is inconsistent_storage";
+  - "a node that reads no promise starts the recovery";
+  - "a seed node at the first start starts with no recovery".
 - Mutation, run once: each check removed. Each test fails.
 
 ## 5. Checks of the build
@@ -264,7 +301,9 @@ this, as the bench does.
 ## 6. Provisional names
 
 `missing_entry`, `inconsistent_storage`, `StorageFault`,
-`StartChecks`, `MaxStorageFault`, `StartCheckMissing`. No
+`StartChecks`, `MaxStorageFault`, `StartCheckMissing`,
+`StartAsNewNode`, `NoFalseRefusal`, `RestartInPhase`, the field of
+item 2.6 and the accepted index in the append ops of item 2.5. No
 specification names these faults. The owner decides the names.
 
 ## 7. Error rule
