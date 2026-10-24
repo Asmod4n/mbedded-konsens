@@ -1,0 +1,50 @@
+# What: how often the two LMDB meta pages stay in the page cache after
+# madvise(MADV_PAGEOUT) and posix_fadvise(POSIX_FADV_DONTNEED) on them,
+# and whether a second attempt drops them. Not a speed measurement.
+# Each step is one write transaction of 16 puts of 64 bytes and a
+# durable commit; then up to 4 attempts to drop the meta pages, each
+# checked with mincore.
+# Why: plan doc/plan-lmdb-only-source.md section 7 item 4 (a page that
+# stays in the cache). The bench 2026-10-24-165704Z counted pages that
+# stayed over a whole run of about 320 steps, so it did not show how
+# often one step is hit.
+# How: one program outside the tree (at the end of this file), g++ 13
+# -O2 (the compiler of the host), LMDB 1.0.2 from deps/lmdb, run on the
+# host of the VM, ext4 on /dev/vda, one process. Three runs: 200, 200 and
+# 3000 steps. The tree at the run: branch lmdb-only-source 84b96c7, not
+# used by the program.
+# Result:
+#   run 1, 200 steps: no step with a meta page left after attempt 1.
+#   run 2, 200 steps: no step with a meta page left after attempt 1.
+#   run 3, 3000 steps: 1 step with both meta pages left after attempt
+#   1; attempt 2 dropped them.
+# kernel 6.18.44-fc-v153
+# ---- m.cpp (run 3; runs 1 and 2 had 200 in place of 3000) ----
+# #include <lmdb.h>
+# #include <sys/mman.h>
+# #include <fcntl.h>
+# #include <unistd.h>
+# #include <cstdio>
+# #include <cstdint>
+# #include <cstring>
+# #define C(x) do{int r_=(x); if(r_){printf("%s: %s\n",#x,mdb_strerror(r_)); return 1;}}while(0)
+# int main(int argc, char** argv){
+#   MDB_env* e; C(mdb_env_create(&e)); C(mdb_env_set_mapsize(e,1<<30)); C(mdb_env_open(e,argv[1],0,0600));
+#   MDB_dbi d; MDB_txn* t; C(mdb_txn_begin(e,nullptr,0,&t)); C(mdb_dbi_open(t,nullptr,0,&d)); C(mdb_txn_commit(t));
+#   MDB_envinfo info; mdb_env_info(e,&info); auto base=(char*)info.me_mapaddr; int fd; mdb_env_get_fd(e,&fd);
+#   int stay_total[4]={0,0,0,0}; int which[2]={0,0};
+#   for(int step=0; step<3000; ++step){
+#     C(mdb_txn_begin(e,nullptr,0,&t));
+#     for(int i=0;i<16;i++){ uint64_t k=step*16+i; char v[64]={}; MDB_val K{8,&k},V{64,v}; C(mdb_put(t,d,&K,&V,0)); }
+#     C(mdb_txn_commit(t));
+#     for(int attempt=0; attempt<4; ++attempt){
+#       madvise(base,8192,MADV_PAGEOUT); posix_fadvise(fd,0,8192,POSIX_FADV_DONTNEED);
+#       unsigned char inc[2]; mincore(base,8192,inc);
+#       int stay=(inc[0]&1)+(inc[1]&1);
+#       if(stay) { stay_total[attempt]++; if(attempt==0){ which[0]+=inc[0]&1; which[1]+=inc[1]&1; } }
+#       else break;
+#     }
+#   }
+#   printf("steps with a meta page resident after attempt 1..4: %d %d %d %d (of 3000); after attempt 1, page 0: %d, page 1: %d\n",
+#          stay_total[0],stay_total[1],stay_total[2],stay_total[3],which[0],which[1]);
+# }

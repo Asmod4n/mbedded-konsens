@@ -230,9 +230,11 @@ Line numbers are at commit 06a52bf.
    Measured (bench/results/2026-10-24-165704Z-lmdb-read-back-full.txt,
    noise floor 10.6 %): with the meta pages, +16 % to +120 % per
    message against no read-back; with the whole used file, +31 % to
-   +156 %, and that cost grows with the file. The LMDB meta pages
-   stayed in the cache in 34 of 84 runs, so the meta pages need the
-   answer to section 7 item 4 too.
+   +156 %, and that cost grows with the file. In 34 of 84 runs with the
+   meta pages, two to six pages stayed in the cache over the whole run
+   of about 320 steps. In a separate test, the meta pages stayed after
+   the first attempt in 1 of 3400 steps, and a second attempt dropped
+   them (bench/results/2026-10-24-165906Z-lmdb-meta-page-drop.txt).
 2. A value that is not equal to what the step wrote is a lost write.
    The node does not send its `accepted` and stops voting. The report of
    the proof (node, index, expected and found CRC) is provisional: it
