@@ -452,6 +452,9 @@ DurableOf(k) ==
 (* node in (Leader, Accept) is in status normal and is the primary of its   *)
 (* ballot. Only the primary sends its log, as in the paper. The log is sent *)
 (* whole: a suffix from index 0.                                            *)
+\* The kinds of RunningStorageFault that StorageFault at a start does not take.
+RunningOnlyKinds == {"stale_meta", "rollback"}
+
 \* @type: Int => $msg;
 RecoveryMsg(x) == [EmptyMessage EXCEPT !.type = "Recovery", !.nonce = x]
 
@@ -1159,7 +1162,7 @@ DurableOfP(k) ==
 PastUpdate ==
   past_durable' =
     [k \in Servers |->
-       IF MaxRollback > 0 /\ rolled_back' = {}
+       IF (MaxRollback > 0 \/ RunningOnlyKinds \cap StorageFaultKind # {}) /\ rolled_back' = {}
        THEN IF DurableOfP(k) # DurableOf(k) THEN past_durable[k] \cup {DurableOf(k)}
             ELSE past_durable[k]
        ELSE {}]
@@ -1441,6 +1444,17 @@ Wipe(i) ==
 LogWithout(l, k) == SubSeq(l, 1, k - 1) \o SubSeq(l, k + 1, Len(l))
 
 \* @type: (Int, Str) => Set($durable);
+\* stale_meta: the disk gives back an earlier meta record with a valid CRC,
+\* and the log stays as it is (review 1 of doc/plan-lmdb-only-source.md,
+\* finding 4). rollback: the disk gives back an earlier version of the log
+\* and of the meta record together, while the node runs.
+\* @type: (Int, Str, $durable) => $durable;
+StaleOf(i, kind, q) ==
+  IF kind = "stale_meta"
+  THEN [DurableOf(i) EXCEPT !.promise = q.promise, !.n_accepted = q.n_accepted,
+                            !.decided_idx = q.decided_idx]
+  ELSE q
+
 DamagedStates(i, kind) ==
   LET d == DurableOf(i) IN
   CASE kind = "missing_entry" ->
@@ -1453,6 +1467,10 @@ DamagedStates(i, kind) ==
          THEN {[d EXCEPT !.promise = DefaultBallot]} ELSE {}
     [] kind = "missing_decided" ->
          IF decided_idx[i] > 0 THEN {[d EXCEPT !.decided_idx = 0]} ELSE {}
+    [] kind = "stale_meta" ->
+         {StaleOf(i, kind, q) : q \in past_durable[i]} \ {d}
+    [] kind = "rollback" ->
+         past_durable[i] \ {d}
 
 \* The checks of the plan find a damaged state when the continuity of the
 \* log breaks (a missing last key keeps it), or when a non-empty log has no
@@ -1485,6 +1503,7 @@ Detected(i, kind, d, k) ==
 StorageFault(i, kind) ==
   /\ i \in Nodes
   /\ kind \in StorageFaultKind
+  /\ kind \notin RunningOnlyKinds
   /\ storage_faults < MaxStorageFault
   /\ storage_faults' = storage_faults + 1
   /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
@@ -1535,11 +1554,16 @@ RunningStorageFault(i, kind) ==
   /\ kind \in StorageFaultKind
   /\ storage_faults < MaxStorageFault
   /\ storage_faults' = storage_faults + 1
-  /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
+  /\ \E k \in 0..Len(log[i]),
+       q \in (IF kind \in RunningOnlyKinds THEN past_durable[i] ELSE {DurableOf(i)}),
+       d \in DamagedStates(i, kind) :
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
+       /\ kind \in RunningOnlyKinds => d = StaleOf(i, kind, q)
        /\ IF StepChecks /\ (\/ kind = "missing_entry" /\ (k < Len(log[i]) \/ ChainCheck)
-                            \/ MetaRecord /\ kind # "missing_entry"
+                            \/ MetaRecord /\ kind \in {"missing_accepted", "missing_promise",
+                                                       "missing_decided"}
+                            \/ MetaRecord /\ kind = "stale_meta" /\ q.log # log[i]
                             \/ ChecksFind(d))
           THEN /\ running' = running \ {i}
                /\ refused' = refused \cup {i}
@@ -2326,7 +2350,7 @@ ASSUME VerifyCrc \in BOOLEAN
 ASSUME ChainCheck \in BOOLEAN
 ASSUME MetaRecord \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
-                                   "missing_decided"}
+                                   "missing_decided", "stale_meta", "rollback"}
 ASSUME StaleReadNode \in BOOLEAN
 ASSUME ClientSessions \in BOOLEAN
 ASSUME ReadIndex \in BOOLEAN
