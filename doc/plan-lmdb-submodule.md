@@ -59,3 +59,19 @@ before the build.
   incremental backup, page size).
 - No handshake field for the data version.
 - No change to deps/crc32c, deps/libhydrogen or deps/mbedded-cbor.
+
+## 5. Review (second Claude agent, 2026-10-24) and changes
+
+Result: changes needed. Each finding is taken into the build:
+
+1. The gitlink pointed at ba47717 of mdb.master3 (version 0.9.90 in
+   lmdb.h). It now points at c279e04, the tag LMDB_1.0.2.
+2. `project(... LANGUAGES C CXX)`.
+3. `find_package(Threads REQUIRED)` moves out of `if(KONSENS_BENCH)`.
+4. README: `git submodule update --init --recursive`, and the sentence
+   that 1.0 does not open a 0.9 data file.
+5. run.sh sets and records `CMAKE_C_FLAGS_RELEASE`, records the compile
+   command of mdb.c and the LMDB version of lmdb.h. The Debug check puts
+   the sanitizer flags into `CMAKE_C_FLAGS` too.
+6. RULES.md names LMDB as an exception (Claude-state 4540577).
+7. module.c stays, as in liblmdb.a of the origin.
