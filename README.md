@@ -243,7 +243,7 @@ of the node reaches the read index.
 ## Testing
 
 The unit tests cover each message of Sequence Paxos and Ballot Leader
-Election, both stores, the wire form and the clients. `test_simulation`,
+Election, the LMDB store, the wire form and the clients. `test_simulation`,
 `test_simulation_rollback` and `test_simulation_clients` run three nodes
 on LMDB for 2000 seeds with message loss, duplicate messages, a crash
 and a restart from an earlier copy of the store. They check the safety

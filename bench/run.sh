@@ -14,21 +14,16 @@ cases=(
     "crc32c 64" "crc32c 1024" "crc32c 65536"
     "encode_accept_decide 0" "decode_accept_decide 0" "encode_decide 0" "decode_decide 0"
     "handle_accept_decide 0" "handle_decide 0"
-    "commit_memory 64" "commit_memory 1024" "commit_memory 65536"
     "commit_lmdb 64" "commit_lmdb 1024" "commit_lmdb 65536"
-    "write_memory 64" "write_memory 1024" "write_memory 65536"
     "write_lmdb 64" "write_lmdb 1024" "write_lmdb 65536"
-    "read_memory 0" "read_lmdb 0"
-    "write_batch_memory 64" "write_batch_memory 1024" "write_batch_memory 65536"
+    "read_lmdb 0"
     "write_batch_lmdb 64" "write_batch_lmdb 1024" "write_batch_lmdb 65536"
     "lmdb_put 64" "lmdb_put 1024" "lmdb_put 65536"
     "lmdb_put_like_storage 64" "lmdb_put_like_storage 1024" "lmdb_put_like_storage 65536"
     "lmdb_get 64" "lmdb_get 1024" "lmdb_get 65536"
     "get_entries_lmdb 64" "get_entries_lmdb 1024" "get_entries_lmdb 65536"
-    "write_memory_threads 64" "write_memory_threads 1024" "write_memory_threads 65536"
     "write_lmdb_threads 64" "write_lmdb_threads 1024" "write_lmdb_threads 65536"
-    "read_memory_threads 0" "read_lmdb_threads 0"
-    "write_batch_memory_threads 64" "write_batch_memory_threads 1024" "write_batch_memory_threads 65536"
+    "read_lmdb_threads 0"
     "write_batch_lmdb_threads 64" "write_batch_lmdb_threads 1024" "write_batch_lmdb_threads 65536"
 )
 
@@ -260,17 +255,15 @@ Cases:
   of the sample, at a follower in
   (Follower, Accept), over a store that counts the payload bytes and keeps
   no entry. The messages are encoded and decoded before the timer starts.
-- commit_memory, commit_lmdb: write_atomically of one append_entries with
-  one entry, on a fresh memory_storage or persistent_storage for each
-  sample.
-- write_memory, write_lmdb: three nodes in one process. Each message goes
+- commit_lmdb: write_atomically of one append_entries with one entry,
+  on a fresh persistent_storage for each sample.
+- write_lmdb: three nodes in one process. Each message goes
   through encode and decode, and the network is a queue. One
   client_request at a follower, timed from the call to its reply.
-- read_memory, read_lmdb: one client_query at a follower, timed from the
-  call to its reply. read_lmdb answers from the state machine in memory
-  after one read-index round, so it stands beside read_memory, not
-  beside lmdb_get.
-- write_batch_memory, write_batch_lmdb: 64 client_request calls at a
+- read_lmdb: one client_query at a follower, timed from the call to its
+  reply. It answers from the state machine in memory after one
+  read-index round, so it does not stand beside lmdb_get.
+- write_batch_lmdb: 64 client_request calls at a
   follower before the first round, timed until the last reply, divided
   by 64.
 
@@ -303,9 +296,8 @@ plus the slowest follower time plus the network. This bench does not
 measure that latency. A cluster case fails when the leader changes
 during the samples.
 
-- write_memory_threads, write_lmdb_threads, read_memory_threads,
-  read_lmdb_threads, write_batch_memory_threads,
-  write_batch_lmdb_threads: the same operations with each node on its
+- write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
+  same operations with each node on its
   own thread. Each node has its own LMDB env in its own directory; the
   three envs share one disk. The election, the registration of the
   client and the write before the reads run on the serial harness
@@ -316,8 +308,7 @@ during the samples.
   calls into the inbox of the follower and waits for the replies. After
   the last sample it waits until no message is in flight, stops and
   joins the threads, and checks that each node has the same log length
-  and the same decided index and that the leader did not change. The
-  memory cases mostly measure the wakeup of the threads.
+  and the same decided index and that the leader did not change.
 
 The serial harness calls tick at each node in each round of the timed
 part, so its rounds also carry heartbeats and resends. The threaded

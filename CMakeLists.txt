@@ -103,8 +103,8 @@ target_compile_definitions(
     "KONSENS_MDB_DUMP_0_9=\"$<TARGET_FILE:mdb_dump-0.9>\"" "KONSENS_MDB_LOAD_0_9=\"$<TARGET_FILE:mdb_load-0.9>\""
     "KONSENS_LSAN_MDB_DUMP_0_9=\"${PROJECT_SOURCE_DIR}/test/lsan-mdb_dump-0.9.txt\"")
 
-add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50)
-add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor)
+add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50 --allow-root-for-test)
+add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor --allow-root-for-test)
 
 option(KONSENS_FUSE_TESTS "Build and run the tests of a failed fsync and a failed read on a FUSE file system" OFF)
 if(KONSENS_FUSE_TESTS)

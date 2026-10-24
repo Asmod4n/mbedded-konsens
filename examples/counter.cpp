@@ -17,8 +17,12 @@
 #include <variant>
 #include <vector>
 
-#include "konsens/memory_storage.hpp"
+#include <unistd.h>
+
 #include "konsens/node.hpp"
+#include "konsens/persistent_storage.hpp"
+#include "root_for_test.hpp"
+#include "temporary_directories.hpp"
 
 namespace {
 
@@ -43,13 +47,14 @@ struct counter {
     }
 };
 
-using node_t = konsens::node<konsens::memory_storage, counter>;
+using node_t = konsens::node<konsens::persistent_storage, counter>;
 
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
 constexpr int round_limit = 200;
 constexpr std::uint64_t increment_count = 5;
+constexpr std::size_t map_size = std::size_t{16} << 20;
 
 std::uint64_t value_of(const std::span<const std::byte> bytes)
 {
@@ -188,12 +193,26 @@ int fail(const std::string_view step, const std::error_code& code)
     return EXIT_FAILURE;
 }
 
-int run()
+int run(const std::span<const std::string_view> args)
 {
+    const bool allow_root = std::ranges::contains(args, allow_root_flag);
+    if (args.size() > (allow_root ? 1u : 0u)) [[unlikely]] {
+        std::cerr << std::format("Usage: counter [{}]", allow_root_flag) << '\n';
+        return EXIT_FAILURE;
+    }
+    const auto user_id = choose_the_user_id(geteuid(), allow_root);
+    if (!user_id) [[unlikely]] {
+        std::cerr << "The library refuses to run as root. Start the example as another user." << '\n';
+        return exit_refused_root;
+    }
+    temporary_directories temporary;
     cluster c{};
     for (std::size_t i = 0; i < node_count; ++i) {
-        auto n =
-            node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), konsens::memory_storage{}, counter{}, i + 1);
+        auto storage = konsens::persistent_storage::open(temporary.create(), map_size, *user_id);
+        if (!storage) [[unlikely]] {
+            return fail("open the storages", storage.error());
+        }
+        auto n = node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), std::move(*storage), counter{}, i + 1);
         if (!n) [[unlikely]] {
             return fail("start the nodes", n.error());
         }
@@ -265,10 +284,13 @@ int run()
 
 }
 
-int main()
+int main(const int argc, char** const argv)
 {
     try {
-        return run();
+        const std::span<char* const> given(argv, static_cast<std::size_t>(argc));
+        const auto rest = given.subspan(std::min(given.size(), std::size_t{1}));
+        const std::vector<std::string_view> args(rest.begin(), rest.end());
+        return run(args);
     } catch (const std::exception& e) {
         std::cerr << std::format("The example ended with an exception: {}", e.what()) << '\n';
         return EXIT_FAILURE;
