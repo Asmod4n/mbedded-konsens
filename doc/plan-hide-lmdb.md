@@ -18,7 +18,7 @@ module owns the types of its dependency and shows them to nobody
   calls `konsens::lmdb_category()`.
 - No test and no example names `lmdb_category`, `MDB_` or `mdb_` in
   code. The tests name them only in comments.
-- src/persistent_storage.cpp:72-80 `to_error_code` maps MDB_MAP_FULL
+- src/persistent_storage.cpp:66-75 `to_error_code` maps MDB_MAP_FULL
   to `std::errc::no_space_on_device`, a positive status to
   `std::generic_category()`, and every other status to the LMDB
   category.
@@ -83,3 +83,33 @@ module owns the types of its dependency and shows them to nobody
   term in the API.
 - A caller can no longer name the LMDB category to compare an error
   code with an LMDB status.
+
+## 6. Review (second Claude agent, 2026-10-24) and changes
+
+Result: changes needed. Each finding is taken into the build:
+
+1. The line numbers of `to_error_code` are 66-75.
+2. `environment` is an aggregate that holds
+   `std::unique_ptr<MDB_env, env_close>`. It cannot be copied, and it
+   needs no destructor of its own. `env_close` moves into the unnamed
+   namespace of the .cpp. `open` puts the raw environment into the
+   unique_ptr before `std::make_unique<environment>`.
+3. The move constructor, the move assignment and the destructor are
+   declared in the header, the move members `noexcept`, and defaulted
+   in the .cpp.
+4. The check of the header compiles one file that poisons `MDB_env`,
+   `MDB_txn`, `MDB_dbi`, `MDB_val`, `mdb_env_close` and
+   `lmdb_category`, then includes every header of include/konsens/.
+5. The bench links LMDB itself and gets src/ as a PRIVATE include
+   directory.
+
+## 7. Result
+
+- g++ 16, image localhost/cxx-matrix, KONSENS_BENCH=ON: 16 of 16 tests
+  green in Release and in Debug with ASan and UBSan.
+- The poisoned file compiles against include/ of this branch. Against
+  include/ of 40fdbbe it fails at persistent_storage.hpp:18 on
+  `MDB_env`.
+- `grep -rn "MDB_\|mdb_\|lmdb" include/` gives no hit.
+- build.ninja links liblmdb.so into each test, example and bench
+  binary, through the link-only dependency of the static konsens.

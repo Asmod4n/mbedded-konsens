@@ -15,16 +15,12 @@
 
 #include "konsens/storage.hpp"
 
-struct MDB_env;
-
 namespace konsens {
 
 enum class storage_errc { crc_mismatch = 1, malformed_record };
 
 const std::error_category& storage_category() noexcept;
 std::error_code make_error_code(storage_errc code) noexcept;
-
-const std::error_category& lmdb_category() noexcept;
 
 struct read_failure {
     std::error_code code;
@@ -52,16 +48,18 @@ public:
     [[nodiscard]] std::expected<ballot, std::error_code> get_accepted_round() const;
     [[nodiscard]] std::expected<std::uint32_t, std::error_code> get_last_entry_crc() const;
 
-private:
-    struct env_close {
-        void operator()(MDB_env* env) const noexcept;
-    };
+    persistent_storage(persistent_storage&&) noexcept;
+    persistent_storage& operator=(persistent_storage&&) noexcept;
+    ~persistent_storage();
 
-    persistent_storage(std::unique_ptr<MDB_env, env_close> env, unsigned int log_dbi, unsigned int meta_dbi) noexcept;
+private:
+    struct environment;
+
+    persistent_storage(std::unique_ptr<environment> env, unsigned int log_dbi, unsigned int meta_dbi) noexcept;
 
     void throw_if_moved_from() const;
 
-    std::unique_ptr<MDB_env, env_close> env_;
+    std::unique_ptr<environment> env_;
     unsigned int log_dbi_;
     unsigned int meta_dbi_;
 };

@@ -32,6 +32,8 @@
 #include <crc32c/crc32c.h>
 #include <lmdb.h>
 
+#include "lmdb_category.hpp"
+
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
