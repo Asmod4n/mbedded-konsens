@@ -119,9 +119,10 @@ Line numbers are at commit 06a52bf.
   (bench/results/2026-10-24-162320Z-lmdb-read-back.txt). The page-out
   left one page in the cache in 19 of 84 runs.
 - A value that a read transaction gives points into the map of LMDB,
-  because the environment uses no page checksum and no encryption
-  (`MDB_REMAPPING`, `mdb.c:2335-2400`). With either, LMDB copies the page
-  out of the map, and the read-back of 2.4 needs another form.
+  because `MDB_REMAP_CHUNKS` is off (`MDB_REMAPPING`, `mdb.c:2337`).
+  Encryption sets it (`:12147`); a checksum alone does not. With it, LMDB
+  maps chunks and, with encryption, decrypts into its own buffer; the
+  read-back of 2.4 then needs another form.
 - The model already has no copy of `promise`, `n_accepted` and
   `decided_idx`: they are durable variables
   (`model/tla/SequencePaxos.tla:210`). `accepted_idx` is a volatile
