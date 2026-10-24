@@ -1442,10 +1442,10 @@ Detected(i, kind, d, k) ==
      \/ ChecksFind(d)
 
 \* A node that reads no promise gets a full copy of the durable state of a
-\* node that votes and does not recover (the source rule of BuildForServer),
-\* and runs the recovery, as every other start does (owner, 2026-10-24
-\* 12:04). Only a seed node at the
-\* first start of a cluster starts with no recovery, and that is Init.
+\* node that votes and does not recover, and runs the recovery, as every
+\* other start does (owner, 2026-10-24 12:04). The copy is the whole
+\* durable state; BuildForServer copies only the decided prefix and has
+\* more conditions. Only a seed node at the first start of a cluster starts with no recovery, and that is Init.
 \* Mutation StartAsNewNode is the code at 4c57d44: (Follower, None), no
 \* recovery, no message (sequence_paxos.hpp:268-271). A refused
 \* node leaves running with its state, as Halt does; it takes no further

@@ -3,7 +3,11 @@
 Model 80d8829: a node that reads no promise takes the durable state of
 a node that votes and does not recover, then runs the recovery (plan
 item 2.6, review 3 finding 9). Settings as in rounds 4 to 6. "Copy" is
-the coverage count of that branch.
+the coverage count of that branch: the successor states it made, one
+for each source, not the faults taken. These runs did not record the
+count of the plain `Restart` of a damage that the checks do not find.
+A coverage run of MC_s for 200 s in review 4 gave 35050 for the
+`\E src` line, 70100 for the copy and 7112 for the plain `Restart`.
 
 | Config | Seed | Kinds | Copy | Refused | States | Result |
 |---|---|---|---|---|---|---|

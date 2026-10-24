@@ -3,14 +3,16 @@
 Source: doc/storage-fault-matrix.md on branch storage-fault-matrix
 (658c93b), rows 2.6 and 2.8, proposals 2 and 3. The matrix proposed
 `malformed_record` for proposal 3; this plan proposes a new code. The
-owner has not decided these proposals yet. This form is provisional.
+owner decided the open points of reviews 3 and 4 on 2026-10-24; the
+names stay provisional (section 6).
 The owner decided on 2026-10-24 that a full map ends the node and that
 rule R comes with the hidden identity; both are outside this plan.
 
 Order of the work: this plan, then the model of section 3 and its TLC
 runs, then one review of plan and model by a second agent, then the
-go of the owner, then the code of section 2. The first review of this
-plan (2026-10-24, 13 findings) is applied below; section 8 lists where.
+go of the owner, then the code of section 2. Reviews 1 to 4
+(doc/review-plan-start-checks-*.md) are applied below; section 8 lists
+where.
 
 ## 1. Facts checked in this session
 
@@ -98,7 +100,10 @@ Line numbers are at commit 4c57d44.
    `storage_errc::missing_entry` and the index that is missing. A read
    past the end still returns no entries, so the callers
    (`sequence_paxos.hpp:502,524,612,891,987,1033`,
-   `counter_stress.cpp:611,644`) keep their behaviour.
+   `counter_stress.cpp:611,644`) keep their behaviour. When the cursor
+   stops at a key at or above `to`, `from + entries.size()` must equal
+   `to`. A key above `to` that follows a gap is not an error of this
+   read.
 3. `persistent_storage::open`: with a non-empty log, the first key must
    be 0 and the last key must be the count minus one. Else `open`
    returns `missing_entry`. One cursor read of the first and of the
@@ -129,35 +134,66 @@ Line numbers are at commit 4c57d44.
    `write_waiting_ops_or_throw` (`sequence_paxos.hpp:577-589`) throws
    `missing_entry` as `write_error`, as every other write error: errors
    that the file system reports are exceptions (owner, 2026-10-24
-   14:06). No call site changes. The process ends, and the start checks
-   and the recovery handle the store at the next start.
+   14:06). No call site changes. The process ends. At the next start,
+   the start checks refuse the store when the decided index is above
+   the log length (item 2.4); else the recovery repairs it.
+   `handle_decide` (`:853-856`) writes `set_decided_index` with no
+   append op in the batch, so the first case is likely (review 4
+   finding 6).
 6. `sequence_paxos::with` starts the recovery also when the promise
    reads as `ballot{}` (owner, 2026-10-24 12:04: a node with an empty
    log gets a full copy and then runs the recovery). Only a seed node
    at the first start of a new cluster starts with no recovery (owner,
    12:05). A seed node starts with no recovery only when the config
    says seed and the store is new: no meta key and no hidden identity
-   (owner, 14:01). A seed that gets a new disk loses the seed field
+   (owner, 14:01). The hidden identity does not exist yet at 4c57d44.
+   Until rule R builds it, "new" means "no meta key"; this form is
+   provisional. A seed that gets a new disk loses the seed field
    first. A cluster starts only with a majority of its nodes as seeds,
    f+1 (owner, 14:01); the check of that count belongs to the config
    tool and is outside this plan. The name of the config field is
-   provisional. The full copy
-   itself is outside this plan; until it exists, the recovery copies
-   the log as it does now.
+   provisional. The full copy itself is outside this plan; until it
+   exists, the recovery copies the log as it does now. The model of
+   that form is 6276400, with the runs of
+   `model/results/*-start-checks-runs-7.md` (section 3.6).
 7. Each read up to the accepted index or the decided index in
    sequence_paxos compares the count of entries it got with `to - from`
    (owner, 2026-10-24 14:03). When they differ, the node stops voting
-   with `missing_entry`. The reads: `create_log_sync` (`:612`),
-   `handle_recovery` (`:891`), `handle_get_state` (`:983`),
-   `read_decided_suffix` (`:501`) and the read in
-   `log_or_buffered_proposals_contain`. A correct state always gives
-   the full range, because the waiting ops are written before each
-   read. The continuity rule of item 2.2 also covers the key at which
-   the cursor stops: that key must equal `from + entries.size()`.
+   with `missing_entry`. The reads and the place that stops the vote:
+   - `create_log_sync` (`:612`), `handle_recovery` (`:891`),
+     `handle_get_state` (`:983`) and the read of one entry at `:1033`:
+     in sequence_paxos, where the read is. At `:1033` the read always
+     returns one entry in a correct state, so the branch for an empty
+     result (`:1037-1042`) goes, and a short result is `missing_entry`.
+   - `get_last_entry_crc` (`:884`, `:929`, `:981`): see the
+     provisional form below.
+   - `read_decided_suffix` (`:498-503`) is `const`. It returns
+     `missing_entry` to `node::apply_decided_entries`
+     (`node.hpp:394-397`) and to the public `node::read_decided_suffix`
+     (`node.hpp:255-258`). Both call one non-const method of
+     sequence_paxos that stops the vote. Provisional form.
+   - `log_or_buffered_proposals_contain` (`:518-529`) returns the error
+     to `node.hpp:238`, which calls the same method. Provisional form.
+   A correct state always gives the full range, because the waiting ops
+   are written before each read.
+   `get_last_entry_crc` (`persistent_storage.cpp:535-566`) reads the
+   key at MDB_LAST and does not compare it with `accepted_idx_ - 1`.
+   After a lost last key, a recovery answer that is not the primary
+   (`:890`) reads no log and sends the CRC of the entry before.
+   `find_hardware_fault` (`:962-976`) then names a healthy node.
+   Provisional form, until the owner decides (review 4 finding 1): the
+   node reads `get_entries(accepted_idx_ - 1, accepted_idx_)` through
+   the check of this item and computes the CRC; with `accepted_idx_` 0
+   there is no entry. The other form: the storage concept
+   (`storage.hpp:128`) returns the index with the CRC, and the node
+   compares it; that changes the concept and every storage.
 8. The recovery checks that the log it receives from the primary has
-   the length of its accepted index (`complete_recovery` at `:922`).
-   When it differs, the node does not complete the recovery with that
-   answer.
+   the length of the accepted index of the primary (`l->accepted_idx`,
+   `complete_recovery` at `:922`). When it differs, the node keeps that
+   answer with primary = false and no log, as `:1011-1019` does for a
+   changed state. Else `find_recovery_primary` (`:1050-1062`) finds the
+   same answer again and the path through all peers stays closed
+   (`:924-926`).
 9. Every new error branch is `[[unlikely]]`.
 10. No change to the protocol, to the wire or to the file format.
 
@@ -204,8 +240,8 @@ with no recovery and no message (`RestartInPhase`), is only the
 mutation StartAsNewNode. A node with an empty log, an accepted round
 and no promise is refused by check 2.4.2 and gets no copy.
 
-The model has no damage of a running node. With item 2.5 such damage
-reduces to cases that the model has:
+The model has no damage of a running node. With items 2.5 and 2.7
+such damage reduces to cases that the model has:
 - A lost meta value is read only at the next start: one of the kinds
   above.
 - A key lost below the last key is found by the next read that covers
@@ -213,10 +249,15 @@ reduces to cases that the model has:
   the next start.
 - A lost last key is found by the next read up to the accepted index
   (item 2.7) or by the next append (item 2.5), whichever comes first.
-  A Prepare answer and a recovery answer read before they send, so
-  neither sends a short log. If the node crashes first, it starts with
-  a missing last entry: `missing_entry` at the last position, which the
-  recovery covers.
+  - `handle_prepare` reads only when it sends a sync (`:710-722`). A
+    promise without a sync carries `accepted_idx_` from memory and
+    reads nothing. The next AcceptSync or AcceptDecide carries that
+    length, and item 2.5 fails the write.
+  - A recovery answer of the primary reads the log (`:891`). A recovery
+    answer that is not the primary reads only the last CRC; item 2.7
+    covers that read.
+  If the node crashes first, it starts with a missing last entry:
+  `missing_entry` at the last position, which the recovery covers.
 - A short log that a node receives in the recovery is refused by item
   2.8.
 The model has no damage at run time. These code checks carry the
@@ -294,8 +335,8 @@ All runs are simulations of 15 min:
 - A missing last entry passes the checks when the decided index is
   below the log length. Without the recovery it breaks S2b; with the
   recovery no simulation found a violation.
-- With a crash of another node, with power loss and with a rollback,
-  no simulation found a violation.
+- With a crash (of any node, the damaged one too), with power loss and
+  with a rollback, no simulation found a violation.
 - NoFalseRefusal held in every run with the checks.
 - No breadth-first run: about 5 M states in 15 min, and the search did
   not end.
@@ -307,8 +348,21 @@ All runs are simulations of 15 min:
 - A lost write at the end of the log. The continuity check cannot find
   it (row 2.6 of the matrix). Only the recovery after each start
   protects against it.
-- The full copy for a node with an empty log. The model takes the copy
-  from the recovery.
+- The code of this plan, at the full copy. HEAD (80d8829) models only
+  the full copy. The form of this plan, with the recovery that copies
+  the log, is model 6276400 with the runs of
+  `model/results/*-start-checks-runs-7.md`.
+- The copy branch exists only when a source votes and does not recover.
+  With no such source the fault is not enabled, so "no promise and no
+  source" is not explored.
+- A damaged source. In the model a node with a fault at the start
+  recovers before it is a source, and there is no damage at run time.
+  In the code, a source with a lost last key votes until its next read
+  or append, and `persistent_storage::copy`
+  (`persistent_storage.cpp:569-575`) would copy it. That is two faults.
+  The plan of the full copy reads the log of the source through a read
+  that item 2.7 covers, and the receiver checks the length as item 2.8
+  does.
 - The first start of a seed node other than Init.
 - A build of a new node: `BuildForServer` and `ForceSingle` give the
   node a log with no accepted round. No code path does this yet. The
@@ -350,8 +404,19 @@ this, as the bench does.
   - "a Prepare after a lost last key makes the node stop voting"
     (item 2.7; the child removes the last key while the store is open);
   - "a read that ends at a missing key gives missing_entry" (item 2.2);
-  - "a recovery answer with a log shorter than its accepted index does
-    not complete the recovery" (item 2.8);
+  - "a recovery answer with a log shorter than the accepted index of
+    the primary does not complete the recovery with it, and the node
+    completes the recovery later" (item 2.8);
+  - "a recovery answer that is not the primary after a lost last key
+    makes the node stop voting" (item 2.7, `get_last_entry_crc`);
+  - "a read at `:1033` that returns no entry gives missing_entry"
+    (item 2.7);
+  - "a decided suffix after a lost key makes the node stop voting"
+    (item 2.7, through node);
+  - "a batch of append_on_prefix and append_entries on a whole log
+    commits" (item 2.5, `:764`);
+  - "a complete read with a gap above `to` returns its entries"
+    (item 2.2);
   - "an append after a lost last key throws write_error" (item 2.5);
   - "a seed node at the first start starts with no recovery";
   - "a seed node with a used store starts the recovery".
@@ -377,11 +442,19 @@ specification names these faults. The owner decides the names.
 
 ## 7. Error rule
 
-`missing_entry` and `inconsistent_storage` are values, as
-`crc_mismatch` and `malformed_record` are. `read_failure` carries the
-index. This agrees with "An error goes to whoever can repair it".
+- At a write, `missing_entry` is thrown as `write_error`, derived
+  from `std::system_error` (`storage.hpp:110`), as every error that the
+  file system reports (owner, 2026-10-24 14:06).
+- At a read, `missing_entry` is a value in `read_failure` with the
+  index, and sequence_paxos stops the vote. sequence_paxos finds that
+  fault, not the file system.
+- `inconsistent_storage` is a value of `with`, as `crc_mismatch` and
+  `malformed_record` are.
+This agrees with "An error goes to whoever can repair it".
 
-## 8. Findings of the first review and where they are
+## 8. Findings of the reviews and where they are
+
+Review 1:
 
 1. Test with no promise and harnesses with no check: section 1, 4.
 2. A missing index at `from`: section 2, item 2.
@@ -396,3 +469,23 @@ index. This agrees with "An error goes to whoever can repair it".
 11. Line numbers, matrix branch, `[[unlikely]]`: header, section 1, 2.
 12. Error rule: section 7.
 13. Writing rules: no change needed.
+
+Reviews 2 and 3: doc/review-plan-start-checks-2.md and -3.md; the
+status of each finding of review 3 is in review 4.
+
+Review 4:
+
+1. `get_last_entry_crc`: section 2, item 7 (provisional form).
+2. Read at `:1033`: section 2, item 7; section 4.
+3. Place that stops the vote: section 2, item 7.
+4. Key where the cursor stops: section 2, item 2.
+5. Short recovery answer: section 2, item 8; section 4.
+6. Next start after a lost last key: section 2, item 5.
+7. Error rule: section 7.
+8. Model of the code: section 2, item 6; section 3.6.
+9. Copy branch and damaged source: section 3.6; comment in the model.
+10. Hidden identity: section 2, item 6.
+11. Prepare and recovery answer: section 3.2.
+12. Tests: section 4.
+13. Copy column: results of rounds 9 and 10.
+14. Text: header, section 3.5.
