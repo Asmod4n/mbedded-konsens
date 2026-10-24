@@ -131,7 +131,18 @@ The cost of the checksum against a MAC:
 The library runs as a user that is not root.
 
 LMDB 1.0 does not open a data file of LMDB 0.9. The file formats of the
-two versions differ.
+two versions differ. The build makes `mdb_dump-0.9` from LMDB 0.9.36 and
+`mdb_load` from LMDB 1.0.2 for the upgrade. Stop the node, then:
+
+```sh
+mkdir new
+mdb_dump-0.9 -a -f dump old
+mdb_load -f dump new
+```
+
+Start the node on `new` after it has opened and read the log. Then
+`new` replaces `old`. `mdb_load` opens at most two named databases;
+the storage of a node has two.
 
 ## Installation
 

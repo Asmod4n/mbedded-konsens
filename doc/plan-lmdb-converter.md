@@ -24,7 +24,7 @@ gets one review before the build.
 - Makefile of both versions: mdb_dump and mdb_load link liblmdb.a and
   `-ldl` (0.9 needs no -ldl; it has no module.c).
 - persistent_storage keeps the log in the named database "log" and the
-  meta values in "meta" (src/persistent_storage.cpp:28-29).
+  meta values in "meta" (src/persistent_storage.cpp:29-30).
 
 ## 2. Change
 
@@ -77,3 +77,45 @@ gets one review before the build.
 
 `lmdb-0.9`, `mdb_dump-0.9`, `mdb_load-0.9`, `cmake/lmdb.cmake`,
 `test_lmdb_converter`.
+
+## 6. Review (second Claude agent, 2026-10-24) and changes
+
+Result: changes needed. The build takes these changes:
+
+1. mdb_dump of 1.0.2 writes `mapaddr` with the address of its live map,
+   and mdb_load then sets MDB_FIXEDMAP in the new file. A database that
+   persistent_storage wrote with 0.9 has no such address. The test
+   removes the line before mdb_load-0.9 and checks that the dump of the
+   0.9 database has none. A later upgrade from 1.0 meets this line.
+2. `add_dependencies(test_lmdb_upgrade ...)` for the four programs.
+3. lmdb-0.9 links Threads::Threads. The four programs get the warnings
+   of the LMDB Makefile, not KONSENS_WARNINGS. No target links both
+   libraries; no test links lmdb-0.9.
+4. No cmake/lmdb.cmake. The lines stand beside the target `lmdb`.
+5. The test checks the return value of posix_spawn, waits with waitpid,
+   and requires exit status 0. The environment is empty. stderr is
+   inherited.
+6. The refused open must not fail with no_such_file_or_directory.
+7. The test is test_lmdb_upgrade, after "Upgrading From Release 0.9" of
+   upgrading.doc. The suffix `-0.9` follows the form of the
+   distributions for a second version of a program, as `gcc-14`.
+8. The README makes the new directory before mdb_load.
+9. mdb_load sets at most two named databases (mdb_load.c:430). The
+   README states it.
+10. deps/lmdb-0.9 has `branch = mdb.RE/0.9` in .gitmodules. The weekly
+    check skips a submodule with a branch, so it does not report 1.0.2
+    as newer than 0.9.36 each week.
+
+## 7. Result
+
+- The test passes in Release. It fails at the open of the upgraded
+  directory when the test opens the 0.9 directory there instead
+  (mutation, run once).
+- Under ASan, mdb_dump of 0.9.36 leaks the cursor that dumpit opens
+  (mdb_dump.c:135); 1.0.2 closes it (mdb_dump.c:157). The test runs this
+  one program with an LSan suppression of `dumpit`,
+  test/lsan-mdb_dump-0.9.txt. UBSan reports nothing in 0.9.36.
+- g++/gcc 16, image localhost/cxx-matrix: 18 of 18 tests green in
+  Release and in Debug with ASan and UBSan.
+- LMDB 1.0.2 and 0.9.36 compile with their own warnings: two unused
+  variables in 1.0.2 mdb.c and one in 0.9.36 mdb.c. They are not errors.

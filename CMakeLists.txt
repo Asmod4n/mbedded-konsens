@@ -13,9 +13,25 @@ set(KONSENS_LMDB_SOURCE_DIR ${PROJECT_SOURCE_DIR}/deps/lmdb/libraries/liblmdb)
 add_library(lmdb STATIC ${KONSENS_LMDB_SOURCE_DIR}/mdb.c ${KONSENS_LMDB_SOURCE_DIR}/midl.c
             ${KONSENS_LMDB_SOURCE_DIR}/module.c)
 target_include_directories(lmdb PUBLIC ${KONSENS_LMDB_SOURCE_DIR})
-target_compile_options(lmdb PRIVATE -W -Wall -Wno-unused-parameter -Wbad-function-cast -Wuninitialized)
+set(KONSENS_LMDB_WARNINGS -W -Wall -Wno-unused-parameter -Wbad-function-cast -Wuninitialized)
+target_compile_options(lmdb PRIVATE ${KONSENS_LMDB_WARNINGS})
 target_link_libraries(lmdb PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 set_target_properties(lmdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+set(KONSENS_LMDB_0_9_SOURCE_DIR ${PROJECT_SOURCE_DIR}/deps/lmdb-0.9/libraries/liblmdb)
+add_library(lmdb-0.9 STATIC ${KONSENS_LMDB_0_9_SOURCE_DIR}/mdb.c ${KONSENS_LMDB_0_9_SOURCE_DIR}/midl.c)
+target_include_directories(lmdb-0.9 PUBLIC ${KONSENS_LMDB_0_9_SOURCE_DIR})
+target_compile_options(lmdb-0.9 PRIVATE ${KONSENS_LMDB_WARNINGS})
+target_link_libraries(lmdb-0.9 PUBLIC Threads::Threads)
+
+foreach(program mdb_dump mdb_load)
+    add_executable(${program} ${KONSENS_LMDB_SOURCE_DIR}/${program}.c)
+    target_compile_options(${program} PRIVATE ${KONSENS_LMDB_WARNINGS})
+    target_link_libraries(${program} PRIVATE lmdb)
+    add_executable(${program}-0.9 ${KONSENS_LMDB_0_9_SOURCE_DIR}/${program}.c)
+    target_compile_options(${program}-0.9 PRIVATE ${KONSENS_LMDB_WARNINGS})
+    target_link_libraries(${program}-0.9 PRIVATE lmdb-0.9)
+endforeach()
 
 set(CBOR_INSTALL OFF)
 add_subdirectory(deps/mbedded-cbor EXCLUDE_FROM_ALL)
@@ -81,6 +97,11 @@ target_link_libraries(test_wire PRIVATE mbedded-cbor)
 target_link_libraries(test_crc32c PRIVATE crc32c)
 target_include_directories(test_crc32c PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
 target_link_libraries(test_persistent_storage PRIVATE crc32c)
+add_dependencies(test_lmdb_upgrade mdb_dump mdb_load mdb_dump-0.9 mdb_load-0.9)
+target_compile_definitions(
+    test_lmdb_upgrade PRIVATE "KONSENS_MDB_DUMP=\"$<TARGET_FILE:mdb_dump>\"" "KONSENS_MDB_LOAD=\"$<TARGET_FILE:mdb_load>\""
+    "KONSENS_MDB_DUMP_0_9=\"$<TARGET_FILE:mdb_dump-0.9>\"" "KONSENS_MDB_LOAD_0_9=\"$<TARGET_FILE:mdb_load-0.9>\""
+    "KONSENS_LSAN_MDB_DUMP_0_9=\"${PROJECT_SOURCE_DIR}/test/lsan-mdb_dump-0.9.txt\"")
 
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50)
 add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor)
