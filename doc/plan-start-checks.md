@@ -138,8 +138,12 @@ Line numbers are at commit 4c57d44.
    the start checks refuse the store when the decided index is above
    the log length (item 2.4); else the recovery repairs it.
    `handle_decide` (`:853-856`) writes `set_decided_index` with no
-   append op in the batch, so the first case is likely (review 4
-   finding 6).
+   append op in the batch. So `write_atomically` also compares each
+   `set_decided_index` with the running length: a decided index above
+   it is `missing_entry`, thrown as `write_error`, and nothing commits
+   (owner, 2026-10-24 14:39). The decided index on disk then stays at
+   or below the log length, and the recovery repairs the store at the
+   next start.
 6. `sequence_paxos::with` starts the recovery also when the promise
    reads as `ballot{}` (owner, 2026-10-24 12:04: a node with an empty
    log gets a full copy and then runs the recovery). Only a seed node
@@ -181,12 +185,11 @@ Line numbers are at commit 4c57d44.
    After a lost last key, a recovery answer that is not the primary
    (`:890`) reads no log and sends the CRC of the entry before.
    `find_hardware_fault` (`:962-976`) then names a healthy node.
-   Provisional form, until the owner decides (review 4 finding 1): the
-   node reads `get_entries(accepted_idx_ - 1, accepted_idx_)` through
-   the check of this item and computes the CRC; with `accepted_idx_` 0
-   there is no entry. The other form: the storage concept
-   (`storage.hpp:128`) returns the index with the CRC, and the node
-   compares it; that changes the concept and every storage.
+   The node reads `get_entries(accepted_idx_ - 1, accepted_idx_)`
+   through the check of this item and computes the CRC; with
+   `accepted_idx_` 0 there is no entry. The storage concept
+   (`storage.hpp:128`) does not change (2026-10-24 14:40: the owner
+   left the choice to the session; the recommended form is taken).
 8. The recovery checks that the log it receives from the primary has
    the length of the accepted index of the primary (`l->accepted_idx`,
    `complete_recovery` at `:922`). When it differs, the node keeps that
@@ -262,6 +265,8 @@ such damage reduces to cases that the model has:
   2.8.
 The model has no damage at run time. These code checks carry the
 argument alone.
+A read error of LMDB that ends the process is a crash in the model,
+and MC_s_crash covers it (section 7).
 Without item 2.5, the next append writes at the old last index, and at
 the next start the node reads a log with no gap and a wrong entry. The
 checks at the start cannot find that; it is the case of the mutation
@@ -418,6 +423,10 @@ this, as the bench does.
   - "a complete read with a gap above `to` returns its entries"
     (item 2.2);
   - "an append after a lost last key throws write_error" (item 2.5);
+  - "a decided index above the stored log length throws write_error
+    and commits nothing" (item 2.5);
+  - "a read error of LMDB throws and is not a stop of the vote"
+    (section 7);
   - "a seed node at the first start starts with no recovery";
   - "a seed node with a used store starts the recovery".
 - Mutation, run once: each check removed. Each test fails.
@@ -448,6 +457,11 @@ specification names these faults. The owner decides the names.
 - At a read, `missing_entry` is a value in `read_failure` with the
   index, and sequence_paxos stops the vote. sequence_paxos finds that
   fault, not the file system.
+- A read error that LMDB reports is thrown as a type derived from
+  `std::system_error` and ends the process, as a write error does
+  (owner, 2026-10-24 14:39). The calls of `stop_voting` for such
+  errors (`:713`, `:719`, `:886`, `:893` and the others of section 1)
+  become throws.
 - `inconsistent_storage` is a value of `with`, as `crc_mismatch` and
   `malformed_record` are.
 This agrees with "An error goes to whoever can repair it".
