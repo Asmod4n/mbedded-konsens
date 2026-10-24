@@ -452,4 +452,7 @@ decides the names.
    noise floor 11.0 %): the step costs no more; a read of the step after
    it costs +15 % (64 B) and +12 % (1024 B) with 256 messages per step,
    and nothing above the noise with 1 and 16. LMDB then checks pages on
-   reads. A card asks the owner to decide.
+   reads. The owner chose this form, 2026-10-24 19:45: page checksums
+   with `MDB_REMAP_CHUNKS`, beside the CRC of each entry and the chain
+   CRC. The read-back of 2.4 changes for the chunks and is measured
+   again.
