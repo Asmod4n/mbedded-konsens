@@ -200,8 +200,7 @@ Line numbers are at commit 06a52bf.
    transaction. A running node with no meta record, or with a meta
    record whose CRC fails, is damaged. Round 3 of the model showed why:
    a node with an empty log that loses its promise breaks S1, and no
-   other check finds it. This form is provisional; the owner decides
-   it.
+   other check finds it. The owner chose this form, 2026-10-24 19:19.
 3. The step check reads the last entry and the meta record in its
    transaction and compares the index and the chain CRC. This finds a
    lost last entry. A lost entry in the middle leaves both equal; the
@@ -405,8 +404,7 @@ decides the names.
 
 ## 7. Open questions for the owner
 
-1. The meta record of 2.3 item 2: one record with one CRC, written when
-   the node is created.
+1. Decided, 2026-10-24 19:19: one meta record with one CRC (2.3 item 2).
 2. A `stale_meta` or a `rollback` while the node runs (2.3 item 5): no
    local check finds it. Round 5 shows what it breaks.
 3. A node that stopped voting while it ran (2.1 item 5): it stays
