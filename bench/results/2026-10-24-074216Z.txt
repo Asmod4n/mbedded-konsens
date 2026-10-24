@@ -1,0 +1,240 @@
+# What: the in-memory cases of konsens_bench before and after the group
+# commit, in one run. Arm old: b24bb4f, the parent of the group commit
+# 6afb0d2. Arm new: 6dbd49a. Each arm has its own binary and its A/A copy
+# konsens_bench_aa, built from its own tree.
+# Why: task 7a193882 of Claude-state. Two earlier runs of two builds gave
+# handle_accept_decide 750 ns and 5.3 us.
+# How: scratchpad driver (at the end of this file). 7 rounds; the order
+# of the cases and of the four binaries turns round each even round.
+# 31 samples per case and binary; each line is the median of one binary.
+# Build: Release, CMAKE_CXX_FLAGS_RELEASE and CMAKE_C_FLAGS_RELEASE
+# "-O2 -DNDEBUG", g++-16 and gcc-16, KONSENS_BENCH=ON, x86-64 baseline.
+# The code of both arms stands in the tree at the commits above; the
+# trees were clean. Old links LMDB 0.9.35 of the distribution; new links
+# the submodule LMDB 1.0.2. No case here uses LMDB.
+# processor  Intel(R) Xeon(R) Processor, sha256 of flags 733bd6f8a6de28df
+# kernel 6.18.44-fc-v153; ldd (Ubuntu GLIBC 2.44-1ubuntu2) 2.44
+# binary comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary old/b/konsens_bench sha256 0aaf6ff745e82451
+# binary old/b/konsens_bench_aa sha256 0aaf6ff745e82451
+# binary new/b/konsens_bench sha256 e2ce6261468da33c
+# binary new/b/konsens_bench_aa sha256 e2ce6261468da33c
+# Firecracker VM, 4 cpus, default scheduler, container image
+# localhost/cxx-matrix in podman. User uid 1001, not root, nice 0, not
+# pinned. One thread.
+#
+round=1 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=669.63 min=643.62 max=733.44 payload_bytes_counted=8388608000
+round=1 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4414.70 min=3451.45 max=4898.81 payload_bytes_counted=8388608000
+round=1 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=655.46 min=621.43 max=850.33 payload_bytes_counted=8388608000
+round=1 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4348.83 min=3824.97 max=4643.01 payload_bytes_counted=8388608000
+round=1 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=23.72 min=15.91 max=27.19 decided_idx=12800000
+round=1 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=53.18 min=50.14 max=56.39 decided_idx=12800000
+round=1 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=23.68 min=15.03 max=30.23 decided_idx=12800000
+round=1 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=53.94 min=51.52 max=76.84 decided_idx=12800000
+round=1 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=32.82 min=31.76 max=64.22
+round=1 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=29.53 min=28.54 max=62.01
+round=1 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.20 min=29.61 max=63.44
+round=1 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=28.82 min=28.03 max=58.03
+round=1 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5812.77 min=5768.89 max=7321.66 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=1 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7287.27 min=7184.71 max=8760.30 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=532 follower_ns_per_op=442 log_len_first=1 log_len_last=54401
+round=1 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5816.40 min=5753.08 max=7281.71 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=1 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7286.40 min=7191.09 max=8864.91 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=535 follower_ns_per_op=448 log_len_first=1 log_len_last=54401
+round=1 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9014.56 min=8862.11 max=11381.41 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=1 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10478.69 min=10348.56 max=13002.27 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=557 follower_ns_per_op=498 log_len_first=1 log_len_last=35201
+round=1 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=8981.53 min=8884.73 max=11363.73 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=1 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10523.25 min=10368.06 max=13009.72 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=557 follower_ns_per_op=487 log_len_first=1 log_len_last=35201
+round=1 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4414.56 min=4310.35 max=4496.11 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=1 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6067.13 min=5988.15 max=7105.60 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=372 follower_ns_per_op=380 log_len_first=2 log_len_last=2
+round=1 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4448.87 min=4389.41 max=4656.41 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=1 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6055.30 min=5994.20 max=6456.62 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=376 follower_ns_per_op=380 log_len_first=2 log_len_last=2
+round=2 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6067.86 min=6007.32 max=6364.76 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=373 follower_ns_per_op=378 log_len_first=2 log_len_last=2
+round=2 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4482.04 min=4373.49 max=4793.12 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=2 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6085.69 min=6029.64 max=6428.95 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=378 follower_ns_per_op=399 log_len_first=2 log_len_last=2
+round=2 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4445.48 min=4373.49 max=4550.31 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=2 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10542.48 min=10359.51 max=13375.59 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=563 follower_ns_per_op=491 log_len_first=1 log_len_last=35201
+round=2 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9018.43 min=8915.09 max=11490.15 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=2 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10584.70 min=10445.48 max=13186.22 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=564 follower_ns_per_op=495 log_len_first=1 log_len_last=35201
+round=2 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9014.90 min=8878.75 max=12059.68 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=2 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7335.72 min=7248.29 max=9006.83 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=553 follower_ns_per_op=463 log_len_first=1 log_len_last=54401
+round=2 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5805.26 min=5748.97 max=7377.41 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=2 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7349.71 min=7202.83 max=9367.64 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=544 follower_ns_per_op=449 log_len_first=1 log_len_last=54401
+round=2 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5858.04 min=5788.18 max=7605.68 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=2 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=30.20 min=28.35 max=65.73
+round=2 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=32.11 min=31.31 max=61.47
+round=2 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=29.41 min=28.59 max=61.94
+round=2 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.97 min=30.15 max=61.06
+round=2 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=55.78 min=51.88 max=61.44 decided_idx=12800000
+round=2 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=26.61 min=22.05 max=30.73 decided_idx=12800000
+round=2 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=52.55 min=50.13 max=57.85 decided_idx=12800000
+round=2 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=24.00 min=17.57 max=29.85 decided_idx=12800000
+round=2 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4092.61 min=3637.40 max=4937.99 payload_bytes_counted=8388608000
+round=2 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=675.86 min=635.94 max=735.49 payload_bytes_counted=8388608000
+round=2 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=3644.12 min=2880.97 max=4742.14 payload_bytes_counted=8388608000
+round=2 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=686.78 min=604.25 max=740.93 payload_bytes_counted=8388608000
+round=3 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=676.82 min=620.86 max=746.36 payload_bytes_counted=8388608000
+round=3 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=3590.77 min=2849.44 max=4457.81 payload_bytes_counted=8388608000
+round=3 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=639.66 min=555.06 max=723.13 payload_bytes_counted=8388608000
+round=3 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4093.39 min=3458.96 max=5061.19 payload_bytes_counted=8388608000
+round=3 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=21.88 min=15.72 max=29.79 decided_idx=12800000
+round=3 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=50.50 min=47.75 max=54.62 decided_idx=12800000
+round=3 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=21.65 min=15.59 max=30.22 decided_idx=12800000
+round=3 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=55.76 min=52.97 max=60.86 decided_idx=12800000
+round=3 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.08 min=30.12 max=61.03
+round=3 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=28.66 min=27.83 max=56.65
+round=3 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.46 min=30.11 max=60.56
+round=3 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=28.65 min=27.72 max=57.19
+round=3 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5911.68 min=5777.93 max=7679.64 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=3 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7345.07 min=7244.20 max=9172.42 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=551 follower_ns_per_op=453 log_len_first=1 log_len_last=54401
+round=3 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5795.93 min=5760.91 max=7395.46 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=3 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7401.77 min=7250.32 max=9193.40 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=551 follower_ns_per_op=459 log_len_first=1 log_len_last=54401
+round=3 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9029.12 min=8835.58 max=11578.06 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=3 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10550.00 min=10270.53 max=13289.28 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=558 follower_ns_per_op=498 log_len_first=1 log_len_last=35201
+round=3 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=8948.68 min=8750.82 max=11371.51 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=3 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10441.08 min=10185.84 max=13082.66 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=557 follower_ns_per_op=497 log_len_first=1 log_len_last=35201
+round=3 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4396.08 min=4303.15 max=4642.58 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=3 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6086.60 min=5990.25 max=7162.64 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=377 follower_ns_per_op=413 log_len_first=2 log_len_last=2
+round=3 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4396.66 min=4327.91 max=4502.39 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=3 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6063.46 min=5983.81 max=6270.68 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=378 follower_ns_per_op=377 log_len_first=2 log_len_last=2
+round=4 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6134.01 min=6045.41 max=7933.01 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=373 follower_ns_per_op=375 log_len_first=2 log_len_last=2
+round=4 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4415.00 min=4337.79 max=5729.51 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=4 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6036.53 min=5971.01 max=6197.38 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=372 follower_ns_per_op=379 log_len_first=2 log_len_last=2
+round=4 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=5836.32 min=4392.99 max=7160.99 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=4 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10492.29 min=10338.57 max=12907.91 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=570 follower_ns_per_op=500 log_len_first=1 log_len_last=35201
+round=4 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9031.76 min=8868.17 max=11614.33 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=4 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10438.20 min=10262.12 max=13448.49 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=563 follower_ns_per_op=485 log_len_first=1 log_len_last=35201
+round=4 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9060.06 min=8873.52 max=12014.19 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=4 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7427.12 min=7278.33 max=12382.01 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=626 follower_ns_per_op=538 log_len_first=1 log_len_last=54401
+round=4 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5823.34 min=5740.89 max=7489.66 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=4 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7282.72 min=7220.21 max=8841.14 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=531 follower_ns_per_op=446 log_len_first=1 log_len_last=54401
+round=4 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5806.04 min=5753.14 max=7521.32 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=4 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=30.71 min=29.70 max=64.87
+round=4 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=33.72 min=32.71 max=64.32
+round=4 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=30.58 min=29.31 max=59.56
+round=4 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=33.12 min=32.33 max=63.69
+round=4 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=54.73 min=51.85 max=76.33 decided_idx=12800000
+round=4 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=23.11 min=20.26 max=28.13 decided_idx=12800000
+round=4 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=58.15 min=55.79 max=64.17 decided_idx=12800000
+round=4 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=26.13 min=17.48 max=31.45 decided_idx=12800000
+round=4 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4288.20 min=3944.54 max=5248.96 payload_bytes_counted=8388608000
+round=4 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=654.10 min=612.54 max=752.90 payload_bytes_counted=8388608000
+round=4 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=3955.99 min=3512.39 max=4803.00 payload_bytes_counted=8388608000
+round=4 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=637.51 min=600.45 max=685.47 payload_bytes_counted=8388608000
+round=5 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=641.86 min=590.40 max=681.39 payload_bytes_counted=8388608000
+round=5 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4230.40 min=3252.07 max=5154.58 payload_bytes_counted=8388608000
+round=5 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=678.87 min=634.04 max=1010.10 payload_bytes_counted=8388608000
+round=5 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4198.27 min=3504.34 max=5145.43 payload_bytes_counted=8388608000
+round=5 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=29.03 min=19.96 max=35.03 decided_idx=12800000
+round=5 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=54.81 min=51.45 max=72.70 decided_idx=12800000
+round=5 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=22.65 min=16.96 max=26.13 decided_idx=12800000
+round=5 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=52.30 min=48.51 max=69.08 decided_idx=12800000
+round=5 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.59 min=30.61 max=60.55
+round=5 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=30.60 min=29.88 max=74.76
+round=5 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=32.25 min=31.12 max=61.16
+round=5 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=30.95 min=30.08 max=64.11
+round=5 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5826.29 min=5740.24 max=7623.81 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=5 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7321.71 min=7234.70 max=8924.87 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=541 follower_ns_per_op=447 log_len_first=1 log_len_last=54401
+round=5 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5833.59 min=5746.51 max=7384.61 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=5 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7330.71 min=7245.20 max=9256.53 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=533 follower_ns_per_op=443 log_len_first=1 log_len_last=54401
+round=5 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9055.63 min=8917.83 max=11533.53 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=5 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10529.40 min=10349.95 max=12998.92 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=558 follower_ns_per_op=503 log_len_first=1 log_len_last=35201
+round=5 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9011.58 min=8873.94 max=11814.31 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=5 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10571.45 min=10383.33 max=13513.79 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=568 follower_ns_per_op=496 log_len_first=1 log_len_last=35201
+round=5 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4465.44 min=4366.28 max=6888.36 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=5 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6028.86 min=5956.29 max=6126.46 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=370 follower_ns_per_op=375 log_len_first=2 log_len_last=2
+round=5 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4427.80 min=4368.33 max=4493.32 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=5 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6133.80 min=6063.25 max=6610.94 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=376 follower_ns_per_op=376 log_len_first=2 log_len_last=2
+round=6 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6031.11 min=5963.64 max=6174.12 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=376 follower_ns_per_op=376 log_len_first=2 log_len_last=2
+round=6 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4428.63 min=4336.86 max=4521.96 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=6 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6057.41 min=5978.43 max=6210.52 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=371 follower_ns_per_op=377 log_len_first=2 log_len_last=2
+round=6 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4427.07 min=4380.52 max=4635.61 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=6 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10544.08 min=10368.16 max=12988.21 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=587 follower_ns_per_op=504 log_len_first=1 log_len_last=35201
+round=6 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9013.93 min=8765.81 max=11764.29 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=6 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10464.75 min=10272.85 max=12972.04 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=566 follower_ns_per_op=491 log_len_first=1 log_len_last=35201
+round=6 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=8965.99 min=8862.36 max=11649.15 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=6 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7317.60 min=7235.52 max=8938.75 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=539 follower_ns_per_op=456 log_len_first=1 log_len_last=54401
+round=6 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5864.66 min=5790.91 max=7586.81 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=6 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7351.03 min=7258.08 max=9093.82 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=543 follower_ns_per_op=507 log_len_first=1 log_len_last=54401
+round=6 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5850.54 min=5768.09 max=7444.75 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=6 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=29.32 min=28.46 max=63.64
+round=6 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=32.24 min=30.93 max=69.85
+round=6 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=30.45 min=29.50 max=59.46
+round=6 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=33.37 min=32.34 max=62.39
+round=6 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=53.80 min=50.47 max=61.83 decided_idx=12800000
+round=6 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=25.10 min=18.82 max=29.05 decided_idx=12800000
+round=6 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=57.58 min=51.68 max=62.08 decided_idx=12800000
+round=6 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=27.10 min=17.75 max=33.47 decided_idx=12800000
+round=6 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4022.59 min=3429.09 max=4570.13 payload_bytes_counted=8388608000
+round=6 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=659.11 min=604.36 max=783.24 payload_bytes_counted=8388608000
+round=6 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4133.51 min=3463.96 max=4726.69 payload_bytes_counted=8388608000
+round=6 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=678.96 min=650.80 max=711.96 payload_bytes_counted=8388608000
+round=7 binary=old/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=681.07 min=609.74 max=783.98 payload_bytes_counted=8388608000
+round=7 binary=new/b/konsens_bench nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=3975.68 min=3527.32 max=5151.78 payload_bytes_counted=8388608000
+round=7 binary=old/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=644.79 min=602.62 max=681.87 payload_bytes_counted=8388608000
+round=7 binary=new/b/konsens_bench_aa nice=0 case=handle_accept_decide payload_bytes=0 ops_per_sample=4000 samples=31 ns_per_op_median=4615.22 min=3863.24 max=5009.13 payload_bytes_counted=8388608000
+round=7 binary=old/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=30.77 min=25.66 max=34.58 decided_idx=12800000
+round=7 binary=new/b/konsens_bench nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=55.21 min=53.74 max=79.33 decided_idx=12800000
+round=7 binary=old/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=25.33 min=19.03 max=30.35 decided_idx=12800000
+round=7 binary=new/b/konsens_bench_aa nice=0 case=handle_decide payload_bytes=0 ops_per_sample=400000 samples=31 ns_per_op_median=53.52 min=51.40 max=75.82 decided_idx=12800000
+round=7 binary=old/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=33.94 min=32.62 max=64.59
+round=7 binary=new/b/konsens_bench nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.14 min=30.27 max=60.28
+round=7 binary=old/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=33.83 min=32.63 max=63.40
+round=7 binary=new/b/konsens_bench_aa nice=0 case=commit_memory payload_bytes=64 ops_per_sample=200000 samples=31 ns_per_op_median=31.27 min=29.39 max=60.19
+round=7 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5805.38 min=5747.06 max=7434.29 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=7 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7349.30 min=7255.77 max=9069.18 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=543 follower_ns_per_op=457 log_len_first=1 log_len_last=54401
+round=7 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=5811.26 min=5741.85 max=7510.82 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1701 log_len_last=54401
+round=7 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=64 ops_per_sample=1700 samples=31 ns_per_op_median=7314.68 min=7230.24 max=8962.59 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=538 follower_ns_per_op=451 log_len_first=1 log_len_last=54401
+round=7 binary=old/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9043.05 min=8860.00 max=11747.09 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=7 binary=new/b/konsens_bench nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10493.25 min=10336.17 max=13369.92 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=569 follower_ns_per_op=496 log_len_first=1 log_len_last=35201
+round=7 binary=old/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=9016.66 min=8842.92 max=11478.40 rounds_per_op=1.00 messages_per_op=10.07 log_len_first=1101 log_len_last=35201
+round=7 binary=new/b/konsens_bench_aa nice=0 case=write_memory payload_bytes=1024 ops_per_sample=1100 samples=31 ns_per_op_median=10470.36 min=10306.60 max=13220.55 messages_per_op=10.07 write_atomically_per_op=6.00 write_atomically_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=573 follower_ns_per_op=488 log_len_first=1 log_len_last=35201
+round=7 binary=old/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4408.59 min=4350.55 max=4563.07 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=7 binary=new/b/konsens_bench nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6021.31 min=5985.78 max=6087.95 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=369 follower_ns_per_op=375 log_len_first=2 log_len_last=2
+round=7 binary=old/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=4422.96 min=4350.95 max=4494.44 rounds_per_op=1.00 messages_per_op=11.07 log_len_first=2 log_len_last=2
+round=7 binary=new/b/konsens_bench_aa nice=0 case=read_memory payload_bytes=0 ops_per_sample=2200 samples=31 ns_per_op_median=6028.91 min=5971.68 max=6172.98 messages_per_op=11.07 write_atomically_per_op=0.00 write_atomically_per_node_per_op=0.00/0.00/0.00 leader_ns_per_op=370 follower_ns_per_op=372 log_len_first=2 log_len_last=2
+#
+# Median of the 7 rounds, ns per operation:
+# case                   old      old_aa   new      new_aa
+# handle_accept_decide   676.8    655.5    3975.7   4198.3
+# handle_decide          26.1     23.7     54.8     53.9
+# commit_memory 64 B     32.8     32.2     30.4     30.2
+# write_memory 64 B      5826.3   5816.4   7345.1   7330.7
+# write_memory 1 KiB     9029.1   9013.9   10493.2  10523.2
+# read_memory            4427.1   4427.8   6057.4   6063.5
+# The A/A copies differ by 0.1 % to 0.6 % in the write and read cases,
+# 0.7 % and 1.9 % in commit_memory, 3.2 % and 5.6 % in
+# handle_accept_decide, and 1.7 % and 10.1 % in handle_decide. The gap of
+# handle_decide (about 2x) is above its noise; its cause is not checked.
+#
+# handle_accept_decide: the new case moves each batch of received
+# messages into handle_incoming, so their 64 KiB of payload each is freed
+# inside the timed part. The old case frees the messages after the timed
+# part. A copy of the old case with messages.clear() before the end of
+# the timed part, built the same way, gave 5030.7, 4943.2 and 5046.9 ns
+# in three alternate runs against 4432.7, 4352.9 and 4903.4 ns of new.
+# So the gap of handle_accept_decide is the bench, not the library.
+#
+# write_memory and read_memory run three nodes in memory end to end.
+# New against old (medians of the main binaries): write 64 B +26 %,
+# write 1 KiB +16 %, read +37 %. Not explained by this run.
+#
+# Driver (drive.sh):
+# #!/bin/bash
+# # Runs the in-memory cases of konsens_bench of two commits alternately.
+# set -u
+# cases=("handle_accept_decide 0" "handle_decide 0" "commit_memory 64" "write_memory 64" "write_memory 1024" "read_memory 0")
+# binaries=(old/b/konsens_bench new/b/konsens_bench old/b/konsens_bench_aa new/b/konsens_bench_aa)
+# for ((round = 1; round <= 7; round++)); do
+#     if ((round % 2 == 0)); then
+#         mapfile -t order < <(printf '%s\n' "${cases[@]}" | tac)
+#         mapfile -t border < <(printf '%s\n' "${binaries[@]}" | tac)
+#     else
+#         order=("${cases[@]}"); border=("${binaries[@]}")
+#     fi
+#     for item in "${order[@]}"; do
+#         read -r name payload <<< "$item"
+#         for b in "${border[@]}"; do
+#             line=$(setpriv --reuid=1001 --regid=1001 --clear-groups "/g/$b" "$name" 31 "$payload")
+#             echo "round=$round binary=$b nice=$(nice) $line"
+#         done
+#     done
+# done
