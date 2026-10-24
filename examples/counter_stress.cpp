@@ -8,6 +8,7 @@
 #include <deque>
 #include <exception>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <iterator>
@@ -17,18 +18,25 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include <sys/types.h>
+#include <unistd.h>
+
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "konsens/persistent_storage.hpp"
 #include "konsens/wire.hpp"
+#include "temporary_directories.hpp"
 
 namespace {
 
@@ -53,8 +61,6 @@ struct counter {
     }
 };
 
-using node_t = konsens::node<konsens::memory_storage, counter>;
-
 constexpr std::size_t node_count = 3;
 constexpr std::size_t channel_count = node_count * node_count;
 constexpr std::uint64_t election_ticks = 5;
@@ -68,6 +74,8 @@ constexpr std::uint64_t agreement_round_limit = 1000;
 constexpr std::uint64_t final_read_round_limit = 1000;
 constexpr int usage_exit_code = 2;
 constexpr std::size_t words_of_a_flag = 2;
+constexpr std::size_t mebibyte = std::size_t{1} << 20;
+constexpr std::size_t map_size = 64 * mebibyte;
 
 constexpr std::uint64_t default_clients = 4;
 constexpr std::uint64_t default_increments = 1000;
@@ -87,6 +95,7 @@ struct options {
     std::uint64_t power_loss{default_power_loss};
     bool calls_reconnected{true};
     bool cbor{false};
+    bool lmdb{false};
 };
 
 struct flag {
@@ -106,9 +115,11 @@ constexpr std::array flags{
 
 constexpr std::string_view no_reconnected_flag = "--no-reconnected";
 constexpr std::string_view cbor_flag = "--cbor";
+constexpr std::string_view lmdb_flag = "--lmdb";
 
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
-                                   "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor]";
+                                   "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor] "
+                                   "[--lmdb]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
@@ -133,6 +144,11 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
         }
         if (name == cbor_flag) {
             o.cbor = true;
+            rest = rest.subspan(1);
+            continue;
+        }
+        if (name == lmdb_flag) {
+            o.lmdb = true;
             rest = rest.subspan(1);
             continue;
         }
@@ -179,6 +195,34 @@ std::uint64_t value_of(const std::span<const std::byte> bytes)
     return std::bit_cast<std::uint64_t>(b);
 }
 
+struct memory_cluster {
+    using storage_type = konsens::memory_storage;
+
+    konsens::memory_storage stop(const konsens::node<konsens::memory_storage, counter>& stopped) const
+    {
+        return stopped.get_sequence_paxos().get_internal_storage();
+    }
+
+    std::expected<konsens::memory_storage, std::error_code> start(const std::size_t, konsens::memory_storage kept) const
+    {
+        return kept;
+    }
+};
+
+struct lmdb_cluster {
+    using storage_type = konsens::persistent_storage;
+
+    std::array<std::filesystem::path, node_count> directories;
+    uid_t effective_user_id;
+
+    std::monostate stop(const konsens::node<konsens::persistent_storage, counter>&) const { return {}; }
+
+    std::expected<konsens::persistent_storage, std::error_code> start(const std::size_t i, const std::monostate) const
+    {
+        return konsens::persistent_storage::open(directories.at(i), map_size, effective_user_id);
+    }
+};
+
 konsens::node_config config_of(const konsens::node_id pid)
 {
     std::vector<konsens::node_id> peers;
@@ -193,6 +237,19 @@ konsens::node_config config_of(const konsens::node_id pid)
 bool is_transient(const std::error_code& code)
 {
     return code == konsens::client_errc::recovering || code == konsens::client_errc::retry;
+}
+
+using entry_fields =
+    std::tuple<konsens::entry_kind, std::vector<std::byte>, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t>;
+
+entry_fields fields_of(const konsens::entry& e)
+{
+    return {e.kind, e.payload, e.session, e.request_number, e.client_id, e.pid};
+}
+
+bool compatible(const std::span<const konsens::entry> a, const std::span<const konsens::entry> b)
+{
+    return std::ranges::starts_with(a, b) || std::ranges::starts_with(b, a);
 }
 
 struct failure {
@@ -219,7 +276,11 @@ std::size_t channel_of(const konsens::message& m)
     return static_cast<std::size_t>((from - 1) * node_count + (to - 1));
 }
 
+template <typename Cluster>
 struct cluster {
+    using node_t = konsens::node<typename Cluster::storage_type, counter>;
+
+    Cluster storage;
     std::array<std::optional<node_t>, node_count> nodes;
     std::array<std::optional<konsens::transaction>, node_count> pending;
     std::array<std::deque<std::variant<konsens::message, std::string>>, channel_count> channels;
@@ -338,28 +399,31 @@ struct cluster {
         return {};
     }
 
-    std::expected<void, std::error_code> start(const std::size_t i)
+    std::expected<void, std::error_code> start(const std::size_t i,
+                                               std::expected<typename Cluster::storage_type, std::error_code> opened)
     {
+        if (!opened) [[unlikely]] {
+            return std::unexpected(opened.error());
+        }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), konsens::memory_storage{}, counter{}, nonce);
+        auto n = node_t::with(config_of(i + 1), std::move(*opened), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
         nodes.at(i).emplace(std::move(*n));
-        pending.at(i).reset();
         return {};
     }
 
+    std::expected<void, std::error_code> start(const std::size_t i) { return start(i, storage.start(i, {})); }
+
     std::expected<void, std::error_code> restart(const std::size_t i)
     {
-        auto kept = at(i).get_sequence_paxos().get_internal_storage();
-        nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(kept), counter{}, nonce);
-        if (!n) [[unlikely]] {
-            return std::unexpected(n.error());
-        }
-        nodes.at(i) = std::move(*n);
+        auto kept = storage.stop(at(i));
         pending.at(i).reset();
+        nodes.at(i).reset();
+        if (auto r = start(i, storage.start(i, std::move(kept))); !r) [[unlikely]] {
+            return r;
+        }
         counts.restarts += 1;
         return collect();
     }
@@ -498,9 +562,10 @@ struct call {
     std::uint64_t read_floor;
 };
 
+template <typename Cluster>
 struct stress {
     options given;
-    cluster net;
+    cluster<Cluster> net;
     std::vector<client> clients;
     std::map<std::uint64_t, call> calls;
     std::map<std::pair<std::size_t, std::uint64_t>, std::uint64_t> first_replies;
@@ -510,8 +575,11 @@ struct stress {
     std::uint64_t round;
     std::uint64_t last_progress_round;
     std::vector<konsens::entry> decided_history;
+    std::vector<konsens::ballot> decided_ballot;
     std::array<std::uint64_t, node_count> checked;
     std::array<std::uint64_t, node_count> last_decided;
+    std::set<entry_fields> proposed;
+    std::size_t proposed_checked;
 
     outcome check_decided_logs()
     {
@@ -530,6 +598,7 @@ struct stress {
                 const auto k = checked.at(i);
                 if (k == decided_history.size()) {
                     decided_history.push_back(e);
+                    decided_ballot.push_back(sp.get_accepted_round());
                 } else if (decided_history.at(k) != e) [[unlikely]] {
                     return std::unexpected(failure{"S1: two nodes decided different entries at one index", {}});
                 }
@@ -537,6 +606,97 @@ struct stress {
             }
         }
         return {};
+    }
+
+    outcome check_s2b() const
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            const auto& sp = net.at(i).get_sequence_paxos();
+            if (sp.get_state() != std::pair{konsens::role::leader, konsens::phase::accept}) {
+                continue;
+            }
+            const auto n_leader = sp.get_leader_state().n_leader;
+            const auto last = std::ranges::find_last_if(decided_ballot,
+                                                        [n_leader](const konsens::ballot b) { return b <= n_leader; });
+            const auto held = last.empty() ? 0 : decided_ballot.size() - last.size() + 1;
+            const auto from = checked.at(i);
+            if (from >= held) {
+                continue;
+            }
+            const auto log = sp.get_internal_storage().get_entries(from, held);
+            if (!log) [[unlikely]] {
+                return std::unexpected(failure{"read the log", log.error()});
+            }
+            if (log->size() != held - from ||
+                !std::ranges::equal(*log, std::span(decided_history).subspan(from, held - from))) [[unlikely]] {
+                return std::unexpected(failure{"S2b: a leader misses a decided entry", {}});
+            }
+        }
+        return {};
+    }
+
+    outcome check_s3()
+    {
+        for (; proposed_checked < decided_history.size(); ++proposed_checked) {
+            if (!proposed.contains(fields_of(decided_history.at(proposed_checked)))) [[unlikely]] {
+                return std::unexpected(failure{"S3: a decided entry was not proposed", {}});
+            }
+        }
+        return {};
+    }
+
+    std::expected<std::vector<konsens::entry>, std::error_code> read_log_suffix(const std::size_t i,
+                                                                                const std::uint64_t from) const
+    {
+        const auto& s = net.at(i).get_sequence_paxos().get_internal_storage();
+        const auto len = s.get_log_len();
+        if (!len) [[unlikely]] {
+            return std::unexpected(len.error());
+        }
+        if (*len < from) [[unlikely]] {
+            return std::unexpected(std::make_error_code(std::errc::result_out_of_range));
+        }
+        return s.get_entries(from, *len);
+    }
+
+    outcome check_s5() const
+    {
+        for (std::size_t i = 0; i < node_count; ++i) {
+            for (std::size_t j = i + 1; j < node_count; ++j) {
+                const auto n_accepted = net.at(i).get_sequence_paxos().get_accepted_round();
+                if (n_accepted == konsens::ballot{} ||
+                    n_accepted != net.at(j).get_sequence_paxos().get_accepted_round()) {
+                    continue;
+                }
+                const auto from = std::min(checked.at(i), checked.at(j));
+                const auto a = read_log_suffix(i, from);
+                if (!a) [[unlikely]] {
+                    return std::unexpected(failure{"read the log", a.error()});
+                }
+                const auto b = read_log_suffix(j, from);
+                if (!b) [[unlikely]] {
+                    return std::unexpected(failure{"read the log", b.error()});
+                }
+                if (!compatible(*a, *b)) [[unlikely]] {
+                    return std::unexpected(failure{"S5: two logs with one accepted round differ", {}});
+                }
+            }
+        }
+        return {};
+    }
+
+    outcome check_invariants()
+    {
+        if (auto c = check_decided_logs(); !c) [[unlikely]] {
+            return c;
+        }
+        if (auto c = check_s2b(); !c) [[unlikely]] {
+            return c;
+        }
+        if (auto c = check_s3(); !c) [[unlikely]] {
+            return c;
+        }
+        return check_s5();
     }
 
     outcome send_due_calls()
@@ -552,6 +712,11 @@ struct stress {
             c.sent_round = round;
             c.waiting = true;
             const auto to = net.pick_node();
+            if (c.at == step::registering) {
+                proposed.insert(fields_of({konsens::entry_kind::register_client, {}, 0, 0, id, to + 1}));
+            } else if (c.at == step::incrementing) {
+                proposed.insert(fields_of({konsens::entry_kind::client_request, {}, c.session, c.request_number}));
+            }
             auto& n = net.at(to);
             const auto sent = [&n, &c, id] {
                 if (c.at == step::registering) {
@@ -651,7 +816,7 @@ struct stress {
             return std::unexpected(failure{"run a round", r.error()});
         }
         round += 1;
-        if (auto c = check_decided_logs(); !c) [[unlikely]] {
+        if (auto c = check_invariants(); !c) [[unlikely]] {
             return c;
         }
         return take_replies();
@@ -724,7 +889,7 @@ struct stress {
                 return std::unexpected(failure{"run a round", ran.error()});
             }
             round += 1;
-            if (auto c = check_decided_logs(); !c) [[unlikely]] {
+            if (auto c = check_invariants(); !c) [[unlikely]] {
                 return std::unexpected(c.error());
             }
             std::optional<std::uint64_t> value;
@@ -776,34 +941,39 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
     return static_cast<std::uint64_t>(std::ranges::count_if(copies, [](const auto& c) { return c.second > 1; }));
 }
 
-int run(const options& given)
+template <typename Cluster>
+int run(const options& given, Cluster storage)
 {
-    stress s{given,
-             cluster{{},
-                     {},
-                     {},
-                     {},
-                     std::mt19937_64{given.seed},
-                     given.loss,
-                     given.duplicate,
-                     0,
-                     {},
-                     {},
-                     {},
-                     given.calls_reconnected,
-                     given.cbor,
-                     {}},
-             {},
-             {},
-             {},
-             0,
-             0,
-             1,
-             0,
-             0,
-             {},
-             {},
-             {}};
+    stress<Cluster> s{given,
+                      cluster<Cluster>{std::move(storage),
+                                       {},
+                                       {},
+                                       {},
+                                       {},
+                                       std::mt19937_64{given.seed},
+                                       given.loss,
+                                       given.duplicate,
+                                       0,
+                                       {},
+                                       {},
+                                       {},
+                                       given.calls_reconnected,
+                                       given.cbor,
+                                       {}},
+                      {},
+                      {},
+                      {},
+                      0,
+                      0,
+                      1,
+                      0,
+                      0,
+                      {},
+                      {},
+                      {},
+                      {},
+                      {},
+                      0};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
             return fail(given.seed, {"start the nodes", r.error()});
@@ -886,6 +1056,16 @@ int run(const options& given)
     return EXIT_SUCCESS;
 }
 
+int run_on_lmdb(const options& given)
+{
+    temporary_directories temporary;
+    lmdb_cluster storage{{}, geteuid()};
+    for (auto& d : storage.directories) {
+        d = temporary.create();
+    }
+    return run(given, std::move(storage));
+}
+
 }
 
 int main(const int argc, char** const argv)
@@ -896,7 +1076,7 @@ int main(const int argc, char** const argv)
             std::cerr << std::format("{}.\n{}", given.error(), usage) << '\n';
             return usage_exit_code;
         }
-        return run(*given);
+        return given->lmdb ? run_on_lmdb(*given) : run(*given, memory_cluster{});
     } catch (const std::exception& e) {
         std::cerr << std::format("The program ended with an exception: {}", e.what()) << '\n';
         return EXIT_FAILURE;
