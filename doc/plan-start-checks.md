@@ -4,7 +4,10 @@ Source: doc/storage-fault-matrix.md on branch storage-fault-matrix
 (658c93b), rows 2.6 and 2.8, proposals 2 and 3. The matrix proposed
 `malformed_record` for proposal 3; this plan proposes a new code. The
 owner decided the open points of reviews 3 and 4 on 2026-10-24; the
-names stay provisional (section 6).
+names stay provisional (section 6). The owner decided on 2026-10-24
+14:44 that LMDB is the only source of data. The fields that
+sequence_paxos keeps in memory (section 1) contradict that rule, so
+this plan is revised after the plan of that change.
 The owner decided on 2026-10-24 that a full map ends the node and that
 rule R comes with the hidden identity; both are outside this plan.
 
@@ -185,11 +188,11 @@ Line numbers are at commit 4c57d44.
    After a lost last key, a recovery answer that is not the primary
    (`:890`) reads no log and sends the CRC of the entry before.
    `find_hardware_fault` (`:962-976`) then names a healthy node.
-   The node reads `get_entries(accepted_idx_ - 1, accepted_idx_)`
-   through the check of this item and computes the CRC; with
-   `accepted_idx_` 0 there is no entry. The storage concept
-   (`storage.hpp:128`) does not change (2026-10-24 14:40: the owner
-   left the choice to the session; the recommended form is taken).
+   Open. The owner decided on 2026-10-24 14:44 that LMDB is the only
+   source of data and that no answer comes from a copy in memory. Then
+   the length and the CRC come from one read transaction, and this
+   case does not exist. That change has its own plan; items 2.5 and
+   2.7 are revised after it.
 8. The recovery checks that the log it receives from the primary has
    the length of the accepted index of the primary (`l->accepted_idx`,
    `complete_recovery` at `:922`). When it differs, the node keeps that
