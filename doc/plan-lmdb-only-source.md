@@ -85,7 +85,9 @@ Line numbers are at commit 06a52bf.
   `mdb_env_write_meta`).
 - LMDB_1.0.2 has page checksums (`mdb_env_set_checksum`, `lmdb.h:1118`)
   and page encryption (`mdb_env_set_encrypt`, `lmdb.h:1108`). The plan
-  does not use them yet; the owner decides (section 7). LMDB checks the
+  does not use them: the owner decided on 2026-10-16 against
+  `mdb_env_set_checksum` and `MDB_REMAP_CHUNKS`, because they break the
+  views into the map. LMDB checks the
   checksum of a page when the page first enters its own page cache
   (`mdb_rpage_encsum`, `mdb.c:6860-6885`), not on each read. In one
   bench, the checksum added no cost above the noise floor of 17.1 % to a
@@ -213,7 +215,14 @@ Line numbers are at commit 06a52bf.
    LMDB writes a changed page to a new place and reuses freed pages, so
    an older version of a page can stand on the disk. Model round 5
    checks both kinds. At a start, the recovery of VR Revisited covers
-   them; while the node runs, nothing does yet (section 7).
+   them; while the node runs, item 6 covers part of them.
+6. Each node keeps, for each peer, the highest promise and the highest
+   accepted index that the peer reported, in memory. A message of the
+   peer with a lower value makes the node refuse it and report the
+   proof. This finds only a step back that a peer saw. The README says
+   this, and recommends a drive with power-loss protection or with its
+   write cache off (owner, 2026-10-24 19:19). The model of this check is
+   round 7.
 
 ### 2.4 The read-back and the vote
 
@@ -405,17 +414,17 @@ decides the names.
 ## 7. Open questions for the owner
 
 1. Decided, 2026-10-24 19:19: one meta record with one CRC (2.3 item 2).
-2. A `stale_meta` or a `rollback` while the node runs (2.3 item 5): no
-   local check finds it. Round 5 shows what it breaks.
+2. Decided, 2026-10-24 19:19: for a `stale_meta` or a `rollback` while
+   the node runs (2.3 item 5), the README warns, and the peers check
+   (2.3 item 6).
 3. A node that stopped voting while it ran (2.1 item 5): it stays
    stopped until the operator acts, or it starts the recovery of VR
    Revisited from a peer.
 4. A page that stays in the cache after the page-out (2.4 item 1): the
    node tries again, or does not report.
 5. The effects of a work whose entry is cut (2.5 item 4).
-6. The page checksums of LMDB 1.0 (`mdb_env_set_checksum`): use them in
-   place of the CRC of each entry, beside it, or not at all. With them,
-   LMDB copies each page out of the map (section 1).
+6. Withdrawn: the page checksums of LMDB were decided against on
+   2026-10-16 (section 1).
 7. The one pointer subtraction of 2.4 item 6.
 8. The name of the storage transaction type (2.1 item 7).
 
