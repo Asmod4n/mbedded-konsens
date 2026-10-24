@@ -125,7 +125,7 @@ are therefore outside this matrix.
 | Assumptions | CRC32C detects the change. LMDB reads its B-tree pages with no check. |
 | Tests | test_persistent_storage: "a flipped byte in a stored entry is a CRC mismatch at its index". test_sequence_paxos: "a different CRC32C of one last entry stops voting with the evidence", and the flipped last entry under recovery. test_device_faults: a failed read gives SIGBUS. |
 | Model | Not modeled. plan.md counts it as a `Wipe` of the node. |
-| Gap | The check runs only when an entry is read. An entry that no one reads stays damaged with no report until a scrub (not built). The B-tree pages have no check. The code does not call `mdb_env_set_checksum` (lmdb.h:1110). |
+| Gap | The check runs only when an entry is read. An entry that no one reads stays damaged with no report until a scrub (not built). The B-tree pages have no check. LMDB page checksums are not taken (section 5, item 4). |
 
 ### 2.8 Metadata is damaged or missing
 
@@ -253,12 +253,11 @@ These are proposals. The owner decides each one.
    is one cursor read at the start. It must be measured.
 3. A check of continuity in `read_entries` (2.6): each index equals the
    one before plus one. Else the read gives `malformed_record`.
-4. LMDB page checksums (2.7). They are under MDB_RPAGE_CACHE
-   (lmdb.h:192-194, :1096-1119). They change the file format, so the
-   decisions on the data version and the converter apply. A stale page
-   has its own valid checksum, so they do not detect a lost write.
-   Whether MDB_BAD_CHECKSUM (lmdb.h:523) replaces SIGBUS is not
-   checked. The cost must be measured.
+4. LMDB page checksums (2.7): not taken. The owner rejected
+   mdb_env_set_checksum and MDB_REMAP_CHUNKS on 2026-10-16. LMDB checks
+   a page checksum only with MDB_REMAP_CHUNKS, and then the caller must
+   copy each value after a get (mdb.c:7796-7798). Measurement:
+   bench/results/2026-10-24-102121Z.txt on branch page-checksums.
 5. A chain of CRCs (section 4) also for 2.6.
 6. A complete run of each row with "no complete run", on the current
    model, after the owner chooses the bounds.
