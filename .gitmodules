@@ -4,3 +4,6 @@
 [submodule "deps/crc32c"]
 	path = deps/crc32c
 	url = https://github.com/google/crc32c
+[submodule "deps/lmdb"]
+	path = deps/lmdb
+	url = https://github.com/LMDB/lmdb
