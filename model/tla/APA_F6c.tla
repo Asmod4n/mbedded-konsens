@@ -25,6 +25,8 @@ OVERRIDE_PowerLoss == FALSE
 OVERRIDE_Mutation == "none"
 OVERRIDE_MaxStorageFault == 0
 OVERRIDE_StartChecks == TRUE
+OVERRIDE_RunningFaults == FALSE
+OVERRIDE_StepChecks == TRUE
 OVERRIDE_StorageFaultKind == {}
 OVERRIDE_ClientSessions == FALSE
 OVERRIDE_MaxClientSend == 0

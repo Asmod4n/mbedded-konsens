@@ -74,6 +74,10 @@ CONSTANTS
   MaxStorageFault,
   \* @type: Bool;
   StartChecks,
+  \* @type: Bool;
+  RunningFaults,
+  \* @type: Bool;
+  StepChecks,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -1482,6 +1486,47 @@ StorageFault(i, kind) ==
                               elections, proposed, rolled_back, client, reconfig>>
                /\ GhostUpdate
 
+\* RunningStorageFault, RunningFaults, StepChecks (doc/plan-lmdb-only-source.md).
+\* The durable state of a running node changes. The node holds no copy of
+\* it, so its next step reads the damaged state (owner, 2026-10-24 14:44:
+\* LMDB is the only source). A missing key at the last position is a lost
+\* last entry: LMDB drops the key and the count, so the stored log stays
+\* consistent and one entry shorter. With StepChecks, the read of the next
+\* step finds what the checks find, and the node leaves running, as
+\* stop_voting does. Every other damage is the new state of the node.
+\* @type: (Int, Str) => Bool;
+RunningStorageFault(i, kind) ==
+  /\ RunningFaults
+  /\ i \in Nodes
+  /\ kind \in StorageFaultKind
+  /\ storage_faults < MaxStorageFault
+  /\ storage_faults' = storage_faults + 1
+  /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
+       /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
+       /\ kind # "missing_entry" => k = 0
+       /\ IF StepChecks /\ (\/ kind = "missing_entry" /\ k < Len(log[i])
+                            \/ ChecksFind(d))
+          THEN /\ running' = running \ {i}
+               /\ refused' = refused \cup {i}
+               /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
+                                                    THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
+                                                    ELSE stage1_ghost[j]]
+               /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
+                              timeouts, elections, ghost, recovery, rollback, client, readvars,
+                              buffered_stopsign, first_log, reconfigurations, force_single,
+                              read_only, deactivated, halts, read_only_entries, build_source,
+                              leasevars, leaseghost>>
+          ELSE /\ promise' = [promise EXCEPT ![i] = d.promise]
+               /\ n_accepted' = [n_accepted EXCEPT ![i] = d.n_accepted]
+               /\ log' = [log EXCEPT ![i] = d.log]
+               /\ decided_idx' = [decided_idx EXCEPT ![i] = d.decided_idx]
+               /\ accepted_idx' = [accepted_idx EXCEPT ![i] = Len(d.log)]
+               /\ UNCHANGED <<refused, role, phase, current_seq_num, cached_promise_message,
+                              buffered_proposals, leader_state, chan, wiped, crashes, wipes,
+                              losses, duplicates, timeouts, elections, proposed, rolled_back,
+                              recovery, client, readvars, buffered_stopsign, reconfig, leasevars>>
+               /\ GhostUpdate
+
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
 \* resend_messages_leader, follower.rs:240-282 resend_messages_follower.
 \* util.rs:211-222 get_preparable_peers.
@@ -2121,6 +2166,7 @@ Next ==
   \/ \E s \in running, k \in Nodes : SendDeactivated(s, k)
   \/ \E i \in running : Halt(i)
   \/ \E i \in running, kind \in StorageFaultKind : StorageFault(i, kind)
+  \/ \E i \in running, kind \in StorageFaultKind : RunningStorageFault(i, kind)
   \/ \E i \in Nodes \ running : Resume(i)
   \/ Tick
   \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
@@ -2213,6 +2259,8 @@ ASSUME MaxReadOnly \in Nat
 ASSUME MaxHalt \in Nat
 ASSUME MaxStorageFault \in Nat
 ASSUME StartChecks \in BOOLEAN
+ASSUME RunningFaults \in BOOLEAN
+ASSUME StepChecks \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided"}
 ASSUME StaleReadNode \in BOOLEAN
