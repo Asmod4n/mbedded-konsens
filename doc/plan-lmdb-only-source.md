@@ -409,6 +409,9 @@ start-checks plan ("no change to the file format") changes with this.
 - Do `stale_meta` and `rollback` of a running node break S1 to S4 with
   every check on? Round 5.
 - Does a resend (`MaxTimeout = 1`) change round 4? Round 5.
+- Do the high-water mark and the repair from a peer keep S1 to S4
+  against `stale_meta` and `rollback`? Round 8: no violation in five
+  simulations of 15 min (model/results/20261024T195900Z-lmdb-only-source-runs-8.md).
 
 ### 3.3 Configurations and runs
 
