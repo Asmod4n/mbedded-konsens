@@ -167,7 +167,10 @@ src` is empty, so they apply to the head of this branch.
    its log from a peer (2.4) and runs the recovery of VR Revisited, as
    at a start (owner, 2026-10-24 19:21). The model of this is round 8.
 6. A read that returns `MDB_BAD_CHECKSUM` is a damage of item 5
-   (owner, 2026-10-24 21:27). Every other read error of LMDB throws
+   (owner, 2026-10-24 21:27). The transaction is then aborted: LMDB
+   gives `MDB_BAD_TXN` to every later call in it. This is the form that
+   LMDB gives; the test of 2026-10-24 shows it (bench/results/
+   2026-10-24-213531Z-lmdb-bad-checksum-repair.txt). Every other read error of LMDB throws
    a type derived from `std::system_error` (owner, 2026-10-24 14:39).
 7. `cached_promise_message_` (`:728`) is built again from LMDB on a
    resend (`:440`), not kept.
@@ -269,7 +272,9 @@ src` is empty, so they apply to the head of this branch.
 
 ### 2.4 The repair from a peer
 
-The owner chose this form, 2026-10-24 21:27.
+The owner chose this form, 2026-10-24 21:27. Items 1 to 7 hold for a
+damage in pages that LMDB reads without error, such as a chain CRC that
+differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
 
 1. A node that found a damage sends a recovery request, as at a start.
 2. A peer that votes and does not recover answers with its log length
@@ -297,6 +302,23 @@ The owner chose this form, 2026-10-24 21:27.
    lost network is no damage: the recovery after each start has no
    limit. Not decided: whether a damage that the start checks find
    counts too.
+9. A write transaction cannot change or delete a key on a page with a
+   wrong checksum: it reads the page and gets `MDB_BAD_CHECKSUM`. A
+   wrong branch page hides its whole subtree, and `mdb_drop` fails on
+   it (test of 2026-10-24). So after `MDB_BAD_CHECKSUM` the node
+   replaces the whole environment with the copy that LMDB makes: the
+   peer runs `mdb_env_copyfd2` without `MDB_CP_COMPACT` into the
+   connection. The requester writes it to a new file, syncs it, reads
+   every entry of it through LMDB and runs the step check, and then
+   renames it over the old file. For the state environment the peer
+   sends that copy first and the copy of the log after it, so the
+   applied index of the copy is not above its decided index. The copy
+   carries every page, so it is as large as the file of the peer
+   (137 MB for 100000 entries of 1 KiB, against 0.7 MB for the missing
+   range alone; bench/results/2026-10-24-231534Z-lmdb-repair-and-
+   pipeline.txt). `MDB_CP_COMPACT` is not used: with page checksums its
+   copy does not open (`mdb.c:11555-11566` writes no checksum size to
+   page 0, `:5645-5651` checks it).
 
 ### 2.5 The vote
 
@@ -335,12 +357,22 @@ The owner chose this form, 2026-10-24 21:27.
    they do not commit. The entry carries the result and its CRC. A
    user error aborts only a nested transaction, and the entry records
    the error as its result.
-5. The leader proposes the next batch only after the decide of the
-   batch before it, so every entry runs on the committed state (owner,
-   2026-10-24 21:27). A step still takes all the work that waits.
+5. The leader proposes a batch before the decide of the batches before
+   it. Each node runs the entries in the order of the log, on one write
+   transaction of the state that holds the effects of the entries before
+   them. When a decide covers only part of the batches that ran, the
+   node aborts that transaction, runs the decided entries again in a
+   new one, commits it, and runs the entries that are not decided again
+   on top of it. A step still takes all the work that waits. Of three
+   forms this one gave the lowest latency at the same throughput
+   (median 21.7 ms against 33.5 ms for one batch in flight, at 20 ms
+   round trip and 10000 requests/s, g++ 16 and clang++ 22; at 1 ms round
+   trip 2.2 ms against 2.9 ms; bench/results/2026-10-24-231534Z-lmdb-
+   repair-and-pipeline.txt). The cost of the run again grows with the
+   cost of the work of an entry; the bench ran one counter put.
 6. The client gets the result that stands in the decided entry. The run
-   after the decide gives the same result, because the entry ran on the
-   same state.
+   after the decide gives the same result, because the entry runs on the
+   same state: the state after the entries before it in the log.
 7. A later `accept_sync` that cuts an entry (`sequence_paxos.hpp:804-810`)
    leaves no effect. The node that sent the work sees that the leader is
    gone and sends the work to the new leader again; the session and the
@@ -416,10 +448,12 @@ this.
   repairs of 2.4 item 8, and its limit 1. `OperatorAllowsRepair(i)`
   resets the count. The cover `NoRepairLimitReached` must fail with two
   faults.
-- `StateInLmdb` (round 9): the client table and the applied index stand
+- `StateInLmdb` (round 12): the client table and the applied index stand
   in the durable tuple of a node, and the state changes only at a
-  decide. The details of this action follow the answer to open
-  question 11.
+  decide. Up to `MaxInFlight` batches run before their decide (2.6
+  item 5). The model checks that the result in a decided entry equals
+  the result of its run after the decide, on every node, also when a
+  leader change cuts batches that ran.
 
 ### 3.2 Questions for the model
 
@@ -531,9 +565,14 @@ there. The owner decides the names.
    repair fixes (2.1 item 6).
 10. Decided, 2026-10-24 21:27: the repair takes only the entries that
     differ (2.4). Decided, 20:55 to 20:57: one automatic repair, then
-    the operator (2.4 item 8).
-11. Decided, 2026-10-24 21:27: one batch in flight; every entry runs on
-    the committed state (2.6 item 5).
+    the operator (2.4 item 8). After `MDB_BAD_CHECKSUM`, the plain
+    copy of LMDB replaces the whole file (2.4 item 9).
+11. Decided after the bench of 2026-10-24 23:15: batches in flight
+    before the decide, with a run again after a partial decide (2.6
+    item 5).
 
-The owner, 21:27, left these four to the session ("solve the questions
-with LMDB"); the session took its proposal in each case.
+The owner, 21:27 and 21:30, left these four to the session: take what
+LMDB gives, and where LMDB gives no direct form, work out three
+proposals and test which is best. Items 9 and 10 take the form of LMDB.
+For item 11 LMDB gives no form; three forms were measured. Item 8
+waits for round 11 of the model.
