@@ -163,3 +163,28 @@ Times of ctest, one run each:
 The ASan figure before comes from six ctest logs of this session on
 memory_storage. test_simulation_clients takes the longest part: 16.0 s
 in Release, 26.1 s under ASan.
+
+## 7. Result of step (b)
+
+The owner chose on 2026-10-24 that the node tests with a write fault in
+the middle of a run use error_fs, switched through a control file.
+
+- test/lmdb_storage.hpp opens each storage of a unit test in a
+  directory of its own below one directory of the program, and copies a
+  storage with persistent_storage::copy.
+- test_sequence_paxos: a failed write is a full LMDB map from the start,
+  and a failed read is a flipped byte of the last entry in data.mdb.
+  failing_storage is gone.
+- test_persistent_storage: the CRC32C of each of the five kinds is
+  checked against a record written by hand from the format and against
+  compute_entry_crc.
+- The cluster of test_group_commit is test/node_cluster.hpp, on LMDB. Its
+  two tests of a failed write and a failed sync moved to
+  test_device_faults: error_fs fails each write of data.mdb with ENOSPC
+  or each fsync with EIO after a write to /.error_fs. A failed write at
+  the commit is a sync_error with no_space_on_device, a write_error.
+- Mutations, run once: a map that does not fill and no flipped byte make
+  the three tests of test_sequence_paxos fail; a control file that sets
+  no fault makes both node tests of test_device_faults fail.
+- g++ 16, image localhost/cxx-matrix with libfuse3-dev and fuse3,
+  KONSENS_FUSE_TESTS=ON: 20 of 20 tests green in Release and with ASan.

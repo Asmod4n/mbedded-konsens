@@ -3,6 +3,7 @@
 #include <array>
 #include <cerrno>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -77,6 +78,16 @@ public:
         server_ = 0;
         REQUIRE(WIFEXITED(status));
         REQUIRE(WEXITSTATUS(status) == 0);
+    }
+
+    // The file /.error_fs of the mount sets the faults while LMDB keeps its
+    // files open. The write returns after error_fs has set them.
+    void set_faults(const std::string& faults) const
+    {
+        std::ofstream control(mount_point_ / ".error_fs");
+        control << faults;
+        control.close();
+        REQUIRE_FALSE(control.fail());
     }
 
 private:

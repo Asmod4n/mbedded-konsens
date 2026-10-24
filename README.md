@@ -264,7 +264,8 @@ All tests pass with a tmpfs of 64 MiB. A build with AddressSanitizer runs
 200 seeds of each simulation instead of 2000.
 
 `test_device_faults` runs LMDB on a FUSE file system that fails each
-fsync, or the reads of one range of the data file. It needs the packages
+fsync, each write of the data file, or the reads of one range of the
+data file. A storage and a cluster of three nodes run on it. It needs the packages
 libfuse3-dev and fuse3, the device /dev/fuse and the right to mount. The
 option turns it on:
 

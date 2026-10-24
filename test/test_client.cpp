@@ -16,17 +16,17 @@
 
 #include "batches.hpp"
 #include "konsens/client.hpp"
-#include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "lmdb_storage.hpp"
 
 namespace {
 
 using konsens::client_errc;
 using konsens::entry_kind;
-using konsens::memory_storage;
 using konsens::message;
 using konsens::node_id;
 using konsens::paxos_message;
+using konsens::persistent_storage;
 using konsens::phase;
 using konsens::role;
 
@@ -47,7 +47,7 @@ struct concatenation {
 
 static_assert(konsens::state_machine<concatenation>);
 
-using node_t = konsens::node<memory_storage, concatenation>;
+using node_t = konsens::node<persistent_storage, concatenation>;
 
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
@@ -136,7 +136,7 @@ cluster elected()
 {
     cluster c;
     for (node_id p = 1; p <= node_count; ++p) {
-        c.nodes.push_back(*node_t::with(config_of(p), memory_storage{}, concatenation{}, 0));
+        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), concatenation{}, 0));
     }
     c.run(rounds, once);
     REQUIRE(c.at(3).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
@@ -165,9 +165,9 @@ TEST_CASE("a start applies the decided log from index 0")
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
-    const auto kept = c.at(1).get_sequence_paxos().get_internal_storage();
+    auto kept = lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
     REQUIRE(c.at(1).get_applied_idx() == 2);
-    auto n = *node_t::with(config_of(1), kept, concatenation{}, 0);
+    auto n = *node_t::with(config_of(1), std::move(kept), concatenation{}, 0);
     CHECK(n.get_applied_idx() == 2);
     CHECK(n.get_state_machine().value == bytes_of("a"));
     REQUIRE(n.get_client_table().contains(s));
