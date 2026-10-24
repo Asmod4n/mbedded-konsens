@@ -14,7 +14,7 @@ CONSTANTS
   \*   accepted_idx: Int, log_sync: Seq($logSync), seq_num: $seqNum,
   \*   entries: Seq($entry), nonce: Int, promise: Int, primary: Bool,
   \*   log: Seq($entry), read: Int, id: Int, reads: Set(Int), read_index: Int,
-  \*   recovering: Bool};
+  \*   recovering: Bool, last: Seq($entry)};
   \* @typeAlias: promiseMeta = {state: Str, n_accepted: Int, accepted_idx: Int, decided_idx: Int};
   \* @typeAlias: maxMeta = {n_accepted: Int, accepted_idx: Int, decided_idx: Int, pid: Int};
   \* @typeAlias: leaderState = {n_leader: Int, promises_meta: Int -> $promiseMeta,
@@ -78,6 +78,8 @@ CONSTANTS
   RunningFaults,
   \* @type: Bool;
   StepChecks,
+  \* @type: Bool;
+  VerifyCrc,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -308,7 +310,21 @@ EmptyMessage ==
   [type |-> "", n |-> DefaultBallot, decided_idx |-> 0, n_accepted |-> DefaultBallot,
    accepted_idx |-> 0, log_sync |-> <<>>, seq_num |-> DefaultSeq, entries |-> <<>>,
    nonce |-> 0, promise |-> DefaultBallot, primary |-> FALSE, log |-> <<>>,
-   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0, recovering |-> FALSE]
+   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0, recovering |-> FALSE, last |-> <<>>]
+
+\* The log up to position k. It stands for the digest of the state up to k,
+\* as each node reads it back after the commit (owner, 2026-10-24 15:30 to
+\* 15:35, doc/plan-lmdb-only-source.md). A log shorter than k gives itself,
+\* which equals no prefix of length k.
+\* @type: (Seq($entry), Int) => Seq($entry);
+PrefixAt(l, k) == IF k <= Len(l) THEN SubSeq(l, 1, k) ELSE l
+
+\* With VerifyCrc, a node raises its decided index to d only when its own log
+\* up to d equals the digest in the message. Else it keeps the old index.
+\* @type: (Seq($entry), Int, Int, $msg) => Int;
+CheckedDecided(lg, old, d, m) ==
+  IF VerifyCrc /\ d > old /\ ~(d <= Len(m.last) /\ PrefixAt(lg, d) = SubSeq(m.last, 1, d))
+  THEN old ELSE d
 
 \* util.rs:96-108 LeaderState::with
 \* @type: Int => $leaderState;
@@ -415,7 +431,7 @@ AccSyncMsg(ls, to, lg, dec) ==
                ELSE IF fm.n_accepted = mm.n_accepted THEN Min(mm.accepted_idx, fm.accepted_idx)
                ELSE fm.decided_idx
   IN [EmptyMessage EXCEPT !.type = "AcceptSync", !.n = ls.n_leader,
-      !.seq_num = AccSyncSeq(ls, to), !.decided_idx = dec,
+      !.seq_num = AccSyncSeq(ls, to), !.decided_idx = dec, !.last = PrefixAt(lg, dec),
       !.log_sync = <<[suffix |-> Suffix(lg, valid), sync_idx |-> valid]>>]
 \* @type: ($leaderState, Set(Int)) => $leaderState;
 WithAccSyncSeqs(ls, fs) ==
@@ -639,7 +655,8 @@ AcceptEntriesLeader(i, es, c) ==
      /\ chan' = Send(c, i, [k \in fs |->
                   <<[EmptyMessage EXCEPT !.type = "AcceptDecide", !.n = ls1.n_leader,
                      !.seq_num = ls1.follower_seq_nums[k],
-                     !.decided_idx = decided_idx[i], !.entries = es]>>])
+                     !.decided_idx = decided_idx[i], !.entries = es,
+                     !.last = PrefixAt(log[i], decided_idx[i])]>>])
 
 \* @type: (Int, $seqNum) => $msg;
 AcceptStopSignMsg(n, s) == [EmptyMessage EXCEPT !.type = "AcceptStopSign", !.n = n, !.seq_num = s]
@@ -808,7 +825,8 @@ HandleAcceptSync(i, j, m, c) ==
            lg  == AppendOnPrefix(log[i], s.sync_idx, s.suffix)
            fwd == bp # <<>> /\ ld > 0 /\ ld # i /\ ~(i \in Nodes /\ HasStopSign(lg))
            acc == [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                       !.accepted_idx = s.sync_idx + Len(s.suffix)]
+                                       !.accepted_idx = s.sync_idx + Len(s.suffix),
+                                       !.last = PrefixAt(lg, s.sync_idx + Len(s.suffix))]
            out == [k \in (IF fwd THEN {ld} ELSE {}) \cup (IF Votes(i) THEN {j} ELSE {}) |->
                      (IF fwd /\ k = ld
                       THEN <<[EmptyMessage EXCEPT !.type = "ProposalForward", !.entries = bp]>>
@@ -816,7 +834,8 @@ HandleAcceptSync(i, j, m, c) ==
                      \o (IF Votes(i) /\ k = j THEN <<acc>> ELSE <<>>)]
        IN /\ n_accepted' = [n_accepted EXCEPT ![i] = m.n]
           /\ decided_idx' = [decided_idx EXCEPT ![i] =
-                               IF DecidedIdxMonotone THEN Max(@, m.decided_idx) ELSE m.decided_idx]
+                               CheckedDecided(lg, @, IF DecidedIdxMonotone THEN Max(@, m.decided_idx)
+                                                       ELSE m.decided_idx, m)]
           /\ log' = [log EXCEPT ![i] = lg]
           /\ accepted_idx' = [accepted_idx EXCEPT ![i] = s.sync_idx + Len(s.suffix)]
           /\ buffered_proposals' = IF fwd THEN [buffered_proposals EXCEPT ![i] = <<>>]
@@ -853,11 +872,13 @@ HandleAcceptDecide(i, j, m, c) ==
                 rep == m.entries # <<>> \/ ud.flushed
             IN /\ log' = [log EXCEPT ![i] = @ \o m.entries]
                /\ accepted_idx' = [accepted_idx EXCEPT ![i] = acc]
-               /\ decided_idx' = [decided_idx EXCEPT ![i] = ud.dec]
+               /\ decided_idx' = [decided_idx EXCEPT ![i] =
+                                    CheckedDecided(log[i] \o m.entries, @, ud.dec, m)]
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IF rep THEN IfVotes(i, BallotPid(m.n),
                               [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                                   !.accepted_idx = acc])
+                                                   !.accepted_idx = acc,
+                                                   !.last = PrefixAt(log[i] \o m.entries, acc)])
                                      ELSE NoOut)
                /\ UNCHANGED <<promise, n_accepted, role, phase,
                               cached_promise_message, buffered_proposals, leader_state>>
@@ -877,11 +898,12 @@ HandleDecide(i, j, m, c) ==
   ELSE LET st == CheckMsgStatus(current_seq_num[i], m.seq_num) IN
        IF st = "Expected"
        THEN LET ud == UpdateDecided(decided_idx[i], accepted_idx[i], m.decided_idx)
-            IN /\ decided_idx' = [decided_idx EXCEPT ![i] = ud.dec]
+            IN /\ decided_idx' = [decided_idx EXCEPT ![i] = CheckedDecided(log[i], @, ud.dec, m)]
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IF ud.flushed THEN IfVotes(i, BallotPid(m.n),
                               [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                                   !.accepted_idx = accepted_idx[i]])
+                                                   !.accepted_idx = accepted_idx[i],
+                                                   !.last = PrefixAt(log[i], accepted_idx[i])])
                                      ELSE NoOut)
                /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx,
                               cached_promise_message, buffered_proposals, leader_state>>
@@ -905,7 +927,8 @@ HandleAcceptStopSign(i, j, m, c) ==
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IfVotes(i, BallotPid(m.n),
                               [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                                   !.accepted_idx = Len(lg)]))
+                                                   !.accepted_idx = Len(lg),
+                                                   !.last = PrefixAt(lg, Len(lg))]))
                /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase,
                               cached_promise_message, buffered_proposals, leader_state>>
        ELSE IF st = "DroppedPreceding"
@@ -932,7 +955,8 @@ HandleForwardStopSign(i, j, m, c) ==
 \* leader.rs:316-345 handle_accepted, leader.rs:240-255 send_decide
 \* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleAccepted(i, j, m, c) ==
-  IF m.n = leader_state[i].n_leader /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  IF /\ m.n = leader_state[i].n_leader /\ role[i] = "Leader" /\ phase[i] = "Accept"
+     /\ VerifyCrc => PrefixAt(log[i], m.accepted_idx) = m.last
   THEN LET ls1 == [leader_state[i] EXCEPT !.accepted_indexes[j] = m.accepted_idx] IN
        IF /\ m.accepted_idx > decided_idx[i]
           /\ IsChosen(ls1, m.accepted_idx)
@@ -944,7 +968,8 @@ HandleAccepted(i, j, m, c) ==
                /\ chan' = Send(c, i, [k \in fs |->
                             <<[EmptyMessage EXCEPT !.type = "Decide", !.n = ls2.n_leader,
                                !.seq_num = ls2.follower_seq_nums[k],
-                               !.decided_idx = m.accepted_idx]>>])
+                               !.decided_idx = m.accepted_idx,
+                               !.last = PrefixAt(log[i], m.accepted_idx)]>>])
                /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx,
                               current_seq_num, cached_promise_message, buffered_proposals>>
        ELSE /\ leader_state' = [leader_state EXCEPT ![i] = ls1]
@@ -1570,14 +1595,16 @@ ResendMessageTimeout(i) ==
                    resend(k) ==
                      IF IsReconfigured(i)
                      THEN [EmptyMessage EXCEPT !.type = "Decide", !.n = ls.n_leader,
-                           !.seq_num = ls.follower_seq_nums[k], !.decided_idx = decided_idx[i]]
+                           !.seq_num = ls.follower_seq_nums[k], !.decided_idx = decided_idx[i],
+                           !.last = PrefixAt(log[i], decided_idx[i])]
                      ELSE AcceptStopSignMsg(ls.n_leader, ls.follower_seq_nums[k])
                    df == IF phase[i] = "Accept" /\ Mutation # "NoDecideOnResend"
                          THEN PromisedFollowers(ls) \ ss ELSE {}
                    ls1 == IF Mutation = "DecideOnResendOldSeq" THEN ls ELSE NextSeqNums(ls, df)
                    \* @type: Int => $msg;
                    decide(k) == [EmptyMessage EXCEPT !.type = "Decide", !.n = ls.n_leader,
-                                 !.seq_num = ls1.follower_seq_nums[k], !.decided_idx = decided_idx[i]]
+                                 !.seq_num = ls1.follower_seq_nums[k], !.decided_idx = decided_idx[i],
+                                 !.last = PrefixAt(log[i], decided_idx[i])]
                IN /\ chan' = Send(chan, i, [k \in pp \cup ss \cup df |->
                                     IF k \in pp THEN <<PrepareMsg(i)>>
                                     ELSE IF k \in ss THEN <<resend(k)>>
@@ -1947,7 +1974,8 @@ LeaderCountsOwnAccepted(i) ==
   /\ IsChosen(leader_state[i], own)
   /\ wait_remaining <= 0 \/ Mutation = "ForcedWithoutWait"
   /\ HandleAccepted(i, i, [EmptyMessage EXCEPT !.type = "Accepted",
-                           !.n = leader_state[i].n_leader, !.accepted_idx = own], chan)
+                           !.n = leader_state[i].n_leader, !.accepted_idx = own,
+                           !.last = PrefixAt(log[i], own)], chan)
   /\ UNCHANGED <<env, proposed, recovery, rolled_back, client, readvars,
                  buffered_stopsign, reconfig, leasevars>>
   /\ GhostUpdate
@@ -2144,7 +2172,8 @@ LeaderDecidesChosen(i) ==
   /\ leader_state' = [leader_state EXCEPT ![i] = ls2]
   /\ chan' = Send(chan, i, [k \in fs |->
                <<[EmptyMessage EXCEPT !.type = "Decide", !.n = ls2.n_leader,
-                  !.seq_num = ls2.follower_seq_nums[k], !.decided_idx = d]>>])
+                  !.seq_num = ls2.follower_seq_nums[k], !.decided_idx = d,
+                  !.last = PrefixAt(log[i], d)]>>])
   /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx, current_seq_num,
                  cached_promise_message, buffered_proposals, env, proposed, recovery,
                  rolled_back, client, readvars, buffered_stopsign, reconfig, leasevars>>
@@ -2283,6 +2312,7 @@ ASSUME MaxStorageFault \in Nat
 ASSUME StartChecks \in BOOLEAN
 ASSUME RunningFaults \in BOOLEAN
 ASSUME StepChecks \in BOOLEAN
+ASSUME VerifyCrc \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided"}
 ASSUME StaleReadNode \in BOOLEAN

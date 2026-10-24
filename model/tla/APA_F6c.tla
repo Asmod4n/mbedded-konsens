@@ -27,6 +27,7 @@ OVERRIDE_MaxStorageFault == 0
 OVERRIDE_StartChecks == TRUE
 OVERRIDE_RunningFaults == FALSE
 OVERRIDE_StepChecks == TRUE
+OVERRIDE_VerifyCrc == FALSE
 OVERRIDE_StorageFaultKind == {}
 OVERRIDE_ClientSessions == FALSE
 OVERRIDE_MaxClientSend == 0
