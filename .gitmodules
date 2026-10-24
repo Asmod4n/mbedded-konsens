@@ -4,3 +4,6 @@
 [submodule "deps/crc32c"]
 	path = deps/crc32c
 	url = https://github.com/google/crc32c
+[submodule "deps/libhydrogen"]
+	path = deps/libhydrogen
+	url = https://github.com/jedisct1/libhydrogen
