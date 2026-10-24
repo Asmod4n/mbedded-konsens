@@ -1,0 +1,342 @@
+# What LMDB does after MDB_BAD_CHECKSUM, and which repair works
+# Test of one file outside the tree (source below). Not a speed measurement.
+# LMDB: LMDB_1.0.2 checkout at 
+# compiler: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0; mdb.c built with gcc -O1 -g
+# kernel: 6.18.44-fc-v153; fs of the test dir: ext2/ext3
+# env flags: MDB_NOTLS | MDB_REMAP_CHUNKS, mdb_env_set_checksum(FNV-1a 64 bit, 8 bytes), mapsize 64 MiB
+# data: one unnamed DB, 4000 keys k%08d, values 900 bytes, one write txn; 1341 pages (8 branch, 1333 leaf)
+# fault: one byte at the middle of one page XORed with 0x5a while the env is closed
+# probe (first victim key was not on the bad page; the sweep finds the keys of the page):
+fill commit OK
+[leaf] pages=1341 branch=8 leaf=1333
+[leaf] corrupt pgno=36 flags=2 first_key=102
+T1 get victim          : OK
+T2 get victim again    : OK
+T3 get key 0           : OK
+T4 get key 3999        : OK
+T5 new txn get victim  : OK
+T6 cursor scan         : ok=99 stop=MDB_BAD_CHECKSUM: Page checksum mismatch
+T7 scan from victim+60 : ok=0 stop=MDB_BAD_TXN: Transaction must abort, has a child, or is invalid
+T8 put victim          : OK
+T9 del victim          : OK
+T10 drop(empty)        : OK
+T10 commit             : OK
+T11 copy2 compact      : OK
+fill commit OK
+[branch] pages=1341 branch=8 leaf=1333
+[branch] corrupt pgno=4 flags=1 first_key=606
+T1 get victim          : OK
+T2 get victim again    : OK
+T3 get key 0           : MDB_BAD_CHECKSUM: Page checksum mismatch
+T4 get key 3999        : MDB_BAD_TXN: Transaction must abort, has a child, or is invalid
+T5 new txn get victim  : OK
+T6 cursor scan         : ok=0 stop=MDB_BAD_CHECKSUM: Page checksum mismatch
+T7 scan from victim+60 : ok=0 stop=MDB_BAD_TXN: Transaction must abort, has a child, or is invalid
+T8 put victim          : OK
+T9 del victim          : OK
+T10 drop(empty)        : MDB_BAD_CHECKSUM: Page checksum mismatch
+T10 commit             : MDB_BAD_TXN: Transaction must abort, has a child, or is invalid
+T11 copy2 compact      : MDB_BAD_CHECKSUM: Page checksum mismatch
+# sweep:
+fill commit OK
+[sweep leaf] pgno=36
+  fresh-txn gets failing: 3, first=99 last=101
+  get in txn A: MDB_BAD_CHECKSUM: Page checksum mismatch; get in txn B while A open: MDB_BAD_CHECKSUM: Page checksum mismatch
+  txn A reads key 98 (same chunk, before the bad page): OK
+  txn B reads bad key 99 while A holds chunk: MDB_BAD_CHECKSUM: Page checksum mismatch
+  copy2 compact: MDB_BAD_CHECKSUM: Page checksum mismatch
+  copy2 plain: OK
+fill commit OK
+[sweep branch] pgno=4
+  fresh-txn gets failing: 606, first=0 last=605
+  get in txn A: MDB_BAD_CHECKSUM: Page checksum mismatch; get in txn B while A open: MDB_BAD_CHECKSUM: Page checksum mismatch
+  txn A reads key -1 (same chunk, before the bad page): MDB_BAD_CHECKSUM: Page checksum mismatch
+  txn B reads bad key 0 while A holds chunk: MDB_BAD_CHECKSUM: Page checksum mismatch
+  copy2 compact: MDB_BAD_CHECKSUM: Page checksum mismatch
+  copy2 plain: OK
+# repair:
+fill commit OK
+[repair leaf] bad keys 99..101
+  R1 overwrite bad keys: put MDB_BAD_CHECKSUM: Page checksum mismatch, commit MDB_BAD_CHECKSUM: Page checksum mismatch, bad after 3
+fill commit OK
+  R2 delete bad keys: del MDB_BAD_CHECKSUM: Page checksum mismatch, commit MDB_BAD_CHECKSUM: Page checksum mismatch, bad after 3
+fill commit OK
+  R3 empty db and rewrite all: OK, commit OK, bad after 0
+  R4 fresh txn scan from first key after bad range: ok=3898 stop=MDB_NOTFOUND: No matching key/data pair found
+  R5 copy2 compact after R3: OK
+fill commit OK
+[repair branch] bad keys 0..605
+  R1 overwrite bad keys: put MDB_BAD_CHECKSUM: Page checksum mismatch, commit MDB_BAD_CHECKSUM: Page checksum mismatch, bad after 606
+fill commit OK
+  R2 delete bad keys: del MDB_BAD_CHECKSUM: Page checksum mismatch, commit MDB_BAD_CHECKSUM: Page checksum mismatch, bad after 606
+fill commit OK
+  R3 empty db and rewrite all: MDB_BAD_CHECKSUM: Page checksum mismatch, commit MDB_BAD_CHECKSUM: Page checksum mismatch, bad after 606
+  R4 fresh txn scan from first key after bad range: ok=3394 stop=MDB_NOTFOUND: No matching key/data pair found
+  R5 copy2 compact after R3: MDB_BAD_CHECKSUM: Page checksum mismatch
+# source t_badsum.cpp:
+#include <lmdb.h>
+#include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <filesystem>
+#include <stdexcept>
+
+static void fnv(const MDB_val* src, MDB_val* dst, const MDB_val*)
+{
+    std::uint64_t h = 1469598103934665603ull;
+    auto p = static_cast<const unsigned char*>(src->mv_data);
+    for (std::size_t i = 0; i < src->mv_size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    std::memcpy(dst->mv_data, &h, 8);
+}
+
+static const char* err(int rc) { return rc == 0 ? "OK" : mdb_strerror(rc); }
+
+constexpr int n_keys = 4000;
+constexpr int val_size = 900;
+constexpr unsigned page_size = 4096;
+constexpr unsigned flags_offset = 18;
+
+static std::string key(int i) { char b[16]; std::snprintf(b, sizeof b, "k%08d", i); return b; }
+
+static MDB_env* open_env(const std::string& dir, unsigned extra)
+{
+    MDB_env* env; mdb_env_create(&env);
+    if (int rc = mdb_env_set_checksum(env, fnv, 8)) { std::printf("set_checksum %s\n", err(rc)); }
+    mdb_env_set_mapsize(env, 64u << 20);
+    int rc = mdb_env_open(env, dir.c_str(), MDB_NOTLS | MDB_REMAP_CHUNKS | extra, 0644);
+    if (rc) { std::printf("open %s\n", err(rc)); std::exit(1); }
+    return env;
+}
+
+static void fill(const std::string& dir)
+{
+    std::filesystem::remove_all(dir); std::filesystem::create_directory(dir);
+    MDB_env* env = open_env(dir, 0);
+    MDB_txn* t; mdb_txn_begin(env, nullptr, 0, &t);
+    MDB_dbi d; mdb_dbi_open(t, nullptr, 0, &d);
+    std::string v(val_size, 'x');
+    for (int i = 0; i < n_keys; ++i) {
+        auto k = key(i); std::snprintf(v.data(), 10, "v%08d", i);
+        MDB_val kk{k.size(), k.data()}, vv{v.size(), v.data()};
+        if (int rc = mdb_put(t, d, &kk, &vv, 0)) { std::printf("put %s\n", err(rc)); std::exit(1); }
+    }
+    std::printf("fill commit %s\n", err(mdb_txn_commit(t)));
+    mdb_env_close(env);
+}
+
+struct page_info { std::size_t pgno; unsigned flags; int first_key; };
+
+static std::vector<page_info> scan(const std::string& file)
+{
+    std::ifstream f(file, std::ios::binary);
+    std::vector<char> b((std::istreambuf_iterator<char>(f)), {});
+    std::vector<page_info> out;
+    for (std::size_t pg = 2; pg * page_size < b.size(); ++pg) {
+        const char* p = b.data() + pg * page_size;
+        std::uint16_t fl; std::memcpy(&fl, p + flags_offset, 2);
+        int first = -1;
+        for (unsigned o = 0; o + 9 < page_size; ++o)
+            if (p[o] == 'k' && std::isdigit(static_cast<unsigned char>(p[o + 1]))) { first = std::atoi(p + o + 1); break; }
+        out.push_back({pg, fl, first});
+    }
+    return out;
+}
+
+static void flip(const std::string& file, std::size_t pgno)
+{
+    std::fstream f(file, std::ios::in | std::ios::out | std::ios::binary);
+    std::size_t off = pgno * page_size + page_size / 2;
+    f.seekg(off); char c; f.read(&c, 1); c ^= 0x5a; f.seekp(off); f.write(&c, 1);
+}
+
+static int get(MDB_txn* t, MDB_dbi d, int i)
+{
+    auto k = key(i); MDB_val kk{k.size(), k.data()}, vv;
+    return mdb_get(t, d, &kk, &vv);
+}
+
+static void probe(const std::string& label, unsigned want_flag)
+{
+    std::string dir = "env-" + label;
+    fill(dir);
+    auto pages = scan(dir + "/data.mdb");
+    int nb = 0, nl = 0;
+    for (auto& p : pages) { if (p.flags & 1) ++nb; if (p.flags & 2) ++nl; }
+    std::printf("[%s] pages=%zu branch=%d leaf=%d\n", label.c_str(), pages.size(), nb, nl);
+    const page_info* tgt = nullptr;
+    for (auto& p : pages)
+        if ((p.flags & want_flag) && p.first_key > 100 && p.first_key < n_keys - 100) { tgt = &p; break; }
+    if (!tgt) { std::printf("no target\n"); return; }
+    std::printf("[%s] corrupt pgno=%zu flags=%u first_key=%d\n", label.c_str(), tgt->pgno, tgt->flags, tgt->first_key);
+    int victim = tgt->first_key;
+    flip(dir + "/data.mdb", tgt->pgno);
+
+    MDB_env* env = open_env(dir, 0);
+    MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+    MDB_dbi d; mdb_dbi_open(r, nullptr, 0, &d);
+    std::printf("T1 get victim          : %s\n", err(get(r, d, victim)));
+    std::printf("T2 get victim again    : %s\n", err(get(r, d, victim)));
+    std::printf("T3 get key 0           : %s\n", err(get(r, d, 0)));
+    std::printf("T4 get key %d        : %s\n", n_keys - 1, err(get(r, d, n_keys - 1)));
+    mdb_txn_abort(r);
+    mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+    std::printf("T5 new txn get victim  : %s\n", err(get(r, d, victim)));
+    {
+        MDB_cursor* c; mdb_cursor_open(r, d, &c);
+        MDB_val k, v; int ok = 0, bad = 0, rc = mdb_cursor_get(c, &k, &v, MDB_FIRST);
+        while (rc == 0) { ++ok; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT); }
+        if (rc != MDB_NOTFOUND) ++bad;
+        std::printf("T6 cursor scan         : ok=%d stop=%s\n", ok, err(rc));
+        auto k2 = key(victim + 60); k = {k2.size(), k2.data()};
+        rc = mdb_cursor_get(c, &k, &v, MDB_SET_RANGE);
+        int ok2 = 0; while (rc == 0) { ++ok2; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT); }
+        std::printf("T7 scan from victim+60 : ok=%d stop=%s\n", ok2, err(rc));
+        mdb_cursor_close(c);
+    }
+    mdb_txn_abort(r);
+    MDB_txn* w;
+    mdb_txn_begin(env, nullptr, 0, &w);
+    { auto k = key(victim); std::string v(val_size, 'y'); MDB_val kk{k.size(), k.data()}, vv{v.size(), v.data()};
+      std::printf("T8 put victim          : %s\n", err(mdb_put(w, d, &kk, &vv, 0))); }
+    mdb_txn_abort(w);
+    mdb_txn_begin(env, nullptr, 0, &w);
+    { auto k = key(victim); MDB_val kk{k.size(), k.data()};
+      std::printf("T9 del victim          : %s\n", err(mdb_del(w, d, &kk, nullptr))); }
+    mdb_txn_abort(w);
+    mdb_txn_begin(env, nullptr, 0, &w);
+    std::printf("T10 drop(empty)        : %s\n", err(mdb_drop(w, d, 0)));
+    std::printf("T10 commit             : %s\n", err(mdb_txn_commit(w)));
+    std::filesystem::remove_all(dir + "-copy"); std::filesystem::create_directory(dir + "-copy");
+    std::printf("T11 copy2 compact      : %s\n", err(mdb_env_copy2(env, (dir + "-copy").c_str(), MDB_CP_COMPACT)));
+    mdb_env_close(env);
+}
+
+static void sweep(const std::string& label, unsigned want_flag)
+{
+    std::string dir = "env-s" + label;
+    fill(dir);
+    auto pages = scan(dir + "/data.mdb");
+    const page_info* tgt = nullptr;
+    for (auto& p : pages)
+        if ((p.flags & want_flag) && p.first_key > 100 && p.first_key < n_keys - 100) { tgt = &p; break; }
+    flip(dir + "/data.mdb", tgt->pgno);
+    std::printf("[sweep %s] pgno=%zu\n", label.c_str(), tgt->pgno);
+    MDB_env* env = open_env(dir, 0);
+    MDB_dbi d;
+    { MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r); mdb_dbi_open(r, nullptr, 0, &d); mdb_txn_abort(r); }
+    int lo = -1, hi = -1, nbad = 0;
+    for (int i = 0; i < n_keys; ++i) {
+        MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+        int rc = get(r, d, i);
+        if (rc) { ++nbad; if (lo < 0) lo = i; hi = i; }
+        mdb_txn_abort(r);
+    }
+    std::printf("  fresh-txn gets failing: %d, first=%d last=%d\n", nbad, lo, hi);
+    {
+        MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+        int rc1 = get(r, d, lo), rc2 = 0;
+        MDB_txn* r2; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r2);
+        rc2 = get(r2, d, lo);
+        std::printf("  get in txn A: %s; get in txn B while A open: %s\n", err(rc1), err(rc2));
+        mdb_txn_abort(r2); mdb_txn_abort(r);
+    }
+    {
+        MDB_txn* a; mdb_txn_begin(env, nullptr, MDB_RDONLY, &a);
+        std::printf("  txn A reads key %d (same chunk, before the bad page): %s\n", lo - 1, err(get(a, d, lo - 1)));
+        MDB_txn* b; mdb_txn_begin(env, nullptr, MDB_RDONLY, &b);
+        std::printf("  txn B reads bad key %d while A holds chunk: %s\n", lo, err(get(b, d, lo)));
+        mdb_txn_abort(b); mdb_txn_abort(a);
+    }
+    std::filesystem::remove_all(dir + "-copy"); std::filesystem::create_directory(dir + "-copy");
+    std::printf("  copy2 compact: %s\n", err(mdb_env_copy2(env, (dir + "-copy").c_str(), MDB_CP_COMPACT)));
+    std::filesystem::remove_all(dir + "-copy0"); std::filesystem::create_directory(dir + "-copy0");
+    std::printf("  copy2 plain: %s\n", err(mdb_env_copy2(env, (dir + "-copy0").c_str(), 0)));
+    mdb_env_close(env);
+}
+
+static int put(MDB_txn* t, MDB_dbi d, int i)
+{
+    auto k = key(i); std::string v(val_size, 'r'); MDB_val kk{k.size(), k.data()}, vv{v.size(), v.data()};
+    return mdb_put(t, d, &kk, &vv, 0);
+}
+
+static void repair(const std::string& label, unsigned want_flag)
+{
+    std::string dir = "env-r" + label;
+    auto setup = [&](int& lo, int& hi, MDB_env*& env, MDB_dbi& d) {
+        fill(dir);
+        auto pages = scan(dir + "/data.mdb");
+        const page_info* tgt = nullptr;
+        for (auto& p : pages)
+            if ((p.flags & want_flag) && p.first_key > 100 && p.first_key < n_keys - 100) { tgt = &p; break; }
+        flip(dir + "/data.mdb", tgt->pgno);
+        env = open_env(dir, 0);
+        { MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r); mdb_dbi_open(r, nullptr, 0, &d); mdb_txn_abort(r); }
+        lo = -1; hi = -1;
+        for (int i = 0; i < n_keys; ++i) {
+            MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+            if (get(r, d, i)) { if (lo < 0) lo = i; hi = i; }
+            mdb_txn_abort(r);
+        }
+    };
+    auto bad_after = [&](MDB_env* env, MDB_dbi d) {
+        int n = 0;
+        for (int i = 0; i < n_keys; ++i) {
+            MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+            if (get(r, d, i)) ++n;
+            mdb_txn_abort(r);
+        }
+        return n;
+    };
+    int lo, hi; MDB_env* env; MDB_dbi d;
+    setup(lo, hi, env, d);
+    std::printf("[repair %s] bad keys %d..%d\n", label.c_str(), lo, hi);
+    {
+        MDB_txn* w; mdb_txn_begin(env, nullptr, 0, &w);
+        int rc = 0;
+        for (int i = lo; i <= hi && rc == 0; ++i) rc = put(w, d, i);
+        int c = rc ? (mdb_txn_abort(w), rc) : mdb_txn_commit(w);
+        std::printf("  R1 overwrite bad keys: put %s, commit %s, bad after %d\n", err(rc), err(c), bad_after(env, d));
+    }
+    mdb_env_close(env);
+    setup(lo, hi, env, d);
+    {
+        MDB_txn* w; mdb_txn_begin(env, nullptr, 0, &w);
+        int rc = 0;
+        for (int i = lo; i <= hi && rc == 0; ++i) { auto k = key(i); MDB_val kk{k.size(), k.data()}; rc = mdb_del(w, d, &kk, nullptr); }
+        int c = rc ? (mdb_txn_abort(w), rc) : mdb_txn_commit(w);
+        std::printf("  R2 delete bad keys: del %s, commit %s, bad after %d\n", err(rc), err(c), bad_after(env, d));
+    }
+    mdb_env_close(env);
+    setup(lo, hi, env, d);
+    {
+        MDB_txn* w; mdb_txn_begin(env, nullptr, 0, &w);
+        int rc = mdb_drop(w, d, 0);
+        for (int i = 0; i < n_keys && rc == 0; ++i) rc = put(w, d, i);
+        int c = rc ? (mdb_txn_abort(w), rc) : mdb_txn_commit(w);
+        std::printf("  R3 empty db and rewrite all: %s, commit %s, bad after %d\n", err(rc), err(c), bad_after(env, d));
+    }
+    {
+        MDB_txn* r; mdb_txn_begin(env, nullptr, MDB_RDONLY, &r);
+        MDB_cursor* c; mdb_cursor_open(r, d, &c);
+        auto k2 = key(hi + 1); MDB_val k{k2.size(), k2.data()}, v;
+        int rc = mdb_cursor_get(c, &k, &v, MDB_SET_RANGE), ok = 0;
+        while (rc == 0) { ++ok; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT); }
+        std::printf("  R4 fresh txn scan from first key after bad range: ok=%d stop=%s\n", ok, err(rc));
+        mdb_cursor_close(c); mdb_txn_abort(r);
+    }
+    std::filesystem::remove_all(dir + "-c"); std::filesystem::create_directory(dir + "-c");
+    std::printf("  R5 copy2 compact after R3: %s\n", err(mdb_env_copy2(env, (dir + "-c").c_str(), MDB_CP_COMPACT)));
+    mdb_env_close(env);
+}
+
+int main(int argc, char**)
+{
+    if (argc > 2) { repair("leaf", 2); repair("branch", 1); return 0; }
+    if (argc > 1) { sweep("leaf", 2); sweep("branch", 1); return 0; }
+    probe("leaf", 2);
+    probe("branch", 1);
+}

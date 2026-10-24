@@ -92,6 +92,8 @@ CONSTANTS
   RepairFromPeer,
   \* @type: Bool;
   VerifyPromise,
+  \* @type: Str;
+  MismatchAction,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -1356,10 +1358,37 @@ Dispatch(i, j, m, c) ==
             [] m.type = "AcceptStopSign"  -> HandleAcceptStopSign(i, j, m, c)
        /\ UNCHANGED recovery
 
+\* MismatchAction (doc/plan-lmdb-only-source.md 2.5 item 3). The head of
+\* the channel from j to i would raise the decided index of i to d, and the
+\* prefix of i up to d differs from the one in the message. "keep": the
+\* handler keeps the old decided index (CheckedDecided). "damage": the node
+\* takes it as a damage (DamageFound). "stop": the node leaves running.
+\* @type: (Int, Int) => Bool;
+Mismatch(i, j) ==
+  /\ VerifyCrc
+  /\ i \in running /\ ~recovering[i] /\ ~deactivated[i] /\ ~SingleNodeMode(i)
+  /\ chan[<<j, i>>] # <<>>
+  /\ LET m  == Head(chan[<<j, i>>])
+         ok == ~SteppedBack(i, j, m) /\ CheckValidBallot(i, m.n).valid
+         old == decided_idx[i]
+         Rej(lg, d) == d > old /\ CheckedDecided(lg, old, d, m) # d
+     IN /\ ok
+        /\ \/ /\ m.type = "AcceptSync" /\ role[i] = "Follower" /\ phase[i] = "Prepare"
+              /\ Rej(AppendOnPrefix(log[i], m.log_sync[1].sync_idx, m.log_sync[1].suffix),
+                     IF DecidedIdxMonotone THEN Max(old, m.decided_idx) ELSE m.decided_idx)
+           \/ /\ m.type = "AcceptDecide" /\ role[i] = "Follower" /\ phase[i] = "Accept"
+              /\ CheckMsgStatus(current_seq_num[i], m.seq_num) = "Expected"
+              /\ Rej(log[i] \o m.entries,
+                     UpdateDecided(old, accepted_idx[i] + Len(m.entries), m.decided_idx).dec)
+           \/ /\ m.type = "Decide" /\ phase[i] = "Accept"
+              /\ CheckMsgStatus(current_seq_num[i], m.seq_num) = "Expected"
+              /\ Rej(log[i], UpdateDecided(old, accepted_idx[i], m.decided_idx).dec)
+
 \* mod.rs:263-282 handle: deliver the head of the channel from j to i.
 Receive(j, i) ==
   /\ i \in running
   /\ chan[<<j, i>>] # <<>>
+  /\ MismatchAction # "keep" => ~Mismatch(i, j)
   /\ LET m == Head(chan[<<j, i>>])
          c == [chan EXCEPT ![<<j, i>>] = Tail(@)]
      IN /\ SingleNodeMode(i) => m.type = "Deactivated"
@@ -1665,6 +1694,21 @@ StorageFault(i, kind) ==
 \* a restart.
 AutoRepairs == 1
 
+\* The node stops voting and leaves running, as stop_voting does.
+\* @type: Int => Bool;
+LeaveRunning(i) ==
+  /\ running' = running \ {i}
+  /\ refused' = refused \cup {i}
+  /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
+                                       THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
+                                       ELSE stage1_ghost[j]]
+  /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
+                 timeouts, elections, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, first_log, reconfigurations, force_single,
+                 read_only, deactivated, halts, read_only_entries, build_source,
+                 leasevars, leaseghost>>
+
+
 \* After an automatic repair, the operator gets a notice. The operator can
 \* allow one more automatic repair at the next damage (owner, 2026-10-24
 \* 20:57). Without that, the node repairs no more by itself.
@@ -1687,16 +1731,14 @@ DamageFound(i) ==
          /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
                         elections, proposed, rolled_back, client, reconfig>>
          /\ GhostUpdateRP({i}, {i})
-  ELSE /\ running' = running \ {i}
-       /\ refused' = refused \cup {i}
-       /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
-                                            THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
-                                            ELSE stage1_ghost[j]]
-       /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
-                      timeouts, elections, ghost, recovery, rollback, client, readvars,
-                      buffered_stopsign, first_log, reconfigurations, force_single,
-                      read_only, deactivated, halts, read_only_entries, build_source,
-                      leasevars, leaseghost>>
+  ELSE LeaveRunning(i)
+
+\* @type: Int => Bool;
+MismatchFound(i) ==
+  /\ MismatchAction # "keep"
+  /\ \E j \in Servers \ {i} : <<j, i>> \in Pairs /\ Mismatch(i, j)
+  /\ UNCHANGED storage_faults
+  /\ IF MismatchAction = "damage" THEN DamageFound(i) ELSE LeaveRunning(i)
 
 \* RunningStorageFault, RunningFaults, StepChecks (doc/plan-lmdb-only-source.md).
 \* The durable state of a running node changes. The node holds no copy of
@@ -2403,6 +2445,7 @@ Next ==
   \/ \E i \in running, kind \in StorageFaultKind : RunningStorageFault(i, kind)
   \/ \E i \in running : StepCheck(i)
   \/ \E i \in Nodes : OperatorAllowsRepair(i)
+  \/ \E i \in Nodes : MismatchFound(i)
   \/ \E i \in Nodes \ running : Resume(i)
   \/ Tick
   \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
@@ -2504,6 +2547,7 @@ ASSUME PeerCheck \in BOOLEAN
 ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0
 ASSUME HighWater \in BOOLEAN
 ASSUME VerifyPromise \in BOOLEAN
+ASSUME MismatchAction \in {"keep", "damage", "stop"}
 ASSUME RepairFromPeer \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided", "stale_meta", "rollback"}
@@ -2541,6 +2585,18 @@ HighWaterHolds ==
 \* log length that LMDB holds. Where this holds, the model can read the
 \* log length in place of the copy.
 AcceptedIdxIsLogLen == \A i \in running : accepted_idx[i] = Len(log[i])
+
+\* MismatchAction: where a follower finds a mismatch, the prefix in the
+\* message agrees with the decided history. So the follower is the node
+\* that differs, and "damage" blames the right node.
+MismatchBlamesFollower ==
+  \A i \in Nodes, j \in Servers :
+    (<<j, i>> \in Pairs /\ Mismatch(i, j)) =>
+      LET l == Head(chan[<<j, i>>]).last
+      IN IsPrefix(l, decided_history) \/ IsPrefix(decided_history, l)
+
+\* Cover: a mismatch happens. A run with an undetected damage must violate it.
+NoMismatch == \A i \in Nodes, j \in Servers : <<j, i>> \in Pairs => ~Mismatch(i, j)
 
 \* Cover of the repair limit (owner, 2026-10-24 20:55): a node that used its
 \* automatic repair and then found a second damage leaves running. A run
