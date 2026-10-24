@@ -5,10 +5,17 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LMDB REQUIRED IMPORTED_TARGET lmdb)
+find_package(Threads REQUIRED)
 find_package(doctest REQUIRED)
 find_package(Boost REQUIRED CONFIG)
+
+set(KONSENS_LMDB_SOURCE_DIR ${PROJECT_SOURCE_DIR}/deps/lmdb/libraries/liblmdb)
+add_library(lmdb STATIC ${KONSENS_LMDB_SOURCE_DIR}/mdb.c ${KONSENS_LMDB_SOURCE_DIR}/midl.c
+            ${KONSENS_LMDB_SOURCE_DIR}/module.c)
+target_include_directories(lmdb PUBLIC ${KONSENS_LMDB_SOURCE_DIR})
+target_compile_options(lmdb PRIVATE -W -Wall -Wno-unused-parameter -Wbad-function-cast -Wuninitialized)
+target_link_libraries(lmdb PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+set_target_properties(lmdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(CBOR_INSTALL OFF)
 add_subdirectory(deps/mbedded-cbor EXCLUDE_FROM_ALL)
@@ -46,7 +53,7 @@ set(KONSENS_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Ws
 file(GLOB KONSENS_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.cpp)
 add_library(konsens ${KONSENS_SOURCES})
 target_include_directories(konsens PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(konsens PUBLIC PkgConfig::LMDB)
+target_link_libraries(konsens PUBLIC lmdb)
 target_link_libraries(konsens PRIVATE mbedded-cbor Boost::headers crc32c)
 target_include_directories(konsens PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
 target_include_directories(konsens PUBLIC $<TARGET_PROPERTY:mbedded-cbor,INTERFACE_INCLUDE_DIRECTORIES>)
@@ -80,7 +87,6 @@ add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increment
 
 option(KONSENS_BENCH "Build konsens_bench and its A/A copy konsens_bench_aa" OFF)
 if(KONSENS_BENCH)
-    find_package(Threads REQUIRED)
     foreach(bench_name konsens_bench konsens_bench_aa)
         add_executable(${bench_name} ${PROJECT_SOURCE_DIR}/bench/konsens_bench.cpp)
         target_link_libraries(${bench_name} PRIVATE konsens crc32c Threads::Threads)

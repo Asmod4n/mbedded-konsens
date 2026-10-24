@@ -122,7 +122,7 @@ The cost of the checksum against a MAC:
 |---|---|
 | Compiler | g++ 16 |
 | System | Linux |
-| LMDB | `liblmdb` with pkg-config |
+| LMDB | the submodule `deps/lmdb`, LMDB 1.0.2, OpenLDAP Public License |
 | Boost | the headers |
 | mbedded-cbor | the submodule `deps/mbedded-cbor` |
 | crc32c | the submodule `deps/crc32c`, Google crc32c, BSD-3-Clause license |
@@ -130,12 +130,15 @@ The cost of the checksum against a MAC:
 
 The library runs as a user that is not root.
 
+LMDB 1.0 does not open a data file of LMDB 0.9. The file formats of the
+two versions differ.
+
 ## Installation
 
 Ubuntu 26.10:
 
 ```sh
-sudo apt install g++-16 cmake pkg-config liblmdb-dev doctest-dev libboost-dev git
+sudo apt install g++-16 cmake doctest-dev libboost-dev git
 ```
 
 On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel`.
@@ -143,7 +146,7 @@ On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel`.
 ```sh
 git clone https://github.com/Asmod4n/mbedded-konsens
 cd mbedded-konsens
-git submodule update --init deps/mbedded-cbor deps/crc32c
+git submodule update --init --recursive
 CC=gcc-16 CXX=g++-16 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```

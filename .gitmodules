@@ -7,3 +7,6 @@
 [submodule "deps/libhydrogen"]
 	path = deps/libhydrogen
 	url = https://github.com/jedisct1/libhydrogen
+[submodule "deps/lmdb"]
+	path = deps/lmdb
+	url = https://github.com/LMDB/lmdb

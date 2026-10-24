@@ -83,6 +83,7 @@ context() {
     echo "# build type Release, CMAKE_CXX_FLAGS_RELEASE $(grep -E '^CMAKE_CXX_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# build type Release, CMAKE_C_FLAGS_RELEASE $(grep -E '^CMAKE_C_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/bench/konsens_bench.cpp')"
+    echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/deps/lmdb/libraries/liblmdb/mdb.c')"
     echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
     for b in "${binaries[@]}"; do
@@ -90,7 +91,8 @@ context() {
     done
     echo "# binary comment $(readelf -p .comment /work/build/konsens_bench | grep -oE 'GCC: .*' | sort -u | tr '\n' ' ')"
     echo "# libraries $(ldd /work/build/konsens_bench | awk '{printf "%s %s; ", $1, $3}')"
-    echo "# packages $(dpkg-query -W -f='${Package} ${Version}; ' libstdc++6 libc6 liblmdb0 || true)"
+    echo "# packages $(dpkg-query -W -f='${Package} ${Version}; ' libstdc++6 libc6 || true)"
+    echo "# lmdb $(grep -E '^#define MDB_VERSION_(MAJOR|MINOR|PATCH)' /src/deps/lmdb/libraries/liblmdb/lmdb.h | awk '{printf "%s ", $3}')from the submodule deps/lmdb"
     echo "# kernel $(uname -r) $(uname -v)"
     if [[ -r /sys/kernel/sched_ext/state ]]; then
         echo "# scheduler sched_ext $(cat /sys/kernel/sched_ext/state)"
