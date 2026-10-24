@@ -1295,8 +1295,8 @@ Propose(i, v) ==
 \* With Recovery, the node first sends Recovery with a fresh nonce and
 \* takes part in nothing else until its answers are complete
 \* (owner decision: after each start a node votes only after f + 1 answers).
-\* @type: (Set(Int), Int -> $durable, Set(Int), Bool) => Bool;
-Restart(R, d, Q, rec) ==
+\* @type: (Set(Int), Int -> $durable, Set(Int), Bool, Str) => Bool;
+RestartInPhase(R, d, Q, rec, ph) ==
   LET \* @type: (Int -> a, Int -> a) => Int -> a;
       At(f, g) == [k \in Servers |-> IF k \in R THEN g[k] ELSE f[k]]
       msg(k)   == IF rec THEN RecoveryMsg(nonce[k] + 1) ELSE PrepareReqMsg(d[k].promise)
@@ -1306,7 +1306,7 @@ Restart(R, d, Q, rec) ==
   /\ log' = At(log, [k \in R |-> d[k].log])
   /\ decided_idx' = At(decided_idx, [k \in R |-> d[k].decided_idx])
   /\ role' = At(role, [k \in R |-> "Follower"])
-  /\ phase' = At(phase, [k \in R |-> "Recover"])
+  /\ phase' = At(phase, [k \in R |-> ph])
   /\ accepted_idx' = At(accepted_idx, [k \in R |-> Len(d[k].log)])
   /\ current_seq_num' = At(current_seq_num, [k \in R |-> DefaultSeq])
   /\ cached_promise_message' = At(cached_promise_message, [k \in R |-> <<>>])
@@ -1328,6 +1328,9 @@ Restart(R, d, Q, rec) ==
   /\ wait_remaining' = IF R \cap NextConfigNodes # {} /\ wait_remaining > 0
                        THEN LeaseLength ELSE wait_remaining
   /\ UNCHANGED <<witness_epoch, node_epoch>>
+
+\* @type: (Set(Int), Int -> $durable, Set(Int), Bool) => Bool;
+Restart(R, d, Q, rec) == RestartInPhase(R, d, Q, rec, "Recover")
 
 \* F3: crash keeping durable state.
 Crash(i) ==
@@ -1398,8 +1401,11 @@ Wipe(i) ==
 \* doc/plan-start-checks.md section 3. A node restarts after a crash and
 \* reads a damaged durable state of one kind. Provisional names:
 \* StorageFault, StartChecks, the kinds.
-\* missing_entry: LMDB lost the key k; read_entries skips it, and the later
-\* entries move one position down.
+\* missing_entry: LMDB lost the key k. LogWithout is an approximation of
+\* what the node reads without the checks: read_entries works by key, so a
+\* range read up to the count returns the keys below the count, and the
+\* last key is not read. Only the mutation StartCheckMissing uses it; with
+\* the checks, each k below the last position is found.
 \* @type: (Seq($entry), Int) => Seq($entry);
 LogWithout(l, k) == SubSeq(l, 1, k - 1) \o SubSeq(l, k + 1, Len(l))
 
@@ -1412,7 +1418,7 @@ DamagedStates(i, kind) ==
          IF Len(log[i]) > 0 /\ n_accepted[i] # DefaultBallot
          THEN {[d EXCEPT !.n_accepted = DefaultBallot]} ELSE {}
     [] kind = "missing_promise" ->
-         IF Len(log[i]) > 0 /\ promise[i] # DefaultBallot
+         IF promise[i] # DefaultBallot
          THEN {[d EXCEPT !.promise = DefaultBallot]} ELSE {}
     [] kind = "missing_decided" ->
          IF decided_idx[i] > 0 THEN {[d EXCEPT !.decided_idx = 0]} ELSE {}
@@ -1435,6 +1441,10 @@ Detected(i, kind, d, k) ==
   /\ \/ kind = "missing_entry" /\ k < Len(log[i])
      \/ ChecksFind(d)
 
+\* A node that reads no promise starts as a new node: (Follower, None), no
+\* recovery, no message (sequence_paxos.hpp:268-271 at 4c57d44). A refused
+\* node leaves running with its state, as Halt does; it takes no further
+\* step. Only a node of Nodes gets a storage fault.
 \* @type: (Int, Str) => Bool;
 StorageFault(i, kind) ==
   /\ i \in Nodes
@@ -1455,7 +1465,9 @@ StorageFault(i, kind) ==
                               buffered_stopsign, first_log, reconfigurations, force_single,
                               read_only, deactivated, halts, read_only_entries, build_source,
                               leasevars, leaseghost>>
-          ELSE /\ Restart({i}, [j \in {i} |-> d], {j \in {i} : Quiet(j)}, Recovery)
+          ELSE /\ IF d.promise = DefaultBallot
+                  THEN RestartInPhase({i}, [j \in {i} |-> d], {i}, FALSE, "None")
+                  ELSE Restart({i}, [j \in {i} |-> d], {j \in {i} : Quiet(j)}, Recovery)
                /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
                               elections, proposed, rolled_back, client, reconfig>>
                /\ GhostUpdate
@@ -2222,6 +2234,9 @@ S1 == \A i, j \in Servers : Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i),
 S2 == \A i \in Servers : Votes(i) => IsPrefix(DecidedPrefix(i), decided_history)
 
 S2Grows == [][IsPrefix(decided_history, decided_history')]_vars
+
+\* doc/plan-start-checks.md: an undamaged durable state passes the checks.
+NoFalseRefusal == \A i \in Servers \ refused : ~ChecksFind(DurableOf(i))
 
 \* A leader in (Leader, Accept) with ballot b holds every entry of
 \* decided_history that was decided at a ballot <= b.
