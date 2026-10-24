@@ -1,0 +1,262 @@
+Measurement: LMDB page checksums (mdb_env_set_checksum) with CRC32C
+
+Question of the owner, 2026-10-24: what do LMDB page checksums cost, and
+what do they detect.
+
+Code: one file outside the tree, appended at the end of this file. It is
+deleted after the run. Each arm is its own binary, built the same way.
+- arm 0: LMDB with no checksum.
+- arm 0b: a copy of the arm 0 binary, for the noise floor.
+- arm 1: mdb_env_set_checksum with Google crc32c (4 bytes per page) and
+  MDB_REMAP_CHUNKS.
+- arm 2: mdb_env_set_checksum with no MDB_REMAP_CHUNKS (damage check only).
+
+Damage check: 2000 entries of 1024 bytes, one commit each, then one bit
+of the value of key 1000 flipped in data.mdb, then a cursor read of all
+entries.
+- arm 0: no error; 2000 entries read; 1 value wrong.
+- arm 1: MDB_BAD_CHECKSUM after 999 entries; no wrong value read.
+- arm 2: no error; 2000 entries read; 1 value wrong. LMDB 1.0.2 checks
+  the checksum only in the code that remaps chunks
+  (mdb.c:7045, MDB_REMAPPING mdb.c:2335-2337). Without
+  MDB_REMAP_CHUNKS the checksum is written and never read.
+
+Speed: per run, 20000 commits of one put of 1024 bytes with MDB_APPEND
+(commit_ns = time per commit), then 20 cursor reads of all 20000
+entries (read_ns = time per entry read). The directory is in /dev/shm
+(tmpfs), so the sync costs nearly nothing. commit_ns is the CPU cost of
+a commit, not the cost on a disk.
+
+Order: 9 repetitions; each repetition runs arm 0, arm 0b, arm 1; each
+run in a new podman container with its own /dev/shm.
+
+Results (ns):
+rep 1 arm 0 speed arm=0 commit_ns=3548 read_ns=920 check=43799880
+rep 1 arm 0b speed arm=0 commit_ns=3500 read_ns=820 check=43799880
+rep 1 arm 1 speed arm=1 commit_ns=4948 read_ns=860 check=43799880
+rep 2 arm 0 speed arm=0 commit_ns=3586 read_ns=840 check=43799880
+rep 2 arm 0b speed arm=0 commit_ns=3497 read_ns=819 check=43799880
+rep 2 arm 1 speed arm=1 commit_ns=5018 read_ns=888 check=43799880
+rep 3 arm 0 speed arm=0 commit_ns=3467 read_ns=841 check=43799880
+rep 3 arm 0b speed arm=0 commit_ns=3471 read_ns=805 check=43799880
+rep 3 arm 1 speed arm=1 commit_ns=5028 read_ns=889 check=43799880
+rep 4 arm 0 speed arm=0 commit_ns=3920 read_ns=843 check=43799880
+rep 4 arm 0b speed arm=0 commit_ns=3554 read_ns=995 check=43799880
+rep 4 arm 1 speed arm=1 commit_ns=5634 read_ns=907 check=43799880
+rep 5 arm 0 speed arm=0 commit_ns=3506 read_ns=869 check=43799880
+rep 5 arm 0b speed arm=0 commit_ns=3489 read_ns=816 check=43799880
+rep 5 arm 1 speed arm=1 commit_ns=4984 read_ns=1017 check=43799880
+rep 6 arm 0 speed arm=0 commit_ns=3466 read_ns=807 check=43799880
+rep 6 arm 0b speed arm=0 commit_ns=5374 read_ns=906 check=43799880
+rep 6 arm 1 speed arm=1 commit_ns=5316 read_ns=878 check=43799880
+rep 7 arm 0 speed arm=0 commit_ns=4573 read_ns=818 check=43799880
+rep 7 arm 0b speed arm=0 commit_ns=3473 read_ns=803 check=43799880
+rep 7 arm 1 speed arm=1 commit_ns=5014 read_ns=1029 check=43799880
+rep 8 arm 0 speed arm=0 commit_ns=3485 read_ns=786 check=43799880
+rep 8 arm 0b speed arm=0 commit_ns=3517 read_ns=821 check=43799880
+rep 8 arm 1 speed arm=1 commit_ns=5044 read_ns=856 check=43799880
+rep 9 arm 0 speed arm=0 commit_ns=3549 read_ns=821 check=43799880
+rep 9 arm 0b speed arm=0 commit_ns=3495 read_ns=800 check=43799880
+rep 9 arm 1 speed arm=1 commit_ns=4926 read_ns=865 check=43799880
+
+Medians (min, max), 9 repetitions:
+- commit_ns: arm 0 3548 (3466, 4573); arm 0b 3497 (3471, 5374); arm 1 5018 (4926, 5634)
+- read_ns:   arm 0 840 (786, 920);    arm 0b 819 (800, 995);    arm 1 888 (856, 1029)
+Noise floor, arm 0b against arm 0: commit -1.4 %, read -2.5 %.
+Arm 1 against arm 0: commit +41.4 % (+1.47 us per commit), read +5.7 %.
+Both differences are above the noise floor. On a disk, a commit waits for
+fsync; this run does not measure that.
+
+Not measured: a real disk; larger values; whether MDB_REMAP_CHUNKS changes
+the life of a pointer that a read returns (mdb.c:7796 says the caller
+must copy the data). The library and its zero-copy send depend on that.
+
+Context:
+- commit of mbedded-konsens: 4c57d44 (clean); deps/lmdb c279e04 (LMDB_1.0.2);
+  deps/crc32c 2bbb3be (libcrc32c.a of a Release build of the tree).
+- build: gcc-16 -O2 for mdb.c and midl.c; g++-16 -std=c++26 -O2 -DARM=n;
+  no -march, so the instruction set is x86-64 baseline; crc32c selects its
+  SSE4.2 form at run time.
+- compiler: g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0; libstdc++ of g++ 16;
+  C library: Ubuntu GLIBC 2.44-1ubuntu2.
+- image: localhost/cxx-matrix, Ubuntu (development branch); podman 4.9.3.
+- kernel 6.18.44-fc-v153 (Firecracker VM); I/O scheduler none; tmpfs.
+- processor: Intel(R) Xeon(R) Processor, 4 cpus; sha256 of the flags line:
+  733bd6f8a6de28df.
+- user 1000 in the container, not root; nice 0; no raised priority (the
+  user cannot raise it); not pinned; 1 thread; load average 0.33 before,
+  0.63 after.
+
+Source:
+#include <lmdb.h>
+#include <crc32c/crc32c.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#ifndef ARM
+#error ARM must be 0 (plain), 1 (checksum with MDB_REMAP_CHUNKS) or 2 (checksum only)
+#endif
+
+constexpr std::size_t value_size = 1024;
+constexpr int damage_entries = 2000;
+constexpr int damaged_key = 1000;
+constexpr int write_entries = 20000;
+constexpr int read_passes = 20;
+constexpr std::size_t map_size = std::size_t{1} << 30;
+
+static void crc32c_sum(const MDB_val* src, MDB_val* dst, const MDB_val*)
+{
+    const std::uint32_t c = crc32c::Crc32c(static_cast<const std::uint8_t*>(src->mv_data), src->mv_size);
+    std::memcpy(dst->mv_data, &c, sizeof c);
+}
+
+static MDB_env* open_env(const std::string& dir)
+{
+    MDB_env* env = nullptr;
+    mdb_env_create(&env);
+    mdb_env_set_mapsize(env, map_size);
+    unsigned int flags = 0;
+#if ARM == 1 || ARM == 2
+    if (int rc = mdb_env_set_checksum(env, crc32c_sum, sizeof(std::uint32_t)); rc) {
+        std::printf("set_checksum: %s\n", mdb_strerror(rc));
+    }
+#endif
+#if ARM == 1
+    flags |= MDB_REMAP_CHUNKS;
+#endif
+    if (int rc = mdb_env_open(env, dir.c_str(), flags, 0600); rc) {
+        std::printf("open: %s\n", mdb_strerror(rc));
+        return nullptr;
+    }
+    return env;
+}
+
+static std::vector<char> value_of(int key)
+{
+    std::vector<char> v(value_size);
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        v[i] = static_cast<char>('a' + (key + i) % 26);
+    }
+    std::snprintf(v.data(), 16, "K%08d", key);
+    return v;
+}
+
+static int put_one(MDB_env* env, int key)
+{
+    MDB_txn* txn;
+    MDB_dbi dbi;
+    mdb_txn_begin(env, nullptr, 0, &txn);
+    mdb_dbi_open(txn, nullptr, 0, &dbi);
+    auto v = value_of(key);
+    const std::uint64_t k = __builtin_bswap64(static_cast<std::uint64_t>(key));
+    MDB_val kv{sizeof k, const_cast<std::uint64_t*>(&k)}, vv{v.size(), v.data()};
+    int rc = mdb_put(txn, dbi, &kv, &vv, MDB_APPEND);
+    if (rc) {
+        mdb_txn_abort(txn);
+        return rc;
+    }
+    return mdb_txn_commit(txn);
+}
+
+static int read_all(MDB_env* env, std::uint64_t& sum, int& count, int& wrong)
+{
+    MDB_txn* txn;
+    MDB_dbi dbi;
+    MDB_cursor* c;
+    mdb_txn_begin(env, nullptr, MDB_RDONLY, &txn);
+    mdb_dbi_open(txn, nullptr, 0, &dbi);
+    mdb_cursor_open(txn, dbi, &c);
+    MDB_val k, v;
+    int rc;
+    count = 0;
+    wrong = 0;
+    for (rc = mdb_cursor_get(c, &k, &v, MDB_FIRST); rc == 0; rc = mdb_cursor_get(c, &k, &v, MDB_NEXT)) {
+        std::uint64_t key;
+        std::memcpy(&key, k.mv_data, sizeof key);
+        const auto expect = value_of(static_cast<int>(__builtin_bswap64(key)));
+        if (v.mv_size != expect.size() || std::memcmp(v.mv_data, expect.data(), expect.size()) != 0) {
+            ++wrong;
+        }
+        sum += static_cast<const unsigned char*>(v.mv_data)[v.mv_size - 1];
+        ++count;
+    }
+    mdb_cursor_close(c);
+    mdb_txn_abort(txn);
+    return rc == MDB_NOTFOUND ? 0 : rc;
+}
+
+static void damage(const std::string& dir)
+{
+    {
+        MDB_env* env = open_env(dir);
+        for (int i = 0; i < damage_entries; ++i) {
+            if (int rc = put_one(env, i); rc) {
+                std::printf("damage put %d: %s\n", i, mdb_strerror(rc));
+            }
+        }
+        mdb_env_close(env);
+    }
+    std::fstream f(dir + "/data.mdb", std::ios::in | std::ios::out | std::ios::binary);
+    std::string all((std::istreambuf_iterator<char>(f)), {});
+    char tag[16];
+    std::snprintf(tag, sizeof tag, "K%08d", damaged_key);
+    const auto at = all.find(tag);
+    f.seekp(static_cast<std::streamoff>(at + 20));
+    f.put(static_cast<char>(all[at + 20] ^ 0x01));
+    f.close();
+    MDB_env* env = open_env(dir);
+    if (!env) {
+        return;
+    }
+    std::uint64_t sum = 0;
+    int count = 0, wrong = 0;
+    const int rc = read_all(env, sum, count, wrong);
+    std::printf("damage: flipped one bit at file offset %zu; read rc=%s, entries=%d, wrong values=%d\n", at + 20,
+                rc ? mdb_strerror(rc) : "0", count, wrong);
+    mdb_env_close(env);
+}
+
+static void speed(const std::string& dir)
+{
+    MDB_env* env = open_env(dir);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < write_entries; ++i) {
+        if (int rc = put_one(env, i); rc) {
+            std::printf("speed put %d: %s\n", i, mdb_strerror(rc));
+            return;
+        }
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    std::uint64_t sum = 0;
+    int count = 0, wrong = 0;
+    for (int p = 0; p < read_passes; ++p) {
+        if (int rc = read_all(env, sum, count, wrong); rc) {
+            std::printf("speed read: %s\n", mdb_strerror(rc));
+        }
+    }
+    const auto t2 = std::chrono::steady_clock::now();
+    const auto ns = [](auto d) { return std::chrono::duration_cast<std::chrono::nanoseconds>(d).count(); };
+    std::printf("speed arm=%d commit_ns=%lld read_ns=%lld check=%llu\n", ARM,
+                static_cast<long long>(ns(t1 - t0) / write_entries),
+                static_cast<long long>(ns(t2 - t1) / (static_cast<long long>(write_entries) * read_passes)),
+                static_cast<unsigned long long>(sum + static_cast<unsigned>(wrong)));
+    mdb_env_close(env);
+}
+
+int main(int argc, char** argv)
+{
+    const std::string mode = argv[1];
+    const std::string dir = argv[2];
+    if (mode == "damage") {
+        damage(dir);
+    } else {
+        speed(dir);
+    }
+}
