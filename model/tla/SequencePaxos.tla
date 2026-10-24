@@ -70,6 +70,12 @@ CONSTANTS
   PowerLoss,
   \* @type: Str;
   Mutation,
+  \* @type: Int;
+  MaxStorageFault,
+  \* @type: Bool;
+  StartChecks,
+  \* @type: Set(Str);
+  StorageFaultKind,
   \* @type: Bool;
   ClientSessions,
   \* @type: Int;
@@ -138,6 +144,10 @@ VARIABLES
   timeouts,
   \* @type: Int;
   elections,
+  \* @type: Int;
+  storage_faults,
+  \* @type: Set(Int);
+  refused,
   \* @type: Set($entry);
   proposed,
   \* @type: Seq($entry);
@@ -210,7 +220,8 @@ VARIABLES
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
               cached_promise_message, buffered_proposals, leader_state>>
-env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections>>
+env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections,
+              storage_faults, refused>>
 ghost    == <<proposed, decided_history, decided_ballot>>
 recovery == <<recovering, nonce, recovery_responses, power_loss_completed>>
 rollback == <<rolled_back, past_durable>>
@@ -560,6 +571,8 @@ Init ==
   /\ duplicates = 0
   /\ timeouts = 0
   /\ elections = 0
+  /\ storage_faults = 0
+  /\ refused = {}
   /\ proposed = {}
   /\ decided_history = <<>>
   /\ decided_ballot = [k \in 1..MaxLog |-> DefaultBallot]
@@ -1236,7 +1249,7 @@ HandleLeader(i, k) ==
      /\ chan' = Send(chan, i, [p \in Peers(i) |->
                   <<[EmptyMessage EXCEPT !.type = "Prepare", !.n = n, !.decided_idx = dec,
                      !.n_accepted = na, !.accepted_idx = acc]>>])
-     /\ UNCHANGED <<n_accepted, log, decided_idx, accepted_idx, current_seq_num,
+     /\ UNCHANGED <<storage_faults, refused, n_accepted, log, decided_idx, accepted_idx, current_seq_num,
                     cached_promise_message, buffered_proposals,
                     wiped, crashes, wipes, losses, duplicates, timeouts, proposed,
                     recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
@@ -1282,8 +1295,8 @@ Propose(i, v) ==
 \* With Recovery, the node first sends Recovery with a fresh nonce and
 \* takes part in nothing else until its answers are complete
 \* (owner decision: after each start a node votes only after f + 1 answers).
-\* @type: (Set(Int), Int -> $durable, Set(Int), Bool) => Bool;
-Restart(R, d, Q, rec) ==
+\* @type: (Set(Int), Int -> $durable, Set(Int), Bool, Str) => Bool;
+RestartInPhase(R, d, Q, rec, ph) ==
   LET \* @type: (Int -> a, Int -> a) => Int -> a;
       At(f, g) == [k \in Servers |-> IF k \in R THEN g[k] ELSE f[k]]
       msg(k)   == IF rec THEN RecoveryMsg(nonce[k] + 1) ELSE PrepareReqMsg(d[k].promise)
@@ -1293,7 +1306,7 @@ Restart(R, d, Q, rec) ==
   /\ log' = At(log, [k \in R |-> d[k].log])
   /\ decided_idx' = At(decided_idx, [k \in R |-> d[k].decided_idx])
   /\ role' = At(role, [k \in R |-> "Follower"])
-  /\ phase' = At(phase, [k \in R |-> "Recover"])
+  /\ phase' = At(phase, [k \in R |-> ph])
   /\ accepted_idx' = At(accepted_idx, [k \in R |-> Len(d[k].log)])
   /\ current_seq_num' = At(current_seq_num, [k \in R |-> DefaultSeq])
   /\ cached_promise_message' = At(cached_promise_message, [k \in R |-> <<>>])
@@ -1316,12 +1329,15 @@ Restart(R, d, Q, rec) ==
                        THEN LeaseLength ELSE wait_remaining
   /\ UNCHANGED <<witness_epoch, node_epoch>>
 
+\* @type: (Set(Int), Int -> $durable, Set(Int), Bool) => Bool;
+Restart(R, d, Q, rec) == RestartInPhase(R, d, Q, rec, "Recover")
+
 \* F3: crash keeping durable state.
 Crash(i) ==
   /\ crashes < MaxCrash
   /\ crashes' = crashes + 1
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : Quiet(k)}, Recovery)
-  /\ UNCHANGED <<wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back,
+  /\ UNCHANGED <<storage_faults, refused, wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back,
                  client, reconfig>>
   /\ GhostUpdate
 
@@ -1338,7 +1354,7 @@ Rollback(R) ==
   /\ \E d \in [R -> UNION {past_durable[k] : k \in R}] :
        /\ \A k \in R : d[k] \in past_durable[k] /\ d[k] # DurableOf(k)
        /\ Restart(R, d, {k \in R : Quiet(k)}, Recovery)
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  client, reconfig>>
   /\ GhostUpdate
 
@@ -1377,10 +1393,94 @@ Wipe(i) ==
   /\ wait_remaining' = IF i \in NextConfigNodes /\ wait_remaining > 0
                        THEN LeaseLength ELSE wait_remaining
   /\ UNCHANGED <<witness_epoch, node_epoch>>
-  /\ UNCHANGED <<chan, crashes, losses, duplicates, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, chan, crashes, losses, duplicates, timeouts, elections, proposed,
                  nonce, rolled_back, client, running, first_log, reconfigurations,
                  force_single, read_only, halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
+
+\* doc/plan-start-checks.md section 3. A node restarts after a crash and
+\* reads a damaged durable state of one kind. Provisional names:
+\* StorageFault, StartChecks, the kinds.
+\* missing_entry: LMDB lost the key k. LogWithout is an approximation of
+\* what the node reads without the checks: read_entries works by key, so a
+\* range read up to the count returns the keys below the count, and the
+\* last key is not read. Only the mutation StartCheckMissing uses it; with
+\* the checks, each k below the last position is found.
+\* @type: (Seq($entry), Int) => Seq($entry);
+LogWithout(l, k) == SubSeq(l, 1, k - 1) \o SubSeq(l, k + 1, Len(l))
+
+\* @type: (Int, Str) => Set($durable);
+DamagedStates(i, kind) ==
+  LET d == DurableOf(i) IN
+  CASE kind = "missing_entry" ->
+         {[d EXCEPT !.log = LogWithout(log[i], k)] : k \in 1..Len(log[i])}
+    [] kind = "missing_accepted" ->
+         IF Len(log[i]) > 0 /\ n_accepted[i] # DefaultBallot
+         THEN {[d EXCEPT !.n_accepted = DefaultBallot]} ELSE {}
+    [] kind = "missing_promise" ->
+         IF promise[i] # DefaultBallot
+         THEN {[d EXCEPT !.promise = DefaultBallot]} ELSE {}
+    [] kind = "missing_decided" ->
+         IF decided_idx[i] > 0 THEN {[d EXCEPT !.decided_idx = 0]} ELSE {}
+
+\* The checks of the plan find a damaged state when the continuity of the
+\* log breaks (a missing last key keeps it), or when a non-empty log has no
+\* accepted round, or when the accepted round is above the promise, or when
+\* the decided index is above the log length.
+\* @type: ($durable) => Bool;
+ChecksFind(d) ==
+  \/ Len(d.log) > 0 /\ d.n_accepted = DefaultBallot
+  \/ d.n_accepted > d.promise
+  \/ d.decided_idx > Len(d.log)
+
+\* A missing key below the last key breaks the continuity. The model of the
+\* damaged state keeps no keys, so the action passes the position.
+\* @type: (Int, Str, $durable, Int) => Bool;
+Detected(i, kind, d, k) ==
+  /\ StartChecks /\ Mutation # "StartCheckMissing"
+  /\ \/ kind = "missing_entry" /\ k < Len(log[i])
+     \/ ChecksFind(d)
+
+\* A node that reads no promise gets a full copy of the durable state of a
+\* node that votes and does not recover, and runs the recovery, as every
+\* other start does (owner, 2026-10-24 12:04). The copy is the whole
+\* durable state; BuildForServer copies only the decided prefix and has
+\* more conditions. Only a seed node at the first start of a cluster starts with no recovery, and that is Init.
+\* Mutation StartAsNewNode is the code at 4c57d44: (Follower, None), no
+\* recovery, no message (sequence_paxos.hpp:268-271). A refused
+\* node leaves running with its state, as Halt does; it takes no further
+\* step. Only a node of Nodes gets a storage fault.
+\* @type: (Int, Str) => Bool;
+StorageFault(i, kind) ==
+  /\ i \in Nodes
+  /\ kind \in StorageFaultKind
+  /\ storage_faults < MaxStorageFault
+  /\ storage_faults' = storage_faults + 1
+  /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
+       /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
+       /\ kind # "missing_entry" => k = 0
+       /\ IF Detected(i, kind, d, k)
+          THEN /\ running' = running \ {i}
+               /\ refused' = refused \cup {i}
+               /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
+                                                    THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
+                                                    ELSE stage1_ghost[j]]
+               /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
+                              timeouts, elections, ghost, recovery, rollback, client, readvars,
+                              buffered_stopsign, first_log, reconfigurations, force_single,
+                              read_only, deactivated, halts, read_only_entries, build_source,
+                              leasevars, leaseghost>>
+          ELSE /\ IF d.promise = DefaultBallot /\ Mutation = "StartAsNewNode"
+                  THEN RestartInPhase({i}, [j \in {i} |-> d], {i}, FALSE, "None")
+                  ELSE IF d.promise = DefaultBallot
+                  THEN \E src \in running \ {i} :
+                         /\ Votes(src) /\ ~recovering[src]
+                         /\ Restart({i}, [j \in {i} |-> DurableOf(src)], {j \in {i} : Quiet(j)},
+                                    Recovery)
+                  ELSE Restart({i}, [j \in {i} |-> d], {j \in {i} : Quiet(j)}, Recovery)
+               /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
+                              elections, proposed, rolled_back, client, reconfig>>
+               /\ GhostUpdate
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
 \* resend_messages_leader, follower.rs:240-282 resend_messages_follower.
@@ -1433,7 +1533,7 @@ ResendMessageTimeout(i) ==
      THEN /\ chan' = Send(chan, i, [k \in Peers(i) |-> <<PrepareReqMsg(promise[i])>>])
           /\ UNCHANGED <<durable, volatile>>
      ELSE UNCHANGED <<durable, volatile, chan>>
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, elections, proposed,
                  recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
                  leasevars>>
   /\ chan' # chan \/ phase' # phase
@@ -1445,7 +1545,7 @@ Lose(p, k) ==
   /\ losses < MaxLoss
   /\ losses' = losses + 1
   /\ chan' = [chan EXCEPT ![p] = SubSeq(@, 1, k - 1) \o SubSeq(@, k + 1, Len(@))]
-  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, duplicates, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, durable, volatile, wiped, crashes, wipes, duplicates, timeouts, elections, proposed,
                  recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
                  leasevars>>
   /\ GhostUpdate
@@ -1457,7 +1557,7 @@ Duplicate(p, k) ==
   /\ duplicates' = duplicates + 1
   /\ Len(chan[p]) < Cap
   /\ chan' = [chan EXCEPT ![p] = Append(@, @[k])]
-  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, losses, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, durable, volatile, wiped, crashes, wipes, losses, timeouts, elections, proposed,
                  recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
                  leasevars>>
   /\ GhostUpdate
@@ -1844,7 +1944,7 @@ EnterReadOnly(i) ==
   /\ read_only_entries' = read_only_entries + 1
   /\ read_only' = [read_only EXCEPT ![i] = TRUE]
   /\ Restart({i}, [k \in {i} |-> d], {i}, Recovery)
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
                  deactivated, halts, stage1_ghost, build_source>>
   /\ GhostUpdate
@@ -1856,7 +1956,7 @@ LeaveReadOnly(i) ==
   /\ read_only' = [read_only EXCEPT ![i] = FALSE]
   /\ stage1_ghost' = [stage1_ghost EXCEPT ![i].leave_decided = Len(decided_history)]
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : deactivated[k]}, Recovery)
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
                  deactivated, halts, read_only_entries, build_source>>
   /\ GhostUpdate
@@ -1877,11 +1977,12 @@ Halt(i) ==
 \* @type: Int => Bool;
 Resume(i) ==
   /\ i \in Nodes \ running
+  /\ i \notin refused
   /\ i # force_single.node
   /\ running' = running \cup {i}
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : Quiet(k)},
              Recovery /\ Mutation # "ResumeWithoutRecovery")
-  /\ UNCHANGED <<wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
+  /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, first_log, reconfigurations, force_single, read_only,
                  deactivated, halts, read_only_entries, stage1_ghost, build_source>>
   /\ GhostUpdate
@@ -2019,6 +2120,7 @@ Next ==
   \/ \E i \in running : EnterReadOnly(i) \/ LeaveReadOnly(i)
   \/ \E s \in running, k \in Nodes : SendDeactivated(s, k)
   \/ \E i \in running : Halt(i)
+  \/ \E i \in running, kind \in StorageFaultKind : StorageFault(i, kind)
   \/ \E i \in Nodes \ running : Resume(i)
   \/ Tick
   \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
@@ -2100,7 +2202,8 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
                      "NoDecideOnResend", "DecideOnResendOldSeq",
-                     "PowerLossWithF", "PowerLossStartAtAccepted"}
+                     "PowerLossWithF", "PowerLossStartAtAccepted",
+                     "StartCheckMissing", "StartAsNewNode"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -2108,6 +2211,10 @@ ASSUME MaxForceSingle \in {0, 1}
 ASSUME MaxForceSingle > 0 => SingleNode /\ Cardinality(NextConfigNodes) = 1
 ASSUME MaxReadOnly \in Nat
 ASSUME MaxHalt \in Nat
+ASSUME MaxStorageFault \in Nat
+ASSUME StartChecks \in BOOLEAN
+ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
+                                   "missing_decided"}
 ASSUME StaleReadNode \in BOOLEAN
 ASSUME ClientSessions \in BOOLEAN
 ASSUME ReadIndex \in BOOLEAN
@@ -2137,6 +2244,9 @@ S1 == \A i, j \in Servers : Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i),
 S2 == \A i \in Servers : Votes(i) => IsPrefix(DecidedPrefix(i), decided_history)
 
 S2Grows == [][IsPrefix(decided_history, decided_history')]_vars
+
+\* doc/plan-start-checks.md: an undamaged durable state passes the checks.
+NoFalseRefusal == \A i \in Servers \ refused : ~ChecksFind(DurableOf(i))
 
 \* A leader in (Leader, Accept) with ballot b holds every entry of
 \* decided_history that was decided at a ballot <= b.
