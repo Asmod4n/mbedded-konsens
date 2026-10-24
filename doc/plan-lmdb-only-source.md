@@ -319,13 +319,18 @@ Line numbers are at commit 06a52bf.
    transactions stay possible.
 3. The result and its CRC go into the `accepted` of the follower, as
    the read-back of 2.4 gives them.
-4. Open (section 7): a follower runs the work before the decide. When a
-   later `accept_sync` cuts that entry (`sequence_paxos.hpp:804-810`),
-   its effects must go too. The Jepsen decision of 2026-10-17 11:24 put
-   the state in its own LMDB environment and its commit after the
-   decide; the owner's form of 2026-10-24 15:35 reads the result back
-   after that commit and before "committed". Both cannot hold for one
-   commit.
+4. The owner's form, 2026-10-24 20:25: a redo log. The entry holds the
+   writes that its work makes, as the work computed them. The state
+   changes only after the decide, and only with the writes in the
+   entry. A later `accept_sync` that cuts the entry
+   (`sequence_paxos.hpp:804-810`) leaves no effect, because nothing was
+   written to the state. Execute-Verify compares these recorded writes:
+   the follower computes the writes of the work itself and compares
+   them with the writes in the entry of the leader. The work runs in a
+   nested transaction that is always aborted; only its writes are kept,
+   in the entry. This keeps the Jepsen decision of 2026-10-17 11:24:
+   the state commits only after the decide. Provisional name: write
+   set. Not yet in the model.
 
 ### 2.6 Group commit
 
@@ -470,7 +475,7 @@ decides the names.
 4. Decided, 2026-10-24 19:28: a page that stays in the cache stays, and
    the node does nothing about it. No O_DIRECT: it would need a second
    reader of the LMDB pages.
-5. The effects of a work whose entry is cut (2.5 item 4).
+5. Decided, 2026-10-24 20:25: a redo log (2.5 item 4).
 6. The page checksums of LMDB were decided against on 2026-10-16
    (section 1). Measured on 2026-10-24 at the owner's wish. The owner,
    19:29 and 19:30, ends the reason of 2026-10-16: a value
