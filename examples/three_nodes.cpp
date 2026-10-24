@@ -43,7 +43,8 @@ using node_t = konsens::node<konsens::persistent_storage, concatenation>;
 
 constexpr std::size_t node_count = 3;
 constexpr std::size_t stopped_node = 2;
-constexpr std::size_t map_size = std::size_t{64} << 20;
+constexpr std::size_t mebibyte = std::size_t{1} << 20;
+constexpr std::size_t map_size = 64 * mebibyte;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
 constexpr int round_limit = 200;

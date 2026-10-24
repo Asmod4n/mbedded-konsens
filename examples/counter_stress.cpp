@@ -74,7 +74,8 @@ constexpr std::uint64_t agreement_round_limit = 1000;
 constexpr std::uint64_t final_read_round_limit = 1000;
 constexpr int usage_exit_code = 2;
 constexpr std::size_t words_of_a_flag = 2;
-constexpr std::size_t map_size = std::size_t{64} << 20;
+constexpr std::size_t mebibyte = std::size_t{1} << 20;
+constexpr std::size_t map_size = 64 * mebibyte;
 
 constexpr std::uint64_t default_clients = 4;
 constexpr std::uint64_t default_increments = 1000;
@@ -410,7 +411,6 @@ struct cluster {
             return std::unexpected(n.error());
         }
         nodes.at(i).emplace(std::move(*n));
-        pending.at(i).reset();
         return {};
     }
 
@@ -419,6 +419,7 @@ struct cluster {
     std::expected<void, std::error_code> restart(const std::size_t i)
     {
         auto kept = storage.stop(at(i));
+        pending.at(i).reset();
         nodes.at(i).reset();
         if (auto r = start(i, storage.start(i, std::move(kept))); !r) [[unlikely]] {
             return r;
@@ -622,19 +623,12 @@ struct stress {
             if (from >= held) {
                 continue;
             }
-            const auto& s = sp.get_internal_storage();
-            const auto len = s.get_log_len();
-            if (!len) [[unlikely]] {
-                return std::unexpected(failure{"read the log", len.error()});
-            }
-            if (*len < held) [[unlikely]] {
-                return std::unexpected(failure{"S2b: a leader misses a decided entry", {}});
-            }
-            const auto log = s.get_entries(from, held);
+            const auto log = sp.get_internal_storage().get_entries(from, held);
             if (!log) [[unlikely]] {
                 return std::unexpected(failure{"read the log", log.error()});
             }
-            if (!std::ranges::equal(*log, std::span(decided_history).subspan(from, held - from))) [[unlikely]] {
+            if (log->size() != held - from ||
+                !std::ranges::equal(*log, std::span(decided_history).subspan(from, held - from))) [[unlikely]] {
                 return std::unexpected(failure{"S2b: a leader misses a decided entry", {}});
             }
         }
@@ -659,7 +653,10 @@ struct stress {
         if (!len) [[unlikely]] {
             return std::unexpected(len.error());
         }
-        return s.get_entries(std::min(from, *len), *len);
+        if (*len < from) [[unlikely]] {
+            return std::unexpected(std::make_error_code(std::errc::result_out_of_range));
+        }
+        return s.get_entries(from, *len);
     }
 
     outcome check_s5() const
