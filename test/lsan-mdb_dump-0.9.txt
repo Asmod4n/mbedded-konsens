@@ -1,0 +1,4 @@
+# dumpit of LMDB 0.9.36 (mdb_dump.c:135) opens a cursor for each database
+# and never closes it; LMDB 1.0 closes it (mdb_dump.c:157). The process
+# ends right after, so the test does not count this leak of the origin.
+leak:dumpit
