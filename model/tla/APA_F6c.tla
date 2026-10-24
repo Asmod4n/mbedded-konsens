@@ -29,6 +29,7 @@ OVERRIDE_RunningFaults == FALSE
 OVERRIDE_StepChecks == TRUE
 OVERRIDE_VerifyCrc == FALSE
 OVERRIDE_ChainCheck == FALSE
+OVERRIDE_MetaRecord == FALSE
 OVERRIDE_StorageFaultKind == {}
 OVERRIDE_ClientSessions == FALSE
 OVERRIDE_MaxClientSend == 0

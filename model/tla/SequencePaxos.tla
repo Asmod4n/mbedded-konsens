@@ -81,6 +81,7 @@ CONSTANTS
   \* @type: Bool;
   VerifyCrc,
   ChainCheck,
+  MetaRecord,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -1522,7 +1523,11 @@ StorageFault(i, kind) ==
 \* stop_voting does. With ChainCheck, each entry carries the CRC over the
 \* CRC of its predecessor and its own bytes, and the meta record holds the
 \* last index and its chain CRC; so the step check also finds a lost last
-\* entry. Every other damage is the new state of the node.
+\* entry. With MetaRecord, the promise, the accepted round, the decided
+\* index, the last index and the chain CRC are one record with one CRC.
+\* The node writes it when it is created and it never goes away, so a lost
+\* or changed value is found. Every other damage is the new state of the
+\* node.
 \* @type: (Int, Str) => Bool;
 RunningStorageFault(i, kind) ==
   /\ RunningFaults
@@ -1534,6 +1539,7 @@ RunningStorageFault(i, kind) ==
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
        /\ IF StepChecks /\ (\/ kind = "missing_entry" /\ (k < Len(log[i]) \/ ChainCheck)
+                            \/ MetaRecord /\ kind # "missing_entry"
                             \/ ChecksFind(d))
           THEN /\ running' = running \ {i}
                /\ refused' = refused \cup {i}
@@ -2318,6 +2324,7 @@ ASSUME RunningFaults \in BOOLEAN
 ASSUME StepChecks \in BOOLEAN
 ASSUME VerifyCrc \in BOOLEAN
 ASSUME ChainCheck \in BOOLEAN
+ASSUME MetaRecord \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided"}
 ASSUME StaleReadNode \in BOOLEAN
