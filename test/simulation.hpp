@@ -28,8 +28,9 @@
 // start(i, kept) gives the storage of node i, and stop(node) gives what a
 // crash keeps. A crash destroys the node before start, so that a storage
 // that holds a file, as LMDB does, is closed before it is opened again.
-// With rollback::one and a storage that can be copied, one node restarts
-// from an earlier copy of its storage (a lost fsync or a backup), as
+// With rollback::one and a Cluster that can keep(i, storage) and
+// restore(i, kept), one node restarts from an earlier copy of its storage
+// (a lost fsync or a backup), as
 // Rollback in SequencePaxos.tla, run F6b. Only recovery repairs that node.
 // A crash or a rollback starts only while no node recovers: two nodes that
 // recover at once leave one voting node of three, no primary, and a
@@ -362,6 +363,7 @@ struct coverage {
     std::uint64_t reads;
     std::uint64_t reads_across_leader_change;
     std::uint64_t expired;
+    std::uint64_t rollbacks;
 
     coverage& operator+=(const coverage& o)
     {
@@ -371,6 +373,7 @@ struct coverage {
         reads += o.reads;
         reads_across_leader_change += o.reads_across_leader_change;
         expired += o.expired;
+        rollbacks += o.rollbacks;
         return *this;
     }
 };
@@ -406,7 +409,7 @@ struct world {
     bool duplicated = false;
     bool crashed = false;
     bool survived_crash = true;
-    std::optional<std::pair<std::size_t, typename Cluster::storage_type>> earlier;
+    std::optional<std::pair<std::size_t, typename Cluster::earlier_type>> earlier;
     bool rolled_back = false;
     std::array<client, client_count> users{};
     std::map<std::uint64_t, call> calls;
@@ -517,15 +520,19 @@ struct world {
     void keep_earlier(std::size_t i)
     {
         note([&] { return std::string("keep earlier storage of " + std::to_string(i + 1)); });
-        earlier.emplace(i, nodes[i].get_sequence_paxos().get_internal_storage());
+        earlier.emplace(i, cluster.keep(i, nodes[i].get_sequence_paxos().get_internal_storage()));
     }
 
     void roll_back()
     {
         const auto i = earlier->first;
         note([&] { return std::string("roll back " + std::to_string(i + 1)); });
+        const auto len_before = nodes[i].get_sequence_paxos().get_internal_storage().get_log_len().value();
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), earlier->second, concatenation{}, nonce);
+        nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), concatenation{}, nonce);
+        if (nodes[i].get_sequence_paxos().get_internal_storage().get_log_len().value() < len_before) {
+            counts.rollbacks += 1;
+        }
         last_decided[i] = nodes[i].get_sequence_paxos().get_decided_idx();
         collect(i);
         rolled_back = true;
@@ -910,7 +917,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
         } else if (action == 98 && !w.crashed && !w.recovers()) {
             w.crash(pick(node_count));
             w.crashed = true;
-        } else if constexpr (std::copyable<typename Cluster::storage_type>) {
+        } else if constexpr (requires { typename Cluster::earlier_type; }) {
             if (faults == rollback::one && action == 95 && !w.earlier) {
                 const auto i = pick(node_count);
                 if (w.nodes[i].get_sequence_paxos().get_promise() != ballot{}) {

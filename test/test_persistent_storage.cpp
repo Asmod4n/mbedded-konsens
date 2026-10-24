@@ -294,6 +294,57 @@ TEST_CASE("open of a missing directory gives no_such_file_or_directory")
     CHECK(opened.error() == std::errc::no_such_file_or_directory);
 }
 
+// A rollback in the simulation restores a copy that was made while the node
+// ran. The copy must hold the state of the last commit, and a write after the
+// copy must not reach it.
+TEST_CASE("copy keeps the state of the last commit and not a later write")
+{
+    const temporary_directory dir;
+    const temporary_directory copied;
+    const std::vector<konsens::entry> written{normal_entry("first"), normal_entry("second")};
+    const konsens::ballot promise{1, 7, 3, 2};
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}, konsens::set_promise{promise},
+                                                   konsens::set_decided_index{1}};
+        REQUIRE(storage.write_atomically(ops).has_value());
+        REQUIRE(storage.copy(copied.path()).has_value());
+        const std::vector<konsens::entry> later_entries{normal_entry("later")};
+        const std::vector<konsens::storage_op> later{konsens::append_entries{later_entries},
+                                                     konsens::set_decided_index{3}};
+        REQUIRE(storage.write_atomically(later).has_value());
+    }
+    const auto storage = open_storage(copied.path());
+    CHECK(storage.get_log_len() == 2u);
+    CHECK(storage.get_entries(0, 3) == written);
+    CHECK(storage.get_promise() == promise);
+    CHECK(storage.get_decided_idx() == 1u);
+}
+
+// A user copies twice into the same directory. LMDB does not overwrite a
+// copy, and the second copy is an error value, not a crash.
+TEST_CASE("copy into a directory that holds a copy gives file_exists")
+{
+    const temporary_directory dir;
+    const temporary_directory copied;
+    const auto storage = open_storage(dir.path());
+    REQUIRE(storage.copy(copied.path()).has_value());
+    const auto again = storage.copy(copied.path());
+    REQUIRE_FALSE(again.has_value());
+    CHECK(again.error() == std::errc::file_exists);
+}
+
+// A user gives a directory that does not exist. The error is a value that
+// says so.
+TEST_CASE("copy into a missing directory gives no_such_file_or_directory")
+{
+    const temporary_directory dir;
+    const auto storage = open_storage(dir.path());
+    const auto copied = storage.copy(dir.path() / "missing");
+    REQUIRE_FALSE(copied.has_value());
+    CHECK(copied.error() == std::errc::no_such_file_or_directory);
+}
+
 // A storage that was moved from has no environment. A use of it is a wrong
 // use, and a wrong use fails loudly and reads no memory that is not alive.
 TEST_CASE("a moved-from storage throws logic_error")
@@ -303,6 +354,8 @@ TEST_CASE("a moved-from storage throws logic_error")
     const auto moved = std::move(storage);
     CHECK(moved.get_log_len() == 0u);
     CHECK_THROWS_AS((void)storage.get_log_len(), std::logic_error);
+    const temporary_directory copied;
+    CHECK_THROWS_AS((void)storage.copy(copied.path()), std::logic_error);
 }
 
 namespace {

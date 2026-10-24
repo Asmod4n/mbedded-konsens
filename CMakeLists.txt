@@ -106,6 +106,12 @@ target_compile_definitions(
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50)
 add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor)
 
+set(KONSENS_TEST_TMPDIR "" CACHE PATH "The directory of the LMDB environments of the tests, a tmpfs; empty keeps TMPDIR")
+if(KONSENS_TEST_TMPDIR)
+    get_property(konsens_all_tests DIRECTORY PROPERTY TESTS)
+    set_tests_properties(${konsens_all_tests} PROPERTIES ENVIRONMENT "TMPDIR=${KONSENS_TEST_TMPDIR}")
+endif()
+
 option(KONSENS_BENCH "Build konsens_bench and its A/A copy konsens_bench_aa" OFF)
 if(KONSENS_BENCH)
     foreach(bench_name konsens_bench konsens_bench_aa)

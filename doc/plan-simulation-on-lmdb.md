@@ -122,3 +122,44 @@ Result: changes needed. The build takes these changes:
    rollback on LMDB, one simulation test, the timing table; (b) the unit
    tests with the helper of item 3; (c) examples, bench, removal of the
    header, README.
+
+## 6. Result of step (a)
+
+The owner chose on 2026-10-24: ASan runs once before each merge, not at
+each step; the ASan build uses `-O1`; test_simulation is split so that
+ctest runs it in parallel; a build with ASan runs fewer seeds.
+
+- persistent_storage::copy makes the rollback copy with mdb_env_copy2
+  and MDB_CP_COMPACT while the node runs. Restore opens the copy.
+- test_simulation is three programs: test_simulation,
+  test_simulation_rollback and test_simulation_clients. The cluster is in
+  test/lmdb_cluster.hpp. test_simulation_lmdb is gone.
+- A rollback counts when the restored log is shorter. Mutation, run once:
+  roll_back that does not restore gives `c.rollbacks == 0`, and both
+  rollback cases fail.
+- g++ 16, image localhost/cxx-matrix, KONSENS_TEST_TMPDIR=/dev/shm:
+  19 of 19 tests green in Release and in Debug with
+  `-O1 -fno-omit-frame-pointer -fsanitize=address,undefined`. Both pass
+  with `--shm-size=64m`.
+- Without frame pointers at `-O1`, the LSan suppression of `dumpit` in
+  test_lmdb_upgrade does not match, because the stack has no frame of
+  dumpit.
+
+Times, g++ 16, test_simulation with all its cases in one process, before
+the split, 2000 seeds, Release:
+
+| Storage | Median of 3, alternate runs |
+|---|---|
+| memory_storage | 8.0 s |
+| LMDB on tmpfs | 27.9 s |
+
+Times of ctest, one run each:
+
+| Build | Before | After |
+|---|---|---|
+| Release | 26.1 s, one process | 16.1 s, split |
+| ASan | 479-493 s, -O0, memory, 2000 seeds | 26.1 s, -O1, LMDB, 200 seeds, split |
+
+The ASan figure before comes from six ctest logs of this session on
+memory_storage. test_simulation_clients takes the longest part: 16.0 s
+in Release, 26.1 s under ASan.
