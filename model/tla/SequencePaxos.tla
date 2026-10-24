@@ -1441,8 +1441,11 @@ Detected(i, kind, d, k) ==
   /\ \/ kind = "missing_entry" /\ k < Len(log[i])
      \/ ChecksFind(d)
 
-\* A node that reads no promise starts as a new node: (Follower, None), no
-\* recovery, no message (sequence_paxos.hpp:268-271 at 4c57d44). A refused
+\* A node that reads no promise gets a full copy and runs the recovery, as
+\* every other start does (owner, 2026-10-24 12:04); only a seed node at the
+\* first start of a cluster starts with no recovery, and that is Init.
+\* Mutation StartAsNewNode is the code at 4c57d44: (Follower, None), no
+\* recovery, no message (sequence_paxos.hpp:268-271). A refused
 \* node leaves running with its state, as Halt does; it takes no further
 \* step. Only a node of Nodes gets a storage fault.
 \* @type: (Int, Str) => Bool;
@@ -1465,7 +1468,7 @@ StorageFault(i, kind) ==
                               buffered_stopsign, first_log, reconfigurations, force_single,
                               read_only, deactivated, halts, read_only_entries, build_source,
                               leasevars, leaseghost>>
-          ELSE /\ IF d.promise = DefaultBallot
+          ELSE /\ IF d.promise = DefaultBallot /\ Mutation = "StartAsNewNode"
                   THEN RestartInPhase({i}, [j \in {i} |-> d], {i}, FALSE, "None")
                   ELSE Restart({i}, [j \in {i} |-> d], {j \in {i} : Quiet(j)}, Recovery)
                /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
@@ -2193,7 +2196,7 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
                      "NoDecideOnResend", "DecideOnResendOldSeq",
                      "PowerLossWithF", "PowerLossStartAtAccepted",
-                     "StartCheckMissing"}
+                     "StartCheckMissing", "StartAsNewNode"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
