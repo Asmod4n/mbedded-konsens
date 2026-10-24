@@ -135,7 +135,10 @@ Line numbers are at commit 4c57d44.
    12:05). A seed node starts with no recovery only when the config
    says seed and the store is new: no meta key and no hidden identity
    (owner, 14:01). A seed that gets a new disk loses the seed field
-   first. The name of the config field is provisional. The full copy
+   first. A cluster starts only with a majority of its nodes as seeds,
+   f+1 (owner, 14:01); the check of that count belongs to the config
+   tool and is outside this plan. The name of the config field is
+   provisional. The full copy
    itself is outside this plan; until it exists, the recovery copies
    the log as it does now.
 7. Every new error branch is `[[unlikely]]`.
