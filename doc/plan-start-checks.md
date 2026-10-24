@@ -158,7 +158,25 @@ the invariants of `MC_c_crash.cfg`
 - Results go to `model/results/<time>-start-checks-<run>.md` and are
   pushed after each run.
 
-### 3.5 What the model does not show
+### 3.5 Results
+
+Rounds 1 to 3 ran as simulations only:
+`model/results/*-start-checks-runs-1.md`, `-2.md` and `-3.md`. The runs
+added after round 1: MC_s_nocheck_missing_entry_noS5,
+MC_s_nocheck_missing_entry_safety, the `_norec` configs (Recovery =
+FALSE) and second seeds.
+
+- A missing key below the last key breaks S5 and S2 without the
+  checks. With the checks, no violation.
+- A missing accepted round or promise breaks S2b without the recovery
+  after the start. With the recovery and without the checks, no
+  simulation found a violation (2 seeds of 15 min each).
+- A missing last entry passes the checks. Without the recovery it
+  breaks S2b; with the recovery no violation was found.
+- No breadth-first run: about 5 M states in 15 min, and the search did
+  not end.
+
+### 3.6 What the model does not show
 
 - That the code reads the damage as the model says. The tests of
   section 4 show it.

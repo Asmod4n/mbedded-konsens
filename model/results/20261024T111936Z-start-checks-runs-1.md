@@ -38,6 +38,6 @@ As expected: the node decides again what it decided before.
 
 ## Breadth-first search
 
-Not started. Each simulation reached about 5 M states in 15 min with
-no end of the state space in sight, so a breadth-first search at
-these bounds cannot finish on this machine.
+Not started. Each simulation reached about 5 M states in 15 min, and
+the state space did not end. A breadth-first search at these bounds
+cannot finish on this machine.
