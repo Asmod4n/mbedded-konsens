@@ -33,11 +33,11 @@ Line numbers are at commit 4c57d44.
   (`read_log_len`, `:436`), not at the accepted index in memory. A last
   key that is lost while the node runs is not found: the next append
   succeeds at the old last index, and the stored log differs from the
-  log in memory. Owner question 2 of 2026-10-24.
+  log in memory. Item 2.5 is the answer (owner, 2026-10-24 12:03).
 - A node that reads `ballot{}` as its promise starts as a new node,
   (follower, none), with no recovery (`sequence_paxos.hpp:268-271`).
-  So a lost promise with an empty log is found by no check of this
-  plan. Owner question 1 of 2026-10-24.
+  So a lost promise with an empty log is found by no check of the
+  start. Item 2.6 is the answer (owner, 2026-10-24 12:04).
 - `get_log_len` (`:496-504`) calls `read_log_len` (`:192-200`), which
   returns the count of entries. It does not read the last index.
 - A missing meta value reads as `ballot{}` or 0 (`:262`, `:327-329`,
@@ -113,10 +113,21 @@ Line numbers are at commit 4c57d44.
 5. `persistent_storage::write_atomically` compares the count of stored
    entries with the accepted index of the caller (owner, 2026-10-24
    12:03). `append_entries` and `append_on_prefix` (`storage.hpp:87-94`)
-   each carry the accepted index that the caller holds. When the count
-   that `read_log_len` gives differs from it, `write_atomically`
-   returns `missing_entry` and commits nothing. The node then stops
-   voting, as at every other read error.
+   each carry the length of the log before that op, as the caller holds
+   it. `write_atomically` reads the count once (`:436`) and then keeps
+   the length that each op returns (`:438-441`). Each append op compares
+   its length with that running length: the count for the first op, the
+   length that the op before returned for each later op. It never
+   compares with `from_idx`, so `append_on_prefix` with `from_idx`
+   above the count stays valid (the `std::min` at `:289` stays; test
+   `test_persistent_storage.cpp:128` passes with the length 1 in the
+   op). When the lengths differ, `write_atomically` returns
+   `missing_entry` and commits nothing. No caller in sequence_paxos
+   holds a length other than the stored one (`:684`, `:764`, `:810`,
+   `:836`, `:1069`, review 3). Storages other than persistent_storage
+   (for example `counting_storage` in the bench) ignore the field. What
+   the node does with `missing_entry` there is open (owner card of
+   2026-10-24, review 3 finding 2).
 6. `sequence_paxos::with` starts the recovery also when the promise
    reads as `ballot{}` (owner, 2026-10-24 12:04: a node with an empty
    log gets a full copy and then runs the recovery). Only a seed node
@@ -163,9 +174,13 @@ kinds:
 A damage that the checks find makes the node leave `running`. It keeps
 its state and takes no further step, as `Halt` does. This is what
 `stop_voting` does in the code. Every damage that the checks do not
-find restarts the node: through `Restart` with the recovery, or, when
-the promise reads as `DefaultBallot`, as a new node in phase "None"
-with no recovery and no message (`RestartInPhase`).
+find restarts the node through `Restart` with the recovery. When the
+promise reads as `DefaultBallot`, the node first takes a full copy of
+the durable state of a node that votes and does not recover, and then
+runs the recovery (item 2.6). The start as a new node in phase "None",
+with no recovery and no message (`RestartInPhase`), is only the
+mutation StartAsNewNode. A node with an empty log, an accepted round
+and no promise is refused by check 2.4.2 and gets no copy.
 
 The model has no damage of a running node. With item 2.5 such damage
 reduces to cases that the model has:
@@ -185,7 +200,10 @@ run MC_s_nocheck_missing_entry_safety, which breaks S2.
 
 `Mutation = "StartCheckMissing"` turns the checks off. Each kind runs
 alone. The model shows a need for a check when the kind breaks S2 or
-S2b without that check.
+S2b without that check. With the recovery, no simulation found a
+violation for a missing accepted round or promise without the checks.
+So checks 2.4.1 and 2.4.2 are defence in depth while the recovery
+runs; they give an error with evidence in place of a silent repair.
 
 `Mutation = "StartAsNewNode"` is the start of the code at 4c57d44: a
 node that reads no promise starts as a new node, (follower, none), with
@@ -215,7 +233,13 @@ MaxDuplicate and MaxHalt are 0. Every config with the checks adds
 | MC_s_nocheck_*_norec | mutation, Recovery FALSE | accepted or promise |
 
 - MC_s_powerloss has no `missing_decided`: a lower decided index
-  breaks S7 by its definition.
+  breaks S7 by its definition. It takes its other bounds from
+  power-loss/MC_p.sim.cfg: MaxLog 1, MaxCrash 3, MaxTimeout 1. With
+  MaxLog 1 the continuity check never runs; MC_s_powerloss_log2 is the
+  same config with MaxLog 2.
+- In MC_s_crash the crash can also hit the damaged node.
+- Every node is a seed in Init. A start where some nodes are not seeds
+  is not in the model.
 - Each run is a simulation of 15 min. Breadth-first only when the state
   count of the simulation shows that it can finish.
 - At most three TLC runs at a time, one worker and one GC thread each,
@@ -229,8 +253,8 @@ MaxDuplicate and MaxHalt are 0. Every config with the checks adds
 All runs are simulations of 15 min:
 `model/results/*-start-checks-runs-1.md` to `-4.md` and `-7.md`.
 
-- A missing key below the last key breaks S5 and S2 without the
-  checks. With the checks, no simulation found a violation.
+- In the model (`LogWithout`, an approximation of the code), a missing
+  key below the last key breaks S5 and S2 without the checks. With the checks, no simulation found a violation.
 - A missing accepted round or promise breaks S2b without the recovery
   after the start. With the recovery, no simulation found a violation.
 - A lost promise with an empty log breaks S2b when the node starts as
@@ -270,6 +294,10 @@ this, as the bench does.
   writes a promise and an accepted round. Every harness checks
   `with(...).has_value()` with REQUIRE before it uses the value, so
   that the simulations and counter_stress show each refusal.
+- With item 2.6, every start with an empty store recovers unless it is
+  marked as the first start of a seed. The harnesses that start nodes
+  mark their first start: simulation.hpp, node_cluster.hpp,
+  test_node.cpp and counter_stress.
 - test_persistent_storage:
   - "a missing entry in the middle of the log is missing_entry at
     open";
