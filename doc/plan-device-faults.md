@@ -87,3 +87,38 @@ is the device under LMDB. This plan gets one review before the build.
 
 `error_fs`, `error_fsync`, `error_reads_from`, `mounted_error_fs`,
 `test_device_faults`, `KONSENS_FUSE_TESTS`.
+
+## 6. Review (second Claude agent, 2026-10-24) and changes
+
+Result: changes needed. The build takes these changes:
+
+1. The read fault covers a range, as a line "start length error" of a
+   device-mapper table: `error_reads_offset` and `error_reads_length`,
+   and only for data.mdb. A fault from an offset on can also hit the
+   root page of the main database, which a later commit can put after
+   the overflow pages.
+2. The test finds the range: the large entry carries a pattern; after
+   the unmount the test finds the pattern in the backing data.mdb. The
+   range is the whole pages inside the payload.
+3. The kernel can read ahead past the range. The test runs at the real
+   offsets of a persistent_storage file, so the build shows whether a
+   page outside the range stays readable.
+4. error_fs runs with `-f`, so its stderr stays and the test can reap
+   it. Its init callback writes one byte to a pipe that the fixture
+   gives it; the fixture blocks on the read of that byte.
+5. The child of the SIGBUS test sets SIGBUS to SIG_DFL (ASan has its own
+   handler), sets RLIMIT_CORE to 0 and ends with _exit.
+6. A second mutation, outside the tree and run once: LMDB that ignores
+   the failed sync in mdb_txn_commit. The check "a clean mount shows the
+   log of before" must then fail.
+7. error_fs and the test get KONSENS_WARNINGS. fuse3 comes from
+   pkg_check_modules with IMPORTED_TARGET, so its headers are system
+   headers. FUSE_USE_VERSION is a compile definition of error_fs.
+8. The test closes each storage before the unmount, and the unmount is
+   a call of the test that REQUIREs exit status 0. The destructor of the
+   fixture unmounts only a mount that is still there. The path of
+   fusermount3 comes from find_program.
+9. open of persistent_storage commits a write transaction. On a database
+   that exists, that commit writes nothing (mdb.c:4555-4557), so open
+   passes on the error_fsync mount.
+10. The test gets a ctest TIMEOUT.
