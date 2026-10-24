@@ -8,6 +8,7 @@
 #include <deque>
 #include <exception>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <iterator>
@@ -28,9 +29,14 @@
 #include <variant>
 #include <vector>
 
+#include <sys/types.h>
+#include <unistd.h>
+
 #include "konsens/memory_storage.hpp"
 #include "konsens/node.hpp"
+#include "konsens/persistent_storage.hpp"
 #include "konsens/wire.hpp"
+#include "temporary_directories.hpp"
 
 namespace {
 
@@ -55,8 +61,6 @@ struct counter {
     }
 };
 
-using node_t = konsens::node<konsens::memory_storage, counter>;
-
 constexpr std::size_t node_count = 3;
 constexpr std::size_t channel_count = node_count * node_count;
 constexpr std::uint64_t election_ticks = 5;
@@ -70,6 +74,7 @@ constexpr std::uint64_t agreement_round_limit = 1000;
 constexpr std::uint64_t final_read_round_limit = 1000;
 constexpr int usage_exit_code = 2;
 constexpr std::size_t words_of_a_flag = 2;
+constexpr std::size_t map_size = std::size_t{64} << 20;
 
 constexpr std::uint64_t default_clients = 4;
 constexpr std::uint64_t default_increments = 1000;
@@ -89,6 +94,7 @@ struct options {
     std::uint64_t power_loss{default_power_loss};
     bool calls_reconnected{true};
     bool cbor{false};
+    bool lmdb{false};
 };
 
 struct flag {
@@ -108,9 +114,11 @@ constexpr std::array flags{
 
 constexpr std::string_view no_reconnected_flag = "--no-reconnected";
 constexpr std::string_view cbor_flag = "--cbor";
+constexpr std::string_view lmdb_flag = "--lmdb";
 
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
-                                   "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor]";
+                                   "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor] "
+                                   "[--lmdb]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
@@ -135,6 +143,11 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
         }
         if (name == cbor_flag) {
             o.cbor = true;
+            rest = rest.subspan(1);
+            continue;
+        }
+        if (name == lmdb_flag) {
+            o.lmdb = true;
             rest = rest.subspan(1);
             continue;
         }
@@ -180,6 +193,34 @@ std::uint64_t value_of(const std::span<const std::byte> bytes)
     std::ranges::copy(bytes, b.begin());
     return std::bit_cast<std::uint64_t>(b);
 }
+
+struct memory_cluster {
+    using storage_type = konsens::memory_storage;
+
+    konsens::memory_storage stop(const konsens::node<konsens::memory_storage, counter>& stopped) const
+    {
+        return stopped.get_sequence_paxos().get_internal_storage();
+    }
+
+    std::expected<konsens::memory_storage, std::error_code> start(const std::size_t, konsens::memory_storage kept) const
+    {
+        return kept;
+    }
+};
+
+struct lmdb_cluster {
+    using storage_type = konsens::persistent_storage;
+
+    std::array<std::filesystem::path, node_count> directories;
+    uid_t effective_user_id;
+
+    std::monostate stop(const konsens::node<konsens::persistent_storage, counter>&) const { return {}; }
+
+    std::expected<konsens::persistent_storage, std::error_code> start(const std::size_t i, const std::monostate) const
+    {
+        return konsens::persistent_storage::open(directories.at(i), map_size, effective_user_id);
+    }
+};
 
 konsens::node_config config_of(const konsens::node_id pid)
 {
@@ -234,7 +275,11 @@ std::size_t channel_of(const konsens::message& m)
     return static_cast<std::size_t>((from - 1) * node_count + (to - 1));
 }
 
+template <typename Cluster>
 struct cluster {
+    using node_t = konsens::node<typename Cluster::storage_type, counter>;
+
+    Cluster storage;
     std::array<std::optional<node_t>, node_count> nodes;
     std::array<std::optional<konsens::transaction>, node_count> pending;
     std::array<std::deque<std::variant<konsens::message, std::string>>, channel_count> channels;
@@ -353,10 +398,14 @@ struct cluster {
         return {};
     }
 
-    std::expected<void, std::error_code> start(const std::size_t i)
+    std::expected<void, std::error_code> start(const std::size_t i,
+                                               std::expected<typename Cluster::storage_type, std::error_code> opened)
     {
+        if (!opened) [[unlikely]] {
+            return std::unexpected(opened.error());
+        }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), konsens::memory_storage{}, counter{}, nonce);
+        auto n = node_t::with(config_of(i + 1), std::move(*opened), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
@@ -365,16 +414,15 @@ struct cluster {
         return {};
     }
 
+    std::expected<void, std::error_code> start(const std::size_t i) { return start(i, storage.start(i, {})); }
+
     std::expected<void, std::error_code> restart(const std::size_t i)
     {
-        auto kept = at(i).get_sequence_paxos().get_internal_storage();
-        nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(kept), counter{}, nonce);
-        if (!n) [[unlikely]] {
-            return std::unexpected(n.error());
+        auto kept = storage.stop(at(i));
+        nodes.at(i).reset();
+        if (auto r = start(i, storage.start(i, std::move(kept))); !r) [[unlikely]] {
+            return r;
         }
-        nodes.at(i) = std::move(*n);
-        pending.at(i).reset();
         counts.restarts += 1;
         return collect();
     }
@@ -513,9 +561,10 @@ struct call {
     std::uint64_t read_floor;
 };
 
+template <typename Cluster>
 struct stress {
     options given;
-    cluster net;
+    cluster<Cluster> net;
     std::vector<client> clients;
     std::map<std::uint64_t, call> calls;
     std::map<std::pair<std::size_t, std::uint64_t>, std::uint64_t> first_replies;
@@ -895,37 +944,39 @@ std::uint64_t count_requests_decided_twice(const std::span<const konsens::entry>
     return static_cast<std::uint64_t>(std::ranges::count_if(copies, [](const auto& c) { return c.second > 1; }));
 }
 
-int run(const options& given)
+template <typename Cluster>
+int run(const options& given, Cluster storage)
 {
-    stress s{given,
-             cluster{{},
-                     {},
-                     {},
-                     {},
-                     std::mt19937_64{given.seed},
-                     given.loss,
-                     given.duplicate,
-                     0,
-                     {},
-                     {},
-                     {},
-                     given.calls_reconnected,
-                     given.cbor,
-                     {}},
-             {},
-             {},
-             {},
-             0,
-             0,
-             1,
-             0,
-             0,
-             {},
-             {},
-             {},
-             {},
-             {},
-             0};
+    stress<Cluster> s{given,
+                      cluster<Cluster>{std::move(storage),
+                                       {},
+                                       {},
+                                       {},
+                                       {},
+                                       std::mt19937_64{given.seed},
+                                       given.loss,
+                                       given.duplicate,
+                                       0,
+                                       {},
+                                       {},
+                                       {},
+                                       given.calls_reconnected,
+                                       given.cbor,
+                                       {}},
+                      {},
+                      {},
+                      {},
+                      0,
+                      0,
+                      1,
+                      0,
+                      0,
+                      {},
+                      {},
+                      {},
+                      {},
+                      {},
+                      0};
     for (std::size_t i = 0; i < node_count; ++i) {
         if (auto r = s.net.start(i); !r) [[unlikely]] {
             return fail(given.seed, {"start the nodes", r.error()});
@@ -1008,6 +1059,16 @@ int run(const options& given)
     return EXIT_SUCCESS;
 }
 
+int run_on_lmdb(const options& given)
+{
+    temporary_directories temporary;
+    lmdb_cluster storage{{}, geteuid()};
+    for (auto& d : storage.directories) {
+        d = temporary.create();
+    }
+    return run(given, std::move(storage));
+}
+
 }
 
 int main(const int argc, char** const argv)
@@ -1018,7 +1079,7 @@ int main(const int argc, char** const argv)
             std::cerr << std::format("{}.\n{}", given.error(), usage) << '\n';
             return usage_exit_code;
         }
-        return run(*given);
+        return given->lmdb ? run_on_lmdb(*given) : run(*given, memory_cluster{});
     } catch (const std::exception& e) {
         std::cerr << std::format("The program ended with an exception: {}", e.what()) << '\n';
         return EXIT_FAILURE;

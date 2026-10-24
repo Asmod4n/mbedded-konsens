@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -19,12 +18,12 @@
 #include <variant>
 #include <vector>
 
-#include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
+#include "temporary_directories.hpp"
 
 namespace {
 
@@ -58,33 +57,6 @@ constexpr uid_t root_user_id = 0;
 constexpr uid_t test_user_id = 65534;
 constexpr int exit_refused_root = 2;
 constexpr std::string_view allow_root_flag = "--allow-root-for-test";
-
-class temporary_directories {
-public:
-    temporary_directories() = default;
-    temporary_directories(const temporary_directories&) = delete;
-    temporary_directories& operator=(const temporary_directories&) = delete;
-    ~temporary_directories()
-    {
-        for (const auto& p : paths_) {
-            std::error_code ignored;
-            std::filesystem::remove_all(p, ignored);
-        }
-    }
-
-    std::filesystem::path create()
-    {
-        std::string name = (std::filesystem::temp_directory_path() / "konsens-three-nodes-XXXXXX").string();
-        if (mkdtemp(name.data()) == nullptr) [[unlikely]] {
-            throw std::system_error(errno, std::generic_category(), "mkdtemp");
-        }
-        paths_.emplace_back(name);
-        return paths_.back();
-    }
-
-private:
-    std::vector<std::filesystem::path> paths_;
-};
 
 konsens::node_config config_of(const konsens::node_id pid)
 {
