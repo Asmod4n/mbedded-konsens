@@ -428,7 +428,11 @@ decides the names.
 5. The effects of a work whose entry is cut (2.5 item 4).
 6. The page checksums of LMDB were decided against on 2026-10-16
    (section 1). Measured on 2026-10-24 at the owner's wish; a card asks
-   whether the decision of 2026-10-16 stays.
+   whether the decision of 2026-10-16 stays. The owner, 19:29: a value
+   from LMDB is used only inside its transaction and is never copied,
+   so it does not matter that LMDB hands out its own copy of a page
+   with checksums. With checksums, the page-out of 2.4 item 1 does not
+   reach that copy, and the read-back needs another form.
 7. The one pointer subtraction of 2.4 item 6.
 8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
 
