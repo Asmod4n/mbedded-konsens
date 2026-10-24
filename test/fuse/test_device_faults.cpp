@@ -9,8 +9,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
@@ -22,6 +25,7 @@
 
 #include "konsens/persistent_storage.hpp"
 #include "mounted_error_fs.hpp"
+#include "node_cluster.hpp"
 #include "temporary_directory.hpp"
 
 namespace {
@@ -197,4 +201,82 @@ TEST_CASE("a failed read of an entry ends the process with SIGBUS")
     REQUIRE(WIFSIGNALED(status));
     CHECK(WTERMSIG(status) == SIGBUS);
     failing.unmount();
+}
+
+namespace {
+
+node_cluster::cluster cluster_on(const std::filesystem::path& mount_point)
+{
+    std::array<std::shared_ptr<node_cluster::disk>, node_cluster::node_count> disks;
+    for (std::size_t i = 0; i < disks.size(); ++i) {
+        const auto directory = mount_point / std::to_string(i + 1);
+        std::filesystem::create_directory(directory);
+        disks.at(i) = node_cluster::disk_in(directory);
+    }
+    return {.disks = disks, .nodes = {}, .next_nonce = 1};
+}
+
+}
+
+// The decision of the owner (2026-10-21) for a write that fails before the
+// LMDB commit: the commit throws write_error with the error code of the
+// disk. None of the messages and replies of the transaction leaves the
+// node, because each of them depends on the write that did not happen. The
+// program does not repeat the commit, so a later commit is a wrong use. The
+// owner chose (2026-10-24) that the fault comes from the file system under
+// LMDB: error_fs fails each write of data.mdb with ENOSPC while the node
+// runs.
+TEST_CASE("a write that fails at the commit throws write_error and releases nothing")
+{
+    using namespace node_cluster;
+    const mount_directories d;
+    mounted_error_fs fs(d.backing, d.mount_point, "");
+    {
+        auto c = elected(cluster_on(d.mount_point));
+        const auto l = c.leader();
+        const auto s = registered(c, l, client_a);
+        auto t = value_of(c.nodes.at(l).client_request(client_a, s, 1, {}));
+        t += value_of(c.nodes.at(l).tick());
+        fs.set_faults("error_writes");
+        bool thrown = false;
+        try {
+            static_cast<void>(c.nodes.at(l).commit(t));
+        } catch (const konsens::write_error& e) {
+            thrown = true;
+            CHECK(e.code() == std::errc::no_space_on_device);
+        }
+        CHECK(thrown);
+        CHECK(c.nodes.at(l).take_outgoing_messages().empty());
+        CHECK(c.nodes.at(l).take_client_replies().empty());
+        fs.set_faults("none");
+        const auto next = value_of(c.nodes.at(l).tick());
+        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(next)), std::logic_error);
+        CHECK(c.nodes.at(l).take_outgoing_messages().empty());
+    }
+    fs.unmount();
+}
+
+// The same decision for a sync that fails at the LMDB commit, which
+// persistent_storage raises as sync_error: nothing in the library catches
+// it, and nothing of the transaction leaves the node. error_fs fails each
+// fsync while the node runs.
+TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
+{
+    using namespace node_cluster;
+    const mount_directories d;
+    mounted_error_fs fs(d.backing, d.mount_point, "");
+    {
+        auto c = elected(cluster_on(d.mount_point));
+        const auto l = c.leader();
+        const auto s = registered(c, l, client_a);
+        const auto t = value_of(c.nodes.at(l).client_request(client_a, s, 1, {}));
+        fs.set_faults("error_fsync");
+        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(t)), konsens::sync_error);
+        CHECK(c.nodes.at(l).take_outgoing_messages().empty());
+        CHECK(c.nodes.at(l).take_client_replies().empty());
+        fs.set_faults("none");
+        const auto next = value_of(c.nodes.at(l).tick());
+        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(next)), std::logic_error);
+    }
+    fs.unmount();
 }
