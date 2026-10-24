@@ -85,7 +85,12 @@ Line numbers are at commit 06a52bf.
   `mdb_env_write_meta`).
 - LMDB_1.0.2 has page checksums (`mdb_env_set_checksum`, `lmdb.h:1118`)
   and page encryption (`mdb_env_set_encrypt`, `lmdb.h:1108`). The plan
-  does not use them yet; the owner decides (section 7).
+  does not use them yet; the owner decides (section 7). LMDB checks the
+  checksum of a page when the page first enters its own page cache
+  (`mdb_rpage_encsum`, `mdb.c:6860-6885`), not on each read. In one
+  bench, the checksum added no cost above the noise floor of 17.1 % to a
+  step or to a read after it, and the reads of a step called it zero
+  times (bench/results/2026-10-24-165345Z-lmdb-page-checksum.txt).
 - The page cache, tested on this machine (kernel 6.18, ext4), in small
   programs outside the tree
   (bench/results/2026-10-24-163112Z-page-cache-drop.txt):
