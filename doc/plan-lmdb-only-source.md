@@ -87,9 +87,13 @@ Line numbers are at commit 06a52bf.
   and page encryption (`mdb_env_set_encrypt`, `lmdb.h:1108`). The plan
   does not use them: the owner decided on 2026-10-16 against
   `mdb_env_set_checksum` and `MDB_REMAP_CHUNKS`, because they break the
-  views into the map. LMDB checks the
-  checksum of a page when the page first enters its own page cache
-  (`mdb_rpage_encsum`, `mdb.c:6860-6885`), not on each read. In one
+  views into the map. LMDB checks a
+  checksum only on the path of `MDB_REMAP_CHUNKS` (`mdb_rpage_encsum`,
+  `mdb.c:6860-6885`, called at `:7215-7233`), and only when a page first
+  enters that cache. With a checksum alone, `MDB_REMAP_CHUNKS` stays off
+  (`MDB_REMAPPING`, `mdb.c:2337`; only encryption sets it, `:12147`):
+  LMDB writes the checksum (`:4296`), checks its size at open (`:5646`),
+  and checks no page on a read. In one
   bench, the checksum added no cost above the noise floor of 17.1 % to a
   step or to a read after it, and the reads of a step called it zero
   times (bench/results/2026-10-24-165345Z-lmdb-page-checksum.txt).
@@ -427,12 +431,13 @@ decides the names.
    reader of the LMDB pages.
 5. The effects of a work whose entry is cut (2.5 item 4).
 6. The page checksums of LMDB were decided against on 2026-10-16
-   (section 1). Measured on 2026-10-24 at the owner's wish; a card asks
-   whether the decision of 2026-10-16 stays. The owner, 19:29: a value
+   (section 1). Measured on 2026-10-24 at the owner's wish. The owner,
+   19:29 and 19:30, ends the reason of 2026-10-16: a value
    from LMDB is used only inside its transaction and is never copied,
-   so it does not matter that LMDB hands out its own copy of a page
-   with checksums. With checksums, the page-out of 2.4 item 1 does not
-   reach that copy, and the read-back needs another form.
+   so it does not matter how LMDB hands out a page. With a checksum
+   alone, values still point into the map, so the read-back of 2.4 stays
+   as it is; but LMDB then checks no page on a read (section 1).
 7. The one pointer subtraction of 2.4 item 6.
 8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
-
+   Next: measure the form with `MDB_REMAP_CHUNKS`, in which LMDB checks
+   a page on its first load, and give the numbers to the owner.
