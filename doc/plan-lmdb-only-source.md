@@ -282,6 +282,24 @@ Line numbers are at commit 06a52bf.
 7. With the disk cache of the drive on, a read can come from that cache
    and not from the medium. The read-back does not find a loss there.
    The README says this, as it says for a volatile cache now.
+8. With the page checksums and `MDB_REMAP_CHUNKS` (owner, 2026-10-24
+   19:45), LMDB maps chunks of 16 pages, each with its own `mmap`, and
+   the map of `mdb_env_info` holds only the two meta pages. A value
+   address does not give its file offset, so item 6 does not apply in
+   this form. The read-back then works so:
+   - `madvise(MADV_PAGEOUT)` on the range of each value in its chunk;
+   - `posix_fadvise(POSIX_FADV_DONTNEED)` on the whole file;
+   - the read transaction ends, and a new one reads the values; LMDB
+     checks the page checksum of each page that it reads, once in each
+     transaction (mdb.c:6862-6886, :3773-3792).
+   Measured (bench/results/2026-10-24-195244Z-lmdb-read-back-remap.txt,
+   noise floor 16.8 %), against the same form with a read-back from the
+   cache: 64 B +17.5 % to +92 %, 1024 B +44 % to +121 %; against no
+   checksum and no read-back: +19 % to +246 %. mincore found no value
+   page in memory after the drop. A page that another live transaction
+   holds in the same chunk is not checked again in that transaction.
+   Open: the file offset from `/proc/self/maps` would let the drop take
+   only the value pages; not measured.
 
 ### 2.5 Execute-Verify and nested transactions
 
