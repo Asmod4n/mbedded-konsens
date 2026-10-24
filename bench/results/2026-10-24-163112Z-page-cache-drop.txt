@@ -1,0 +1,92 @@
+# What: which calls take the pages of a file that the process maps out
+# of the page cache. Not a speed measurement: each line is a count of
+# resident pages that mincore reports.
+# Why: plan doc/plan-lmdb-only-source.md section 2.4, the read-back
+# after a commit must read from the disk.
+# How: three small programs outside the tree (at the end of this file),
+# g++ 13 -O1 (the compiler of the host), run on the host of the VM, ext4 on /dev/vda. Each writes a
+# file of 64 pages, fdatasyncs it, maps it MAP_SHARED, touches each
+# page, and then tries one way to drop pages. The tree at the run:
+# branch lmdb-only-source fe79246, not used by the programs.
+# kernel 6.18.44-fc-v153; g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0; mount /dev/vda ext4
+#
+# ---- t: whole file ----
+after touch: 64/64
+after fadvise only: 64/64
+madvise PAGEOUT=0 
+after pageout: 0/64
+after pageout+fadvise: 0/64
+fresh map of cache: 0/64
+# ---- t2: one page, then 16 pages, after one pwrite of 64 pages ----
+resident 64/64
+one page out: page8=1 total=64
+16 pages out: total=64
+fadvise page8 after: page8=0
+# ---- t3: one page (page 8); mode 1 fadvise; 2 MADV_PAGEOUT then fadvise; 3 MADV_DONTNEED then fadvise; 4 MADV_DONTNEED of the whole map then fadvise ----
+mode 1: page8=1 total=64
+mode 2: page8=0 total=63
+mode 3: page8=1 total=64
+mode 4: page8=1 total=64
+# ---- t.cpp ----
+# #include <cerrno>
+# #include <sys/mman.h>
+# #include <fcntl.h>
+# #include <unistd.h>
+# #include <cstdio>
+# #include <cstring>
+# #include <vector>
+# int resident(void* p, size_t n){ std::vector<unsigned char> v((n+4095)/4096); mincore(p,n,v.data()); int c=0; for(auto b:v) c+=b&1; return c; }
+# int main(){
+#   const size_t n=64*4096;
+#   int fd=open("f.bin",O_RDWR|O_CREAT|O_TRUNC,0600);
+#   std::vector<char> buf(n,'x'); write(fd,buf.data(),n); fdatasync(fd);
+#   char* p=(char*)mmap(nullptr,n,PROT_READ,MAP_SHARED,fd,0);
+#   volatile char s=0; for(size_t i=0;i<n;i+=4096) s+=p[i];
+#   printf("after touch: %d/64\n",resident(p,n));
+#   posix_fadvise(fd,0,n,POSIX_FADV_DONTNEED);
+#   printf("after fadvise only: %d/64\n",resident(p,n));
+#   int r=madvise(p,n,MADV_PAGEOUT); printf("madvise PAGEOUT=%d %s\n",r,r?strerror(errno):"");
+#   printf("after pageout: %d/64\n",resident(p,n));
+#   posix_fadvise(fd,0,n,POSIX_FADV_DONTNEED);
+#   printf("after pageout+fadvise: %d/64\n",resident(p,n));
+#   int fd2=open("f.bin",O_RDONLY); void* q=mmap(nullptr,n,PROT_READ,MAP_SHARED,fd2,0);
+#   printf("fresh map of cache: %d/64\n",resident(q,n));
+# }
+# ---- t2.cpp ----
+# #include <cerrno>
+# #include <sys/mman.h>
+# #include <fcntl.h>
+# #include <unistd.h>
+# #include <cstdio>
+# #include <vector>
+# int res(void* p,size_t n){std::vector<unsigned char> v((n+4095)/4096);mincore(p,n,v.data());int c=0;for(auto b:v)c+=b&1;return c;}
+# int main(){
+#   const size_t n=64*4096; int fd=open("g.bin",O_RDWR|O_CREAT|O_TRUNC,0600);
+#   std::vector<char> b(n,'y'); if(pwrite(fd,b.data(),n,0)<0) return 1; fdatasync(fd);
+#   char* p=(char*)mmap(nullptr,n,PROT_READ,MAP_SHARED,fd,0); volatile char s=0; for(size_t i=0;i<n;i+=4096)s+=p[i];
+#   printf("resident %d/64\n",res(p,n));
+#   madvise(p+8*4096,4096,MADV_PAGEOUT); printf("one page out: page8=%d total=%d\n",res(p+8*4096,4096),res(p,n));
+#   madvise(p+16*4096,16*4096,MADV_PAGEOUT); printf("16 pages out: total=%d\n",res(p,n));
+#   posix_fadvise(fd,8*4096,4096,POSIX_FADV_DONTNEED); printf("fadvise page8 after: page8=%d\n",res(p+8*4096,4096));
+# }
+# ---- t3.cpp ----
+# #include <cstdlib>
+# #include <sys/mman.h>
+# #include <fcntl.h>
+# #include <unistd.h>
+# #include <cstdio>
+# #include <cstring>
+# #include <vector>
+# int res(void* p,size_t n){std::vector<unsigned char> v((n+4095)/4096);mincore(p,n,v.data());int c=0;for(auto b:v)c+=b&1;return c;}
+# int main(int argc,char**argv){
+#   int mode=atoi(argv[1]);
+#   const size_t n=64*4096; int fd=open("h.bin",O_RDWR|O_CREAT|O_TRUNC,0600);
+#   std::vector<char> b(n,'y'); if(pwrite(fd,b.data(),n,0)<0) return 1; fdatasync(fd);
+#   char* p=(char*)mmap(nullptr,n,PROT_READ,MAP_SHARED,fd,0); volatile char s=0; for(size_t i=0;i<n;i+=4096)s+=p[i];
+#   char* q=p+8*4096;
+#   if(mode==1) posix_fadvise(fd,8*4096,4096,POSIX_FADV_DONTNEED);
+#   if(mode==2){ madvise(q,4096,MADV_PAGEOUT); posix_fadvise(fd,8*4096,4096,POSIX_FADV_DONTNEED);}
+#   if(mode==3){ madvise(q,4096,MADV_DONTNEED); posix_fadvise(fd,8*4096,4096,POSIX_FADV_DONTNEED);}
+#   if(mode==4){ madvise(p,n,MADV_DONTNEED); posix_fadvise(fd,8*4096,4096,POSIX_FADV_DONTNEED);}
+#   printf("mode %d: page8=%d total=%d\n",mode,res(q,4096),res(p,n));
+# }
