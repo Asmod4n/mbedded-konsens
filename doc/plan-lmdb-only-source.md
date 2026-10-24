@@ -236,7 +236,16 @@ Line numbers are at commit 06a52bf.
    proof. This finds only a step back that a peer saw. The README says
    this, and recommends a drive with power-loss protection or with its
    write cache off (owner, 2026-10-24 19:19). The model of this check is
-   round 7.
+   round 7. It does not find the traces of round 5.
+7. The state machine of each node keeps, in memory, the highest
+   promise, the highest pair of accepted round and last index, and the
+   highest decided index that its own transactions read or wrote (owner,
+   2026-10-24 19:51). It is a check, not a source: each step reads LMDB
+   and compares. A value below the mark is a damage (2.1 item 5). A
+   restart forgets the mark; the recovery covers that case. TigerBeetle
+   keeps the same values in memory (`op`, `commit_max`:
+   src/vsr/replica.zig:393-449 at 0450c32). The model
+   of this check is round 8. Provisional name: high-water mark.
 
 ### 2.4 The read-back and the vote
 
@@ -374,8 +383,14 @@ start-checks plan ("no change to the file format") changes with this.
   function of the decided index; the tests of 2.2 item 2 check the
   writers. The read-back of 2.4 item 1 is modelled as the fault that
   the step check finds before the report.
-- Not modelled: the recovery of a node that stopped while it ran. The
-  model keeps it out of `running` (section 7).
+- `HighWater` (Bool): the mark of 2.3 item 7. `HighWaterHolds` checks
+  that no step without a damage falls below the mark.
+- `RepairFromPeer` (Bool): a node that finds a damage while it runs
+  takes the durable state of a node that votes and does not recover,
+  and restarts with the recovery (2.1 item 5). With no such node, it
+  leaves `running`.
+- `AcceptedIdxIsLogLen` checks that the copy `accepted_idx` equals the
+  log length in each run, as a step before its removal.
 
 ### 3.2 Questions for the model
 
@@ -463,8 +478,6 @@ decides the names.
    so it does not matter how LMDB hands out a page. With a checksum
    alone, values still point into the map, so the read-back of 2.4 stays
    as it is; but LMDB then checks no page on a read (section 1).
-7. The one pointer subtraction of 2.4 item 6.
-8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
    Measured with `MDB_REMAP_CHUNKS`
    (bench/results/2026-10-24-194139Z-lmdb-page-checksum-remap.txt,
    noise floor 11.0 %): the step costs no more; a read of the step after
@@ -472,5 +485,8 @@ decides the names.
    and nothing above the noise with 1 and 16. LMDB then checks pages on
    reads. The owner chose this form, 2026-10-24 19:45: page checksums
    with `MDB_REMAP_CHUNKS`, beside the CRC of each entry and the chain
-   CRC. The read-back of 2.4 changes for the chunks and is measured
-   again.
+   CRC. The read-back in this form is 2.4 item 8.
+7. The one pointer subtraction of 2.4 item 6. In the form that the
+   owner chose (item 6), 2.4 item 6 does not apply (2.4 item 8); the question stays only if
+   the drop takes the file offset from `/proc/self/maps`.
+8. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 7).
