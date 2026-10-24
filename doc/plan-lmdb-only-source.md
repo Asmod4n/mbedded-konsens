@@ -167,7 +167,7 @@ src` is empty, so they apply to the head of this branch.
    its log from a peer (2.4) and runs the recovery of VR Revisited, as
    at a start (owner, 2026-10-24 19:21). The model of this is round 8.
 6. A read that returns `MDB_BAD_CHECKSUM` is a damage of item 5
-   (provisional; open question 9). Every other read error of LMDB throws
+   (owner, 2026-10-24 21:27). Every other read error of LMDB throws
    a type derived from `std::system_error` (owner, 2026-10-24 14:39).
 7. `cached_promise_message_` (`:728`) is built again from LMDB on a
    resend (`:440`), not kept.
@@ -269,7 +269,7 @@ src` is empty, so they apply to the head of this branch.
 
 ### 2.4 The repair from a peer
 
-This form is provisional (open question 10).
+The owner chose this form, 2026-10-24 21:27.
 
 1. A node that found a damage sends a recovery request, as at a start.
 2. A peer that votes and does not recover answers with its log length
@@ -309,8 +309,8 @@ This form is provisional (open question 10).
    chain CRC of its own log at that index. It decides only from such
    reports.
 3. A follower raises its decided index to `d` only when its own chain
-   CRC at `d` equals the one in the message. What it does when they
-   differ is open (open question 8).
+   CRC at `d` equals the one in the message. When they differ, that is a
+   damage of 2.1 item 5 (owner, 2026-10-24 21:27).
 4. `handle_majority_promises` raises the decided index to the highest
    decided index of the promises only when the chain CRC at that index
    in the promise equals its own after the sync.
@@ -335,10 +335,9 @@ This form is provisional (open question 10).
    they do not commit. The entry carries the result and its CRC. A
    user error aborts only a nested transaction, and the entry records
    the error as its result.
-5. The state on which an entry runs before the decide is open (open
-   question 11). Provisional form: the leader proposes the next batch
-   only after the decide of the batch before it, so every entry runs on
-   the committed state. A step still takes all the work that waits.
+5. The leader proposes the next batch only after the decide of the
+   batch before it, so every entry runs on the committed state (owner,
+   2026-10-24 21:27). A step still takes all the work that waits.
 6. The client gets the result that stands in the decided entry. The run
    after the decide gives the same result, because the entry ran on the
    same state.
@@ -526,15 +525,15 @@ there. The owner decides the names.
    table stand in LMDB (2.6); the node reads no page back from the disk
    itself (2.1 item 11). With this, the pointer rounding of review 2,
    finding 6, does not arise.
-8. Open, asked on a card: what a follower does when its chain CRC at `d`
-   differs from the leader's. Proposal: it is a damage of 2.1 item 5.
-9. Open: `MDB_BAD_CHECKSUM` is a damage that the repair of 2.4 fixes, or
-   a `std::system_error` that ends the process. Proposal: a damage.
-10. Open: the form of the repair of 2.4 (only the entries that differ,
-    or the whole state). Proposal: the form of 2.4. Decided, 20:55 to
-    20:57: one automatic repair, then the operator (2.4 item 8).
-11. Open: the state on which an entry runs before the decide (2.6
-    item 5). Proposal: one batch in flight, so every entry runs on the
-    committed state. The other form keeps the undecided entries in an
-    open write transaction of the state and runs them again after a
-    decide that covers only part of them.
+8. Decided, 2026-10-24 21:27: a follower whose chain CRC at `d` differs
+   from the leader's has a damage (2.5 item 3).
+9. Decided, 2026-10-24 21:27: `MDB_BAD_CHECKSUM` is a damage that the
+   repair fixes (2.1 item 6).
+10. Decided, 2026-10-24 21:27: the repair takes only the entries that
+    differ (2.4). Decided, 20:55 to 20:57: one automatic repair, then
+    the operator (2.4 item 8).
+11. Decided, 2026-10-24 21:27: one batch in flight; every entry runs on
+    the committed state (2.6 item 5).
+
+The owner, 21:27, left these four to the session ("solve the questions
+with LMDB"); the session took its proposal in each case.
