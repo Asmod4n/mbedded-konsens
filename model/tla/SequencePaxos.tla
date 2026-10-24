@@ -28,6 +28,7 @@ CONSTANTS
   \*   crashes: Int, rolled_back: Set(Int), ballot: Int, decided_new_at_start: Seq($entry),
   \*   forced_decided: Bool};
   \* @typeAlias: round = {n: Int, id: Int, reads: Set(Int), read_index: Int, acks: Set(Int)};
+  \* @typeAlias: mark = {promise: Int, n_accepted: Int, acc: Int, decided: Int};
   \* @typeAlias: session = {open: Bool, request_number: Int, reply: Int};
   \* @typeAlias: forceSingle = {node: Int, log: Seq($entry), decided: Seq($entry),
   \*   history: Seq($entry)};
@@ -83,6 +84,10 @@ CONSTANTS
   ChainCheck,
   MetaRecord,
   PeerCheck,
+  \* @type: Bool;
+  HighWater,
+  \* @type: Bool;
+  RepairFromPeer,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -226,7 +231,9 @@ VARIABLES
   \* @type: Bool;
   old_decided_after_forced,
   \* @type: Int -> (Int -> {n: Int, idx: Int});
-  peer_seen
+  peer_seen,
+  \* @type: Int -> $mark;
+  high_water
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -235,7 +242,7 @@ env      == <<wiped, crashes, wipes, losses, duplicates, timeouts, elections,
               storage_faults, refused>>
 ghost    == <<proposed, decided_history, decided_ballot>>
 recovery == <<recovering, nonce, recovery_responses, power_loss_completed>>
-rollback == <<rolled_back, past_durable, peer_seen>>
+rollback == <<rolled_back, past_durable, peer_seen, high_water>>
 readvars == <<reads, read_pending, read_round>>
 reconfig == <<running, first_log, reconfigurations, force_single, read_only, deactivated,
               halts, read_only_entries, stage1_ghost, build_source>>
@@ -460,6 +467,33 @@ RunningOnlyKinds == {"stale_meta", "rollback"}
 
 NothingSeen == [n |-> DefaultBallot, idx |-> 0]
 
+(* HighWater (owner, 2026-10-24 19:51: the node keeps the highest index    *)
+(* that it saw). The state machine of a node keeps, in memory, the highest *)
+(* promise, the highest pair of accepted round and log length, and the     *)
+(* highest decided index that its own transactions read or wrote. It is a  *)
+(* check, not a source: a step reads LMDB, and a value below the mark is a  *)
+(* damage. A restart forgets the mark. Provisional names: HighWater, mark.  *)
+\* @type: $mark;
+NoMark == [promise |-> DefaultBallot, n_accepted |-> DefaultBallot, acc |-> 0, decided |-> 0]
+\* @type: $durable => $mark;
+Mark(d) == [promise |-> d.promise, n_accepted |-> d.n_accepted, acc |-> Len(d.log),
+            decided |-> d.decided_idx]
+\* @type: ($mark, $mark) => Bool;
+BelowMark(m, h) ==
+  \/ m.promise < h.promise
+  \/ m.decided < h.decided
+  \/ m.n_accepted < h.n_accepted
+  \/ m.n_accepted = h.n_accepted /\ m.acc < h.acc
+\* @type: ($mark, $mark) => $mark;
+MaxMark(h, m) ==
+  [promise |-> Max(h.promise, m.promise), decided |-> Max(h.decided, m.decided),
+   n_accepted |-> IF BelowMark([h EXCEPT !.promise = 0, !.decided = 0],
+                               [m EXCEPT !.promise = 0, !.decided = 0])
+                  THEN m.n_accepted ELSE h.n_accepted,
+   acc |-> IF BelowMark([h EXCEPT !.promise = 0, !.decided = 0],
+                        [m EXCEPT !.promise = 0, !.decided = 0])
+           THEN m.acc ELSE h.acc]
+
 \* The messages whose field n is a ballot that the sender holds or held.
 BallotTypes == {"Prepare", "Promise", "AcceptSync", "AcceptDecide", "Accepted", "Decide"}
 
@@ -614,6 +648,7 @@ Init ==
   /\ leader_state = [i \in Servers |-> LeaderStateWith(DefaultBallot)]
   /\ chan = [p \in Pairs |-> <<>>]
   /\ peer_seen = [i \in Servers |-> [j \in Servers |-> NothingSeen]]
+  /\ high_water = [i \in Servers |-> NoMark]
   /\ wiped = [i \in Servers |-> FALSE]
   /\ crashes = 0
   /\ wipes = 0
@@ -1234,7 +1269,19 @@ PeerSeenUpdate ==
        THEN Raised(peer_seen[i][j], Head(chan[<<j, i>>]))
        ELSE peer_seen[i][j]]]
 
-GhostUpdate == HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate /\ PeerSeenUpdate
+\* The nodes of R restart in the step and forget their mark.
+\* @type: Set(Int) => Bool;
+HighWaterUpdate(R) ==
+  high_water' =
+    [i \in Servers |->
+       IF ~HighWater THEN high_water[i]
+       ELSE IF i \in R \/ ~(i \in running /\ i \in running') THEN Mark(DurableOfP(i))
+       ELSE MaxMark(high_water[i], Mark(DurableOfP(i)))]
+
+\* @type: Set(Int) => Bool;
+GhostUpdateR(R) ==
+  HistoryUpdate /\ PastUpdate /\ LeaseGhostUpdate /\ PeerSeenUpdate /\ HighWaterUpdate(R)
+GhostUpdate == GhostUpdateR({})
 
 ----------------------------------------------------------------------------
 (* Actions *)
@@ -1418,7 +1465,7 @@ Crash(i) ==
   /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : Quiet(k)}, Recovery)
   /\ UNCHANGED <<storage_faults, refused, wiped, wipes, losses, duplicates, timeouts, elections, proposed, rolled_back,
                  client, reconfig>>
-  /\ GhostUpdate
+  /\ GhostUpdateR({i})
 
 \* F6: rollback. Each node in R restarts with an earlier durable state of its
 \* own (lost fsync, backup), all of them in one step (plan item 26: at the
@@ -1435,7 +1482,7 @@ Rollback(R) ==
        /\ Restart(R, d, {k \in R : Quiet(k)}, Recovery)
   /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  client, reconfig>>
-  /\ GhostUpdate
+  /\ GhostUpdateR(R)
 
 \* F4: disk loss. The restart finds no promise: (Follower, Phase::None),
 \* Ballot::default, mod.rs:78, and writes the default promise, mod.rs:112-115.
@@ -1475,7 +1522,7 @@ Wipe(i) ==
   /\ UNCHANGED <<storage_faults, refused, chan, crashes, losses, duplicates, timeouts, elections, proposed,
                  nonce, rolled_back, client, running, first_log, reconfigurations,
                  force_single, read_only, halts, read_only_entries, stage1_ghost, build_source>>
-  /\ GhostUpdate
+  /\ GhostUpdateR({i})
 
 \* doc/plan-start-checks.md section 3. A node restarts after a crash and
 \* reads a damaged durable state of one kind. Provisional names:
@@ -1575,7 +1622,33 @@ StorageFault(i, kind) ==
                   ELSE Restart({i}, [j \in {i} |-> d], {j \in {i} : Quiet(j)}, Recovery)
                /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
                               elections, proposed, rolled_back, client, reconfig>>
-               /\ GhostUpdate
+               /\ GhostUpdateR({i})
+
+\* A running node that finds a damage stops voting and leaves running, as
+\* stop_voting does. With RepairFromPeer (owner, 2026-10-24 19:21), it
+\* takes the durable state of a node that votes and does not recover, and
+\* restarts with the recovery, as StorageFault does for a node with no
+\* promise. With no such node, it leaves running. The step does not change
+\* storage_faults.
+\* @type: Int => Bool;
+DamageFound(i) ==
+  IF RepairFromPeer /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
+  THEN \E src \in running \ {i} :
+         /\ Votes(src) /\ ~recovering[src]
+         /\ Restart({i}, [j \in {i} |-> DurableOf(src)], {j \in {i} : Quiet(j)}, Recovery)
+         /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
+                        elections, proposed, rolled_back, client, reconfig>>
+         /\ GhostUpdateR({i})
+  ELSE /\ running' = running \ {i}
+       /\ refused' = refused \cup {i}
+       /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
+                                            THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
+                                            ELSE stage1_ghost[j]]
+       /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
+                      timeouts, elections, ghost, recovery, rollback, client, readvars,
+                      buffered_stopsign, first_log, reconfigurations, force_single,
+                      read_only, deactivated, halts, read_only_entries, build_source,
+                      leasevars, leaseghost>>
 
 \* RunningStorageFault, RunningFaults, StepChecks (doc/plan-lmdb-only-source.md).
 \* The durable state of a running node changes. The node holds no copy of
@@ -1609,17 +1682,9 @@ RunningStorageFault(i, kind) ==
                             \/ MetaRecord /\ kind \in {"missing_accepted", "missing_promise",
                                                        "missing_decided"}
                             \/ MetaRecord /\ kind = "stale_meta" /\ q.log # log[i]
+                            \/ HighWater /\ BelowMark(Mark(d), high_water[i])
                             \/ ChecksFind(d))
-          THEN /\ running' = running \ {i}
-               /\ refused' = refused \cup {i}
-               /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
-                                                    THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
-                                                    ELSE stage1_ghost[j]]
-               /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
-                              timeouts, elections, ghost, recovery, rollback, client, readvars,
-                              buffered_stopsign, first_log, reconfigurations, force_single,
-                              read_only, deactivated, halts, read_only_entries, build_source,
-                              leasevars, leaseghost>>
+          THEN DamageFound(i)
           ELSE /\ promise' = [promise EXCEPT ![i] = d.promise]
                /\ n_accepted' = [n_accepted EXCEPT ![i] = d.n_accepted]
                /\ log' = [log EXCEPT ![i] = d.log]
@@ -1641,16 +1706,8 @@ StepCheck(i) ==
   /\ RunningFaults /\ StepChecks
   /\ i \in Nodes
   /\ ChecksFind(DurableOf(i))
-  /\ running' = running \ {i}
-  /\ refused' = refused \cup {i}
-  /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
-                                       THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
-                                       ELSE stage1_ghost[j]]
-  /\ UNCHANGED <<storage_faults, durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
-                 timeouts, elections, ghost, recovery, rollback, client, readvars,
-                 buffered_stopsign, first_log, reconfigurations, force_single,
-                 read_only, deactivated, halts, read_only_entries, build_source,
-                 leasevars, leaseghost>>
+  /\ UNCHANGED storage_faults
+  /\ DamageFound(i)
 
 \* mod.rs:232-237 resend_message_timeout, leader.rs:371-403
 \* resend_messages_leader, follower.rs:240-282 resend_messages_follower.
@@ -2120,7 +2177,7 @@ EnterReadOnly(i) ==
   /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
                  deactivated, halts, stage1_ghost, build_source>>
-  /\ GhostUpdate
+  /\ GhostUpdateR({i})
 
 \* @type: Int => Bool;
 LeaveReadOnly(i) ==
@@ -2132,7 +2189,7 @@ LeaveReadOnly(i) ==
   /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, running, first_log, reconfigurations, force_single,
                  deactivated, halts, read_only_entries, build_source>>
-  /\ GhostUpdate
+  /\ GhostUpdateR({i})
 
 \* @type: Int => Bool;
 Halt(i) ==
@@ -2158,7 +2215,7 @@ Resume(i) ==
   /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates, timeouts, elections, proposed,
                  rolled_back, client, first_log, reconfigurations, force_single, read_only,
                  deactivated, halts, read_only_entries, stage1_ghost, build_source>>
-  /\ GhostUpdate
+  /\ GhostUpdateR({i})
 
 ----------------------------------------------------------------------------
 (* Actions of the lease at the witness. Names for the owner, no source:     *)
@@ -2396,6 +2453,8 @@ ASSUME ChainCheck \in BOOLEAN
 ASSUME MetaRecord \in BOOLEAN
 ASSUME PeerCheck \in BOOLEAN
 ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0
+ASSUME HighWater \in BOOLEAN
+ASSUME RepairFromPeer \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided", "stale_meta", "rollback"}
 ASSUME StaleReadNode \in BOOLEAN
@@ -2421,6 +2480,17 @@ Bounds ==
 \* follower.rs:140: decided index <= accepted index.
 AcceptedIdxIsLogLength ==
   \A i \in Servers : accepted_idx[i] = Len(log[i]) /\ decided_idx[i] <= accepted_idx[i]
+
+\* HighWater: no step of a node that is not a damage takes its durable state
+\* below its mark. A break is a false report of a damage.
+HighWaterHolds ==
+  HighWater => \A i \in running : ~BelowMark(Mark(DurableOf(i)), high_water[i])
+
+\* The 19:38 rule of the owner: outside a transaction a node knows only
+\* its state machine. The copy accepted_idx of the code at 4c57d44 is the
+\* log length that LMDB holds. Where this holds, the model can read the
+\* log length in place of the copy.
+AcceptedIdxIsLogLen == \A i \in running : accepted_idx[i] = Len(log[i])
 
 S1 == \A i, j \in Servers : Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i), DecidedPrefix(j))
 
