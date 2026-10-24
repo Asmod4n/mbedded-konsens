@@ -10,8 +10,8 @@ Order of the work: this plan, then the model of section 3 and its TLC
 runs, then one review of plan and model by a second agent, then the
 go of the owner, then the code of section 2.
 
-Provisional: the form "one read for each step" (section 2, item 2). It
-waits for the answer of the owner to the card of 14:47.
+The owner, 14:49: "wir nutzen die modi, in denen lmdb schnell und
+sicher ist". So a step runs in one LMDB write transaction (section 2).
 
 ## 1. Facts checked in this session
 
@@ -54,6 +54,9 @@ Line numbers are at commit 06a52bf.
   values and the last CRC are read in separate transactions.
 - `get_log_len` is the count of entries (`read_log_len`, `:192-200`),
   not the last key plus one.
+- A write transaction of LMDB reads its own changes: `mdb_page_get`
+  looks in the dirty list of the transaction and of its parents first
+  (`deps/lmdb/libraries/liblmdb/mdb.c`, `mdb_page_get`, LMDB_1.0.2).
 - The model already has no copy of `promise`, `n_accepted` and
   `decided_idx`: they are durable variables
   (`model/tla/SequencePaxos.tla:210`). `accepted_idx` is a volatile
@@ -66,32 +69,36 @@ Line numbers are at commit 06a52bf.
 ## 2. Change of the code
 
 1. `sequence_paxos` has no field for promise, accepted round, decided
-   index or log length. The four values come from the storage.
-2. Provisional form, after the card of 14:47: at the first use in a
-   step, the node reads the four values and the last CRC in one read
-   transaction. The values of the step are these values with the
-   waiting ops of the step applied, by one pure function of
-   (stored values, waiting ops). `commit` writes the ops and drops the
-   values of the step. Between two steps the node holds none of them.
-   A write of the waiting ops in the middle of a step reads the values
-   again after the write.
-3. The storage gives the four values and the last CRC in one read, as
-   one struct. The log length is the last key plus one. The read
-   compares it with the count of entries through the continuity
-   function of the start-checks plan (its item 2.1). When they
-   differ, the read returns `missing_entry`. The struct name is
-   provisional.
-4. The checks of `with` in the start-checks plan (its item 2.4) run on
-   every read of item 3, not only at the start. One function makes
-   them.
-5. Each public getter (`get_promise`, `get_accepted_round`,
-   `get_decided_idx`, `get_accepted_idx`) reads the storage. It throws
-   `std::logic_error` while ops wait, as `read_decided_suffix` does
-   (`:500`).
-6. `cached_promise_message_` (`:728`) is built again from the storage
-   on a resend (`:440`), not kept.
-7. Every new error branch is `[[unlikely]]`.
-8. No change to the protocol, to the wire or to the file format.
+   index or log length, and no list of waiting ops. The four values
+   come from LMDB.
+2. A step runs in one LMDB write transaction. The first call of a step
+   begins it. Every read and every write of the step goes through it,
+   so a read sees the writes of the same step. `commit` commits it
+   once, and the messages of the step leave only after that commit,
+   as now (`take_outgoing_messages`, `:459-463`). The writes in the
+   middle of a step (`:591-595`, `:766`, `:1071`) go: they exist only
+   so that a later read sees the write.
+3. Between two steps, a read (the public getters, `node.hpp:127`,
+   `:221`, `:374`, `:466`) takes a read transaction from the pool.
+4. In one transaction, the storage gives the log length as the last
+   key plus one, and compares it with the count of entries through the
+   continuity function of the start-checks plan (its item 2.1). When
+   they differ, the read returns `missing_entry`.
+5. The checks of `with` in the start-checks plan (its item 2.4) run at
+   the first read of each step, not only at the start. One function
+   makes them.
+6. `cached_promise_message_` (`:728`) is built again from LMDB on a
+   resend (`:440`), not kept.
+7. The storage concept (`storage.hpp:121-129`) changes from
+   `write_atomically(ops)` and separate getters to a transaction that
+   reads and writes. The name of the type comes from LMDB
+   (transaction, commit, abort) and is provisional. No LMDB name
+   leaves the library.
+8. A write error of a step throws `write_error`, as now; a read error
+   of LMDB throws a type derived from `std::system_error` (owner,
+   2026-10-24 14:39).
+9. Every new error branch is `[[unlikely]]`.
+10. No change to the protocol, to the wire or to the file format.
 
 ## 3. Model
 
@@ -105,7 +112,7 @@ Line numbers are at commit 06a52bf.
   `missing_decided`) and one more, `lost_last_entry`: the last key and
   the count both lose one entry, so the log is consistent and one
   entry shorter.
-- `StepChecks` (Bool): TRUE models the checks of items 3 and 4 at
+- `StepChecks` (Bool): TRUE models the checks of items 4 and 5 at
   each step. A damage they find makes the node leave `running`, as
   `stop_voting` does.
 - The node takes its next step on the damaged state, because the model
@@ -118,7 +125,7 @@ Line numbers are at commit 06a52bf.
 - Does `lost_last_entry` of a running node break S2 or S2b? The
   checks cannot find it, because the stored log is consistent. At
   06a52bf the field `accepted_idx_` made the next append fail.
-- Do the checks of items 3 and 4 find every other kind before it does
+- Do the checks of items 4 and 5 find every other kind before it does
   harm?
 
 ### 3.3 Configurations and runs
@@ -142,8 +149,8 @@ after each round.
 - "a key lost while the node runs is found at the next step";
 - "a promise lost while the node runs is found at the next step" for a
   log that is not empty;
-- "the values of a step include its waiting ops";
-- "a getter while ops wait throws logic_error";
+- "a read in a step sees the writes of the same step";
+- "no message leaves before the commit of its step";
 - "a resent promise carries the stored values".
 The tests for the cases of section 3.2 follow the model results.
 
@@ -151,11 +158,11 @@ The tests for the cases of section 3.2 follow the model results.
 
 - g++ 16, image localhost/cxx-matrix-fuse, Release, all tests.
 - counter_stress seeds 1 to 300 with `--cbor --power-loss 50`.
-- The cost of the read at each step: the bench cases of a commit and
-  of a read, before and after, in every build, by the rules of a
+- The cost: the bench cases of a commit and of a read, before and
+  after, in every build, by the rules of a
   measurement. No number is written before the run.
 
 ## 6. Provisional names
 
-`RunningStorageFault`, `StepChecks`, `lost_last_entry`, the struct of
-item 3. The owner decides the names.
+`RunningStorageFault`, `StepChecks`, `lost_last_entry`, the
+transaction type of item 7. The owner decides the names.
