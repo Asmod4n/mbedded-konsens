@@ -96,6 +96,12 @@ Line numbers are at commit 06a52bf.
     of the cache. `MADV_DONTNEED` and then `POSIX_FADV_DONTNEED` keep
     it. In an LMDB bench with values of 1024 bytes, `MADV_PAGEOUT` alone
     left 360 of 527 value pages in the cache, and the pair left 0.
+- The read-back costs, against the same step with no read-back, in
+  one bench on this machine (g++ 16 -O2, ext4 on a virtio disk, noise
+  floor 16.2 %): +23 % to +24 % with 1 message per step, +29 % to
+  +35 % with 16, +95 % to +128 % with 256
+  (bench/results/2026-10-24-162320Z-lmdb-read-back.txt). The page-out
+  left one page in the cache in 19 of 84 runs.
 - A value that a read transaction gives points into the map of LMDB,
   because the environment has no `MDB_WRITEMAP` and LMDB reads through
   the map.
