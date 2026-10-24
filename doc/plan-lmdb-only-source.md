@@ -90,6 +90,12 @@ Line numbers are at commit 06a52bf.
   - `madvise(MADV_PAGEOUT)` on the mapping takes the pages out of the
     cache: `mincore` shows 0 of 64 pages, also through a new mapping
     of the file. The kernel skips a page that another process maps.
+  - `madvise(MADV_PAGEOUT)` on one page of a file written with one
+    `pwrite` keeps that page: the page is part of a larger folio. Then
+    `posix_fadvise(POSIX_FADV_DONTNEED)` on the same page takes it out
+    of the cache. `MADV_DONTNEED` and then `POSIX_FADV_DONTNEED` keep
+    it. In an LMDB bench with values of 1024 bytes, `MADV_PAGEOUT` alone
+    left 360 of 527 value pages in the cache, and the pair left 0.
 - A value that a read transaction gives points into the map of LMDB,
   because the environment has no `MDB_WRITEMAP` and LMDB reads through
   the map.
@@ -181,8 +187,8 @@ Line numbers are at commit 06a52bf.
    step wrote and the meta record, from the disk and not from the
    cache:
    - a read transaction gives the address of each value in the map;
-   - `madvise(MADV_PAGEOUT)` takes the pages of these values out of the
-     cache;
+   - `madvise(MADV_PAGEOUT)` and then `posix_fadvise(POSIX_FADV_DONTNEED)`
+     on the same range take the pages of these values out of the cache;
    - a new read of the same values reads them from the disk;
    - the node computes the CRC of each entry and the chain CRC.
 2. A value that is not equal to what the step wrote is a lost write.
