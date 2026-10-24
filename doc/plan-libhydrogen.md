@@ -82,3 +82,11 @@ Result: changes needed. Each finding is taken into the build:
 7. run.sh: sixth argument, passed to `--inside`; header; C flags set to
    `-O2 -DNDEBUG` and recorded with the compile command of hydrogen.c.
 8. The `ldd` check is replaced by a grep of the CMake files for OpenSSL.
+
+## 6. Change after the owner, 2026-10-24
+
+The owner: the measurement of libhydrogen does not matter. hydro_hash
+does not replace CRC32C. It is only additive, for a rebuild. The bench
+cases crc32c_chunks, hydro_hash and hydro_hash_chunks are removed, and
+the run was discarded. The submodule, the build of libhydrogen with its
+tests, the prefixes of run.sh and the removal of bench/hash_bench.cpp stay.

@@ -17,7 +17,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <ranges>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -31,7 +30,6 @@
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
-#include <hydrogen.h>
 #include <lmdb.h>
 
 #include "konsens/memory_storage.hpp"
@@ -49,11 +47,6 @@ constexpr std::size_t batch_size = 64;
 constexpr std::size_t crc_buffer_count = 16;
 constexpr std::string_view crc32c_check_input = "123456789";
 constexpr std::uint32_t crc32c_check_value = 0xe3069283;
-constexpr std::array<char, hydro_hash_CONTEXTBYTES> hash_context{'l', 'i', 'b', 't', 'e', 's', 't', 's'};
-constexpr std::size_t hash_check_message_bytes = 1000;
-constexpr std::uint64_t hash_check_message_seed = hash_check_message_bytes + 1;
-constexpr std::string_view hash_check_value = "7dfa45ce18210e2422fd658bf7beccb6e534e44f99ae359f4af3ba41af8ca463";
-constexpr std::size_t chunk_bytes = 64;
 constexpr std::array<std::size_t, 3> payload_sizes{64, 1024, 65536};
 constexpr std::byte payload_byte{0x5a};
 constexpr std::size_t node_count = 3;
@@ -511,134 +504,6 @@ case_outcome measure_crc32c(const run_settings& s)
         }
     }
     return case_result{ns, std::format("crc_folded={:08x}", folded)};
-}
-
-using hash_key = std::array<std::uint8_t, hydro_hash_KEYBYTES>;
-using hash_digest = std::array<std::uint8_t, hydro_hash_BYTES>;
-using hash_seed = std::array<std::uint8_t, hydro_random_SEEDBYTES>;
-
-hash_seed hash_seed_of(const std::uint64_t value)
-{
-    hash_seed seed{};
-    for (std::size_t i = 0; i < sizeof value; ++i) {
-        seed.at(i) = static_cast<std::uint8_t>(value >> (8 * i));
-    }
-    return seed;
-}
-
-hash_key hash_key_of_libhydrogen_test()
-{
-    hash_key key{};
-    const auto seed = hash_seed_of(0);
-    hydro_random_buf_deterministic(key.data(), key.size(), seed.data());
-    return key;
-}
-
-bool libhydrogen_test_vector_holds(const hash_key& key)
-{
-    std::vector<std::uint8_t> message(hash_check_message_bytes);
-    const auto seed = hash_seed_of(hash_check_message_seed);
-    hydro_random_buf_deterministic(message.data(), message.size(), seed.data());
-    hash_digest digest{};
-    if (hydro_hash_hash(digest.data(), digest.size(), message.data(), message.size(), hash_context.data(), key.data())
-        != 0) [[unlikely]] {
-        return false;
-    }
-    std::array<char, hydro_hash_BYTES * 2 + 1> hex{};
-    hydro_bin2hex(hex.data(), hex.size(), digest.data(), digest.size());
-    return std::string_view(hex.data(), hydro_hash_BYTES * 2) == hash_check_value;
-}
-
-std::expected<hash_key, failure> prepare_hydro_hash()
-{
-    if (hydro_init() != 0) [[unlikely]] {
-        return std::unexpected(failure{"initialize libhydrogen", check_failed()});
-    }
-    const auto key = hash_key_of_libhydrogen_test();
-    if (!libhydrogen_test_vector_holds(key)) [[unlikely]] {
-        return std::unexpected(failure{"compare hydro_hash of the libhydrogen test message with its value", check_failed()});
-    }
-    return key;
-}
-
-template <typename F>
-case_result time_hash(const run_settings& s, F&& hash)
-{
-    const std::vector<std::vector<std::byte>> buffers(crc_buffer_count,
-                                                      std::vector<std::byte>(s.payload_bytes, payload_byte));
-    std::vector<double> ns;
-    std::uint32_t folded = 0;
-    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        const auto start = std::chrono::steady_clock::now();
-        for (std::uint64_t k = 0; k < s.ops; ++k) {
-            folded ^= hash(std::span<const std::byte>(buffers.at(k % crc_buffer_count)));
-        }
-        const auto end = std::chrono::steady_clock::now();
-        if (sample >= warm_up_samples) {
-            ns.push_back(ns_per_op_of(start, end, s.ops));
-        }
-    }
-    return case_result{ns, std::format("folded={:08x}", folded)};
-}
-
-std::uint32_t first_word_of(const hash_digest& digest)
-{
-    return std::uint32_t{digest.at(0)} << 24 | std::uint32_t{digest.at(1)} << 16 | std::uint32_t{digest.at(2)} << 8
-         | std::uint32_t{digest.at(3)};
-}
-
-case_outcome measure_crc32c_chunks(const run_settings& s)
-{
-    if (crc32c::Crc32c(crc32c_check_input) != crc32c_check_value) [[unlikely]] {
-        return std::unexpected(failure{"compare the CRC32C of the check input with the check value", check_failed()});
-    }
-    return time_hash(s, [](const std::span<const std::byte> bytes) {
-        std::uint32_t crc = 0;
-        for (const auto chunk : bytes | std::views::chunk(chunk_bytes)) {
-            crc = crc32c::Extend(crc, reinterpret_cast<const std::uint8_t*>(chunk.data()), chunk.size());
-        }
-        return crc;
-    });
-}
-
-case_outcome measure_hydro_hash(const run_settings& s)
-{
-    const auto key = prepare_hydro_hash();
-    if (!key) [[unlikely]] {
-        return std::unexpected(key.error());
-    }
-    return time_hash(s, [&key](const std::span<const std::byte> bytes) {
-        hash_digest digest{};
-        if (hydro_hash_hash(digest.data(), digest.size(), bytes.data(), bytes.size(), hash_context.data(), key->data())
-            != 0) [[unlikely]] {
-            std::abort();
-        }
-        return first_word_of(digest);
-    });
-}
-
-case_outcome measure_hydro_hash_chunks(const run_settings& s)
-{
-    const auto key = prepare_hydro_hash();
-    if (!key) [[unlikely]] {
-        return std::unexpected(key.error());
-    }
-    return time_hash(s, [&key](const std::span<const std::byte> bytes) {
-        hydro_hash_state state{};
-        hash_digest digest{};
-        if (hydro_hash_init(&state, hash_context.data(), key->data()) != 0) [[unlikely]] {
-            std::abort();
-        }
-        for (const auto chunk : bytes | std::views::chunk(chunk_bytes)) {
-            if (hydro_hash_update(&state, chunk.data(), chunk.size()) != 0) [[unlikely]] {
-                std::abort();
-            }
-        }
-        if (hydro_hash_final(&state, digest.data(), digest.size()) != 0) [[unlikely]] {
-            std::abort();
-        }
-        return first_word_of(digest);
-    });
 }
 
 template <typename T>
@@ -1882,9 +1747,6 @@ struct bench_case {
 
 constexpr auto cases = std::to_array<bench_case>({
     {"crc32c", measure_crc32c, {3400000, 300000, 3000}, 0, false},
-    {"crc32c_chunks", measure_crc32c_chunks, {3400000, 300000, 3000}, 0, false},
-    {"hydro_hash", measure_hydro_hash, {200000, 20000, 400}, 0, false},
-    {"hydro_hash_chunks", measure_hydro_hash_chunks, {200000, 20000, 400}, 0, false},
     {"encode_accept_decide", measure_encode_accept_decide, {}, 200, false},
     {"decode_accept_decide", measure_decode_accept_decide, {}, 160, false},
     {"encode_decide", measure_encode_decide, {}, 150000, false},

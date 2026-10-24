@@ -12,9 +12,6 @@ default_rounds=7
 binaries=(konsens_bench konsens_bench_aa)
 cases=(
     "crc32c 64" "crc32c 1024" "crc32c 65536"
-    "crc32c_chunks 64" "crc32c_chunks 1024" "crc32c_chunks 65536"
-    "hydro_hash 64" "hydro_hash 1024" "hydro_hash 65536"
-    "hydro_hash_chunks 64" "hydro_hash_chunks 1024" "hydro_hash_chunks 65536"
     "encode_accept_decide 0" "decode_accept_decide 0" "encode_decide 0" "decode_decide 0"
     "handle_accept_decide 0" "handle_decide 0"
     "commit_memory 64" "commit_memory 1024" "commit_memory 65536"
@@ -86,7 +83,6 @@ context() {
     echo "# build type Release, CMAKE_CXX_FLAGS_RELEASE $(grep -E '^CMAKE_CXX_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# build type Release, CMAKE_C_FLAGS_RELEASE $(grep -E '^CMAKE_C_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/bench/konsens_bench.cpp')"
-    echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/deps/libhydrogen/hydrogen.c')"
     echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
     for b in "${binaries[@]}"; do
@@ -254,11 +250,6 @@ median, the minimum and the maximum of its samples.
 Cases:
 - crc32c: crc32c::Crc32c of Google crc32c over one payload, taken in turn from 16 buffers.
   The operations are independent, so the number is throughput.
-- crc32c_chunks: as crc32c, but crc32c::Extend over each 64-byte chunk of the payload in turn.
-- hydro_hash: hydro_hash_hash of libhydrogen over one payload, 32 bytes out, with the
-  context "libtests" and the key of the hash test of libhydrogen (tests/tests.c).
-- hydro_hash_chunks: as hydro_hash, but hydro_hash_init, hydro_hash_update over each
-  64-byte chunk in turn, and hydro_hash_final.
 - encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
   entries of 1024 B. encode_decide, decode_decide: one Decide. A decode
   case copies the bytes before the timer starts.
@@ -339,11 +330,8 @@ follower before the first sample and after the last sample.
 write_lmdb_threads stands beside lmdb_put times the number of LMDB
 commits in series of write_lmdb.
 
-Checks: crc32c and crc32c_chunks compare the CRC of "123456789" with the
-check value e3069283. hydro_hash and hydro_hash_chunks first compute the
-third vector of the hash test of libhydrogen (1000 bytes from
-hydro_random_buf_deterministic with seed 1001, the same key and context)
-and compare it with 7dfa45ce...8ca463. The encode and decode cases compare each decoded message with
+Checks: crc32c compares the CRC of "123456789" with the check value
+e3069283. The encode and decode cases compare each decoded message with
 the encoded one. handle_accept_decide compares the bytes counted with the
 bytes sent; handle_decide compares the decided index with the last
 Decide. The commit cases compare the log length with the number of
