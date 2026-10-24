@@ -263,6 +263,17 @@ cmake -S . -B build -DKONSENS_TEST_TMPDIR=/dev/shm
 All tests pass with a tmpfs of 64 MiB. A build with AddressSanitizer runs
 200 seeds of each simulation instead of 2000.
 
+`test_device_faults` runs LMDB on a FUSE file system that fails each
+fsync, or the reads of one range of the data file. It needs the packages
+libfuse3-dev and fuse3, the device /dev/fuse and the right to mount. The
+option turns it on:
+
+```sh
+cmake -S . -B build -DKONSENS_FUSE_TESTS=ON
+```
+
+In podman, the container needs `--device /dev/fuse --cap-add SYS_ADMIN`.
+
 The TLA+ model of the protocol is checked with TLC for each fault: lost
 and duplicate messages, crashes, a disk that loses writes, and a
 restart of every node.

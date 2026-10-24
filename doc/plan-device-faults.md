@@ -122,3 +122,22 @@ Result: changes needed. The build takes these changes:
    that exists, that commit writes nothing (mdb.c:4555-4557), so open
    passes on the error_fsync mount.
 10. The test gets a ctest TIMEOUT.
+
+## 7. Result
+
+- g++ 16, image localhost/cxx-matrix with libfuse3-dev and fuse3,
+  KONSENS_FUSE_TESTS=ON, KONSENS_TEST_TMPDIR=/dev/shm, podman with
+  `--device /dev/fuse --cap-add SYS_ADMIN`: 20 of 20 tests green in
+  Release and in Debug with
+  `-O1 -fno-omit-frame-pointer -fsanitize=address,undefined`.
+  test_device_faults takes 0.04 s in Release and 0.10 s with ASan.
+- The read fault covers only the whole pages inside the payload of the
+  large entry. open passes, and the read of the entry ends the child
+  with SIGBUS.
+- Mutation, run once: error_fs without its faults. Both tests fail: no
+  sync_error, and the child does not end by a signal.
+- Mutation, run once: LMDB that writes the meta page after a failed
+  sync. The test still passed: the meta page goes through the file with
+  O_DSYNC, its write fails on the error_fsync mount, and LMDB writes the
+  old meta page back (mdb_env_write_meta). With that write back removed
+  too, "a clean mount shows the log of before" fails.
