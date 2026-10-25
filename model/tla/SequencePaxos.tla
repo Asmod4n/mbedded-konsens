@@ -473,12 +473,12 @@ MaxDecided(ls) ==
 \* prefix up to that index as the synced log of the leader. With no such
 \* promise, it keeps its own decided index.
 \* @type: ($leaderState, Seq($entry), Int) => Int;
-MaxDecidedVerified(ls, lg, own) ==
+MaxDecidedVerified(ls, lg, kept) ==
   LET ds == {ls.promises_meta[k].decided_idx :
                k \in {x \in Promised(ls) :
                       LET d == ls.promises_meta[x].decided_idx
                       IN d <= Len(lg) /\ PrefixAt(lg, d) = ls.promises_meta[x].last}}
-  IN IF ds = {} THEN own ELSE CHOOSE d \in ds : \A e \in ds : d >= e
+  IN IF ds = {} THEN kept ELSE CHOOSE d \in ds : \A e \in ds : d >= e
 
 \* util.rs:121-125 next_seq_num, applied to a set of followers
 \* @type: ($leaderState, Set(Int)) => $leaderState;
@@ -523,6 +523,117 @@ WithAccSyncSeqs(ls, fs) ==
 DurableOf(k) ==
   [promise |-> promise[k], n_accepted |-> n_accepted[k], log |-> log[k],
    decided_idx |-> decided_idx[k]]
+
+(* ExecuteVerify (doc/plan-execute-verify.md section 4). Names from the    *)
+(* plan, all provisional: Results, Rejected, answer, try_again, refused,    *)
+(* verified_idx, proof, open mark. A result is a record [rv, j]: rv is the  *)
+(* value of the result, j its jitter. Two results agree when their values   *)
+(* are equal and their jitters differ by at most 1 (plan 2.2.2, 4.2). The   *)
+(* value of a right run of entry e on base b is RightRv(e, b); it holds the *)
+(* values of the base, so a run on another base gives another value. The    *)
+(* value of a wrong run of node i is BadRv(i, e). With ExecuteVerify FALSE  *)
+(* each new action is disabled, each new variable keeps its initial value,  *)
+(* and each changed expression is the old one.                              *)
+\* @type: Seq($entry);
+EmptyFn == [k \in {} |-> 0]
+VoidEntry == [type |-> "Void", session |-> 0, request_number |-> 0]
+ResultsEntry(f, t, lst) == [type |-> "Results", session |-> 0, request_number |-> 0,
+                            from |-> f, to |-> t, list |-> lst]
+\* The plan gives rejected(k) no other field. A follower cannot check 2.7.3
+\* without the counted answers, so the model carries them (provisional).
+RejectedEntry(k, cnt) == [type |-> "Rejected", session |-> 0, request_number |-> 0,
+                          from |-> k, to |-> k, list |-> cnt]
+EVMessages == {"Answer", "TryAgain", "Refused"}
+
+IsVerdict(e) == e \notin Values /\ e.type \in {"Results", "Rejected"}
+IsRequest(e) == e \in Values \/ e.type \in {"RegisterClient", "Request", "ExpireSession"}
+
+RightRv(e, b) == [v |-> e, on |-> [n \in 1..Len(b) |-> b[n][2].rv], bad |-> 0]
+BadRv(i, e) == [v |-> e, on |-> <<>>, bad |-> i]
+NoResult == [rv |-> [v |-> VoidEntry, on |-> <<>>, bad |-> 0], j |-> 0]
+Agree(a, b) == a.rv = b.rv /\ a.j - b.j \in -1..1
+Jitters == IF Spread THEN 0..2 ELSE 0..1
+
+\* The results that a run of node i on entry e and base b can give, with the
+\* ghost w of the wrong pairs after the run.
+RunResults(i, e, b, w) ==
+  {[rv |-> RightRv(e, b), j |-> x] : x \in Jitters}
+  \cup (IF <<i, e>> \in w THEN {[rv |-> BadRv(i, e), j |-> 0]} ELSE {})
+
+\* A run may add the pair <<i, e>> while fewer than a majority of the nodes
+\* hold a pair for e and fewer than MaxWrong pairs exist (plan 4.2).
+WrongAfter(i, e, w) ==
+  {w} \cup (IF /\ <<i, e>> \notin w
+              /\ Cardinality(w) < MaxWrong
+              /\ Cardinality({n \in Servers : <<n, e>> \in w}) + 1 < Majority(i)
+           THEN {w \cup {<<i, e>>}} ELSE {})
+
+\* @type: Int => Seq($entry);
+DecidedPrefix(i) == SubSeq(log[i], 1, Min(decided_idx[i], Len(log[i])))
+
+\* The verdict function V of plan 2.3.1 over a sequence of entries.
+NoChoice == [p |-> 0, chosen |-> EmptyFn, void |-> {}]
+HasRequest(l, f, t) == \E q \in f..t : q \in 1..Len(l) /\ IsRequest(l[q])
+VStep(l, m, a) ==
+  LET e == l[m] IN
+  IF ~IsVerdict(e) THEN a
+  ELSE IF /\ e.type = "Results"
+          /\ \/ e.from = a.p + 1
+             \/ Mutation = "StaleVerdictTaken" /\ e.from <= a.p + 1
+          /\ e.to < m /\ HasRequest(l, e.from, e.to)
+  THEN [a EXCEPT !.chosen = e.list @@ @, !.p = Max(@, e.to)]
+  ELSE IF e.type = "Rejected" /\ e.from = a.p + 1 /\ e.from < m /\ IsRequest(l[e.from])
+  THEN [a EXCEPT !.void = @ \cup {e.from}, !.p = e.from]
+  ELSE a
+RECURSIVE VFrom(_, _, _)
+VFrom(l, m, a) == IF m > Len(l) THEN a ELSE VFrom(l, m + 1, VStep(l, m, a))
+V(l) == VFrom(l, 1, NoChoice)
+
+\* Plan 2.3.3: the highest index of l such that every request entry at or
+\* below it is at or below p. Mutation AppliedIsPointer takes p.
+AppliedIdxOf(l) ==
+  LET a  == V(l)
+      rs == {q \in (a.p + 1)..Len(l) : IsRequest(l[q])}
+  IN IF Mutation = "AppliedIsPointer" THEN a.p
+     ELSE IF rs = {} THEN Len(l)
+     ELSE (CHOOSE q \in rs : \A x \in rs : q <= x) - 1
+
+\* Plan 4.9: the effective prefix, with each void entry kept as a no-op.
+EffPrefix(l) ==
+  LET a == V(l) IN
+  [k \in 1..AppliedIdxOf(l) |-> IF k \in a.void THEN VoidEntry ELSE l[k]]
+
+\* The prefix that the state machine and the client read.
+\* @type: Int => Seq($entry);
+ClientPrefix(i) == IF ExecuteVerify THEN EffPrefix(DecidedPrefix(i)) ELSE DecidedPrefix(i)
+
+\* The indexes below q that hold a request entry that is not void, in order.
+RECURSIVE ReqIdx(_, _, _)
+ReqIdx(l, vd, q) ==
+  IF q <= 1 THEN <<>>
+  ELSE ReqIdx(l, vd, q - 1) \o (IF IsRequest(l[q - 1]) /\ (q - 1) \notin vd THEN <<q - 1>> ELSE <<>>)
+
+\* The base of index q of l (plan 2.4.1): each request entry below q that is
+\* not void, with its result: chosen at or below p, res(k) above p.
+BaseWith(l, a, q, res(_)) ==
+  LET ks == ReqIdx(l, a.void, q) IN
+  [n \in 1..Len(ks) |-> <<l[ks[n]], IF ks[n] <= a.p THEN a.chosen[ks[n]].res ELSE res(ks[n])>>]
+
+\* Plan 2.7.4: verified_idx passes each entry that is not a verdict entry.
+VerifiedAfter(lg, v) ==
+  LET ws == {w \in v..Len(lg) : \A k \in (v + 1)..w : ~IsVerdict(lg[k])}
+  IN CHOOSE w \in ws : \A x \in ws : w >= x
+CommonPrefixLen(a, b) ==
+  CHOOSE k \in 0..Min(Len(a), Len(b)) :
+    /\ SubSeq(a, 1, k) = SubSeq(b, 1, k)
+    /\ k = Min(Len(a), Len(b)) \/ a[k + 1] # b[k + 1]
+\* The verified index of node i after its log becomes lg.
+NewVerified(i, lg) == VerifiedAfter(lg, Min(verified_idx[i], CommonPrefixLen(log[i], lg)))
+\* An accepted index that node i sends or counts for itself (plan 2.7.4).
+AccBound(i, lg, acc) == IF ExecuteVerify THEN Min(acc, NewVerified(i, lg)) ELSE acc
+\* Plan 2.7.5: a promise carries the log only up to verified_idx.
+PromiseLog(i) == IF ExecuteVerify THEN SubSeq(log[i], 1, Min(verified_idx[i], Len(log[i]))) ELSE log[i]
+PromiseAcc(i) == IF ExecuteVerify THEN Len(PromiseLog(i)) ELSE accepted_idx[i]
 
 (* Recovery of Viewstamped Replication Revisited (Liskov, Cowling,         *)
 (* MIT-CSAIL-TR-2012-021, section 4.3), applied to Sequence Paxos (plan     *)
@@ -786,7 +897,8 @@ ForwardProposals(i, es, c) ==
 \* @type: (Int, Seq($entry), <<Int, Int>> -> Seq($msg)) => Bool;
 AcceptEntriesLeader(i, es, c) ==
   LET acc == accepted_idx[i] + Len(es)
-      ls0 == [leader_state[i] EXCEPT !.accepted_indexes[i] = IF Votes(i) THEN acc ELSE @]
+      own_acc == IF Mutation = "OwnAcceptUnchecked" THEN acc ELSE AccBound(i, log[i] \o es, acc)
+      ls0 == [leader_state[i] EXCEPT !.accepted_indexes[i] = IF Votes(i) THEN own_acc ELSE @]
       fs  == PromisedFollowers(ls0)
       ls1 == NextSeqNums(ls0, fs)
   IN /\ log' = [log EXCEPT ![i] = @ \o es]
@@ -804,7 +916,8 @@ AcceptStopSignMsg(n, s) == [EmptyMessage EXCEPT !.type = "AcceptStopSign", !.n =
 \* @type: (Int, <<Int, Int>> -> Seq($msg)) => Bool;
 AcceptStopSignLeader(i, c) ==
   LET acc == accepted_idx[i] + 1
-      ls0 == [leader_state[i] EXCEPT !.accepted_indexes[i] = IF Votes(i) THEN acc ELSE @]
+      ls0 == [leader_state[i] EXCEPT !.accepted_indexes[i] =
+                IF Votes(i) THEN AccBound(i, Append(log[i], StopSignEntry), acc) ELSE @]
       fs  == PromisedFollowers(ls0)
       ls1 == NextSeqNums(ls0, fs)
   IN /\ log' = [log EXCEPT ![i] = Append(@, StopSignEntry)]
@@ -869,11 +982,11 @@ HandlePrepareReq(i, j, m, c) ==
 HandlePrepare(i, j, m, c) ==
   IF promise[i] < m.n \/ (promise[i] = m.n /\ phase[i] = "Recover")
   THEN LET na  == n_accepted[i]
-           acc == accepted_idx[i]
+           acc == PromiseAcc(i)
            ls  == IF na > m.n_accepted
-                  THEN <<[suffix |-> Suffix(log[i], m.decided_idx), sync_idx |-> m.decided_idx]>>
+                  THEN <<[suffix |-> Suffix(PromiseLog(i), m.decided_idx), sync_idx |-> m.decided_idx]>>
                   ELSE IF na = m.n_accepted /\ acc > m.accepted_idx
-                  THEN <<[suffix |-> Suffix(log[i], m.accepted_idx), sync_idx |-> m.accepted_idx]>>
+                  THEN <<[suffix |-> Suffix(PromiseLog(i), m.accepted_idx), sync_idx |-> m.accepted_idx]>>
                   ELSE <<>>
            blind == Mutation = "PromiseWithoutAccepted"
            pr  == [EmptyMessage EXCEPT !.type = "Promise", !.n = m.n,
@@ -899,9 +1012,9 @@ HandlePrepare(i, j, m, c) ==
 HandleMajorityPromises(i, ls1, c) ==
   LET sync == ls1.max_promise_sync
       skip == sync = <<>> \/ Mutation = "SyncIgnored"
-      lg1  == IF skip THEN log[i]
-              ELSE AppendOnPrefix(log[i], sync[1].sync_idx, sync[1].suffix)
-      acc1 == IF skip THEN accepted_idx[i]
+      lg1  == IF skip THEN PromiseLog(i)
+              ELSE AppendOnPrefix(PromiseLog(i), sync[1].sync_idx, sync[1].suffix)
+      acc1 == IF skip THEN PromiseAcc(i)
               ELSE sync[1].sync_idx + Len(sync[1].suffix)
       stop == i \in Nodes /\ HasStopSign(lg1)
       bp   == IF stop THEN <<>> ELSE buffered_proposals[i]
@@ -911,7 +1024,7 @@ HandleMajorityPromises(i, ls1, c) ==
       dec  == IF VerifyPromise THEN MaxDecidedVerified(ls1, lg1, decided_idx[i])
               ELSE MaxDecided(ls1)
       ls2  == [ls1 EXCEPT !.max_promise_sync = <<>>,
-                          !.accepted_indexes[i] = IF Votes(i) THEN acc2 ELSE @]
+                          !.accepted_indexes[i] = IF Votes(i) THEN AccBound(i, lg2, acc2) ELSE @]
       fs   == PromisedFollowers(ls2)
   IN /\ n_accepted' = [n_accepted EXCEPT ![i] = ls1.n_leader]
      /\ decided_idx' = [decided_idx EXCEPT ![i] = dec]
@@ -966,9 +1079,10 @@ HandleAcceptSync(i, j, m, c) ==
            ld  == BallotPid(promise[i])
            lg  == AppendOnPrefix(log[i], s.sync_idx, s.suffix)
            fwd == bp # <<>> /\ ld > 0 /\ ld # i /\ ~(i \in Nodes /\ HasStopSign(lg))
+           ab  == AccBound(i, lg, s.sync_idx + Len(s.suffix))
            acc == [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                       !.accepted_idx = s.sync_idx + Len(s.suffix),
-                                       !.last = PrefixAt(lg, s.sync_idx + Len(s.suffix))]
+                                       !.accepted_idx = ab,
+                                       !.last = PrefixAt(lg, ab)]
            out == [k \in (IF fwd THEN {ld} ELSE {}) \cup (IF Votes(i) THEN {j} ELSE {}) |->
                      (IF fwd /\ k = ld
                       THEN <<[EmptyMessage EXCEPT !.type = "ProposalForward", !.entries = bp]>>
@@ -1019,8 +1133,9 @@ HandleAcceptDecide(i, j, m, c) ==
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IF rep THEN IfVotes(i, BallotPid(m.n),
                               [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                                   !.accepted_idx = acc,
-                                                   !.last = PrefixAt(log[i] \o m.entries, acc)])
+                                                   !.accepted_idx = AccBound(i, log[i] \o m.entries, acc),
+                                                   !.last = PrefixAt(log[i] \o m.entries,
+                                                                     AccBound(i, log[i] \o m.entries, acc))])
                                      ELSE NoOut)
                /\ UNCHANGED <<promise, n_accepted, role, phase,
                               cached_promise_message, buffered_proposals, leader_state>>
@@ -1044,8 +1159,8 @@ HandleDecide(i, j, m, c) ==
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IF ud.flushed THEN IfVotes(i, BallotPid(m.n),
                               [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                                   !.accepted_idx = accepted_idx[i],
-                                                   !.last = PrefixAt(log[i], accepted_idx[i])])
+                                                   !.accepted_idx = AccBound(i, log[i], accepted_idx[i]),
+                                                   !.last = PrefixAt(log[i], AccBound(i, log[i], accepted_idx[i]))])
                                      ELSE NoOut)
                /\ UNCHANGED <<promise, n_accepted, log, role, phase, accepted_idx,
                               cached_promise_message, buffered_proposals, leader_state>>
@@ -1069,8 +1184,8 @@ HandleAcceptStopSign(i, j, m, c) ==
                /\ current_seq_num' = [current_seq_num EXCEPT ![i] = m.seq_num]
                /\ chan' = Send(c, i, IfVotes(i, BallotPid(m.n),
                               [EmptyMessage EXCEPT !.type = "Accepted", !.n = m.n,
-                                                   !.accepted_idx = Len(lg),
-                                                   !.last = PrefixAt(lg, Len(lg))]))
+                                                   !.accepted_idx = AccBound(i, lg, Len(lg)),
+                                                   !.last = PrefixAt(lg, AccBound(i, lg, Len(lg)))]))
                /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase,
                               cached_promise_message, buffered_proposals, leader_state>>
        ELSE IF st = "DroppedPreceding"
@@ -1233,7 +1348,7 @@ HandleHeartbeatAck(i, j, m, c) ==
       ok   == role[i] = "Leader" /\ phase[i] = "Accept" /\ rd.reads # {}
               /\ rd.n = m.n /\ rd.id = m.id /\ leader_state[i].n_leader = m.n
       acks == rd.acks \cup {j}
-      own  == {r \in rd.reads : reads[r].node = i}
+      mine == {r \in rd.reads : reads[r].node = i}
       dst  == {reads[r].node : r \in rd.reads} \ {i}
   IN IF ~ok
      THEN /\ chan' = c
@@ -1243,7 +1358,7 @@ HandleHeartbeatAck(i, j, m, c) ==
           /\ chan' = c
           /\ UNCHANGED <<durable, volatile, reads, read_pending>>
      ELSE /\ reads' = [r \in DOMAIN reads |->
-                         IF r \in own
+                         IF r \in mine
                          THEN [reads[r] EXCEPT !.state = "indexed", !.read_index = rd.read_index,
                                                !.crashes = crashes, !.rolled_back = rolled_back,
                                                !.ballot = promise[i]]
@@ -1442,7 +1557,8 @@ Receive(j, i) ==
   /\ MismatchAction # "keep" => ~Mismatch(i, j)
   /\ LET m == Head(chan[<<j, i>>])
          c == [chan EXCEPT ![<<j, i>>] = Tail(@)]
-     IN /\ SingleNodeMode(i) => m.type = "Deactivated"
+     IN /\ m.type \notin EVMessages
+        /\ SingleNodeMode(i) => m.type = "Deactivated"
         /\ IF m.type = "Deactivated"
            THEN HandleDeactivated(i, c)
            ELSE IF deactivated[i] /\ Mutation # "DeactivatedStillVotes"
@@ -1465,7 +1581,7 @@ HandleLeader(i, k) ==
   LET n   == Ballot(k, i)
       na  == n_accepted[i]
       dec == decided_idx[i]
-      acc == accepted_idx[i]
+      acc == PromiseAcc(i)
       ls0 == LeaderStateWith(n)
       me  == [n_accepted |-> na, accepted_idx |-> acc, decided_idx |-> dec, pid |-> i,
               last |-> IF VerifyPromise THEN PrefixAt(log[i], dec) ELSE <<>>]
@@ -1955,9 +2071,6 @@ Duplicate(p, k) ==
 (* sends to any node, and a follower forwards the entry to the leader. One  *)
 (* client. A reply is no message: the reply step reads the decided state of *)
 (* one node. A lost reply is a reply step that does not occur.              *)
-\* @type: Int => Seq($entry);
-DecidedPrefix(i) == SubSeq(log[i], 1, Min(decided_idx[i], Len(log[i])))
-
 \* @type: $entry;
 RegisterClientEntry == [type |-> "RegisterClient", session |-> 0, request_number |-> 0]
 \* @type: (Int, Int) => $entry;
@@ -2250,7 +2363,7 @@ LeaderCountsOwnPromise(i) ==
 \* leader.rs:316-345 handle_accepted
 \* @type: Int => Bool;
 LeaderCountsOwnAccepted(i) ==
-  LET own == leader_state[i].accepted_indexes[i] IN
+  LET own_idx == leader_state[i].accepted_indexes[i] IN
   /\ SingleNode
   /\ ClusterNodes(i) = {i}
   /\ ~deactivated[i] \/ Mutation = "DeactivatedStillVotes"
@@ -2258,12 +2371,12 @@ LeaderCountsOwnAccepted(i) ==
   /\ ~recovering[i]
   /\ Votes(i)
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
-  /\ own > decided_idx[i]
-  /\ IsChosen(leader_state[i], own)
+  /\ own_idx > decided_idx[i]
+  /\ IsChosen(leader_state[i], own_idx)
   /\ wait_remaining <= 0 \/ Mutation = "ForcedWithoutWait"
   /\ HandleAccepted(i, i, [EmptyMessage EXCEPT !.type = "Accepted",
-                           !.n = leader_state[i].n_leader, !.accepted_idx = own,
-                           !.last = PrefixAt(log[i], own)], chan)
+                           !.n = leader_state[i].n_leader, !.accepted_idx = own_idx,
+                           !.last = PrefixAt(log[i], own_idx)], chan)
   /\ UNCHANGED <<env, proposed, recovery, rolled_back, client, readvars,
                  buffered_stopsign, reconfig, leasevars>>
   /\ GhostUpdate
