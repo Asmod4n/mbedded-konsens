@@ -47,9 +47,10 @@ violation and a review approves this plan.
 2. A node agrees with an entry when the result of its own run equals the
    result in the entry. The compare walks the CBOR items. A float of any
    width is decoded to `double`, and two floats agree within 1 ULP of
-   `double` (owner, 2026-10-25 09:22). NaN agrees with NaN, and +0 agrees
-   with -0 (provisional, question 5.1). Every other item, and every key
-   of a mutation, agrees byte for byte.
+   `double` (owner, 2026-10-25 09:22): the distance of the bits in
+   binary64, NaN agrees only with NaN, and +0 and -0 are 1 ULP apart
+   (owner, 2026-10-17 12:43). Every other item, and every key of a
+   mutation, agrees byte for byte.
 3. The assumption: for each entry, either every node that works agrees
    with the result in the entry, or none does. The nodes whose run of an
    entry gives a wrong result are fewer than a majority, over all time.
@@ -263,7 +264,7 @@ configuration holds one class of fault:
 
 ## 5. Questions for the owner
 
-1. NaN agrees with NaN, and +0 agrees with -0 (proposal).
+1. Decided (owner, 2026-10-17 12:43): the ULP rule of 1.1.2.
 2. "Try again" is a second run on the node that does not agree
    (proposal). The other reading: the node asks the leader to run again.
 3. The full scan of the log at each start grows with the log, and no
