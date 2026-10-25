@@ -166,8 +166,9 @@ violation and a review approves the parts that changed from form 5.
 2. The leader counts an answer for index `q` only when the answer ran on
    the selected base: `base_crc` equals the CRC over the selected results
    in `p + 1 .. from - 1`, and the results of the answer in `from .. q -
-   1` are the selected bytes. An answer whose base is not selected yet
-   is kept and counted later.
+   1` are the selected bytes, and its pointer equals the pointer `p` of
+   the leader. An answer whose base is not selected yet is kept and
+   counted later.
 3. For each index above `p`, in order, the leader selects the counted
    result that agrees with the most counted results, ties broken by the
    lowest node id, once at least a majority of the configuration agrees
@@ -187,8 +188,10 @@ violation and a review approves the parts that changed from form 5.
    verdict entry of its log above `p` that is not decided, the leader
    appends `results(p + 1, j, list)`: the selected bytes with the CRC of
    the node that sent them, and the counted nodes that did not agree.
-   When the counted answers for `p + 1` leave no result that a majority
-   could still reach, it appends `rejected(p + 1)`. It appends at most one
+   When the counted answers for `k`, the first request entry above `p`,
+   leave no result that a majority could still reach, it appends
+   `rejected(k)`. (Round 1 of the code: `rejected(p + 1)` let a stale
+   verdict entry at `p + 1` make the leader append without end.) It appends at most one
    verdict entry in each step; group commit carries it with the other
    entries of the step.
 
@@ -241,6 +244,8 @@ violation and a review approves the parts that changed from form 5.
    The list makes a node run again; it does not make a node throw.
 2. A node that was not counted, ran on another base, or is not listed
    does not throw.
+2a. The report of 2.8.1 is a record to the log sink of the node, with
+   the proof; it is not a message to another node.
 3. A void `k` makes no node throw. The proof goes to the operator.
 
 ### 2.9 What a client sees
@@ -264,6 +269,10 @@ violation and a review approves the parts that changed from form 5.
 3. The start reads the record:
    - A proof whose index is at or below the index of the open mark is
      covered: the start clears it, in one commit, and counts nothing.
+     This happens once for each open mark. A second covered proof while
+     the same mark is open counts as a damage. (Round 1 of the code: a
+     fault that stays on the disk otherwise restarted the node without
+     end.)
    - Any other proof counts as a damage: `count_a_repair` sets the count,
      sets the open mark with the index of the proof, and clears the proof,
      in one commit. While the count allows it, the node repairs; else it
