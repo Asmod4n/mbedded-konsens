@@ -13,6 +13,7 @@
 #include <functional>
 #include <iterator>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -566,6 +567,25 @@ TEST_CASE("set_decided_index commits the entries below it and nothing above")
     auto t = storage.begin();
     REQUIRE(t.has_value());
     CHECK(t->set_decided_index(5) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
+}
+
+// An entry of more than about 2000 bytes lies on LMDB overflow pages. A
+// raise of the decided index over two or more such entries in one
+// transaction once wrote each new state under a key that pointed into a page
+// of the previous put, so the next entry was lost or failed its CRC.
+TEST_CASE("a raise of the decided index over large entries keeps every entry")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::string large(70000, 'x');
+    const std::vector entries{normal_entry(large), normal_entry(large + "b"), normal_entry(large + "c"),
+                              normal_entry(large + "d"), normal_entry(std::string(2100, 'e'))};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(entries)); });
+    write(storage, [&](auto& t) { REQUIRE(t.set_decided_index(5)); });
+    for (const auto index : std::views::iota(std::uint64_t{0}, std::uint64_t{5})) {
+        CHECK(state_of(storage, index) == konsens::entry_state::committed);
+    }
+    CHECK(entries_of(storage, 0, 5) == entries);
 }
 
 // The recovery writes the whole log of the primary again from index 0. An

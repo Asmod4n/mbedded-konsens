@@ -626,7 +626,7 @@ std::expected<void, std::error_code> set_entry_states(const databases& d, std::v
         const auto key_bytes = to_big_endian(index);
         MDB_val key = value_of(key_bytes);
         MDB_val data{};
-        const int found = mdb_cursor_get(c->get(), &key, &data, MDB_SET_KEY);
+        const int found = mdb_cursor_get(c->get(), &key, &data, MDB_SET);
         if (found == MDB_NOTFOUND) [[unlikely]] {
             return std::unexpected(make_error_code(storage_errc::missing_entry));
         }
