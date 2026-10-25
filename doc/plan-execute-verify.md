@@ -163,7 +163,10 @@ violation and a review approves the parts that changed from form 5.
 4. Before it selects, the leader sends `try_again(q)` (provisional) once
    to each counted node whose result does not agree with the result it
    is about to select. Such a node runs `q` again on the same base and
-   answers again. Its second answer counts in place of the first.
+   answers again. Its second answer counts in place of the first. The
+   selection does not wait for the second answer. A node goes into the
+   list only when its second answer also does not agree. A node with no
+   second answer at the append is not counted and not listed.
 5. With results selected for `p + 1 .. j`, `j` the last of them, and no
    verdict entry of its log above `p` that is not decided, the leader
    appends `results(p + 1, j, list)`: the selected bytes with the CRC of
@@ -176,23 +179,35 @@ violation and a review approves the parts that changed from form 5.
 ### 2.7 Accept means verify, for a verdict entry
 
 1. A node sends `accepted` for a `results` entry only after it checked
-   it: the CRC of each listed result holds; for each index where it is not
-   listed as a node that did not agree, its own result on the base that
-   the list defines agrees with the listed result. If its own result on
-   that base differs, it runs again first.
-2. A `rejected(k)` entry is accepted only when the node's own answers for
+   it: the CRC of each listed result holds, and for each index it compares
+   its own result on the check base with the listed result. If its own
+   result differs, it runs again first. A node that is not listed accepts
+   when its result agrees. A listed node accepts only when its result
+   still does not agree after the second run; when it agrees, the list is
+   wrong and the node refuses.
+2. The check base of a verdict entry at index `m` is `V` over the node's
+   accepted log up to `m - 1`. In one ballot that log equals the log of
+   the leader. A node does not wait for a decide to form it, and never
+   refuses because its own `p` is lower.
+3. A `rejected(k)` entry is accepted only when the node's own answers for
    `k` would not change it (the node has no result for `k` that the
    counted answers and its own make a majority).
-3. In `sequence_paxos`, a node sends `accepted` only up to its
+4. In `sequence_paxos`, a node sends `accepted` only up to its
    `verified_idx` (provisional), which the node raises after the check
    (plan-state-in-lmdb.md 4.5, kept for this use). A request entry needs
-   no check, so `verified_idx` passes it at once.
-4. A node that does not accept a verdict entry sends `refused(ballot,
-   index)` (provisional) to the leader, with the reason. A leader that
-   gets `refused` for its own verdict entry from a majority of the
-   configuration knows that its own selection or copy is wrong. It throws
-   (section 3): "you are broken" from the majority.
-5. So a decided verdict has a majority that checked it on their own
+   no check, so `verified_idx` passes it at once. The leader counts its
+   own accept also only up to its own `verified_idx`: it checks its own
+   verdict entry after the append, as every node does.
+5. A promise carries the log of the node only up to its `verified_idx`.
+   So a new leader never takes over a verdict entry that no node checked.
+6. A node that does not accept a verdict entry sends `refused(ballot,
+   index)` (provisional) to the leader, with the reason, again on each
+   resend timeout until the ballot changes. A leader that gets `refused`
+   for a verdict entry that its own ballot appended, from a majority of
+   the configuration, knows that its own selection or copy is wrong. It
+   throws (section 3): "you are broken" from the majority. A leader does
+   not throw for an entry that an earlier ballot appended.
+7. So a decided verdict has a majority that checked it on their own
    nodes. A bit flip in the leader's count, compare or copy cannot reach
    the state.
 
@@ -257,8 +272,11 @@ violation and a review approves the parts that changed from form 5.
    hold a pair for `v` and the number of pairs is below `MaxWrong`. A
    second run may give the right result.
 3. `Flip` (Boolean): one step of the leader may replace a selected result
-   by `Bad(leader)` before it appends the `results` entry, at most
-   `MaxFlip` times.
+   by `Bad(leader)`, or move a node into or out of the list, before it
+   appends the `results` entry, at most `MaxFlip` times.
+3a. The model has no CRC32C. A CRC that holds is the assumption of 2.3.5,
+   and the model does not check it. A flip that a CRC finds is outside
+   the model; the code tests of 2.3.5 cover it.
 4. Verdict entries are values `Results(from, to, list)` and
    `Rejected(k)`. S3 counts them as proposed. `V(log)` is an operator, the
    same as 2.3.1.
@@ -295,9 +313,12 @@ violation and a review approves the parts that changed from form 5.
     - `StatesAgree`: the applied states of two nodes are prefixes of one
       another.
     - `ThrowOnlyWrong`: only a node with a wrong run of `q` takes a result
-      throw for `q`, also with `Spread` (the list of 2.1.2).
+      throw for `q`. With `Spread`, a run whose jitter is 2 away from the
+      selected result counts as a wrong run (provisional, question 7.5).
     - `RepairsBounded`: `result_throws` that count stay at most
       `AutoRepairs` before `OperatorAllowsRepair`.
+    - `VerdictCoversRequest`: each `results` entry covers at least one
+      request entry.
     - S1 to S5, E1, R1, StateIsDecided and EntryRunsOnOnePrefix stay.
 12. Covers, each must be violated by a trace: `NoResults`, `NoReject`
     (with `Spread`), `NoFollowerThrow`, `NoLeaderThrow` (with `Flip`),
@@ -314,10 +335,19 @@ violation and a review approves the parts that changed from form 5.
     - `ThrowWithoutList` (2.8 by own compare, with `Spread`):
       `ThrowOnlyWrong`.
     - `CountProofTwice` (3.3 counts a covered proof): `RepairsBounded`.
-    - `VerdictWithoutRequest` (2.1.3 off): the cover `NoIdleRead` stays
-      violated only through endless verdict entries; the run bounds the
-      log, so this mutation is checked by a state constraint that
-      counts verdict entries above the last request entry.
+    - `VerdictWithoutRequest` (2.1.3 off): the invariant
+      `VerdictCoversRequest` (each `results` entry covers a request
+      entry).
+    - `ListedSkipsCheck` (a listed node accepts without its compare, with
+      `Flip`): `ThrowOnlyWrong`.
+    - `OwnAcceptUnchecked` (the leader counts its own accept at its log
+      end, with `Flip` and a leader change): `ThrowOnlyWrong`.
+    - `StaleVerdictTaken` (`V` takes a verdict that does not start at
+      `p + 1`): `ChosenOnOwnBase`.
+    - `RejectedUnchecked` (2.7.3 off, with `Spread`): `ChosenByMajority`
+      or the cover `NoReject` reached by a `k` that a majority agrees on.
+    - `AppliedIsPointer` (applied index = `p`): the cover `NoIdleRead`
+      can not be violated.
 
 ## 5. The runs
 
@@ -330,6 +360,7 @@ class of fault:
 1. `MC_ev_wrong`: 3 nodes, `MaxLog = 4`, `MaxWrong = 1`, no crash, no
    Lose, `MaxElection = 1`.
 2. `MC_ev_flip`: as 1, `MaxWrong = 0`, `Flip`, `MaxFlip = 1`.
+2a. `MC_ev_flip_change`: as 2, `MaxElection = 3`.
 3. `MC_ev_change`: 3 nodes, `MaxLog = 5`, `MaxWrong = 1`, no Lose,
    `MaxElection = 3`.
 4. `MC_ev_loss`: 3 nodes, `MaxLog = 4`, `MaxWrong = 1`, Lose 1,
@@ -366,3 +397,7 @@ class of fault:
    known remedy: keep the run of each entry in its own nested transaction
    above a parent that holds the chosen part, so that only that entry is
    run again. Proposal: measure first (6.1, 6.2).
+5. With `Spread`, a working node can give a result outside the tolerance
+   of the contract. Proposal (provisional in 4.11): such a result counts
+   as wrong, and the node throws when it is listed. Option: the leader
+   appends `rejected(k)` in place of a throw.
