@@ -306,21 +306,31 @@ struct view {
     std::span<const entry> decided_prefix() const { return std::span(log).first(decided); }
 };
 
+// A read of the storage of a node that fails ends the run of the seed.
+template <typename T>
+T read_value(std::expected<T, std::error_code> r)
+{
+    REQUIRE(r.has_value());
+    return std::move(*r);
+}
+
 template <typename N>
 view view_of(const N& n)
 {
     const auto& sp = n.get_sequence_paxos();
-    const auto& s = sp.get_internal_storage();
-    auto log = *s.get_entries(0, *s.get_log_len());
-    const auto decided = std::min<std::size_t>(sp.get_decided_idx(), log.size());
-    return {std::move(log), decided, sp.get_accepted_round(), sp.get_state(), sp.get_leader_state().n_leader};
+    const auto t = read_value(sp.get_internal_storage().begin_read_only());
+    const auto m = read_value(t.get_meta());
+    auto log = read_value(t.get_entries(0, m.log_len));
+    const auto decided = std::min<std::size_t>(m.decided_idx, log.size());
+    return {std::move(log), decided, m.accepted_round, sp.get_state(), sp.get_leader_state().n_leader};
 }
 
 template <typename N>
 std::string state_of(node_id pid, const view& v, const N& n)
 {
-    std::string t = "node " + std::to_string(pid) + " promise " + ballot_text(n.get_sequence_paxos().get_promise()) +
-                    " n_accepted " + ballot_text(v.n_accepted) + " decided " + std::to_string(v.decided) + " applied " +
+    std::string t = "node " + std::to_string(pid) + " promise " +
+                    ballot_text(read_value(n.get_sequence_paxos().get_promise())) + " n_accepted " +
+                    ballot_text(v.n_accepted) + " decided " + std::to_string(v.decided) + " applied " +
                     std::to_string(n.get_applied_idx()) + " log";
     for (const auto& e : v.log) {
         t += " " + text_of(e);
@@ -527,13 +537,13 @@ struct world {
     {
         const auto i = earlier->first;
         note([&] { return std::string("roll back " + std::to_string(i + 1)); });
-        const auto len_before = nodes[i].get_sequence_paxos().get_internal_storage().get_log_len().value();
+        const auto len_before = read_value(nodes[i].get_sequence_paxos().get_accepted_idx());
         nonce += 1;
         nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), concatenation{}, nonce);
-        if (nodes[i].get_sequence_paxos().get_internal_storage().get_log_len().value() < len_before) {
+        if (read_value(nodes[i].get_sequence_paxos().get_accepted_idx()) < len_before) {
             counts.rollbacks += 1;
         }
-        last_decided[i] = nodes[i].get_sequence_paxos().get_decided_idx();
+        last_decided[i] = read_value(nodes[i].get_sequence_paxos().get_decided_idx());
         collect(i);
         rolled_back = true;
     }
@@ -561,7 +571,7 @@ struct world {
     {
         ballot b{};
         for (const auto& n : nodes) {
-            b = std::max(b, n.get_sequence_paxos().get_promise());
+            b = std::max(b, read_value(n.get_sequence_paxos().get_promise()));
         }
         return b;
     }
@@ -790,7 +800,7 @@ struct world {
         }
         const auto& v = views;
         for (std::size_t i = 0; i < node_count; ++i) {
-            const auto d = nodes[i].get_sequence_paxos().get_decided_idx();
+            const auto d = read_value(nodes[i].get_sequence_paxos().get_decided_idx());
             if (d < last_decided[i]) {
                 return "S7: decided_idx of node " + std::to_string(i + 1) + " fell";
             }

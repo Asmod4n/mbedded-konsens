@@ -104,11 +104,14 @@ target_link_libraries(test_crc32c PRIVATE crc32c)
 target_include_directories(test_crc32c PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
 target_link_libraries(test_persistent_storage PRIVATE crc32c lmdb)
 target_include_directories(test_persistent_storage PRIVATE ${PROJECT_SOURCE_DIR}/src)
-add_dependencies(test_lmdb_upgrade mdb_dump mdb_load mdb_dump-0.9 mdb_load-0.9)
+target_link_libraries(test_sequence_paxos PRIVATE crc32c lmdb)
+target_include_directories(test_sequence_paxos PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_dependencies(test_lmdb_upgrade mdb_dump mdb_load mdb_dump-0.9 mdb_load-0.9 konsens_lmdb_checksum)
 target_compile_definitions(
     test_lmdb_upgrade PRIVATE "KONSENS_MDB_DUMP=\"$<TARGET_FILE:mdb_dump>\"" "KONSENS_MDB_LOAD=\"$<TARGET_FILE:mdb_load>\""
     "KONSENS_MDB_DUMP_0_9=\"$<TARGET_FILE:mdb_dump-0.9>\"" "KONSENS_MDB_LOAD_0_9=\"$<TARGET_FILE:mdb_load-0.9>\""
-    "KONSENS_LSAN_MDB_DUMP_0_9=\"${PROJECT_SOURCE_DIR}/test/lsan-mdb_dump-0.9.txt\"")
+    "KONSENS_LSAN_MDB_DUMP_0_9=\"${PROJECT_SOURCE_DIR}/test/lsan-mdb_dump-0.9.txt\""
+    "KONSENS_LMDB_CHECKSUM_MODULE=\"$<TARGET_FILE:konsens_lmdb_checksum>\"")
 
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50 --allow-root-for-test)
 add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor --allow-root-for-test)

@@ -100,7 +100,7 @@ struct options {
 
 struct flag {
     std::string_view name;
-    std::uint64_t options::* member;
+    std::uint64_t options::*member;
 };
 
 constexpr std::array flags{
@@ -362,8 +362,12 @@ struct cluster {
     std::expected<void, std::error_code> collect()
     {
         for (const auto& [from, to] : std::exchange(disconnected, {})) {
-            add(from - 1, at(from - 1).reconnected(to));
-            add(to - 1, at(to - 1).reconnected(from));
+            if (auto r = add(from - 1, at(from - 1).reconnected(to)); !r) [[unlikely]] {
+                return r;
+            }
+            if (auto r = add(to - 1, at(to - 1).reconnected(from)); !r) [[unlikely]] {
+                return r;
+            }
         }
         for (std::size_t i = 0; i < node_count; ++i) {
             auto& n = nodes.at(i);
@@ -547,6 +551,16 @@ struct call {
     std::uint64_t read_floor;
 };
 
+template <typename S>
+std::expected<konsens::meta_record, std::error_code> read_meta(const S& storage)
+{
+    const auto t = storage.begin_read_only();
+    if (!t) [[unlikely]] {
+        return std::unexpected(t.error());
+    }
+    return t->get_meta();
+}
+
 template <typename Cluster>
 struct stress {
     options given;
@@ -570,8 +584,12 @@ struct stress {
     {
         for (std::size_t i = 0; i < node_count; ++i) {
             const auto& sp = net.at(i).get_sequence_paxos();
-            const auto decided = sp.get_decided_idx();
-            if (decided < last_decided.at(i) || std::min(decided, sp.get_accepted_idx()) < checked.at(i)) [[unlikely]] {
+            const auto m = read_meta(sp.get_internal_storage());
+            if (!m) [[unlikely]] {
+                return std::unexpected(failure{"read the meta record", m.error()});
+            }
+            const auto decided = m->decided_idx;
+            if (decided < last_decided.at(i) || std::min(decided, m->log_len) < checked.at(i)) [[unlikely]] {
                 return std::unexpected(failure{"S7: the decided index of a node fell", {}});
             }
             last_decided.at(i) = decided;
@@ -583,7 +601,7 @@ struct stress {
                 const auto k = checked.at(i);
                 if (k == decided_history.size()) {
                     decided_history.push_back(e);
-                    decided_ballot.push_back(sp.get_accepted_round());
+                    decided_ballot.push_back(m->accepted_round);
                 } else if (decided_history.at(k) != e) [[unlikely]] {
                     return std::unexpected(failure{"S1: two nodes decided different entries at one index", {}});
                 }
@@ -608,7 +626,11 @@ struct stress {
             if (from >= held) {
                 continue;
             }
-            const auto log = sp.get_internal_storage().get_entries(from, held);
+            const auto t = sp.get_internal_storage().begin_read_only();
+            if (!t) [[unlikely]] {
+                return std::unexpected(failure{"read the log", t.error()});
+            }
+            const auto log = t->get_entries(from, held);
             if (!log) [[unlikely]] {
                 return std::unexpected(failure{"read the log", log.error()});
             }
@@ -633,15 +655,18 @@ struct stress {
     std::expected<std::vector<konsens::entry>, std::error_code> read_log_suffix(const std::size_t i,
                                                                                 const std::uint64_t from) const
     {
-        const auto& s = net.at(i).get_sequence_paxos().get_internal_storage();
-        const auto len = s.get_log_len();
-        if (!len) [[unlikely]] {
-            return std::unexpected(len.error());
+        const auto t = net.at(i).get_sequence_paxos().get_internal_storage().begin_read_only();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
         }
-        if (*len < from) [[unlikely]] {
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            return std::unexpected(m.error());
+        }
+        if (m->log_len < from) [[unlikely]] {
             return std::unexpected(std::make_error_code(std::errc::result_out_of_range));
         }
-        return s.get_entries(from, *len);
+        return t->get_entries(from, m->log_len);
     }
 
     outcome check_s5() const

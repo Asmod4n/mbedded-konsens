@@ -35,7 +35,7 @@ constexpr std::size_t map_size = std::size_t{16} << 20;
 // nothing in memory: the node and its LMDB environment are closed, and
 // start opens the environment again from the files. This is the durable
 // state that Crash in SequencePaxos.tla keeps. A rollback restores a
-// compact copy that the library made of the environment while the node
+// copy that the library made of the environment while the node
 // ran: the state after its last commit, as a lost fsync or a backup.
 struct lmdb_cluster {
     using storage_type = konsens::persistent_storage;

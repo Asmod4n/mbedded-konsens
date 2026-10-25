@@ -43,33 +43,57 @@ constexpr std::uint32_t config_id = 1;
 
 // The disk of a node outlives the node, so a test can end a node between a
 // call and its commit, as a crash does, and start it again on the same
-// disk. The disk counts the calls of write_atomically and the entries of
-// each append_entries. Its store is LMDB.
+// disk. The disk counts the commits of write transactions and the entries
+// of each append_entries. Its store is LMDB.
 struct disk {
     konsens::persistent_storage store;
-    std::uint64_t writes;
+    std::uint64_t commits;
     std::vector<std::size_t> appended;
 };
 
 struct disk_storage {
+    using read_only_transaction = konsens::persistent_storage::read_only_transaction;
+
+    class transaction {
+    public:
+        transaction(konsens::persistent_storage::transaction t, disk* d) : t_{std::move(t)}, d_{d} {}
+
+        auto get_meta() const { return t_.get_meta(); }
+        auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
+        auto get_last_entry() const { return t_.get_last_entry(); }
+        auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
+
+        auto append_entries(const std::span<const entry> entries)
+        {
+            d_->appended.push_back(entries.size());
+            return t_.append_entries(entries);
+        }
+        auto append_on_prefix(const std::uint64_t from_idx, const std::span<const entry> entries)
+        {
+            return t_.append_on_prefix(from_idx, entries);
+        }
+        auto set_promise(const ballot b) { return t_.set_promise(b); }
+        auto set_accepted_round(const ballot b) { return t_.set_accepted_round(b); }
+        auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
+        std::expected<void, std::error_code> commit() &&
+        {
+            d_->commits += 1;
+            return std::move(t_).commit();
+        }
+
+    private:
+        konsens::persistent_storage::transaction t_;
+        disk* d_;
+    };
+
     std::shared_ptr<disk> d;
 
-    std::expected<void, std::error_code> write_atomically(const std::span<const konsens::storage_op> ops)
+    std::expected<transaction, std::error_code> begin()
     {
-        d->writes += 1;
-        for (const auto& op : ops) {
-            if (const auto* a = std::get_if<konsens::append_entries>(&op)) {
-                d->appended.push_back(a->entries.size());
-            }
-        }
-        return d->store.write_atomically(ops);
+        return d->store.begin().transform(
+            [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), d.get()}; });
     }
-    auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return d->store.get_entries(from, to); }
-    auto get_log_len() const { return d->store.get_log_len(); }
-    auto get_promise() const { return d->store.get_promise(); }
-    auto get_decided_idx() const { return d->store.get_decided_idx(); }
-    auto get_accepted_round() const { return d->store.get_accepted_round(); }
-    auto get_last_entry_crc() const { return d->store.get_last_entry_crc(); }
+    std::expected<read_only_transaction, std::error_code> begin_read_only() const { return d->store.begin_read_only(); }
 };
 
 inline std::shared_ptr<disk> disk_in(const std::filesystem::path& directory)
@@ -139,7 +163,13 @@ struct cluster {
         return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, counter{}, next_nonce);
     }
 
-    void restart(const std::size_t i) { nodes.at(i) = start(i); }
+    void restart(const std::size_t i)
+    {
+        {
+            const auto ended = std::move(nodes.at(i));
+        }
+        nodes.at(i) = start(i);
+    }
 
     void run(const int count)
     {

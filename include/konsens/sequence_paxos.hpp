@@ -516,6 +516,7 @@ public:
 
     std::vector<paxos_message> take_outgoing_messages()
     {
+        throw_if_a_write_did_not_finish();
         throw_if_a_step_is_open();
         return std::exchange(outgoing_, {});
     }
@@ -525,20 +526,23 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (auto r = begin_step(); !r) [[unlikely]] {
-            return r;
-        }
         if (state_.first == role::leader) {
+            if (auto r = begin_step(); !r) [[unlikely]] {
+                return r;
+            }
             read_pending_.push_back({pid_, read});
             return start_read_round();
         }
-        const auto m = read_meta();
+        const auto m = read_meta_between_steps();
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
         const node_id leader = m->promise.pid;
         if (leader == 0 || leader == pid_) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::retry));
+        }
+        if (auto r = begin_step(); !r) [[unlikely]] {
+            return r;
         }
         outgoing_.push_back({pid_, leader, read_index_request{read}});
         return {};
@@ -777,7 +781,7 @@ private:
     }
 
     std::expected<konsens::log_sync, std::error_code> create_log_sync(const std::uint64_t common_prefix_idx,
-                                                                     const meta_record& m) const
+                                                                      const meta_record& m) const
     {
         auto suffix = read_range(*txn_, std::min(common_prefix_idx, m.log_len), m.log_len);
         if (!suffix) [[unlikely]] {
@@ -1003,8 +1007,7 @@ private:
         }
         leader_state_.increment_seq_num_session(to);
         const auto seq_num = leader_state_.next_seq_num(to);
-        outgoing_.push_back(
-            {pid_, to, accept_sync{leader_state_.n_leader, seq_num, m->decided_idx, std::move(*sync)}});
+        outgoing_.push_back({pid_, to, accept_sync{leader_state_.n_leader, seq_num, m->decided_idx, std::move(*sync)}});
         return {};
     }
 
@@ -1018,8 +1021,8 @@ private:
             return {};
         }
         const auto sync_idx = accsync.log_sync.sync_idx;
-        if (sync_idx > m->log_len ||
-            (accsync.n == applied_sync_.n && accsync.seq_num.session <= applied_sync_.session)) [[unlikely]] {
+        if (sync_idx > m->log_len || (accsync.n == applied_sync_.n && accsync.seq_num.session <= applied_sync_.session))
+            [[unlikely]] {
             return {};
         }
         write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
@@ -1181,8 +1184,9 @@ private:
             return stop_voting(last_crc.error());
         }
         auto all = recovery_responses_;
-        all.emplace_back(pid_, recovery_response{nonce_, m->promise, false, m->accepted_round, {}, m->decided_idx,
-                                                 true, m->log_len, *last_crc});
+        all.emplace_back(
+            pid_, recovery_response{
+                      nonce_, m->promise, false, m->accepted_round, {}, m->decided_idx, true, m->log_len, *last_crc});
         if (const auto fault = find_hardware_fault(all)) [[unlikely]] {
             return stop_voting(*fault);
         }

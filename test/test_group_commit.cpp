@@ -25,13 +25,13 @@
 using namespace node_cluster;
 
 // The aim of group commit (doc/plan-group-commit.md section 5): 64 client
-// requests that wait at the leader cost one write_atomically on each node
-// in each pass, not one for each request. The leader appends the 64
+// requests that wait at the leader cost one commit of the storage on each
+// node in each pass, not one for each request. The leader appends the 64
 // entries with one append_entries, and each follower writes the 64 entries
 // of its one AcceptDecide in one call. The test adds the 64 transactions
-// into one, commits each node once in each pass, and counts the calls of
-// write_atomically around each commit.
-TEST_CASE("64 requests make one write_atomically on each node in each pass")
+// into one, commits each node once in each pass, and counts the commits of
+// the storage around each commit of the node.
+TEST_CASE("64 requests make one commit of the storage on each node in each pass")
 {
     auto c = elected();
     const auto l = c.leader();
@@ -50,9 +50,9 @@ TEST_CASE("64 requests make one write_atomically on each node in each pass")
         std::vector<std::vector<message>> inbox(node_count);
         for (std::size_t i = 0; i < node_count; ++i) {
             if (pending.at(i)) {
-                const auto before = c.disks.at(i)->writes;
+                const auto before = c.disks.at(i)->commits;
                 REQUIRE(c.nodes.at(i).commit(*pending.at(i)));
-                CHECK(c.disks.at(i)->writes - before <= 1);
+                CHECK(c.disks.at(i)->commits - before <= 1);
                 pending.at(i).reset();
             }
             for (auto& m : c.nodes.at(i).take_outgoing_messages()) {
@@ -99,14 +99,14 @@ TEST_CASE("a crash between the batch and the commit sends nothing, and the retry
         std::ranges::move(c.nodes.at(f).take_outgoing_messages(), std::back_inserter(accepted));
     }
     REQUIRE(std::ranges::any_of(accepted, holds<konsens::accepted>));
-    const auto decided_on_disk = *c.disks.at(l)->store.get_decided_idx();
+    const auto decided_on_disk = lmdb_storage::meta_of(c.disks.at(l)->store).decided_idx;
     const auto uncommitted = c.nodes.at(l).handle_incoming(messages_to(accepted, pid_of(l)));
     REQUIRE(uncommitted);
-    REQUIRE(c.nodes.at(l).get_sequence_paxos().get_decided_idx() > decided_on_disk);
+    REQUIRE(value_of(c.nodes.at(l).get_sequence_paxos().get_decided_idx()) > decided_on_disk);
     CHECK(c.nodes.at(l).take_outgoing_messages().empty());
     CHECK(c.nodes.at(l).take_client_replies().empty());
     c.restart(l);
-    CHECK(*c.disks.at(l)->store.get_decided_idx() == decided_on_disk);
+    CHECK(lmdb_storage::meta_of(c.disks.at(l)->store).decided_idx == decided_on_disk);
     c.run(rounds);
     CHECK(c.replies_of_all().empty());
     const auto at = first_follower(l);
@@ -131,13 +131,13 @@ TEST_CASE("a follower that ends before its commit sends no Accepted")
     const auto f = first_follower(l);
     batches::commit(c.nodes.at(l), c.nodes.at(l).append(make_entry(1)));
     auto out = c.nodes.at(l).take_outgoing_messages();
-    const auto log_on_disk = *c.disks.at(f)->store.get_log_len();
+    const auto log_on_disk = lmdb_storage::meta_of(c.disks.at(f)->store).log_len;
     const auto uncommitted = c.nodes.at(f).handle_incoming(messages_to(out, pid_of(f)));
     REQUIRE(uncommitted);
     REQUIRE(c.nodes.at(f).get_sequence_paxos().get_accepted_idx() == log_on_disk + 1);
     CHECK(c.nodes.at(f).take_outgoing_messages().empty());
     c.restart(f);
-    CHECK(*c.disks.at(f)->store.get_log_len() == log_on_disk);
+    CHECK(lmdb_storage::meta_of(c.disks.at(f)->store).log_len == log_on_disk);
 }
 
 // AcceptDecide and the Decide of its entries can arrive in one batch. The
@@ -168,12 +168,12 @@ TEST_CASE("AcceptDecide and Decide in one batch apply the entries after the comm
     CHECK(c.nodes.at(slow).get_applied_idx() == applied + 1);
 }
 
-// P1 of the plan, R4 of the review: a handler that reads the storage while
-// ops of the batch wait must read what those ops write. A follower gets an
-// AcceptDecide and then a Prepare of a higher ballot in one batch. The
-// Promise carries the log from the decided index of the Prepare, and that
-// log holds the entry of the AcceptDecide only if the ops were written
-// before the read.
+// P1 of the plan, R4 of the review: a handler that reads the storage in a
+// step must read what the earlier handlers of the step wrote. A follower
+// gets an AcceptDecide and then a Prepare of a higher ballot in one step.
+// The Promise carries the log from the decided index of the Prepare, and
+// that log holds the entry of the AcceptDecide only if the read sees the
+// writes of the same transaction. The step makes one commit.
 TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the AcceptDecide")
 {
     using sp_t = konsens::sequence_paxos<disk_storage>;
@@ -185,11 +185,11 @@ TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the A
     REQUIRE(sp.handle({3, 1, konsens::accept_sync{first, {1, 1}, 0, {{}, 0}}}));
     REQUIRE(sp.commit());
     static_cast<void>(sp.take_outgoing_messages());
-    const auto writes = d->writes;
+    const auto commits = d->commits;
     REQUIRE(sp.handle({3, 1, konsens::accept_decide{first, {1, 2}, 0, {make_entry(7)}}}));
     REQUIRE(sp.handle({2, 1, konsens::prepare{second, 0, ballot{}, 0}}));
     REQUIRE(sp.commit());
-    CHECK(d->writes - writes == 2);
+    CHECK(d->commits - commits == 1);
     const auto out = sp.take_outgoing_messages();
     const auto it = std::ranges::find_if(
         out, [](const paxos_message& m) { return m.to == 2 && std::holds_alternative<konsens::promise>(m.msg); });
@@ -247,7 +247,7 @@ TEST_CASE("the sum of the transactions of several calls commits all of them at o
     for (std::uint64_t k = 0; k <= resend_ticks; ++k) {
         t += value_of(c.nodes.at(l).tick());
     }
-    t += c.nodes.at(l).reconnected(pid_of(first_follower(l)));
+    t += value_of(c.nodes.at(l).reconnected(pid_of(first_follower(l))));
     CHECK(c.nodes.at(l).take_outgoing_messages().empty());
     CHECK(c.nodes.at(l).take_client_replies().empty());
     REQUIRE(c.nodes.at(l).commit(t));
@@ -291,7 +291,7 @@ TEST_CASE("a storage read from outside while ops wait is a wrong use")
     CHECK_THROWS_AS(static_cast<void>(c.nodes.at(f).get_sequence_paxos().get_internal_storage()), std::logic_error);
     REQUIRE(c.nodes.at(f).commit(t));
     CHECK(c.nodes.at(f).read_decided_suffix(0));
-    CHECK(c.nodes.at(f).get_sequence_paxos().get_internal_storage().get_log_len() == 1u);
+    CHECK(lmdb_storage::meta_of(c.disks.at(f)->store).log_len == 1u);
 }
 
 // R6 of the review: the messages that wait for a commit have one limit,

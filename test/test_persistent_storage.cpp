@@ -28,6 +28,7 @@
 #include "konsens/persistent_storage.hpp"
 #include "lmdb_category.hpp"
 #include "lmdb_checksum.hpp"
+#include "lmdb_damage.hpp"
 #include "temporary_directory.hpp"
 
 static_assert(konsens::storage<konsens::persistent_storage>);
@@ -80,8 +81,8 @@ konsens::meta_record meta_of(const konsens::persistent_storage& storage)
     return *m;
 }
 
-std::expected<std::vector<konsens::entry>, std::error_code>
-entries_of(const konsens::persistent_storage& storage, const std::uint64_t from, const std::uint64_t to)
+std::expected<std::vector<konsens::entry>, std::error_code> entries_of(const konsens::persistent_storage& storage,
+                                                                       const std::uint64_t from, const std::uint64_t to)
 {
     const auto t = storage.begin_read_only();
     REQUIRE(t.has_value());
@@ -97,48 +98,14 @@ std::optional<konsens::entry_state> state_of(const konsens::persistent_storage& 
     return *state;
 }
 
-std::array<std::byte, sizeof(std::uint64_t)> key_of(const std::uint64_t index)
-{
-    std::array<std::byte, sizeof index> key{};
-    for (std::size_t i = 0; i < key.size(); ++i) {
-        key.at(i) = static_cast<std::byte>(index >> (8 * (key.size() - 1 - i)));
-    }
-    return key;
-}
-
-// A test damages a closed storage as a disk would: it opens the files with
-// LMDB itself, with the page checksum of the library, so that LMDB accepts
-// the pages and only the checks of the library can find the damage.
-void change_with_lmdb(const std::filesystem::path& directory, const std::function<void(MDB_txn*, MDB_dbi, MDB_dbi)>& f)
-{
-    MDB_env* env = nullptr;
-    REQUIRE(mdb_env_create(&env) == MDB_SUCCESS);
-    REQUIRE(mdb_env_set_maxdbs(env, 2) == MDB_SUCCESS);
-    REQUIRE(mdb_env_set_mapsize(env, map_size) == MDB_SUCCESS);
-    REQUIRE(mdb_env_set_checksum(env, konsens::compute_page_checksum, konsens::page_checksum_size) == MDB_SUCCESS);
-    REQUIRE(mdb_env_open(env, directory.c_str(), MDB_NOTLS | MDB_REMAP_CHUNKS, 0600) == MDB_SUCCESS);
-    MDB_txn* txn = nullptr;
-    REQUIRE(mdb_txn_begin(env, nullptr, 0, &txn) == MDB_SUCCESS);
-    MDB_dbi log = 0;
-    MDB_dbi meta = 0;
-    REQUIRE(mdb_dbi_open(txn, "log", 0, &log) == MDB_SUCCESS);
-    REQUIRE(mdb_dbi_open(txn, "meta", 0, &meta) == MDB_SUCCESS);
-    f(txn, log, meta);
-    REQUIRE(mdb_txn_commit(txn) == MDB_SUCCESS);
-    mdb_env_close(env);
-}
-
-void delete_key(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key_bytes)
-{
-    MDB_val key{key_bytes.size(), const_cast<std::byte*>(key_bytes.data())};
-    REQUIRE(mdb_del(txn, dbi, &key, nullptr) == MDB_SUCCESS);
-}
+using lmdb_damage::change_with_lmdb;
+using lmdb_damage::delete_key;
+using lmdb_damage::key_of;
 
 void delete_entry(const std::filesystem::path& directory, const std::uint64_t index)
 {
-    change_with_lmdb(directory, [index](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
-        delete_key(txn, log, key_of(index));
-    });
+    change_with_lmdb(directory,
+                     [index](MDB_txn* txn, const MDB_dbi log, MDB_dbi) { delete_key(txn, log, key_of(index)); });
 }
 
 }
@@ -445,8 +412,7 @@ TEST_CASE("a storage that lost its meta record gives missing_meta_record")
     }
     auto t = storage.begin();
     REQUIRE(t.has_value());
-    CHECK(t->set_promise({1, 1, 0, 1}) ==
-          std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    CHECK(t->set_promise({1, 1, 0, 1}) == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
 }
 
 // Plan lmdb-only-source 2.9: the format of the files changed, and no store

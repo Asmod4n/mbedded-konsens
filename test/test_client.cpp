@@ -368,7 +368,7 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
 
     c.alive[2] = false;
     c.run(rounds, once);
-    REQUIRE(c.at(1).get_sequence_paxos().get_promise().pid == 2);
+    REQUIRE(c.at(1).get_sequence_paxos().get_promise()->pid == 2);
     REQUIRE(c.at(1).get_applied_idx() == 2);
     const auto replies = c.at(1).take_client_replies();
     REQUIRE(replies.size() == 1);

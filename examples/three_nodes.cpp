@@ -208,7 +208,7 @@ struct cluster {
         return std::nullopt;
     }
 
-    std::uint64_t decided_count(const std::size_t i) const
+    std::expected<std::uint64_t, std::error_code> decided_count(const std::size_t i) const
     {
         return nodes.at(i)->get_sequence_paxos().get_decided_idx();
     }
@@ -227,7 +227,11 @@ struct cluster {
     bool all_running_decided(const std::uint64_t count) const
     {
         for (std::size_t i = 0; i < node_count; ++i) {
-            if (nodes.at(i) && decided_count(i) < count) {
+            if (!nodes.at(i)) {
+                continue;
+            }
+            const auto decided = decided_count(i);
+            if (!decided || *decided < count) {
                 return false;
             }
         }
@@ -409,10 +413,13 @@ int run(const std::span<const std::string_view> args)
     }
     std::cout << std::format("Node {} is the leader.", *c.leader() + 1) << '\n';
     const auto base = c.decided_count(*c.leader());
+    if (!base) [[unlikely]] {
+        return fail("read the decided index of the leader", base.error());
+    }
     if (auto r = append_at_leader(c, 1, first_entry_count); !r) [[unlikely]] {
         return fail("append the first entries", r.error());
     }
-    const auto first_target = base + first_entry_count;
+    const auto first_target = *base + first_entry_count;
     if (auto r = run_until(c, [&c, first_target] { return c.all_running_decided(first_target); }); !r) [[unlikely]] {
         return fail("decide the first entries", r.error());
     }
@@ -438,8 +445,12 @@ int run(const std::span<const std::string_view> args)
     if (auto r = c.start(stopped_node); !r) [[unlikely]] {
         return fail("reopen the stopped node", r.error());
     }
+    const auto reopened = c.decided_count(stopped_node);
+    if (!reopened) [[unlikely]] {
+        return fail("read the decided index of the reopened node", reopened.error());
+    }
     std::cout << std::format("Node {} is open again from its directory. It has {} decided entries from disk.",
-                             stopped_node + 1, c.decided_count(stopped_node))
+                             stopped_node + 1, *reopened)
               << '\n';
     if (auto r = run_until(c, [&c, second_target] { return c.all_running_decided(second_target); }); !r) [[unlikely]] {
         return fail("let the reopened node catch up", r.error());

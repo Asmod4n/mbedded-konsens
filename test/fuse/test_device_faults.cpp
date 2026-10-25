@@ -56,8 +56,10 @@ konsens::persistent_storage open_storage(const std::filesystem::path& directory)
 void write_entries(const std::filesystem::path& directory, const std::vector<konsens::entry>& entries)
 {
     auto storage = open_storage(directory);
-    const std::vector<konsens::storage_op> ops{konsens::append_entries{entries}};
-    REQUIRE(storage.write_atomically(ops).has_value());
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    REQUIRE(t->append_entries(entries).has_value());
+    REQUIRE(std::move(*t).commit().has_value());
 }
 
 // A payload that does not repeat inside one period, so that the test finds
@@ -131,9 +133,11 @@ TEST_CASE("a failed fsync at commit throws sync_error and keeps the last commit"
         {
             auto storage = open_storage(d.mount_point);
             const std::vector<konsens::entry> later{{konsens::entry_kind::normal, bytes_of("later")}};
-            const std::vector<konsens::storage_op> ops{konsens::append_entries{later}};
+            auto t = storage.begin();
+            REQUIRE(t.has_value());
+            REQUIRE(t->append_entries(later).has_value());
             try {
-                static_cast<void>(storage.write_atomically(ops));
+                static_cast<void>(std::move(*t).commit());
             } catch (const konsens::sync_error& e) {
                 thrown = e.code();
             }
@@ -145,8 +149,12 @@ TEST_CASE("a failed fsync at commit throws sync_error and keeps the last commit"
     mounted_error_fs clean(d.backing, d.mount_point, "");
     {
         const auto storage = open_storage(d.mount_point);
-        CHECK(storage.get_log_len() == written.size());
-        CHECK(storage.get_entries(0, written.size() + 1) == written);
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        const auto m = t->get_meta();
+        REQUIRE(m.has_value());
+        CHECK(m->log_len == written.size());
+        CHECK(t->get_entries(0, written.size()) == written);
     }
     clean.unmount();
 }
@@ -188,7 +196,11 @@ TEST_CASE("a failed read of an entry ends the process with SIGBUS")
         if (write(opened[1], &byte, 1) != 1) {
             _exit(write_failed);
         }
-        static_cast<void>(storage->get_entries(1, 2));
+        const auto t = storage->begin_read_only();
+        if (!t) {
+            _exit(open_failed);
+        }
+        static_cast<void>(t->get_entries(1, 2));
         _exit(read_returned);
     }
     close(opened[1]);
@@ -222,7 +234,7 @@ node_cluster::cluster cluster_on(const std::filesystem::path& mount_point)
 // LMDB commit: the commit throws write_error with the error code of the
 // disk. None of the messages and replies of the transaction leaves the
 // node, because each of them depends on the write that did not happen. The
-// program does not repeat the commit, so a later commit is a wrong use. The
+// program does not repeat the commit, so a later step is a wrong use. The
 // owner chose (2026-10-24) that the fault comes from the file system under
 // LMDB: error_fs fails each write of data.mdb with ENOSPC while the node
 // runs.
@@ -249,8 +261,7 @@ TEST_CASE("a write that fails at the commit throws write_error and releases noth
         CHECK(c.nodes.at(l).take_outgoing_messages().empty());
         CHECK(c.nodes.at(l).take_client_replies().empty());
         fs.set_faults("none");
-        const auto next = value_of(c.nodes.at(l).tick());
-        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(next)), std::logic_error);
+        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(value_of(c.nodes.at(l).tick()))), std::logic_error);
         CHECK(c.nodes.at(l).take_outgoing_messages().empty());
     }
     fs.unmount();
@@ -275,8 +286,7 @@ TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
         CHECK(c.nodes.at(l).take_outgoing_messages().empty());
         CHECK(c.nodes.at(l).take_client_replies().empty());
         fs.set_faults("none");
-        const auto next = value_of(c.nodes.at(l).tick());
-        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(next)), std::logic_error);
+        CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(value_of(c.nodes.at(l).tick()))), std::logic_error);
     }
     fs.unmount();
 }

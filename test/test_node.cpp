@@ -84,7 +84,7 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader")
     for (const auto& n : nodes) {
         CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1)});
     }
-    const auto leader = nodes[0].get_sequence_paxos().get_promise().pid;
+    const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
     REQUIRE(leader == 3);
     std::array<bool, 3> without_leader = all;
     without_leader[leader - 1] = false;
@@ -232,7 +232,7 @@ std::vector<node_t> elect_three()
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    REQUIRE(nodes[behind - 1].get_sequence_paxos().get_promise().pid == elected);
+    REQUIRE(nodes[behind - 1].get_sequence_paxos().get_promise()->pid == elected);
     return nodes;
 }
 
@@ -256,8 +256,7 @@ void check_caught_up(const std::vector<node_t>& nodes)
     const auto& l = nodes[elected - 1].get_sequence_paxos();
     CHECK(f.get_decided_idx() == l.get_decided_idx());
     CHECK(*nodes[behind - 1].read_decided_suffix(0) == *nodes[elected - 1].read_decided_suffix(0));
-    CHECK(f.get_internal_storage().get_entries(0, f.get_accepted_idx()) ==
-          l.get_internal_storage().get_entries(0, l.get_accepted_idx()));
+    CHECK(lmdb_storage::log_of(f.get_internal_storage()) == lmdb_storage::log_of(l.get_internal_storage()));
 }
 
 void check_resynced(const std::vector<konsens::paxos_message>& seen)
@@ -278,7 +277,9 @@ void check_resynced(const std::vector<konsens::paxos_message>& seen)
 TEST_CASE("a follower that lost the last Decide catches up after reconnected")
 {
     auto nodes = lose_the_last_decide();
-    REQUIRE(nodes[behind - 1].commit(nodes[behind - 1].reconnected(elected)));
+    const auto t = nodes[behind - 1].reconnected(elected);
+    REQUIRE(t);
+    REQUIRE(nodes[behind - 1].commit(*t));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -334,24 +335,48 @@ TEST_CASE("a follower that lost an AcceptDecide with an entry catches up after a
 namespace {
 
 struct recording_storage {
+    using read_only_transaction = persistent_storage::read_only_transaction;
+
+    class transaction {
+    public:
+        transaction(persistent_storage::transaction t, std::vector<const konsens::entry*>* appended)
+            : t_{std::move(t)}, appended_{appended}
+        {
+        }
+
+        auto get_meta() const { return t_.get_meta(); }
+        auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
+        auto get_last_entry() const { return t_.get_last_entry(); }
+        auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
+
+        auto append_entries(const std::span<const konsens::entry> entries)
+        {
+            appended_->push_back(entries.data());
+            return t_.append_entries(entries);
+        }
+        auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
+        {
+            return t_.append_on_prefix(from_idx, entries);
+        }
+        auto set_promise(const konsens::ballot b) { return t_.set_promise(b); }
+        auto set_accepted_round(const konsens::ballot b) { return t_.set_accepted_round(b); }
+        auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
+        std::expected<void, std::error_code> commit() && { return std::move(t_).commit(); }
+
+    private:
+        persistent_storage::transaction t_;
+        std::vector<const konsens::entry*>* appended_;
+    };
+
     persistent_storage inner;
     std::vector<const konsens::entry*>* appended;
 
-    std::expected<void, std::error_code> write_atomically(std::span<const konsens::storage_op> ops)
+    std::expected<transaction, std::error_code> begin()
     {
-        for (const auto& op : ops) {
-            if (const auto* a = std::get_if<konsens::append_entries>(&op)) {
-                appended->push_back(a->entries.data());
-            }
-        }
-        return inner.write_atomically(ops);
+        return inner.begin().transform(
+            [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
     }
-    auto get_entries(std::uint64_t from, std::uint64_t to) const { return inner.get_entries(from, to); }
-    auto get_log_len() const { return inner.get_log_len(); }
-    auto get_promise() const { return inner.get_promise(); }
-    auto get_decided_idx() const { return inner.get_decided_idx(); }
-    auto get_accepted_round() const { return inner.get_accepted_round(); }
-    auto get_last_entry_crc() const { return inner.get_last_entry_crc(); }
+    std::expected<read_only_transaction, std::error_code> begin_read_only() const { return inner.begin_read_only(); }
 };
 
 }
@@ -381,7 +406,7 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
         }
     }
     deliver();
-    const node_id leader = nodes.front().get_sequence_paxos().get_promise().pid;
+    const node_id leader = nodes.front().get_sequence_paxos().get_promise()->pid;
     REQUIRE(leader != 0);
     const node_id follower = leader == 1 ? 2 : 1;
     batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(7)));

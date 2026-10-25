@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -99,7 +100,10 @@ std::vector<konsens::entry> entries_to_write()
 // LMDB 1.0 does not open a data file of LMDB 0.9 (upgrading.doc). The
 // upgrade is mdb_dump of 0.9 and mdb_load of 1.0. This test makes a
 // database in the 0.9 format with the data of persistent_storage, converts
-// it, and checks that each entry, its CRC32C and each meta value came over.
+// it, and checks that each entry, its CRCs, its state and the meta record
+// came over. The tools of LMDB 1.0 read and write the page checksums of
+// persistent_storage only with the module that gives the checksum
+// function.
 TEST_CASE("mdb_dump of LMDB 0.9 and mdb_load of LMDB 1.0 keep every entry and meta value")
 {
     const temporary_directory dir;
@@ -112,21 +116,31 @@ TEST_CASE("mdb_dump of LMDB 0.9 and mdb_load of LMDB 1.0 keep every entry and me
     const auto entries = entries_to_write();
     const konsens::ballot promise{1, 7, 3, 2};
     const konsens::ballot accepted{1, 6, 3, 1};
-    std::uint32_t last_crc = 0;
+    konsens::meta_record meta{};
+    std::optional<konsens::last_entry> last;
     {
         auto opened = konsens::persistent_storage::open(written, map_size, non_root_user_id);
         REQUIRE(opened.has_value());
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{entries}, konsens::set_promise{promise},
-                                                   konsens::set_decided_index{entry_count},
-                                                   konsens::set_accepted_round{accepted}};
-        REQUIRE(opened->write_atomically(ops).has_value());
-        const auto crc = opened->get_last_entry_crc();
-        REQUIRE(crc.has_value());
-        last_crc = *crc;
+        auto t = opened->begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->append_entries(entries).has_value());
+        REQUIRE(t->set_promise(promise).has_value());
+        REQUIRE(t->set_accepted_round(accepted).has_value());
+        REQUIRE(t->set_decided_index(entry_count).has_value());
+        REQUIRE(std::move(*t).commit().has_value());
+        const auto r = opened->begin_read_only();
+        REQUIRE(r.has_value());
+        const auto m = r->get_meta();
+        REQUIRE(m.has_value());
+        meta = *m;
+        const auto l = r->get_last_entry();
+        REQUIRE(l.has_value());
+        last = *l;
     }
+    REQUIRE(last.has_value());
 
     const auto new_dump = dir.path() / "new.dump";
-    run({KONSENS_MDB_DUMP, "-a", "-f", new_dump.string(), written.string()});
+    run({KONSENS_MDB_DUMP, "-a", "-m", KONSENS_LMDB_CHECKSUM_MODULE, "-f", new_dump.string(), written.string()});
     remove_mapaddr(new_dump);
     run({KONSENS_MDB_LOAD_0_9, "-f", new_dump.string(), old_format.string()});
 
@@ -138,16 +152,28 @@ TEST_CASE("mdb_dump of LMDB 0.9 and mdb_load of LMDB 1.0 keep every entry and me
     run({KONSENS_MDB_DUMP_0_9, "-a", "-f", old_dump.string(), old_format.string()},
         {"LSAN_OPTIONS=suppressions=" KONSENS_LSAN_MDB_DUMP_0_9});
     CHECK_FALSE(has_mapaddr(lines_of(old_dump)));
-    run({KONSENS_MDB_LOAD, "-f", old_dump.string(), upgraded.string()});
+    run({KONSENS_MDB_LOAD, "-m", KONSENS_LMDB_CHECKSUM_MODULE, "-f", old_dump.string(), upgraded.string()});
 
     const auto storage = konsens::persistent_storage::open(upgraded, map_size, non_root_user_id);
     REQUIRE(storage.has_value());
-    CHECK(storage->get_log_len() == entries.size());
-    const auto read = storage->read_entries(0, entries.size());
+    const auto t = storage->begin_read_only();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    CHECK(m->log_len == entries.size());
+    CHECK(m->promise == promise);
+    CHECK(m->accepted_round == accepted);
+    CHECK(m->decided_idx == entry_count);
+    CHECK(m->last_chain_crc == meta.last_chain_crc);
+    const auto read = t->read_entries(0, entries.size());
     REQUIRE(read.has_value());
     CHECK(*read == entries);
-    CHECK(storage->get_last_entry_crc() == last_crc);
-    CHECK(storage->get_promise() == promise);
-    CHECK(storage->get_decided_idx() == entry_count);
-    CHECK(storage->get_accepted_round() == accepted);
+    const auto l = t->get_last_entry();
+    REQUIRE(l.has_value());
+    CHECK(*l == last);
+    for (std::uint64_t i = 0; i < entries.size(); ++i) {
+        const auto state = t->get_entry_state(i);
+        REQUIRE(state.has_value());
+        CHECK(*state == (i < entry_count ? konsens::entry_state::committed : konsens::entry_state::in_work));
+    }
 }
