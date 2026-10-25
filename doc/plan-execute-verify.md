@@ -171,7 +171,11 @@ violation and a review approves the parts that changed from form 5.
 3. For each index above `p`, in order, the leader selects the counted
    result that agrees with the most counted results, ties broken by the
    lowest node id, once at least a majority of the configuration agrees
-   with it. A selection holds for the whole ballot.
+   with it. A selection holds while its base equals the base that the
+   chosen results up to `p` and the other selections define. When `p`
+   moves past an index whose chosen result differs from the selection
+   there, the leader drops every selection above it whose base differs,
+   and counts again. It appends only selections that hold.
 4. Before it selects, the leader sends `try_again(q)` (provisional) once
    to each counted node whose result does not agree with the result it
    is about to select. Such a node runs `q` again on the same base and
@@ -197,7 +201,9 @@ violation and a review approves the parts that changed from form 5.
    when its result agrees. A listed node accepts only when its result
    still does not agree after the second run; when it agrees, the list is
    wrong and the node refuses.
-2. The check base of a verdict entry at index `m` is `V` over the node's
+2. A node checks a verdict entry only in the accept phase of the ballot
+   that it promised, so the entry is one that the leader of that ballot
+   sent. The check base of a verdict entry at index `m` is `V` over the node's
    accepted log up to `m - 1`. In one ballot that log equals the log of
    the leader. A node does not wait for a decide to form it, and never
    refuses because its own `p` is lower.
