@@ -377,7 +377,8 @@ EmptyMessage ==
   [type |-> "", n |-> DefaultBallot, decided_idx |-> 0, n_accepted |-> DefaultBallot,
    accepted_idx |-> 0, log_sync |-> <<>>, seq_num |-> DefaultSeq, entries |-> <<>>,
    nonce |-> 0, promise |-> DefaultBallot, primary |-> FALSE, log |-> <<>>,
-   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0, recovering |-> FALSE, last |-> <<>>]
+   read |-> 0, id |-> 0, reads |-> {}, read_index |-> 0, recovering |-> FALSE, last |-> <<>>,
+   ptr |-> 0, base |-> <<>>, results |-> <<>>, idx |-> 0]
 
 \* The log up to position k. It stands for the digest of the state up to k,
 \* as each node reads it back after the commit (owner, 2026-10-24 15:30 to
@@ -634,6 +635,15 @@ AccBound(i, lg, acc) == IF ExecuteVerify THEN Min(acc, NewVerified(i, lg)) ELSE 
 \* Plan 2.7.5: a promise carries the log only up to verified_idx.
 PromiseLog(i) == IF ExecuteVerify THEN SubSeq(log[i], 1, Min(verified_idx[i], Len(log[i]))) ELSE log[i]
 PromiseAcc(i) == IF ExecuteVerify THEN Len(PromiseLog(i)) ELSE accepted_idx[i]
+\* Plan 2.4.4: a leader proposes no more request entries while it holds
+\* MaxInFlight results above its applied index.
+InFlightOk(i) ==
+  \/ ~ExecuteVerify
+  \/ ~(role[i] = "Leader" /\ phase[i] = "Accept")
+  \/ Cardinality({k \in DOMAIN own[i] : k > AppliedIdxOf(DecidedPrefix(i))}) < MaxInFlight
+\* Plan 2.3.6: a StopSign only when p covers every request entry.
+StopSignAllowed(i) ==
+  ~ExecuteVerify \/ \A k \in 1..Len(log[i]) : IsRequest(log[i][k]) => k <= V(DecidedPrefix(i)).p
 
 (* Recovery of Viewstamped Replication Revisited (Liskov, Cowling,         *)
 (* MIT-CSAIL-TR-2012-021, section 4.3), applied to Sequence Paxos (plan     *)
@@ -1616,6 +1626,7 @@ Propose(i, v) ==
   /\ ~AcceptedReconfiguration(i) \/ Mutation = "AppendAfterStopSign"
   /\ ~read_only[i] \/ Mutation = "ReadOnlyProposes"
   /\ ~deactivated[i]
+  /\ InFlightOk(i)
   /\ v \notin proposed
   /\ proposed' = proposed \cup {v}
   /\ IF read_only[i]
@@ -1808,6 +1819,31 @@ Detected(i, kind, d, k) ==
   /\ \/ kind = "missing_entry" /\ k < Len(log[i])
      \/ ChecksFind(d)
 
+\* The checks of a step (RunningStorageFault). With ExecuteVerify the start
+\* applies them to the whole log, with no mark (plan 4.8). q is the earlier
+\* durable state that a stale kind gives back.
+\* @type: (Int, Str, Int, $durable, $durable, $mark) => Bool;
+StepFinds(i, kind, k, q, d, h) ==
+  \/ kind = "missing_entry" /\ (k < Len(log[i]) \/ ChainCheck)
+  \/ MetaRecord /\ kind \in {"missing_accepted", "missing_promise", "missing_decided"}
+  \/ MetaRecord /\ kind = "stale_meta" /\ q.log # log[i]
+  \/ HighWater /\ BelowMark(Mark(d), h)
+  \/ ChecksFind(d)
+
+\* @type: (Int, Str, $durable, Int) => Bool;
+DetectedAtStart(i, kind, d, k) ==
+  IF ExecuteVerify
+  THEN StartChecks /\ Mutation # "StartCheckMissing" /\ StepFinds(i, kind, k, d, d, NoMark)
+  ELSE Detected(i, kind, d, k)
+
+\* Plan 3.3: a proof at or below the open mark is covered and counts
+\* nothing. The proof of a damage carries the length of the log.
+\* @type: (Int, Int) => Bool;
+Covered(i, q) ==
+  /\ ExecuteVerify
+  /\ open_mark[i] # 0 /\ q <= open_mark[i]
+  /\ Mutation # "CountProofTwice"
+
 \* A node that reads no promise gets a full copy of the durable state of a
 \* node that votes and does not recover, and runs the recovery, as every
 \* other start does (owner, 2026-10-24 12:04). The copy is the whole
@@ -1830,16 +1866,16 @@ StorageFault(i, kind) ==
   /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
-       /\ IF Detected(i, kind, d, k) /\ StartDamageCounts /\ RepairFromPeer
-             /\ repairs[i] < AutoRepairs
+       /\ IF DetectedAtStart(i, kind, d, k) /\ StartDamageCounts /\ RepairFromPeer
+             /\ (repairs[i] < AutoRepairs \/ Covered(i, Len(log[i])))
              /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
           THEN \E src \in running \ {i} :
                  /\ Votes(src) /\ ~recovering[src]
                  /\ Restart({i}, [j \in {i} |-> DurableOf(src)], {j \in {i} : Quiet(j)}, Recovery)
                  /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
                                 elections, proposed, rolled_back, client, reconfig>>
-                 /\ GhostUpdateRP({i}, {i})
-          ELSE IF Detected(i, kind, d, k)
+                 /\ GhostUpdateRP({i}, IF Covered(i, Len(log[i])) THEN {} ELSE {i})
+          ELSE IF DetectedAtStart(i, kind, d, k)
           THEN /\ running' = running \ {i}
                /\ refused' = refused \cup {i}
                /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
@@ -1901,14 +1937,14 @@ OperatorAllowsRepair(i) ==
 
 \* @type: Int => Bool;
 DamageFound(i) ==
-  IF RepairFromPeer /\ repairs[i] < AutoRepairs
+  IF RepairFromPeer /\ (repairs[i] < AutoRepairs \/ Covered(i, Len(log[i])))
      /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
   THEN \E src \in running \ {i} :
          /\ Votes(src) /\ ~recovering[src]
          /\ Restart({i}, [j \in {i} |-> DurableOf(src)], {j \in {i} : Quiet(j)}, Recovery)
          /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
                         elections, proposed, rolled_back, client, reconfig>>
-         /\ GhostUpdateRP({i}, {i})
+         /\ GhostUpdateRP({i}, IF Covered(i, Len(log[i])) THEN {} ELSE {i})
   ELSE LeaveRunning(i)
 
 \* @type: Int => Bool;
@@ -1946,12 +1982,7 @@ RunningStorageFault(i, kind) ==
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
        /\ kind \in RunningOnlyKinds => d = StaleOf(i, kind, q)
-       /\ IF StepChecks /\ (\/ kind = "missing_entry" /\ (k < Len(log[i]) \/ ChainCheck)
-                            \/ MetaRecord /\ kind \in {"missing_accepted", "missing_promise",
-                                                       "missing_decided"}
-                            \/ MetaRecord /\ kind = "stale_meta" /\ q.log # log[i]
-                            \/ HighWater /\ BelowMark(Mark(d), high_water[i])
-                            \/ ChecksFind(d))
+       /\ IF StepChecks /\ StepFinds(i, kind, k, q, d, high_water[i])
           THEN DamageFound(i)
           ELSE /\ promise' = [promise EXCEPT ![i] = d.promise]
                /\ n_accepted' = [n_accepted EXCEPT ![i] = d.n_accepted]
@@ -2125,6 +2156,7 @@ ClientSend(i, e) ==
   /\ ~read_only[i]
   /\ ~deactivated[i]
   /\ ~AcceptedReconfiguration(i)
+  /\ InFlightOk(i)
   /\ client.sends < MaxClientSend
   /\ client' = [client EXCEPT !.sends = @ + 1]
   /\ proposed' = proposed \cup {e}
@@ -2160,9 +2192,9 @@ ClientRegistered(j, s) ==
   /\ ClientSessions
   /\ Votes(j)
   /\ client.session = 0
-  /\ s <= Len(DecidedPrefix(j))
-  /\ DecidedPrefix(j)[s] = RegisterClientEntry
-  /\ ClientTable(DecidedPrefix(j))[s].open
+  /\ s <= Len(ClientPrefix(j))
+  /\ ClientPrefix(j)[s] = RegisterClientEntry
+  /\ ClientTable(ClientPrefix(j))[s].open
   /\ client' = [client EXCEPT !.session = s, !.request_number = 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars,
                  buffered_stopsign, reconfig, leasevars, leaseghost>>
@@ -2174,7 +2206,7 @@ ClientReplied(j) ==
   /\ Votes(j)
   /\ client.session > 0
   /\ client.request_number <= MaxRequest
-  /\ LET t == ClientTable(DecidedPrefix(j))[client.session] IN
+  /\ LET t == ClientTable(ClientPrefix(j))[client.session] IN
        t.open /\ t.request_number >= client.request_number
   /\ client' = [client EXCEPT !.request_number = @ + 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars,
@@ -2185,8 +2217,8 @@ ClientSessionExpired(j) ==
   /\ ClientSessions
   /\ Votes(j)
   /\ client.session > 0
-  /\ client.session <= Len(DecidedPrefix(j))
-  /\ ~ClientTable(DecidedPrefix(j))[client.session].open
+  /\ client.session <= Len(ClientPrefix(j))
+  /\ ~ClientTable(ClientPrefix(j))[client.session].open
   /\ client' = [client EXCEPT !.session = 0, !.request_number = 1]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, readvars,
                  buffered_stopsign, reconfig, leasevars, leaseghost>>
@@ -2200,8 +2232,8 @@ ExpireSession(i, s) ==
   /\ ~read_only[i]
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
   /\ ~AcceptedReconfiguration(i)
-  /\ s <= Len(DecidedPrefix(i))
-  /\ ClientTable(DecidedPrefix(i))[s].open
+  /\ s <= Len(ClientPrefix(i))
+  /\ ClientTable(ClientPrefix(i))[s].open
   /\ \A k \in 1..Len(log[i]) : log[i][k] # ExpireSessionEntry(s)
   /\ proposed' = proposed \cup {ExpireSessionEntry(s)}
   /\ AcceptEntriesLeader(i, <<ExpireSessionEntry(s)>>, chan)
@@ -2224,7 +2256,9 @@ DecidedNew ==
 ReadStart(r, i) ==
   LET \* @type: Bool => $read;
       started(ok) == [NoRead EXCEPT !.state = "pending", !.node = i,
-                                    !.decided_at_start = decided_history,
+                                    !.decided_at_start = IF ExecuteVerify
+                                                         THEN EffPrefix(decided_history)
+                                                         ELSE decided_history,
                                     !.decided_new_at_start = DecidedNew,
                                     !.contract_stale_ok = ok,
                                     !.forced_decided = forced_has_decided]
@@ -2239,12 +2273,12 @@ ReadStart(r, i) ==
   /\ \E ok \in IF StaleReadNode THEN BOOLEAN ELSE {FALSE} :
      IF read_only[i] \/ (ok /\ ~InStage2(i))
      THEN /\ reads' = [reads EXCEPT ![r] = [started(ok) EXCEPT !.state = "done",
-                                                               !.result = DecidedPrefix(i),
+                                                               !.result = ClientPrefix(i),
                                                                !.stale = TRUE]]
           /\ UNCHANGED <<chan, read_pending>>
      ELSE IF Mutation = "LocalRead" \/ SingleNodeServes(i)
      THEN /\ reads' = [reads EXCEPT ![r] = [started(ok) EXCEPT !.state = "done",
-                                                               !.result = DecidedPrefix(i)]]
+                                                               !.result = ClientPrefix(i)]]
           /\ UNCHANGED <<chan, read_pending>>
      ELSE IF role[i] = "Leader"
      THEN /\ reads' = [reads EXCEPT ![r] = started(ok)]
@@ -2287,12 +2321,13 @@ ReadReply(r) ==
   LET i == reads[r].node IN
   /\ ReadIndex
   /\ reads[r].state = "indexed"
-  /\ decided_idx[i] >= reads[r].read_index
+  /\ IF ExecuteVerify THEN AppliedIdxOf(DecidedPrefix(i)) >= reads[r].read_index
+     ELSE decided_idx[i] >= reads[r].read_index
   /\ \/ Mutation = "ReadBeforeServing"
      \/ /\ reads[r].crashes = crashes
         /\ reads[r].rolled_back = rolled_back
         /\ reads[r].ballot = promise[i]
-  /\ reads' = [reads EXCEPT ![r].state = "done", ![r].result = DecidedPrefix(i)]
+  /\ reads' = [reads EXCEPT ![r].state = "done", ![r].result = ClientPrefix(i)]
   /\ UNCHANGED <<durable, volatile, chan, env, ghost, recovery, rollback, client,
                  read_pending, read_round, buffered_stopsign, reconfig, leasevars, leaseghost>>
 
@@ -2306,6 +2341,7 @@ Reconfigure(i) ==
   /\ ~read_only[i]
   /\ ~deactivated[i]
   /\ ~AcceptedReconfiguration(i)
+  /\ StopSignAllowed(i)
   /\ proposed' = proposed \cup {StopSignEntry}
   /\ IF role[i] = "Leader" /\ phase[i] = "Prepare"
      THEN /\ buffered_stopsign' = [buffered_stopsign EXCEPT ![i] = <<StopSignEntry>>]
@@ -2879,7 +2915,11 @@ EntryRunsOnOnePrefix ==
 \* StateInLmdb: the committed state of each node holds only decided
 \* entries, in the decided order. A read from the state then gives a
 \* decided result.
-StateIsDecided == \A i \in Servers : IsPrefix(applied[i], decided_history)
+StateIsDecided ==
+  \A i \in Servers :
+    IF ExecuteVerify
+    THEN IsPrefix([k \in DOMAIN applied[i] |-> applied[i][k].e], EffPrefix(decided_history))
+    ELSE IsPrefix(applied[i], decided_history)
 
 \* The open transaction of a node that compared it with its log holds the
 \* entries of its log in order (2.6 item 5).
@@ -2933,8 +2973,8 @@ S6 == \A i \in NextConfigNodes \cap running :
 \* E1, run (f): each (session, request_number) is executed at most once.
 \* @type: Seq($entry) => Bool;
 ExecutedOnce(p) == \A a, b \in DOMAIN p : a # b /\ Executed(p, a) /\ Executed(p, b) => p[a] # p[b]
-E1 == /\ ExecutedOnce(decided_history)
-      /\ \A i \in Servers : Votes(i) => ExecutedOnce(DecidedPrefix(i))
+E1 == /\ ExecutedOnce(IF ExecuteVerify THEN EffPrefix(decided_history) ELSE decided_history)
+      /\ \A i \in Servers : Votes(i) => ExecutedOnce(ClientPrefix(i))
 
 \* R1, run (e): a read sees each entry that was decided before the read started.
 \* A read with the mark stale is outside R1.
