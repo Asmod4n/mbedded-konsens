@@ -752,6 +752,18 @@ public:
     bool recovering() const { return recovering_; }
     bool repairing() const { return repair_.has_value(); }
 
+    result scan_the_whole_log()
+    {
+        const auto chains = read_verified_chain_crcs();
+        if (!chains) [[unlikely]] {
+            return std::unexpected(chains.error());
+        }
+        if (chains->size() < mark_.log_len) [[unlikely]] {
+            return stop_voting(make_error_code(storage_errc::crc_mismatch));
+        }
+        return {};
+    }
+
     result start_repair(const std::uint64_t nonce)
     {
         if (!error_ || !error_is_a_damage(*error_) || write_unfinished_) [[unlikely]] {

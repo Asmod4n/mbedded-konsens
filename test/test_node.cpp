@@ -544,8 +544,8 @@ TEST_CASE("a restart during a repair does not count again")
     const auto own_directory = lmdb_storage::new_directory();
     {
         auto own = lmdb_storage::open_node_storage_in(own_directory);
-        REQUIRE(own.count_a_repair());
-        CHECK(own.get_repair_record() == konsens::repair_record{1, true});
+        REQUIRE(own.count_a_repair(0));
+        CHECK(own.get_repair_record() == konsens::repair_record{1, 0, std::nullopt});
     }
     const auto log_directory = lmdb_storage::new_directory();
     {
@@ -559,4 +559,76 @@ TEST_CASE("a restart during a repair does not count again")
     CHECK(n.get_sequence_paxos().repairing());
     CHECK(n.get_repair_count() == 1);
     CHECK_FALSE(n.waits_for_the_operator());
+}
+
+// Plan execute-verify 3.1 and 3.3: the proof is one field of the repair
+// record, and it survives a close of the node storage. count_a_repair
+// sets the open mark and clears the proof in one commit, and the other
+// members keep the fields that they do not name.
+TEST_CASE("the repair record keeps the proof and the open mark")
+{
+    const auto directory = lmdb_storage::new_directory();
+    const konsens::fault_proof proof{konsens::proof_kind::listed_result_differs, 7, {1, 2, 0, 3}, 11, 12};
+    {
+        auto own = lmdb_storage::open_node_storage_in(directory);
+        CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, std::nullopt});
+        REQUIRE(own.write_the_proof(proof));
+    }
+    auto own = lmdb_storage::open_node_storage_in(directory);
+    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, proof});
+    REQUIRE(own.count_a_repair(proof.index));
+    CHECK(own.get_repair_record() == konsens::repair_record{1, 7, std::nullopt});
+    REQUIRE(own.write_the_proof(proof));
+    REQUIRE(own.allow_one_more_repair());
+    CHECK(own.get_repair_record() == konsens::repair_record{0, 7, proof});
+    REQUIRE(own.clear_the_proof());
+    REQUIRE(own.close_the_repair());
+    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, std::nullopt});
+}
+
+// Plan execute-verify 3.6: the start reads the whole log, so an entry that
+// is missing in the middle of the log is a damage at the start, though the
+// meta record and the last entry are whole. It counts toward the one
+// automatic repair, and the repair brings the entry back from a peer.
+TEST_CASE("the start scan finds an entry that is missing in the middle of the log")
+{
+    const auto log_directory = lmdb_storage::new_directory();
+    const auto own_directory = lmdb_storage::new_directory();
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 2; ++p) {
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
+    }
+    nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
+                                  lmdb_storage::open_node_storage_in(own_directory),
+                                  lmdb_storage::open_new_state_storage(), echo{}, 0));
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    const std::vector<konsens::entry> entries{make_entry(1), make_entry(2), make_entry(3)};
+    for (const auto& e : entries) {
+        batches::commit(nodes[0], nodes[0].append(e));
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+    }
+    REQUIRE(*nodes[2].read_decided_suffix(0) == entries);
+    stop(nodes[2]);
+    lmdb_damage::change_with_lmdb(log_directory, [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
+        lmdb_damage::delete_key(txn, log, lmdb_damage::key_of(1));
+    });
+    nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
+                             lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+                             echo{}, 10);
+    CHECK(nodes[2].get_sequence_paxos().repairing());
+    CHECK(nodes[2].get_repair_count() == 1);
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes[2].get_sequence_paxos().votes());
+    CHECK(*nodes[2].read_decided_suffix(0) == entries);
+    const auto record = nodes[2].get_repair_record();
+    REQUIRE(record.has_value());
+    CHECK_FALSE(record->open_mark.has_value());
 }

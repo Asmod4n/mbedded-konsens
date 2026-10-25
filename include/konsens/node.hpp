@@ -113,14 +113,14 @@ public:
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
         }
+        if (sp->votes()) {
+            if (auto r = sp->scan_the_whole_log(); !r && !error_is_a_damage(r.error())) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+        }
         const auto record = own_storage.get_repair_record();
         if (!record) [[unlikely]] {
             return std::unexpected(record.error());
-        }
-        if (sp->votes() && record->open) {
-            if (auto c = own_storage.close_the_repair(); !c) [[unlikely]] {
-                return std::unexpected(c.error());
-            }
         }
         auto promise = std::expected<ballot, std::error_code>{ballot{}};
         if (sp->votes()) {
@@ -139,7 +139,7 @@ public:
                 return std::unexpected(r.error());
             }
         }
-        if (auto r = n.repair_after_a_damage(); !r) [[unlikely]] {
+        if (auto r = n.count_the_fault_at_the_start(*record); !r) [[unlikely]] {
             return std::unexpected(r.error());
         }
         if (n.seq_paxos_.votes()) {
@@ -153,29 +153,28 @@ public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> tick()
     {
-        if (auto r = repair_after_a_damage(); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        if (election_clock_.tick_and_check_timeout() && seq_paxos_.votes()) {
-            const auto promise = seq_paxos_.get_promise();
-            if (!promise) [[unlikely]] {
-                return std::unexpected(promise.error());
-            }
-            if (const auto leader = ble_.hb_timeout(*promise)) {
-                if (auto r = seq_paxos_.handle_leader(ballot_above_promise(*leader, *promise)); !r) [[unlikely]] {
-                    return std::unexpected(r.error());
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (election_clock_.tick_and_check_timeout() && seq_paxos_.votes()) {
+                const auto promise = seq_paxos_.get_promise();
+                if (!promise) [[unlikely]] {
+                    return std::unexpected(promise.error());
+                }
+                if (const auto leader = ble_.hb_timeout(*promise)) {
+                    if (auto r = seq_paxos_.handle_leader(ballot_above_promise(*leader, *promise)); !r) [[unlikely]] {
+                        return std::unexpected(r.error());
+                    }
                 }
             }
-        }
-        if (resend_message_clock_.tick_and_check_timeout()) {
-            if (auto r = seq_paxos_.resend_message_timeout(); !r) [[unlikely]] {
-                return std::unexpected(r.error());
+            if (resend_message_clock_.tick_and_check_timeout()) {
+                if (auto r = seq_paxos_.resend_message_timeout(); !r) [[unlikely]] {
+                    return std::unexpected(r.error());
+                }
+                seq_paxos_.resend_heartbeats();
+                resend_read_index_requests();
+                resend_answer_ = true;
             }
-            seq_paxos_.resend_heartbeats();
-            resend_read_index_requests();
-            resend_answer_ = true;
-        }
-        return current_transaction();
+            return current_transaction();
+        });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> handle_incoming(std::vector<received> batch)
@@ -190,68 +189,80 @@ public:
 
     [[nodiscard]] result commit(const transaction t)
     {
-        current_transaction().throw_if_another_commit(t);
-        *commit_count_ += 1;
-        if (auto r = propose_before_the_step(); !r) [[unlikely]] {
-            static_cast<void>(seq_paxos_.commit());
-            drop_held_messages_and_replies();
-            return r;
-        }
-        const auto w = seq_paxos_.commit();
-        if (!w) [[unlikely]] {
-            drop_held_messages_and_replies();
-            return w;
-        }
-        if (repair_started_ && !seq_paxos_.repairing() && seq_paxos_.votes()) {
-            if (auto r = close_the_repair(); !r) [[unlikely]] {
+        return throw_on_a_damage([&]() -> result {
+            current_transaction().throw_if_another_commit(t);
+            *commit_count_ += 1;
+            if (auto r = propose_before_the_step(); !r) [[unlikely]] {
+                static_cast<void>(seq_paxos_.commit());
                 drop_held_messages_and_replies();
                 return r;
             }
-            static_cast<void>(check_the_applied_state());
-        }
-        if (!seq_paxos_.votes()) {
+            const auto w = seq_paxos_.commit();
+            if (!w) [[unlikely]] {
+                drop_held_messages_and_replies();
+                return w;
+            }
+            if (repair_started_ && !seq_paxos_.repairing() && seq_paxos_.votes()) {
+                if (auto r = close_the_repair(); !r) [[unlikely]] {
+                    drop_held_messages_and_replies();
+                    return r;
+                }
+                static_cast<void>(check_the_applied_state());
+            }
+            if (!seq_paxos_.votes()) {
+                release_messages_and_replies();
+                return {};
+            }
+            if (auto r = serve_clients(); !r) [[unlikely]] {
+                drop_held_messages_and_replies();
+                return r;
+            }
+            if (open_mark_ && !repair_started_ && get_applied_idx() >= *open_mark_) {
+                if (auto r = close_the_open_mark(); !r) [[unlikely]] {
+                    drop_held_messages_and_replies();
+                    return r;
+                }
+            }
             release_messages_and_replies();
             return {};
-        }
-        if (auto r = serve_clients(); !r) [[unlikely]] {
-            drop_held_messages_and_replies();
-            return r;
-        }
-        release_messages_and_replies();
-        return {};
+        });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> append(entry e)
     {
-        if (entry_is_a_verdict(e)) [[unlikely]] {
-            throw std::logic_error("konsens: only the leader appends a verdict entry");
-        }
-        if (e.kind == entry_kind::stop_sign) {
-            const auto open = holds_a_request_without_a_verdict();
-            if (!open) [[unlikely]] {
-                return std::unexpected(open.error());
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (entry_is_a_verdict(e)) [[unlikely]] {
+                throw std::logic_error("konsens: only the leader appends a verdict entry");
             }
-            if (*open) [[unlikely]] {
-                return std::unexpected(make_error_code(client_errc::retry));
+            if (e.kind == entry_kind::stop_sign) {
+                const auto open = holds_a_request_without_a_verdict();
+                if (!open) [[unlikely]] {
+                    return std::unexpected(open.error());
+                }
+                if (*open) [[unlikely]] {
+                    return std::unexpected(make_error_code(client_errc::retry));
+                }
             }
-        }
-        if (auto r = seq_paxos_.append(std::move(e)); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        return current_transaction();
+            if (auto r = seq_paxos_.append(std::move(e)); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            return current_transaction();
+        });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> register_client(const std::uint64_t client_id)
     {
-        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        if (auto r = propose_a_request({entry_kind::register_client, {}, 0, 0, client_id, seq_paxos_.get_pid()}); !r)
-            [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        registrations_.insert(client_id);
-        return current_transaction();
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = propose_a_request({entry_kind::register_client, {}, 0, 0, client_id, seq_paxos_.get_pid()}); !r)
+                [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            registrations_.insert(client_id);
+            return current_transaction();
+        });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> client_request(const std::uint64_t client_id,
@@ -259,65 +270,71 @@ public:
                                                                              const std::uint64_t request_number,
                                                                              std::vector<std::byte> payload)
     {
-        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        if (request_number == 0) [[unlikely]] {
-            throw std::logic_error("konsens: a request number starts at 1");
-        }
-        if (auto r = propose_a_request({entry_kind::client_request, std::move(payload), session, request_number}); !r)
-            [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        requests_.insert_or_assign({session, request_number}, client_id);
-        return current_transaction();
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (request_number == 0) [[unlikely]] {
+                throw std::logic_error("konsens: a request number starts at 1");
+            }
+            if (auto r = propose_a_request({entry_kind::client_request, std::move(payload), session, request_number}); !r)
+                [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            requests_.insert_or_assign({session, request_number}, client_id);
+            return current_transaction();
+        });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> client_query(const std::uint64_t client_id,
                                                                            std::vector<std::byte> payload)
     {
-        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        const auto read = last_read_ + 1;
-        if (auto r = seq_paxos_.start_read(read); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        const auto promise = seq_paxos_.get_promise();
-        if (!promise) [[unlikely]] {
-            return std::unexpected(promise.error());
-        }
-        last_read_ = read;
-        reads_.emplace(read, client_read{client_id, std::move(payload), *promise, std::nullopt});
-        return current_transaction();
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            const auto read = last_read_ + 1;
+            if (auto r = seq_paxos_.start_read(read); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            const auto promise = seq_paxos_.get_promise();
+            if (!promise) [[unlikely]] {
+                return std::unexpected(promise.error());
+            }
+            last_read_ = read;
+            reads_.emplace(read, client_read{client_id, std::move(payload), *promise, std::nullopt});
+            return current_transaction();
+        });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> expire_session(const std::uint64_t client_id,
                                                                              const std::uint64_t session)
     {
-        if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) [[unlikely]] {
-            return std::unexpected(make_error_code(client_errc::retry));
-        }
-        const auto t = read_or_throw(state_.begin_read_only());
-        if (!read_or_throw(t.find_session(session))) [[unlikely]] {
-            return std::unexpected(make_error_code(client_errc::session_expired));
-        }
-        const entry expiry{entry_kind::expire_session, {}, session};
-        const auto undecided =
-            seq_paxos_.log_or_buffered_proposals_contain(read_or_throw(t.get_applied()).index, expiry);
-        if (!undecided) [[unlikely]] {
-            return std::unexpected(undecided.error());
-        }
-        if (!*undecided && !std::ranges::contains(waiting_, expiry)) {
-            if (auto r = propose_a_request(expiry); !r) [[unlikely]] {
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-        }
-        expirations_.insert_or_assign(session, client_id);
-        return current_transaction();
+            if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) [[unlikely]] {
+                return std::unexpected(make_error_code(client_errc::retry));
+            }
+            const auto t = read_or_throw(state_.begin_read_only());
+            if (!read_or_throw(t.find_session(session))) [[unlikely]] {
+                return std::unexpected(make_error_code(client_errc::session_expired));
+            }
+            const entry expiry{entry_kind::expire_session, {}, session};
+            const auto undecided =
+                seq_paxos_.log_or_buffered_proposals_contain(read_or_throw(t.get_applied()).index, expiry);
+            if (!undecided) [[unlikely]] {
+                return std::unexpected(undecided.error());
+            }
+            if (!*undecided && !std::ranges::contains(waiting_, expiry)) {
+                if (auto r = propose_a_request(expiry); !r) [[unlikely]] {
+                    return std::unexpected(r.error());
+                }
+            }
+            expirations_.insert_or_assign(session, client_id);
+            return current_transaction();
+        });
     }
 
     node(node&&) noexcept = default;
@@ -339,6 +356,7 @@ public:
     {
         return own_storage_.get_repair_record().transform([](const repair_record& r) { return r.count; });
     }
+    std::expected<repair_record, std::error_code> get_repair_record() const { return own_storage_.get_repair_record(); }
     [[nodiscard]] result allow_one_more_repair() { return own_storage_.allow_one_more_repair(); }
     const ballot_leader_election& get_ballot_leader_election() const { return ble_; }
     const M& get_state_machine() const { return machine_; }
@@ -364,10 +382,12 @@ public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
     {
-        if (auto r = seq_paxos_.reconnected(pid); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
-        return current_transaction();
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.reconnected(pid); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            return current_transaction();
+        });
     }
 
 private:
@@ -391,16 +411,18 @@ private:
     template <typename T>
     std::expected<transaction, std::error_code> keep_and_handle(std::vector<T> batch)
     {
-        throw_if_batch_exceeds_max_batch_size(batch.size());
-        auto& held = batch_of<T>();
-        const auto first = held.size();
-        held.insert(held.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
-        for (const auto& m : std::span(held).subspan(first)) {
-            if (auto r = handle_one(m); !r) [[unlikely]] {
-                return std::unexpected(r.error());
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            throw_if_batch_exceeds_max_batch_size(batch.size());
+            auto& held = batch_of<T>();
+            const auto first = held.size();
+            held.insert(held.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+            for (const auto& m : std::span(held).subspan(first)) {
+                if (auto r = handle_one(m); !r) [[unlikely]] {
+                    return std::unexpected(r.error());
+                }
             }
-        }
-        return current_transaction();
+            return current_transaction();
+        });
     }
 
     transaction current_transaction() const
@@ -521,24 +543,32 @@ private:
         return {config.configuration_id, config.pid, config.peers, config.leader_priority};
     }
 
-    result repair_after_a_damage()
+    result count_the_fault_at_the_start(const repair_record& record)
     {
+        open_mark_ = record.open_mark;
         const auto e = seq_paxos_.get_error();
-        if (!e || !error_is_a_damage(*e) || waits_for_the_operator_) {
-            return {};
-        }
-        const auto record = own_storage_.get_repair_record();
-        if (!record) [[unlikely]] {
-            return std::unexpected(record.error());
-        }
-        if (!record->open) {
-            if (record->count >= auto_repair_count) {
-                waits_for_the_operator_ = true;
-                return {};
-            }
-            if (auto c = own_storage_.count_a_repair(); !c) [[unlikely]] {
+        const bool damaged = e && error_is_a_damage(*e);
+        const bool covered = record.proof && record.open_mark && record.proof->index <= *record.open_mark;
+        if (covered) {
+            if (auto c = own_storage_.clear_the_proof(); !c) [[unlikely]] {
                 return c;
             }
+        } else if (record.proof || (damaged && !record.open_mark)) {
+            if (record.count >= auto_repair_count) {
+                waits_for_the_operator_ = true;
+                if (!damaged) {
+                    static_cast<void>(seq_paxos_.stop_voting(make_error_code(paxos_errc::result_differs)));
+                }
+                return {};
+            }
+            const auto index = record.proof ? record.proof->index : index_of_the_damage();
+            if (auto c = own_storage_.count_a_repair(index); !c) [[unlikely]] {
+                return c;
+            }
+            open_mark_ = index;
+        }
+        if (!damaged) {
+            return {};
         }
         nonce_ += 1;
         repair_started_ = true;
@@ -546,10 +576,49 @@ private:
         return seq_paxos_.start_repair(nonce_);
     }
 
+    std::uint64_t index_of_the_damage() const
+    {
+        const auto fault = seq_paxos_.get_hardware_fault();
+        if (seq_paxos_.get_error() != make_error_code(paxos_errc::hardware_fault) || !fault) {
+            return 0;
+        }
+        return fault->index;
+    }
+
+    template <typename Step>
+    auto throw_on_a_damage(const Step step) -> decltype(step())
+    {
+        auto r = step();
+        const auto e = seq_paxos_.get_error();
+        if (e && error_is_a_damage(*e) && !waits_for_the_operator_) [[unlikely]] {
+            const auto fault = seq_paxos_.get_hardware_fault();
+            const bool known = *e == make_error_code(paxos_errc::hardware_fault) && fault;
+            write_the_proof_and_throw({proof_kind::damage, index_of_the_damage(), seq_paxos_.mark_.promise,
+                                       known ? fault->crc : 0, known ? fault->other_crc : 0},
+                                      *e, "konsens: a step found a damage of the own log");
+        }
+        return r;
+    }
+
+    [[noreturn]] void write_the_proof_and_throw(const fault_proof& proof, const std::error_code e,
+                                                const char* const what)
+    {
+        if (auto w = own_storage_.write_the_proof(proof); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the proof of a fault");
+        }
+        throw node_fault(e, what);
+    }
+
+    result close_the_open_mark()
+    {
+        open_mark_.reset();
+        return own_storage_.close_the_repair();
+    }
+
     result close_the_repair()
     {
         repair_started_ = false;
-        if (auto c = own_storage_.close_the_repair(); !c) [[unlikely]] {
+        if (auto c = close_the_open_mark(); !c) [[unlikely]] {
             return c;
         }
         const auto promise = seq_paxos_.get_promise();
@@ -838,6 +907,11 @@ private:
                 selection_->count_a_refusal(from, x.index);
             }
         }
+        if (const auto refused = selection_->find_the_entries_that_a_majority_refused(); !refused.empty()) [[unlikely]] {
+            write_the_proof_and_throw({proof_kind::refused_by_a_majority, refused.front(), selection_->get_ballot(), 0, 0},
+                                      make_error_code(paxos_errc::result_differs),
+                                      "konsens: a majority refused a verdict entry of this leader");
+        }
         if (!leads) {
             return {};
         }
@@ -935,12 +1009,27 @@ private:
                 reply_to_the_client(e, k, nullptr);
                 continue;
             }
-            if (compute_result_crc(k, c->second->chosen.result) != c->second->chosen.crc) [[unlikely]] {
-                throw node_fault(make_error_code(paxos_errc::result_differs),
-                                 "konsens: a chosen result fails its CRC on this node");
+            const auto& chosen = c->second->chosen;
+            if (const auto crc = compute_result_crc(k, chosen.result); crc != chosen.crc) [[unlikely]] {
+                write_the_proof_and_throw({proof_kind::result_crc, k, seq_paxos_.mark_.promise, chosen.crc, crc},
+                                          make_error_code(paxos_errc::result_differs),
+                                          "konsens: a chosen result fails its CRC on this node");
+            }
+            if (std::ranges::contains(c->second->out, seq_paxos_.get_pid()) && !(open_mark_ && k <= *open_mark_)) {
+                const auto own = encode_result(run_request(e, *w));
+                if (!results_agree(own, chosen.result)) [[unlikely]] {
+                    write_the_proof_and_throw({proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise,
+                                               chosen.crc, compute_result_crc(k, own)},
+                                              make_error_code(paxos_errc::result_differs),
+                                              "konsens: the result of this node differs from the chosen result");
+                }
             }
             write_the_result(e, k, *r, *w);
-            check_the_written_values(*r, *w);
+            if (!written_values_read_back(*r, *w)) [[unlikely]] {
+                write_the_proof_and_throw({proof_kind::read_back, k, seq_paxos_.mark_.promise, chosen.crc, 0},
+                                          make_error_code(paxos_errc::result_differs),
+                                          "konsens: a value that the node wrote reads back different");
+            }
             reply_to_the_client(e, k, &*r);
         }
         const auto crc = seq_paxos_.get_prefix_chain_crc(v.applied_idx);
@@ -955,7 +1044,7 @@ private:
         return std::move(v.chosen);
     }
 
-    static void check_the_written_values(const request_result& r, const state_storage::transaction& w)
+    static bool written_values_read_back(const request_result& r, const state_storage::transaction& w)
     {
         for (auto m = r.mutations.begin(); m != r.mutations.end(); ++m) {
             if (std::any_of(std::next(m), r.mutations.end(), [&m](const mutation& later) { return later.key == m->key; })) {
@@ -964,10 +1053,10 @@ private:
             const auto found = read_or_throw(w.find(m->key));
             if (found.has_value() != m->value.has_value() ||
                 (found && !std::ranges::equal(*found, *m->value))) [[unlikely]] {
-                throw node_fault(make_error_code(paxos_errc::result_differs),
-                                 "konsens: a value that the node wrote reads back different");
+                return false;
             }
         }
+        return true;
     }
 
     static std::error_code error_of(const std::uint64_t error)
@@ -1326,6 +1415,7 @@ private:
     std::unique_ptr<std::uint64_t> commit_count_ = std::make_unique<std::uint64_t>();
     std::uint64_t nonce_;
     bool repair_started_{};
+    std::optional<std::uint64_t> open_mark_;
     bool waits_for_the_operator_{};
     std::uint64_t max_in_flight_;
     std::vector<node_id> nodes_;

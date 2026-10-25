@@ -197,9 +197,28 @@ private:
     std::unique_ptr<environment> env_;
 };
 
+enum class proof_kind : std::uint8_t {
+    damage = 1,
+    result_crc,
+    read_back,
+    refused_by_a_majority,
+    listed_result_differs
+};
+
+struct fault_proof {
+    proof_kind kind;
+    std::uint64_t index;
+    ballot n;
+    std::uint32_t crc;
+    std::uint32_t other_crc;
+
+    friend bool operator==(const fault_proof&, const fault_proof&) = default;
+};
+
 struct repair_record {
     std::uint64_t count;
-    bool open;
+    std::optional<std::uint64_t> open_mark;
+    std::optional<fault_proof> proof;
 
     friend bool operator==(const repair_record&, const repair_record&) = default;
 };
@@ -212,7 +231,9 @@ public:
                                                                            uid_t effective_user_id);
 
     [[nodiscard]] std::expected<repair_record, std::error_code> get_repair_record() const;
-    [[nodiscard]] std::expected<void, std::error_code> count_a_repair();
+    [[nodiscard]] std::expected<void, std::error_code> write_the_proof(const fault_proof& proof);
+    [[nodiscard]] std::expected<void, std::error_code> clear_the_proof();
+    [[nodiscard]] std::expected<void, std::error_code> count_a_repair(std::uint64_t open_mark);
     [[nodiscard]] std::expected<void, std::error_code> close_the_repair();
     [[nodiscard]] std::expected<void, std::error_code> allow_one_more_repair();
 

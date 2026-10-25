@@ -6,7 +6,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
+#include <functional>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <system_error>
@@ -560,10 +563,25 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
         REQUIRE(w->set_decided_index(log.size()));
         REQUIRE(std::move(*w).commit());
     }
-    CHECK_THROWS_AS((void)node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
-                                       lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(),
-                                       marked{0}, 1),
-                    konsens::node_fault);
+    const auto own_directory = lmdb_storage::new_directory();
+    const auto start = [&] {
+        static_cast<void>(node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
+                                       lmdb_storage::open_node_storage_in(own_directory),
+                                       lmdb_storage::open_new_state_storage(), marked{0}, 1));
+    };
+    CHECK_THROWS_AS(start(), konsens::node_fault);
+    // Plan 3.1: the proof is durable before the throw.
+    const auto bytes = konsens::encode_result({0, {}, {}});
+    const auto crc = konsens::compute_result_crc(1, bytes);
+    const konsens::fault_proof proof{konsens::proof_kind::result_crc, 1, leader_ballot, crc + 1, crc};
+    CHECK(lmdb_storage::open_node_storage_in(own_directory).get_repair_record() ==
+          konsens::repair_record{0, std::nullopt, proof});
+    // Plan 3.3: the next start counts the proof and sets the open mark at
+    // its index. The CRC in this log stays wrong, so the start throws
+    // again, with a proof that the open mark covers.
+    CHECK_THROWS_AS(start(), konsens::node_fault);
+    CHECK(lmdb_storage::open_node_storage_in(own_directory).get_repair_record() ==
+          konsens::repair_record{1, 1, proof});
 }
 
 // A max_in_flight of 0 would hold every request for good, so it is a wrong
@@ -579,31 +597,41 @@ namespace {
 
 // batches::deliver with a change of each message on its way, as a fault of
 // the network or of the sender would make it. The node that got a changed
-// entry finds later that its chain CRC differs from the leader and stops
-// voting, so a failed call or commit does not end the delivery.
+// entry finds later that its chain CRC differs from the leader. It throws
+// node_fault (plan 3.2), and the delivery leaves it out from then on, as a
+// process that ended. The result is the set of nodes that threw.
 template <typename Change>
-void deliver_changed(std::vector<node_t>& nodes, const Change change)
+std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change change)
 {
+    std::set<node_id> faulted;
     for (bool more = true; more;) {
         more = false;
         std::vector<std::vector<message>> inbox(nodes.size());
-        for (auto& n : nodes) {
-            for (auto& m : n.take_outgoing_messages()) {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (faulted.contains(static_cast<node_id>(i + 1))) {
+                continue;
+            }
+            for (auto& m : nodes[i].take_outgoing_messages()) {
                 more = true;
                 change(m);
                 inbox.at(batches::to_of(m) - 1).push_back(std::move(m));
             }
         }
         for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (inbox[i].empty()) {
+            if (inbox[i].empty() || faulted.contains(static_cast<node_id>(i + 1))) {
                 continue;
             }
-            const auto t = nodes[i].handle_incoming(std::move(inbox[i]));
-            if (t) {
-                static_cast<void>(nodes[i].commit(*t));
+            try {
+                const auto t = nodes[i].handle_incoming(std::move(inbox[i]));
+                if (t) {
+                    static_cast<void>(nodes[i].commit(*t));
+                }
+            } catch (const konsens::node_fault&) {
+                faulted.insert(static_cast<node_id>(i + 1));
             }
         }
     }
+    return faulted;
 }
 
 // Changes the results entry in each accept_decide to node `to`.
@@ -741,4 +769,144 @@ TEST_CASE("after a start the verified index is the decided index and the entries
     auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
                            lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), marked{0}, 9);
     CHECK(n.get_sequence_paxos().get_verified_idx() == *log_len);
+}
+
+namespace {
+
+const std::array<std::byte, 1> value_key{std::byte{'v'}};
+
+// A decided log of a registration at index 1, a request with the payload
+// 'a' at index 2, and a results entry at index 3 that lists `out` as the
+// nodes that did not agree with the chosen result of index 2.
+std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
+{
+    const auto directory = lmdb_storage::new_directory();
+    auto storage = lmdb_storage::open_in(directory);
+    auto w = storage.begin();
+    REQUIRE(w.has_value());
+    const auto registration = konsens::encode_result({0, {}, {}});
+    const auto request = konsens::encode_result(
+        {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
+    const std::vector<konsens::chosen_result> list{
+        {{1, registration, konsens::compute_result_crc(1, registration)}, 2, {}},
+        {{2, request, konsens::compute_result_crc(2, request)}, 2, out}};
+    constexpr std::uint64_t session = 1;
+    const std::vector<entry> log{{entry_kind::register_client, {}, 0, 0, client_a, 1},
+                                 {entry_kind::client_request, bytes_of('a'), session, 1},
+                                 {.kind = entry_kind::results,
+                                  .payload = konsens::encode_chosen_results(list),
+                                  .from_idx = 1,
+                                  .to_idx = 2}};
+    REQUIRE(w->set_promise(leader_ballot));
+    REQUIRE(w->set_accepted_round(leader_ballot));
+    REQUIRE(w->append_entries(log));
+    REQUIRE(w->set_decided_index(log.size()));
+    REQUIRE(std::move(*w).commit());
+    return directory;
+}
+
+}
+
+// Plan 2.8.1 and 3.1: a listed node runs the index again on the check base
+// when it applies the results entry. Its result still differs, so it
+// throws after its proof is durable. The list makes it run again; the
+// second run makes it throw.
+TEST_CASE("a listed node whose result still differs throws at the apply")
+{
+    const auto directory = decided_log_with_a_listed({1});
+    const auto own_directory = lmdb_storage::new_directory();
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
+                                                   lmdb_storage::open_node_storage_in(own_directory),
+                                                   lmdb_storage::open_new_state_storage(), marked{'x'}, 1)),
+                    konsens::node_fault);
+    const auto record = lmdb_storage::open_node_storage_in(own_directory).get_repair_record();
+    REQUIRE(record.has_value());
+    REQUIRE(record->proof.has_value());
+    CHECK(record->proof->kind == konsens::proof_kind::listed_result_differs);
+    CHECK(record->proof->index == 2);
+    CHECK(record->proof->n == leader_ballot);
+
+    // Plan 3.3 to 3.5: the next start counts the proof and sets the open
+    // mark at its index. The mark covers the index, so the node writes the
+    // chosen bytes and does not run it again. The mark closes when the
+    // applied index passes it.
+    auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
+                           lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+                           marked{'x'}, 2);
+    CHECK(state_of(n) == bytes_of('a'));
+    CHECK(n.get_repair_record() == konsens::repair_record{1, 2, std::nullopt});
+    batches::commit(n, n.tick());
+    CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, std::nullopt});
+}
+
+// Plan 2.8.1 and 2.8.2: a listed node whose second run agrees does not
+// throw, because the list is wrong and not its result. A node that is not
+// listed does not run again.
+TEST_CASE("a listed node whose result agrees and a node that is not listed do not throw")
+{
+    for (const auto& out : {std::vector<node_id>{1}, std::vector<node_id>{2}}) {
+        CAPTURE(out.front());
+        const auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_in(decided_log_with_a_listed(out)),
+                                     lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(),
+                                     marked{0}, 1);
+        CHECK(state_of(n) == bytes_of('a'));
+        CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, std::nullopt});
+    }
+}
+
+// Plan 2.7.6: a leader that gets refused from a majority for a verdict
+// entry that its own ballot appended knows that its own selection or copy
+// is wrong. Here both followers get another result in the entry, so both
+// refuse it. The leader throws after its proof is durable.
+TEST_CASE("a leader whose verdict entry a majority refused throws")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    const auto flip = [](std::vector<konsens::chosen_result>& list) {
+        const auto bytes = konsens::encode_result({0, bytes_of('z'), {}});
+        list.at(0).chosen.result = bytes;
+        list.at(0).chosen.crc = konsens::compute_result_crc(list.at(0).chosen.index, bytes);
+    };
+    std::vector<std::function<void(message&)>> changes;
+    for (const auto p : three_nodes) {
+        if (p != l) {
+            changes.emplace_back(change_the_results_entry_to(p, flip));
+        }
+    }
+    const auto faulted = deliver_changed(c.nodes, [&changes](message& m) {
+        for (const auto& change : changes) {
+            change(m);
+        }
+    });
+    CHECK(faulted.contains(l));
+    const auto record = c.at(l).get_repair_record();
+    REQUIRE(record.has_value());
+    REQUIRE(record->proof.has_value());
+    CHECK(record->proof->kind == konsens::proof_kind::refused_by_a_majority);
+    CHECK(record->proof->index == 4);
+}
+
+// Plan 3.1 and 3.2: a damage that a step finds is no returned value any
+// more. The follower that got a changed entry finds that its chain CRC
+// differs from the leader, keeps the proof and throws.
+TEST_CASE("a damage that a step finds throws after its proof is durable")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto f = first_follower_of(l);
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    const auto faulted = deliver_changed(c.nodes, change_the_results_entry_to(f, [](auto& list) {
+        const auto bytes = konsens::encode_result({0, bytes_of('z'), {}});
+        list.at(0).chosen.result = bytes;
+        list.at(0).chosen.crc = konsens::compute_result_crc(list.at(0).chosen.index, bytes);
+    }));
+    REQUIRE(faulted.contains(f));
+    CHECK_FALSE(faulted.contains(l));
+    const auto record = c.at(f).get_repair_record();
+    REQUIRE(record.has_value());
+    REQUIRE(record->proof.has_value());
+    CHECK(record->proof->kind == konsens::proof_kind::damage);
 }

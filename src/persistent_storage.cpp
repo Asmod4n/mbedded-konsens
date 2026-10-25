@@ -46,7 +46,6 @@ constexpr std::size_t session_head_size = sizeof(session_record::request_number)
 constexpr unsigned int node_database_count = 1;
 constexpr const char* node_database_name = "node";
 constexpr std::string_view repair_key = "repair";
-constexpr std::size_t repair_record_size = sizeof(repair_record::count) + sizeof(std::uint8_t);
 
 constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
@@ -70,6 +69,18 @@ constexpr std::size_t decided_idx_offset = accepted_round_offset + ballot_size;
 constexpr std::size_t log_len_offset = decided_idx_offset + sizeof(meta_record::decided_idx);
 constexpr std::size_t last_chain_crc_offset = log_len_offset + sizeof(meta_record::log_len);
 constexpr std::size_t meta_record_size = last_chain_crc_offset + sizeof(meta_record::last_chain_crc);
+
+constexpr std::size_t flag_size = sizeof(std::uint8_t);
+constexpr std::size_t open_flag_offset = sizeof(repair_record::count);
+constexpr std::size_t open_mark_offset = open_flag_offset + flag_size;
+constexpr std::size_t proof_flag_offset = open_mark_offset + sizeof(std::uint64_t);
+constexpr std::size_t proof_kind_offset = proof_flag_offset + flag_size;
+constexpr std::size_t proof_index_offset = proof_kind_offset + sizeof(proof_kind);
+constexpr std::size_t proof_ballot_offset = proof_index_offset + sizeof(fault_proof::index);
+constexpr std::size_t proof_crc_offset = proof_ballot_offset + ballot_size;
+constexpr std::size_t proof_other_crc_offset = proof_crc_offset + sizeof(fault_proof::crc);
+constexpr std::size_t repair_record_size = proof_other_crc_offset + sizeof(fault_proof::other_crc);
+constexpr auto last_proof_kind = proof_kind::listed_result_differs;
 
 class storage_error_category final : public std::error_category {
 public:
@@ -228,6 +239,53 @@ meta_record decode_meta(const std::span<const std::byte, meta_record_size> bytes
         from_little_endian<std::uint64_t>(bytes.subspan<log_len_offset, sizeof(meta_record::log_len)>()),
         from_little_endian<std::uint32_t>(bytes.subspan<last_chain_crc_offset, sizeof(meta_record::last_chain_crc)>()),
     };
+}
+
+std::array<std::byte, repair_record_size> encode_repair_record(const repair_record& r) noexcept
+{
+    std::array<std::byte, repair_record_size> out{};
+    std::ranges::copy(to_little_endian(r.count), out.begin());
+    if (r.open_mark) {
+        out[open_flag_offset] = std::byte{1};
+        std::ranges::copy(to_little_endian(*r.open_mark), std::span(out).subspan<open_mark_offset>().begin());
+    }
+    if (r.proof) {
+        out[proof_flag_offset] = std::byte{1};
+        out[proof_kind_offset] = std::byte{std::to_underlying(r.proof->kind)};
+        std::ranges::copy(to_little_endian(r.proof->index), std::span(out).subspan<proof_index_offset>().begin());
+        std::ranges::copy(encode_ballot(r.proof->n), std::span(out).subspan<proof_ballot_offset>().begin());
+        std::ranges::copy(to_little_endian(r.proof->crc), std::span(out).subspan<proof_crc_offset>().begin());
+        std::ranges::copy(to_little_endian(r.proof->other_crc), std::span(out).subspan<proof_other_crc_offset>().begin());
+    }
+    return out;
+}
+
+std::expected<repair_record, std::error_code>
+decode_repair_record(const std::span<const std::byte, repair_record_size> bytes) noexcept
+{
+    const auto open_flag = std::to_integer<std::uint8_t>(bytes[open_flag_offset]);
+    const auto proof_flag = std::to_integer<std::uint8_t>(bytes[proof_flag_offset]);
+    const auto kind = std::to_integer<std::uint8_t>(bytes[proof_kind_offset]);
+    if (open_flag > 1 || proof_flag > 1 ||
+        (proof_flag == 1 && (kind < std::to_underlying(proof_kind::damage) || kind > std::to_underlying(last_proof_kind))))
+        [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    repair_record r{from_little_endian<std::uint64_t>(bytes.first<sizeof(repair_record::count)>()), std::nullopt,
+                    std::nullopt};
+    if (open_flag == 1) {
+        r.open_mark = from_little_endian<std::uint64_t>(bytes.subspan<open_mark_offset, sizeof(std::uint64_t)>());
+    }
+    if (proof_flag == 1) {
+        r.proof = fault_proof{
+            static_cast<proof_kind>(kind),
+            from_little_endian<std::uint64_t>(bytes.subspan<proof_index_offset, sizeof(fault_proof::index)>()),
+            decode_ballot(bytes.subspan<proof_ballot_offset, ballot_size>()),
+            from_little_endian<std::uint32_t>(bytes.subspan<proof_crc_offset, sizeof(fault_proof::crc)>()),
+            from_little_endian<std::uint32_t>(bytes.subspan<proof_other_crc_offset, sizeof(fault_proof::other_crc)>()),
+        };
+    }
+    return r;
 }
 
 struct stored_record {
@@ -1133,15 +1191,9 @@ std::expected<repair_record, std::error_code> node_storage::get_repair_record() 
         return std::unexpected(body.error());
     }
     if (!body->has_value()) {
-        return repair_record{0, false};
+        return repair_record{0, std::nullopt, std::nullopt};
     }
-    const auto bytes = body->value();
-    const auto open_byte = std::to_integer<std::uint8_t>(bytes.back());
-    if (open_byte > 1) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::malformed_record));
-    }
-    return repair_record{from_little_endian<std::uint64_t>(bytes.first<sizeof(repair_record::count)>()),
-                         open_byte == 1};
+    return decode_repair_record(body->value().first<repair_record_size>());
 }
 
 std::expected<void, std::error_code> node_storage::write_repair_record(const repair_record& r)
@@ -1150,23 +1202,40 @@ std::expected<void, std::error_code> node_storage::write_repair_record(const rep
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
-    std::array<std::byte, repair_record_size> body{};
-    std::ranges::copy(to_little_endian(r.count), body.begin());
-    body.back() = std::byte{r.open ? std::uint8_t{1} : std::uint8_t{0}};
-    if (auto put = put_checked(txn->get(), env_->dbi, repair_key, body); !put) [[unlikely]] {
+    if (auto put = put_checked(txn->get(), env_->dbi, repair_key, encode_repair_record(r)); !put) [[unlikely]] {
         return put;
     }
     return commit_or_throw(std::move(*txn));
 }
 
-std::expected<void, std::error_code> node_storage::count_a_repair()
+std::expected<void, std::error_code> node_storage::write_the_proof(const fault_proof& proof)
 {
     throw_if_moved_from();
     const auto r = get_repair_record();
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({r->count + 1, true});
+    return write_repair_record({r->count, r->open_mark, proof});
+}
+
+std::expected<void, std::error_code> node_storage::clear_the_proof()
+{
+    throw_if_moved_from();
+    const auto r = get_repair_record();
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    return write_repair_record({r->count, r->open_mark, std::nullopt});
+}
+
+std::expected<void, std::error_code> node_storage::count_a_repair(const std::uint64_t open_mark)
+{
+    throw_if_moved_from();
+    const auto r = get_repair_record();
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    return write_repair_record({r->count + 1, open_mark, std::nullopt});
 }
 
 std::expected<void, std::error_code> node_storage::close_the_repair()
@@ -1176,7 +1245,7 @@ std::expected<void, std::error_code> node_storage::close_the_repair()
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({r->count, false});
+    return write_repair_record({r->count, std::nullopt, r->proof});
 }
 
 std::expected<void, std::error_code> node_storage::allow_one_more_repair()
@@ -1186,7 +1255,7 @@ std::expected<void, std::error_code> node_storage::allow_one_more_repair()
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({0, r->open});
+    return write_repair_record({0, r->open_mark, r->proof});
 }
 
 namespace {
