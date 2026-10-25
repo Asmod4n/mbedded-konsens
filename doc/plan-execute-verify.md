@@ -81,15 +81,22 @@ violation and a review approves the parts that changed from form 5.
    actor-raft/floats/results/20261025T1045Z-ulp-spread.md: 1 ULP is too
    narrow, glibc 2.39 against 2.44 gives up to 4 ULP). Every other item,
    and every key of a mutation, agrees byte for byte.
-2a. After the selection, each float of the chosen result is rounded to
-   `float_denominator` (optional) with round half to even, before it is
-   stored (owner, 2026-10-25 10:52-10:54). The rounding works on the one
-   chosen value, so every node stores the same bytes. The form:
-   `std::to_chars` in scientific form with the precision, then
+2a. Each float is rounded where the library gets it: when the run of a
+   node gives its result, before the CRC of the result (owner,
+   2026-10-25 20:04). Each node rounds its own result to
+   `float_denominator` (optional) with round half to even, with
+   `std::to_chars` in scientific form with the precision and then
    `std::from_chars` (both correctly rounded; one run measured 58 ns per
-   value with g++ 16 and clang 22, noise floor not measured).
-   `float_digits` and `float_denominator` are fields of the state machine
-   (provisional).
+   value with g++ 16 and clang 22, noise floor not measured). The
+   compare of 2.2.2 then allows at least one step of the denominator,
+   because two nodes near an edge round to two neighbouring steps. The
+   chosen bytes are already rounded, so every node stores the same
+   bytes. `float_digits` and `float_denominator` are fields of the state
+   machine (provisional).
+2b. So that the library sees each float, the state machine gives the
+   reply and each mutation value as one encoded CBOR data item, and the
+   result holds it as a data item, not as a byte string (provisional;
+   tag 24 of RFC 8949 3.4.5.1 is the known form for an embedded item).
 3. The assumption: for each entry, the nodes whose run gives a wrong
    result are fewer than a majority of the configuration, over all time,
    and the results of the nodes that work agree with each other. Outside
