@@ -8,7 +8,12 @@ doc/plan-lmdb-only-source.md. The model is `StateInLmdb`, `StateRun`,
 and gives back a write list, and an entry carries the write list of
 the leader beside the result.
 
-The work has three parts. Each part is one commit with its tests.
+The work has three parts. Each part is one commit with its tests. D1
+is the form that the model checks (`StateApply`, with no run before the
+decide). The gate on `accepted`, the run of the leader before the
+append and the follower that differs are not in the model (review of
+this plan, findings 3 to 5). So D2 and D3 wait for a model round of
+their own, its TLC runs and a review; D1 is built first.
 
 - D1: the state environment, the concept, the apply after the decide,
   the reads from a read transaction.
@@ -41,8 +46,15 @@ The work has three parts. Each part is one commit with its tests.
    and runs the decided entries after it.
 4. A start check: the chain CRC at the applied index in the state
    storage must equal the chain CRC of the log at that index. A
-   difference is a damage (2.1 item 5). Until item 9 of 2.4 stands, the
-   node then stays out of the vote and reports both CRCs.
+   difference, or an applied index above the log length, is a damage
+   (2.1 item 5). An applied index above the decided index is kept: its
+   entries are decided (2.4 item 10, model `StateIsDecided`). Until
+   item 9 of 2.4 stands, the node then stays out of the vote and reports
+   both CRCs.
+5. With item 9 of 2.4, a repair switches the state directory through a
+   name in the node storage, and the node opens the state storage from
+   that name. Until then, `node::with` takes the opened storage, as for
+   the log (stage E left out item 9 too).
 
 ## 2. The concept (D1)
 
@@ -66,19 +78,21 @@ concept state_machine = state_view<V> &&
 ```
 
 1. `state_view` is a concept with `find(key) ->
-   std::expected<std::optional<std::vector<std::byte>>, std::error_code>`.
+   std::expected<std::optional<std::span<const std::byte>>,
+   std::error_code>`. The span stays valid until the transaction ends;
+   the machine writes nothing during `apply`, so LMDB keeps the page.
    The node gives a view over the open write transaction to `apply`, and
    a view over a read transaction to `query`. The machine has no state
    of its own, so both members are const.
 2. A `write` with no value erases the key.
 3. An error that `apply` returns is a user error. The entry records it
    as its result, and its writes are empty. The client gets the error.
-4. An error that `find` returns is an error of the storage. The machine
-   passes it on unchanged, and the node treats it as a damage when
-   `error_is_a_damage` says so, else as a failure of the machine.
-   `apply` and `query` cannot tell the two kinds apart by the type, so
-   the node compares the returned code with the code that the view
-   gave last (provisional; question 3).
+4. An error that `find` returns is an error of the storage. The view
+   keeps a mark that a `find` failed. A run in which a `find` failed is
+   a storage failure, whatever `apply` returns (review, question 3). The
+   node then stops voting with that error: a damage when
+   `error_is_a_damage` says so. The leader then proposes nothing from
+   that run.
 
 ## 3. Apply after the decide (D1)
 
@@ -97,22 +111,34 @@ concept state_machine = state_view<V> &&
 5. `client_query` runs `query` on a read transaction of the state,
    after the read index is reached, as now.
 6. `node` keeps no client table and no applied index in memory. It
-   reads them from the state storage.
+   reads them from the state storage. `get_client_table()` and
+   `get_applied_idx()` return `std::expected` and read a read
+   transaction of the state. `expire_session` reads the session from a
+   read transaction too.
+7. `register_client` takes the log index of its entry as the session,
+   as now; in D1 the index is known, because the entry runs after the
+   decide.
 
 ## 4. Execute-Verify (D2)
 
 1. An entry of kind `client_request` gets three fields: `reply`
    (bytes), `error` (an error value, 0 for none) and `writes` (the write
    list). The file format and the wire carry them; the format version
-   goes up (plan 2.9).
-2. The leader runs each client request before it appends it. The node
+   goes up (plan 2.9). The three fields are part of the encoded entry,
+   so the entry CRC and the chain CRC cover them, and `StateCurrent`
+   sees a replaced entry with other writes as a cut. The chain CRC in
+   `accepted` takes the place of "the result in `accepted`" of 2.9.
+2. Every kind that changes the state runs, in log order, on the leader
+   and on each follower: `register_client`, `client_request`,
+   `expire_session` (review, finding 1).
+3. The leader runs each client request before it appends it. The node
    takes the buffered proposals of `sequence_paxos` before its commit
    (`take_proposals_to_run()`), runs them in log order in the open state
    transaction, fills the three fields, and gives them back
    (`propose_ran(entries)`). A forwarded proposal goes to the buffer in
    the phase accept too, so it runs as well; it is accepted at the same
    commit, so no message leaves earlier.
-3. A follower runs each new entry of kind `client_request` from the
+4. A follower runs each new entry of kind `client_request` from the
    log, in log order, in its open state transaction, before its
    `accepted` leaves. It compares its reply, error and write list with
    the fields of the entry, byte for byte (question 1). When they
@@ -122,10 +148,22 @@ concept state_machine = state_view<V> &&
    later ones, and it reports the entry, the leader and both CRCs as a
    new proof `result_mismatch` (provisional). It votes on; it waits for
    the leader to change (question 2).
-4. `sequence_paxos` gets the bound of the verified index: an `accepted`
+5. `sequence_paxos` gets the bound of the verified index: an `accepted`
    leaves only up to `verified_idx` (provisional), which the node sets
-   with `verified(index)`. The leader verifies its own runs at once.
-5. After the decide, the state commit compares nothing again: the run
+   with `verified(index)`. `verified` queues an `accepted` when the
+   bound rises above the last one sent in the ballot, and
+   `resend_message_timeout` sends it again (review, finding 3). The
+   leader counts itself accepted only up to its own verified index.
+6. A new leader runs the suffix of its sync and the proposals of the
+   phase prepare through the same run, and compares the suffix as a
+   follower does (review, finding 2).
+7. Entries at or below the decided index are applied in one step, in
+   chunks, without the bound of D3; the bound counts only entries that
+   are not decided (review, finding 4).
+8. A follower whose result differs on an entry that is then decided by
+   others has a damage of 2.6 item 6, with the repair of 2.4 (review,
+   finding 5).
+9. After the decide, the state commit compares nothing again: the run
    before the decide compared the result, and the writes are those of
    the entry. A run again after an abort (D3) compares again; a
    difference there is a damage of 2.1 item 5 (plan 2.6 item 6), with
@@ -136,7 +174,7 @@ concept state_machine = state_view<V> &&
 1. The state write transaction stays open over many steps. It holds
    the runs of the entries after the applied index, up to
    `max_in_flight` entries (provisional, a member of `node_config`,
-   default 64 until section 5 of the parent plan measures it). The
+   with no default: section 5 of the parent plan measures it first). The
    leader proposes no more client requests while the bound is full; the
    requests wait in the buffer.
 2. At each step, after the log commit: when the decided index covers
@@ -150,7 +188,8 @@ concept state_machine = state_view<V> &&
    write cut or replaced the log; the node aborts and runs the entries
    after the applied index again.
 4. A crash, a recovery and a repair abort the open transaction (model
-   `StateFollows`).
+   `StateFollows`). A repair keeps or copies the state as 2.4 item 10
+   says, and a wipe loses the state.
 5. The two write transactions, of the log and of the state, stand in
    one thread. The test of plan section 4 runs many steps with commits,
    aborts and a reader in each environment.
@@ -177,9 +216,10 @@ concept state_machine = state_view<V> &&
    only bytes. Proposal: byte-for-byte now; the state machine gets a
    member `results_agree(a, b)` with the contracts.
 2. The leader that differs steps down after three tries (2026-10-17
-   05:08). Proposal: in this stage the follower only stays silent and
-   reports; the steps of the leader come in a stage of their own.
-3. A user error and a storage error both come back as
-   `std::error_code`. Proposal: the view keeps the last error it gave,
-   and the node takes a returned error as a storage error when it
-   equals that one.
+   05:08). When the leader's machine differs, both followers differ,
+   heartbeats keep the leader, and nothing is decided. Proposal: a
+   follower that differs stops answering the heartbeats of that
+   leader, so a new leader is elected; the three tries come in a stage
+   of their own. This goes into the model of D2.
+3. Decided in the plan after the review: a run in which a `find` failed
+   is a storage failure (2.4).
