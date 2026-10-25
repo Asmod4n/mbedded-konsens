@@ -108,6 +108,8 @@ struct last_entry {
 std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t index,
                                 std::span<const std::byte> encoded_entry) noexcept;
 std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t index, const entry& e);
+std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t from_idx,
+                                std::span<const entry> entries);
 
 enum class storage_errc { crc_mismatch = 1, malformed_record, missing_entry, missing_meta_record, unsupported_format };
 
@@ -143,6 +145,9 @@ concept storage_write = storage_read<T> && std::movable<T> &&
                             { t.set_promise(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_accepted_round(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_decided_index(index) } -> std::same_as<std::expected<void, std::error_code>>;
+                            {
+                                t.write_repaired_log(index, entries, b, b, index)
+                            } -> std::same_as<std::expected<void, std::error_code>>;
                             { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
                         };
 

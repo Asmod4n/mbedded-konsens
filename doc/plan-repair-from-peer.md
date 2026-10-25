@@ -83,10 +83,10 @@ other error keeps the present form: the node stops voting and stays out.
    accepted_round, decided_idx)`. It deletes every key from `from_idx`
    upward, appends the entries, and writes the state of every kept
    entry whose state changes: committed below the new decided index, in
-   work from it. The kept entries in `[min(d_old, d_new), max(d_old,
-   d_new))` are rewritten, where `d_old` is the first kept entry that
-   is in work, read from the entries and not from the meta record. Then
-   it writes a new meta record. The storage computes the log length and the last
+   work from it. It reads the state of each kept entry from the entry
+   and not from the meta record, so the entries between the old and the
+   new decided index change in both directions. Then it writes a new
+   meta record. The storage computes the log length and the last
    chain CRC. The commit failure throws, as for every step.
 9. After the commit, the mark is set from the new meta record (not
    raised), and the node starts the recovery of VR Revisited, as at a

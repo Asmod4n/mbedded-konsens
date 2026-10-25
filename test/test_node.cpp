@@ -19,6 +19,7 @@
 #include "batches.hpp"
 #include "echo.hpp"
 #include "konsens/node.hpp"
+#include "lmdb_damage.hpp"
 #include "lmdb_storage.hpp"
 
 namespace {
@@ -71,7 +72,8 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), echo{}, 0));
+        nodes.push_back(
+            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -105,7 +107,9 @@ TEST_CASE("a tick timeout of 0 is a wrong use")
 {
     auto c = config_of(1);
     c.election_tick_timeout = 0;
-    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, lmdb_storage::open_new(), echo{}, 0)), std::logic_error);
+    CHECK_THROWS_AS(
+        static_cast<void>(node_t::with(c, lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0)),
+        std::logic_error);
 }
 
 // Each error value has a message of its own, because a log or a client
@@ -137,7 +141,8 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), echo{}, 0));
+        nodes.push_back(
+            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -149,7 +154,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
     }
     REQUIRE(nodes[2].get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept});
     auto kept = lmdb_storage::open_copy_of(nodes[2].get_sequence_paxos().get_internal_storage());
-    nodes[2] = *node_t::with(config_of(3), std::move(kept), echo{}, 1);
+    nodes[2] = *node_t::with(config_of(3), std::move(kept), lmdb_storage::open_new_node_storage(), echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
     static_cast<void>(nodes[2].take_outgoing_messages());
     std::vector<konsens::message> heartbeat;
@@ -226,7 +231,8 @@ std::vector<node_t> elect_three()
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), echo{}, 0));
+        nodes.push_back(
+            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -362,6 +368,12 @@ struct recording_storage {
         auto set_promise(const konsens::ballot b) { return t_.set_promise(b); }
         auto set_accepted_round(const konsens::ballot b) { return t_.set_accepted_round(b); }
         auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
+        auto write_repaired_log(const std::uint64_t from_idx, const std::span<const konsens::entry> entries,
+                                const konsens::ballot promise, const konsens::ballot accepted_round,
+                                const std::uint64_t decided_idx)
+        {
+            return t_.write_repaired_log(from_idx, entries, promise, accepted_round, decided_idx);
+        }
         std::expected<void, std::error_code> commit() && { return std::move(t_).commit(); }
 
     private:
@@ -394,8 +406,9 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
     std::array<std::vector<const konsens::entry*>, 3> appended;
     std::vector<recording_node> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*recording_node::with(
-            config_of(p), recording_storage{lmdb_storage::open_new(), &appended.at(p - 1)}, echo{}, 0));
+        nodes.push_back(*recording_node::with(config_of(p),
+                                              recording_storage{lmdb_storage::open_new(), &appended.at(p - 1)},
+                                              lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const auto deliver = [&nodes] {
         batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; });
@@ -436,4 +449,109 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
         checked = true;
     }
     CHECK(checked);
+}
+
+namespace {
+
+void lose_the_meta_record_in(const std::filesystem::path& directory)
+{
+    lmdb_damage::change_with_lmdb(
+        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+}
+
+void stop(node_t& n)
+{
+    const auto gone = std::move(n);
+}
+
+}
+
+// Plan lmdb-only-source 2.4 item 8 and the decision of the owner
+// (2026-10-25 03:54): with honest hardware a start finds no damage, so a
+// damage that the start checks find counts toward the one automatic
+// repair. The count stands in the node storage, which a repair does not
+// touch. At the limit the node waits for the operator, and the operator
+// can allow one more repair.
+TEST_CASE("a damage that the start checks find counts toward the automatic repair")
+{
+    const auto log_directory = lmdb_storage::new_directory();
+    const auto own_directory = lmdb_storage::new_directory();
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 2; ++p) {
+        nodes.push_back(
+            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+    }
+    nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
+                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, 0));
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    batches::commit(nodes[0], nodes[0].append(make_entry(1)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    const auto restart = [&](const std::uint64_t nonce, const bool damaged) {
+        stop(nodes[2]);
+        if (damaged) {
+            lose_the_meta_record_in(log_directory);
+        }
+        nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
+                                 lmdb_storage::open_node_storage_in(own_directory), echo{}, nonce);
+    };
+
+    restart(10, true);
+    CHECK(nodes[2].get_repair_count() == 1);
+    CHECK(nodes[2].get_sequence_paxos().repairing());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes[2].get_sequence_paxos().votes());
+    batches::commit(nodes[0], nodes[0].append(make_entry(2)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(*nodes[2].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+
+    restart(20, true);
+    CHECK(nodes[2].get_repair_count() == 1);
+    CHECK(nodes[2].waits_for_the_operator());
+    CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
+    CHECK_FALSE(nodes[2].get_sequence_paxos().repairing());
+    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
+    REQUIRE(nodes[2].allow_one_more_repair());
+    CHECK(nodes[2].get_repair_count() == 0);
+
+    // The waiting node did not repair, so its log still has no meta record.
+    restart(30, false);
+    CHECK(nodes[2].get_repair_count() == 1);
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes[2].get_sequence_paxos().votes());
+    CHECK(*nodes[2].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+}
+
+// Plan repair-from-peer 4.1: a crash during a repair is no damage. The
+// mark of the open repair makes the next start continue it without a
+// second count.
+TEST_CASE("a restart during a repair does not count again")
+{
+    const auto own_directory = lmdb_storage::new_directory();
+    {
+        auto own = lmdb_storage::open_node_storage_in(own_directory);
+        REQUIRE(own.count_a_repair());
+        CHECK(own.get_repair_record() == konsens::repair_record{1, true});
+    }
+    const auto log_directory = lmdb_storage::new_directory();
+    {
+        auto s = lmdb_storage::open_in(log_directory);
+        lmdb_storage::write(s, [](auto& t) { REQUIRE(t.set_promise({1, 1, 0, 2})); });
+    }
+    lose_the_meta_record_in(log_directory);
+    auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
+                           lmdb_storage::open_node_storage_in(own_directory), echo{}, 5);
+    CHECK(n.get_sequence_paxos().repairing());
+    CHECK(n.get_repair_count() == 1);
+    CHECK_FALSE(n.waits_for_the_operator());
 }

@@ -20,6 +20,7 @@
 #include "konsens/ballot_leader_election.hpp"
 #include "konsens/client.hpp"
 #include "konsens/message.hpp"
+#include "konsens/persistent_storage.hpp"
 #include "konsens/sequence_paxos.hpp"
 #include "konsens/state_machine.hpp"
 #include "konsens/storage.hpp"
@@ -28,6 +29,7 @@
 namespace konsens {
 
 inline constexpr std::size_t max_batch_size = 1024;
+inline constexpr std::uint64_t auto_repair_count = 1;
 
 static_assert(std::is_nothrow_move_constructible_v<message> && std::is_nothrow_move_constructible_v<received>);
 
@@ -100,7 +102,8 @@ class node {
 public:
     using result = std::expected<void, std::error_code>;
 
-    static std::expected<node, std::error_code> with(const node_config& config, S internal_storage, M machine,
+    static std::expected<node, std::error_code> with(const node_config& config, S internal_storage,
+                                                     konsens::node_storage own_storage, M machine,
                                                      const std::uint64_t nonce)
     {
         if (config.configuration_id == 0 || config.election_tick_timeout == 0 ||
@@ -111,15 +114,31 @@ public:
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
         }
-        const auto promise = sp->get_promise();
+        const auto record = own_storage.get_repair_record();
+        if (!record) [[unlikely]] {
+            return std::unexpected(record.error());
+        }
+        if (sp->votes() && record->open) {
+            if (auto c = own_storage.close_the_repair(); !c) [[unlikely]] {
+                return std::unexpected(c.error());
+            }
+        }
+        auto promise = std::expected<ballot, std::error_code>{ballot{}};
+        if (sp->votes()) {
+            promise = sp->get_promise();
+        }
         if (!promise) [[unlikely]] {
             return std::unexpected(promise.error());
         }
-        auto ble = ballot_leader_election::with(
-            {config.configuration_id, config.pid, config.peers, config.leader_priority}, *promise);
-        node n(config, std::move(*sp), std::move(ble), std::move(machine));
-        if (auto r = n.apply_decided_entries(); !r) [[unlikely]] {
+        auto ble = ballot_leader_election::with(ble_config_of(config), *promise);
+        node n(config, std::move(*sp), std::move(own_storage), std::move(ble), std::move(machine), nonce);
+        if (auto r = n.repair_after_a_damage(); !r) [[unlikely]] {
             return std::unexpected(r.error());
+        }
+        if (n.seq_paxos_.votes()) {
+            if (auto r = n.apply_decided_entries(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
         }
         n.release_messages_and_replies();
         return n;
@@ -127,7 +146,10 @@ public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> tick()
     {
-        if (election_clock_.tick_and_check_timeout()) {
+        if (auto r = repair_after_a_damage(); !r) [[unlikely]] {
+            return std::unexpected(r.error());
+        }
+        if (election_clock_.tick_and_check_timeout() && seq_paxos_.votes()) {
             const auto promise = seq_paxos_.get_promise();
             if (!promise) [[unlikely]] {
                 return std::unexpected(promise.error());
@@ -166,6 +188,16 @@ public:
         if (!w) [[unlikely]] {
             drop_held_messages_and_replies();
             return w;
+        }
+        if (repair_started_ && !seq_paxos_.repairing() && seq_paxos_.votes()) {
+            if (auto r = close_the_repair(); !r) [[unlikely]] {
+                drop_held_messages_and_replies();
+                return r;
+            }
+        }
+        if (!seq_paxos_.votes()) {
+            release_messages_and_replies();
+            return {};
         }
         if (auto r = serve_clients(); !r) [[unlikely]] {
             drop_held_messages_and_replies();
@@ -270,6 +302,12 @@ public:
     }
 
     const sequence_paxos<S>& get_sequence_paxos() const { return seq_paxos_; }
+    bool waits_for_the_operator() const { return waits_for_the_operator_; }
+    std::expected<std::uint64_t, std::error_code> get_repair_count() const
+    {
+        return own_storage_.get_repair_record().transform([](const repair_record& r) { return r.count; });
+    }
+    [[nodiscard]] result allow_one_more_repair() { return own_storage_.allow_one_more_repair(); }
     const ballot_leader_election& get_ballot_leader_election() const { return ble_; }
     const M& get_state_machine() const { return machine_; }
     std::uint64_t get_applied_idx() const { return applied_idx_; }
@@ -377,10 +415,55 @@ private:
         }
     }
 
-    node(const node_config& config, sequence_paxos<S> seq_paxos, ballot_leader_election ble, M machine)
-        : seq_paxos_(std::move(seq_paxos)), ble_(std::move(ble)), election_clock_{0, config.election_tick_timeout},
-          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine))
+    node(const node_config& config, sequence_paxos<S> seq_paxos, konsens::node_storage own_storage,
+         ballot_leader_election ble, M machine, const std::uint64_t nonce)
+        : seq_paxos_(std::move(seq_paxos)), own_storage_(std::move(own_storage)), ble_(std::move(ble)),
+          ble_config_(ble_config_of(config)), election_clock_{0, config.election_tick_timeout},
+          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce)
     {
+    }
+
+    static ble_config ble_config_of(const node_config& config)
+    {
+        return {config.configuration_id, config.pid, config.peers, config.leader_priority};
+    }
+
+    result repair_after_a_damage()
+    {
+        const auto e = seq_paxos_.get_error();
+        if (!e || !error_is_a_damage(*e) || waits_for_the_operator_) {
+            return {};
+        }
+        const auto record = own_storage_.get_repair_record();
+        if (!record) [[unlikely]] {
+            return std::unexpected(record.error());
+        }
+        if (!record->open) {
+            if (record->count >= auto_repair_count) {
+                waits_for_the_operator_ = true;
+                return {};
+            }
+            if (auto c = own_storage_.count_a_repair(); !c) [[unlikely]] {
+                return c;
+            }
+        }
+        nonce_ += 1;
+        repair_started_ = true;
+        return seq_paxos_.start_repair(nonce_);
+    }
+
+    result close_the_repair()
+    {
+        repair_started_ = false;
+        if (auto c = own_storage_.close_the_repair(); !c) [[unlikely]] {
+            return c;
+        }
+        const auto promise = seq_paxos_.get_promise();
+        if (!promise) [[unlikely]] {
+            return std::unexpected(promise.error());
+        }
+        ble_ = ballot_leader_election::with(ble_config_, *promise);
+        return {};
     }
 
     ballot ballot_above_promise(const ballot elected, const ballot promise) const
@@ -518,7 +601,9 @@ private:
     }
 
     sequence_paxos<S> seq_paxos_;
+    konsens::node_storage own_storage_;
     ballot_leader_election ble_;
+    ble_config ble_config_;
     logical_clock election_clock_;
     logical_clock resend_message_clock_;
     M machine_;
@@ -535,6 +620,9 @@ private:
     std::map<std::uint64_t, client_read> reads_;
     std::uint64_t last_read_{};
     std::unique_ptr<std::uint64_t> commit_count_ = std::make_unique<std::uint64_t>();
+    std::uint64_t nonce_;
+    bool repair_started_{};
+    bool waits_for_the_operator_{};
 };
 
 }

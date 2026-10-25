@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "konsens/node.hpp"
+#include "lmdb_storage.hpp"
 
 // The simulation runs on each storage. A Cluster gives the storage type,
 // start(i, kept) gives the storage of node i, and stop(node) gives what a
@@ -517,7 +518,8 @@ struct world {
             return cluster.stop(stopped);
         }();
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), concatenation{}, nonce);
+        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)),
+                                 lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
     }
@@ -539,7 +541,8 @@ struct world {
         note([&] { return std::string("roll back " + std::to_string(i + 1)); });
         const auto len_before = read_value(nodes[i].get_sequence_paxos().get_accepted_idx());
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), concatenation{}, nonce);
+        nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second),
+                                 lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
         if (read_value(nodes[i].get_sequence_paxos().get_accepted_idx()) < len_before) {
             counts.rollbacks += 1;
         }
@@ -888,7 +891,8 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     w.sizes = sizes;
     w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
-        w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}), concatenation{}, w.nonce));
+        w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}),
+                                                  lmdb_storage::open_new_node_storage(), concatenation{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);

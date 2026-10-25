@@ -106,6 +106,8 @@ target_link_libraries(test_persistent_storage PRIVATE crc32c lmdb)
 target_include_directories(test_persistent_storage PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test_sequence_paxos PRIVATE crc32c lmdb)
 target_include_directories(test_sequence_paxos PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test_node PRIVATE crc32c lmdb)
+target_include_directories(test_node PRIVATE ${PROJECT_SOURCE_DIR}/src)
 add_dependencies(test_lmdb_upgrade mdb_dump mdb_load mdb_dump-0.9 mdb_load-0.9 konsens_lmdb_checksum)
 target_compile_definitions(
     test_lmdb_upgrade PRIVATE "KONSENS_MDB_DUMP=\"$<TARGET_FILE:mdb_dump>\"" "KONSENS_MDB_LOAD=\"$<TARGET_FILE:mdb_load>\""

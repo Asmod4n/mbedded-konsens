@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <ranges>
 #include <utility>
 
 #include <crc32c/crc32c.h>
@@ -125,6 +126,16 @@ std::uint32_t compute_chain_crc(const std::uint32_t previous_chain_crc, const st
     std::vector<std::byte> encoded(encoded_size_of(e));
     encode_entry(e, encoded);
     return compute_chain_crc(previous_chain_crc, index, encoded);
+}
+
+std::uint32_t compute_chain_crc(const std::uint32_t previous_chain_crc, const std::uint64_t from_idx,
+                                const std::span<const entry> entries)
+{
+    auto chain = previous_chain_crc;
+    for (const auto& [i, e] : std::views::enumerate(entries)) {
+        chain = compute_chain_crc(chain, from_idx + static_cast<std::uint64_t>(i), e);
+    }
+    return chain;
 }
 
 bool can_use_crc32c_instruction() noexcept

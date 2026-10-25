@@ -184,9 +184,42 @@ struct read_index_reply {
     friend bool operator==(const read_index_reply&, const read_index_reply&) = default;
 };
 
-using paxos_msg = std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide,
-                               not_accepted, proposal_forward, recovery, recovery_response, get_state, new_state,
-                               read_index_request, heartbeat, heartbeat_ack, read_index_reply>;
+struct repair_request {
+    std::uint64_t nonce;
+    std::uint64_t round;
+    std::vector<std::uint64_t> lengths;
+    friend bool operator==(const repair_request&, const repair_request&) = default;
+};
+
+struct repair_response {
+    std::uint64_t nonce;
+    std::uint64_t round;
+    std::uint64_t log_len;
+    std::vector<std::uint32_t> chain_crcs;
+    friend bool operator==(const repair_response&, const repair_response&) = default;
+};
+
+struct get_repair_entries {
+    std::uint64_t nonce;
+    std::uint64_t from_idx;
+    friend bool operator==(const get_repair_entries&, const get_repair_entries&) = default;
+};
+
+struct repair_entries {
+    std::uint64_t nonce;
+    std::uint64_t from_idx;
+    std::vector<entry> entries;
+    ballot promise;
+    ballot accepted_round;
+    std::uint64_t decided_idx;
+    std::uint32_t last_chain_crc;
+    friend bool operator==(const repair_entries&, const repair_entries&) = default;
+};
+
+using paxos_msg =
+    std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide, not_accepted,
+                 proposal_forward, recovery, recovery_response, get_state, new_state, read_index_request, heartbeat,
+                 heartbeat_ack, read_index_reply, repair_request, repair_response, get_repair_entries, repair_entries>;
 
 struct paxos_message {
     node_id from;

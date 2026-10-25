@@ -274,6 +274,10 @@ std::vector<message> every_kind()
         paxos(konsens::heartbeat{ballot_from(10), 20}),
         paxos(konsens::heartbeat_ack{ballot_from(10), 20}),
         paxos(konsens::read_index_reply{{10, 11, 12}, 20}),
+        paxos(konsens::repair_request{10, 20, {30, 31, 32}}),
+        paxos(konsens::repair_response{10, 20, 30, {40, 41}}),
+        paxos(konsens::get_repair_entries{10, 20}),
+        paxos(konsens::repair_entries{10, 20, five_entries(), ballot_from(30), ballot_from(40), 50, 60}),
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
@@ -360,8 +364,12 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::heartbeat{ballot_from(10), 20}), 14},
         {paxos(konsens::heartbeat_ack{ballot_from(10), 20}), 15},
         {paxos(konsens::read_index_reply{{10}, 20}), 16},
-        {ble(konsens::heartbeat_request{10}), 17},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 18},
+        {paxos(konsens::repair_request{10, 20, {30}}), 17},
+        {paxos(konsens::repair_response{10, 20, 30, {40}}), 18},
+        {paxos(konsens::get_repair_entries{10, 20}), 19},
+        {paxos(konsens::repair_entries{10, 20, {}, ballot_from(30), ballot_from(40), 50, 60}), 20},
+        {ble(konsens::heartbeat_request{10}), 21},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 22},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -414,7 +422,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 18;
+    constexpr std::uint64_t heartbeat_reply_kind = 22;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +

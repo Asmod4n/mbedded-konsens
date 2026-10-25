@@ -74,6 +74,10 @@ public:
         [[nodiscard]] std::expected<void, std::error_code> set_promise(ballot promise);
         [[nodiscard]] std::expected<void, std::error_code> set_accepted_round(ballot accepted_round);
         [[nodiscard]] std::expected<void, std::error_code> set_decided_index(std::uint64_t decided_idx);
+        [[nodiscard]] std::expected<void, std::error_code> write_repaired_log(std::uint64_t from_idx,
+                                                                              std::span<const entry> entries,
+                                                                              ballot promise, ballot accepted_round,
+                                                                              std::uint64_t decided_idx);
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
 
         transaction(transaction&& other) noexcept;
@@ -103,6 +107,38 @@ private:
     explicit persistent_storage(std::unique_ptr<environment> env) noexcept;
 
     void throw_if_moved_from() const;
+
+    std::unique_ptr<environment> env_;
+};
+
+struct repair_record {
+    std::uint64_t count;
+    bool open;
+
+    friend bool operator==(const repair_record&, const repair_record&) = default;
+};
+
+class node_storage {
+    struct environment;
+
+public:
+    [[nodiscard]] static std::expected<node_storage, std::error_code> open(const std::filesystem::path& directory,
+                                                                           uid_t effective_user_id);
+
+    [[nodiscard]] std::expected<repair_record, std::error_code> get_repair_record() const;
+    [[nodiscard]] std::expected<void, std::error_code> count_a_repair();
+    [[nodiscard]] std::expected<void, std::error_code> close_the_repair();
+    [[nodiscard]] std::expected<void, std::error_code> allow_one_more_repair();
+
+    node_storage(node_storage&&) noexcept;
+    node_storage& operator=(node_storage&&) noexcept;
+    ~node_storage();
+
+private:
+    explicit node_storage(std::unique_ptr<environment> env) noexcept;
+
+    void throw_if_moved_from() const;
+    std::expected<void, std::error_code> write_repair_record(const repair_record& r);
 
     std::unique_ptr<environment> env_;
 };

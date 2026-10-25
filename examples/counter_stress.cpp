@@ -206,6 +206,17 @@ struct lmdb_cluster {
     {
         return konsens::persistent_storage::open(directories.at(i), map_size, effective_user_id);
     }
+
+    std::expected<konsens::node_storage, std::error_code> start_node_storage(const std::size_t i) const
+    {
+        const std::filesystem::path directory{directories.at(i).string() + "-node"};
+        std::error_code created;
+        std::filesystem::create_directories(directory, created);
+        if (created) [[unlikely]] {
+            return std::unexpected(created);
+        }
+        return konsens::node_storage::open(directory, effective_user_id);
+    }
 };
 
 konsens::node_config config_of(const konsens::node_id pid)
@@ -394,8 +405,12 @@ struct cluster {
         if (!opened) [[unlikely]] {
             return std::unexpected(opened.error());
         }
+        auto own = storage.start_node_storage(i);
+        if (!own) [[unlikely]] {
+            return std::unexpected(own.error());
+        }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(*opened), counter{}, nonce);
+        auto n = node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }

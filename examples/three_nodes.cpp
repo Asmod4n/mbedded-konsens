@@ -125,8 +125,18 @@ struct cluster {
         if (!storage) [[unlikely]] {
             return std::unexpected(storage.error());
         }
+        const std::filesystem::path node_directory{directories.at(i).string() + "-node"};
+        std::error_code created;
+        std::filesystem::create_directories(node_directory, created);
+        if (created) [[unlikely]] {
+            return std::unexpected(created);
+        }
+        auto own = konsens::node_storage::open(node_directory, effective_user_id);
+        if (!own) [[unlikely]] {
+            return std::unexpected(own.error());
+        }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(*storage), concatenation{}, nonce);
+        auto n = node_t::with(config_of(i + 1), std::move(*storage), std::move(*own), concatenation{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }

@@ -212,7 +212,12 @@ int run(const std::span<const std::string_view> args)
         if (!storage) [[unlikely]] {
             return fail("open the storages", storage.error());
         }
-        auto n = node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), std::move(*storage), counter{}, i + 1);
+        auto own = konsens::node_storage::open(temporary.create(), *user_id);
+        if (!own) [[unlikely]] {
+            return fail("open the storages", own.error());
+        }
+        auto n = node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), std::move(*storage), std::move(*own),
+                              counter{}, i + 1);
         if (!n) [[unlikely]] {
             return fail("start the nodes", n.error());
         }

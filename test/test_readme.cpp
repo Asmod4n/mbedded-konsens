@@ -64,13 +64,16 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
         }
     }
     auto storage = konsens::persistent_storage::open(dir, map_size, non_root_user_id).value();
+    const std::filesystem::path node_dir{dir.string() + "-node"};
+    std::filesystem::create_directories(node_dir);
+    auto own_storage = konsens::node_storage::open(node_dir, non_root_user_id).value();
     return node_t::with({.configuration_id = 1,
                          .pid = pid,
                          .peers = peers,
                          .leader_priority = 0,
                          .election_tick_timeout = 5,
                          .resend_message_tick_timeout = 3},
-                        std::move(storage), counter{}, fresh_nonce())
+                        std::move(storage), std::move(own_storage), counter{}, fresh_nonce())
         .value();
 }
 

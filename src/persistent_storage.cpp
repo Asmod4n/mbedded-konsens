@@ -33,6 +33,11 @@ constexpr const char* meta_database_name = "meta";
 constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
 constexpr std::uint32_t format_version = 1;
+constexpr std::size_t node_storage_map_size = std::size_t{1} << 20;
+constexpr unsigned int node_database_count = 1;
+constexpr const char* node_database_name = "node";
+constexpr std::string_view repair_key = "repair";
+constexpr std::size_t repair_record_size = sizeof(repair_record::count) + sizeof(std::uint8_t);
 
 constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
@@ -481,6 +486,30 @@ std::expected<void, std::error_code> put_entries(const databases& d, meta_record
     return {};
 }
 
+std::expected<void, std::error_code> delete_entries_from(const databases& d, const std::uint64_t from)
+{
+    const auto c = open_cursor(d.txn, d.log_dbi);
+    if (!c) [[unlikely]] {
+        return std::unexpected(c.error());
+    }
+    const auto key_bytes = to_big_endian(from);
+    MDB_val key = value_of(key_bytes);
+    MDB_val data{};
+    int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
+    while (status == MDB_SUCCESS) {
+        const int deleted = mdb_cursor_del(c->get(), 0);
+        if (deleted != MDB_SUCCESS) [[unlikely]] {
+            return std::unexpected(to_error_code(deleted));
+        }
+        key = value_of(key_bytes);
+        status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
+    }
+    if (status != MDB_NOTFOUND) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    return {};
+}
+
 std::expected<void, std::error_code> delete_entries(const databases& d, const std::uint64_t from,
                                                     const std::uint64_t to)
 {
@@ -513,8 +542,9 @@ std::expected<std::uint32_t, std::error_code> chain_crc_before(const databases& 
     return record->value().chain_crc;
 }
 
-std::expected<void, std::error_code> commit_entries(const databases& d, std::vector<std::byte>& rewritten,
-                                                    const std::uint64_t from, const std::uint64_t to)
+std::expected<void, std::error_code> set_entry_states(const databases& d, std::vector<std::byte>& rewritten,
+                                                      const std::uint64_t from, const std::uint64_t to,
+                                                      const std::uint64_t decided_idx)
 {
     const auto c = open_cursor(d.txn, d.log_dbi);
     if (!c) [[unlikely]] {
@@ -535,12 +565,13 @@ std::expected<void, std::error_code> commit_entries(const databases& d, std::vec
         if (!record) [[unlikely]] {
             return std::unexpected(record.error().code);
         }
-        if (record->state == entry_state::committed) {
+        const auto state = index < decided_idx ? entry_state::committed : entry_state::in_work;
+        if (record->state == state) {
             continue;
         }
         const auto stored = as_bytes(data);
         rewritten.assign(stored.begin(), stored.end());
-        write_state(index, entry_state::committed, rewritten);
+        write_state(index, state, rewritten);
         MDB_val replaced = value_of(std::span<const std::byte>(rewritten));
         const int put = mdb_cursor_put(c->get(), &key, &replaced, MDB_CURRENT);
         if (put != MDB_SUCCESS) [[unlikely]] {
@@ -860,12 +891,37 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
         return std::unexpected(make_error_code(storage_errc::missing_entry));
     }
     if (decided_idx > m->decided_idx) {
-        if (auto c = commit_entries(d, env_->rewritten, m->decided_idx, decided_idx); !c) [[unlikely]] {
+        if (auto c = set_entry_states(d, env_->rewritten, m->decided_idx, decided_idx, decided_idx); !c) [[unlikely]] {
             return c;
         }
     }
     m->decided_idx = decided_idx;
     return write_meta(d, *m);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx, const std::span<const entry> entries,
+                                                    const ballot promise, const ballot accepted_round,
+                                                    const std::uint64_t decided_idx)
+{
+    throw_if_no_environment(env_);
+    throw_if_an_entry_has_a_field_of_another_kind(entries);
+    const auto d = env_->of_writer();
+    if (auto deleted = delete_entries_from(d, from_idx); !deleted) [[unlikely]] {
+        return deleted;
+    }
+    if (auto states = set_entry_states(d, env_->rewritten, 0, from_idx, decided_idx); !states) [[unlikely]] {
+        return states;
+    }
+    const auto chain = chain_crc_before(d, from_idx);
+    if (!chain) [[unlikely]] {
+        return std::unexpected(chain.error());
+    }
+    meta_record m{promise, accepted_round, decided_idx, from_idx, *chain};
+    if (auto put = put_entries(d, m, entries); !put) [[unlikely]] {
+        return put;
+    }
+    return write_meta(d, m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&
@@ -991,6 +1047,137 @@ std::expected<void, std::error_code> persistent_storage::copy(const std::filesys
         return std::unexpected(to_error_code(copied));
     }
     return {};
+}
+
+struct node_storage::environment {
+    std::unique_ptr<MDB_env, env_close> handle;
+    MDB_dbi dbi;
+};
+
+node_storage::node_storage(std::unique_ptr<environment> env) noexcept : env_{std::move(env)}
+{
+}
+
+node_storage::node_storage(node_storage&&) noexcept = default;
+node_storage& node_storage::operator=(node_storage&&) noexcept = default;
+node_storage::~node_storage() = default;
+
+void node_storage::throw_if_moved_from() const
+{
+    if (!env_) [[unlikely]] {
+        throw std::logic_error("The node_storage was moved from and has no LMDB environment");
+    }
+}
+
+std::expected<node_storage, std::error_code> node_storage::open(const std::filesystem::path& directory,
+                                                                const uid_t effective_user_id)
+{
+    if (effective_user_id == root_user_id) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
+    }
+    MDB_env* raw_env = nullptr;
+    const int created = mdb_env_create(&raw_env);
+    if (created != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(created));
+    }
+    std::unique_ptr<MDB_env, env_close> env{raw_env};
+    const int maxdbs_set = mdb_env_set_maxdbs(env.get(), node_database_count);
+    if (maxdbs_set != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(maxdbs_set));
+    }
+    const int mapsize_set = mdb_env_set_mapsize(env.get(), node_storage_map_size);
+    if (mapsize_set != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(mapsize_set));
+    }
+    const int checksum_set = mdb_env_set_checksum(env.get(), compute_page_checksum, page_checksum_size);
+    if (checksum_set != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(checksum_set));
+    }
+    const int opened = mdb_env_open(env.get(), directory.c_str(), environment_flags, file_mode);
+    if (opened != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(opened));
+    }
+    auto txn = begin_transaction(env.get(), 0);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    const auto dbi = open_database(txn->get(), node_database_name);
+    if (!dbi) [[unlikely]] {
+        return std::unexpected(dbi.error());
+    }
+    const auto committed = commit_or_throw(std::move(*txn));
+    if (!committed) [[unlikely]] {
+        return std::unexpected(committed.error());
+    }
+    return node_storage{std::make_unique<environment>(std::move(env), *dbi)};
+}
+
+std::expected<repair_record, std::error_code> node_storage::get_repair_record() const
+{
+    throw_if_moved_from();
+    auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    const auto body = get_checked(txn->get(), env_->dbi, repair_key, repair_record_size);
+    if (!body) [[unlikely]] {
+        return std::unexpected(body.error());
+    }
+    if (!body->has_value()) {
+        return repair_record{0, false};
+    }
+    const auto bytes = body->value();
+    const auto open_byte = std::to_integer<std::uint8_t>(bytes.back());
+    if (open_byte > 1) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    return repair_record{from_little_endian<std::uint64_t>(bytes.first<sizeof(repair_record::count)>()),
+                         open_byte == 1};
+}
+
+std::expected<void, std::error_code> node_storage::write_repair_record(const repair_record& r)
+{
+    auto txn = begin_transaction(env_->handle.get(), 0);
+    if (!txn) [[unlikely]] {
+        return std::unexpected(txn.error());
+    }
+    std::array<std::byte, repair_record_size> body{};
+    std::ranges::copy(to_little_endian(r.count), body.begin());
+    body.back() = std::byte{r.open ? std::uint8_t{1} : std::uint8_t{0}};
+    if (auto put = put_checked(txn->get(), env_->dbi, repair_key, body); !put) [[unlikely]] {
+        return put;
+    }
+    return commit_or_throw(std::move(*txn));
+}
+
+std::expected<void, std::error_code> node_storage::count_a_repair()
+{
+    throw_if_moved_from();
+    const auto r = get_repair_record();
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    return write_repair_record({r->count + 1, true});
+}
+
+std::expected<void, std::error_code> node_storage::close_the_repair()
+{
+    throw_if_moved_from();
+    const auto r = get_repair_record();
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    return write_repair_record({r->count, false});
+}
+
+std::expected<void, std::error_code> node_storage::allow_one_more_repair()
+{
+    throw_if_moved_from();
+    const auto r = get_repair_record();
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    return write_repair_record({0, r->open});
 }
 
 }

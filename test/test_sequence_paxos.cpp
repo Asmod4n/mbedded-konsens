@@ -1720,3 +1720,252 @@ TEST_CASE("a message of a peer that stepped back is refused and reported")
     CHECK(accepted_proofs[0].seen.accepted_idx == 2);
     CHECK(accepted_proofs[0].received.accepted_idx == 1);
 }
+
+namespace {
+
+constexpr std::size_t record_tail_size = 13;
+constexpr std::size_t chain_crc_offset_in_tail = 4;
+
+// The chain CRC of a record is not under its entry CRC, so a flipped bit
+// there leaves an entry that reads without error and a chain that does not
+// follow.
+void flip_chain_crc(MDB_txn* txn, const MDB_dbi log, const std::uint64_t index)
+{
+    const auto key_bytes = lmdb_damage::key_of(index);
+    MDB_val key{key_bytes.size(), const_cast<std::byte*>(key_bytes.data())};
+    MDB_val value{};
+    REQUIRE(mdb_get(txn, log, &key, &value) == MDB_SUCCESS);
+    const std::span stored(static_cast<const std::byte*>(value.mv_data), value.mv_size);
+    std::vector<std::byte> changed(stored.begin(), stored.end());
+    changed.at(changed.size() - record_tail_size + chain_crc_offset_in_tail) ^= std::byte{1};
+    MDB_val replaced{changed.size(), changed.data()};
+    REQUIRE(mdb_put(txn, log, &key, &replaced, 0) == MDB_SUCCESS);
+}
+
+std::vector<entry> numbered_log(const std::size_t length, const std::uint8_t first)
+{
+    std::vector<entry> log;
+    for (std::size_t i = 0; i < length; ++i) {
+        log.push_back(make_entry(static_cast<std::uint8_t>(first + i)));
+    }
+    return log;
+}
+
+// A node whose meta record is lost before its start: `with` gives a node
+// that stopped voting with the damage.
+sp_t damaged_node_with(const std::vector<entry>& log, const std::uint64_t decided_idx)
+{
+    const auto directory = lmdb_storage::new_directory();
+    {
+        auto s = lmdb_storage::open_in(directory);
+        lmdb_storage::write(s, [&](auto& t) {
+            REQUIRE(t.append_entries(log));
+            REQUIRE(t.set_promise(ballot_of(1, 3)));
+            REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
+            REQUIRE(t.set_decided_index(decided_idx));
+        });
+    }
+    lmdb_damage::change_with_lmdb(
+        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+    auto sp = make(1, lmdb_storage::open_in(directory), 7);
+    REQUIRE(sp.get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
+    REQUIRE_FALSE(sp.votes());
+    return sp;
+}
+
+konsens::repair_response probe_answer_of(const konsens::repair_request& r, const std::vector<entry>& log)
+{
+    std::vector<std::uint32_t> chains;
+    for (const auto length : r.lengths) {
+        if (length <= log.size()) {
+            chains.push_back(chain_of(log, length));
+        }
+    }
+    return {r.nonce, r.round, log.size(), chains};
+}
+
+konsens::repair_entries entries_answer_of(const konsens::get_repair_entries& g, const std::vector<entry>& log,
+                                          const std::uint64_t decided_idx)
+{
+    return {g.nonce,
+            g.from_idx,
+            std::vector(std::next(log.begin(), static_cast<std::ptrdiff_t>(g.from_idx)), log.end()),
+            ballot_of(2, 2),
+            ballot_of(2, 2),
+            decided_idx,
+            last_crc_of(log)};
+}
+
+// Peer 2 answers each probe from `source` until the node asks for the
+// entries. The result is the index that the node asks for.
+std::uint64_t search_against(sp_t& sp, const std::vector<entry>& source)
+{
+    for (;;) {
+        const auto out = committed_messages_of(sp);
+        const auto fetches = messages_of<konsens::get_repair_entries>(out);
+        if (!fetches.empty()) {
+            return fetches.front().from_idx;
+        }
+        const auto probes = messages_of<konsens::repair_request>(out);
+        REQUIRE_FALSE(probes.empty());
+        CHECK(probes.front().lengths.size() <= konsens::repair_probe_count);
+        REQUIRE(sp.handle({2, 1, probe_answer_of(probes.front(), source)}));
+    }
+}
+
+}
+
+// Plan repair-from-peer 2.4: the chain CRC covers the whole prefix, so the
+// search finds the first index where the two logs differ, for each
+// position, and across more rounds than one when the gap holds more than
+// repair_probe_count lengths. The node then asks only for the entries from
+// that index.
+TEST_CASE("the repair search finds the first index that differs")
+{
+    constexpr std::size_t length = 200;
+    const auto source = numbered_log(length, 0);
+    for (const std::uint64_t p : std::to_array<std::uint64_t>({0, 1, 2, 63, 64, 65, 100, 128, 198, 199, 200})) {
+        INFO("first differing index ", p);
+        auto own = source;
+        if (p < length) {
+            own.at(p) = make_entry(255);
+        } else {
+            own.push_back(make_entry(255));
+        }
+        auto sp = damaged_node_with(own, 0);
+        REQUIRE(sp.start_repair(9));
+        CHECK(sp.repairing());
+        CHECK(search_against(sp, source) == p);
+    }
+    auto shorter = damaged_node_with(numbered_log(50, 0), 0);
+    REQUIRE(shorter.start_repair(9));
+    CHECK(search_against(shorter, source) == 50);
+}
+
+// Plan repair-from-peer 2.3: the start check finds the lost meta record.
+// The chain CRC at index 12 lies below the last entry, so only the scan
+// finds it: the scan ends at the first entry whose chain does not follow. The search starts below it, and the repair
+// takes only the entries from the first index that differs. The new meta record holds the values of the source, and the
+// next step passes the step check with the mark set from them.
+TEST_CASE("a repair takes only the entries that differ, and sets the mark")
+{
+    const auto source = numbered_log(20, 0);
+    const auto directory = lmdb_storage::new_directory();
+    {
+        auto s = lmdb_storage::open_in(directory);
+        lmdb_storage::write(s, [&](auto& t) {
+            REQUIRE(t.append_entries(source));
+            REQUIRE(t.set_promise(ballot_of(1, 3)));
+            REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
+            REQUIRE(t.set_decided_index(18));
+        });
+    }
+    lmdb_damage::change_with_lmdb(directory, [](MDB_txn* txn, const MDB_dbi log, const MDB_dbi meta) {
+        flip_chain_crc(txn, log, 12);
+        lmdb_damage::delete_meta_record(txn, meta);
+    });
+    auto sp = make(1, lmdb_storage::open_in(directory), 7);
+    REQUIRE(sp.get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
+    REQUIRE(sp.start_repair(9));
+    CHECK(search_against(sp, source) == 12);
+    REQUIRE(sp.handle({2, 1, entries_answer_of({9, 12}, source, 15)}));
+    CHECK_FALSE(sp.repairing());
+    CHECK(sp.recovering());
+    const auto out = committed_messages_of(sp);
+    const auto recoveries = messages_of<konsens::recovery>(out);
+    REQUIRE(recoveries.size() == 2);
+    CHECK(recoveries[0].nonce == 9);
+    CHECK(log_of(sp) == source);
+    CHECK(sp.get_promise() == ballot_of(2, 2));
+    CHECK(sp.get_accepted_round() == ballot_of(2, 2));
+    CHECK(sp.get_decided_idx() == 15);
+    CHECK(states_of(sp.get_internal_storage()) == committed_below(15, 20));
+}
+
+// Plan repair-from-peer 2.7: the node folds the chain CRC from its own
+// verified prefix over the received entries. An answer whose entries do not
+// give its last chain CRC is refused, and the node writes nothing.
+TEST_CASE("a repair refuses an entry whose chain CRC does not follow")
+{
+    auto sp = damaged_node_with(one_two, 0);
+    REQUIRE(sp.start_repair(9));
+    const std::vector source{make_entry(1), make_entry(2), make_entry(3)};
+    CHECK(search_against(sp, source) == 2);
+    auto wrong = entries_answer_of({9, 2}, source, 2);
+    wrong.entries.front() = make_entry(4);
+    REQUIRE(sp.handle({2, 1, wrong}));
+    CHECK(sp.repairing());
+    CHECK(committed_messages_of(sp).empty());
+    CHECK(sp.get_promise() == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    auto wrong_start = entries_answer_of({9, 2}, source, 2);
+    wrong_start.from_idx = 1;
+    REQUIRE(sp.handle({2, 1, wrong_start}));
+    CHECK(sp.repairing());
+    REQUIRE(sp.handle({2, 1, entries_answer_of({9, 2}, source, 2)}));
+    CHECK_FALSE(sp.repairing());
+    CHECK(log_of(sp) == source);
+}
+
+// Plan repair-from-peer 2.10: a peer answers a probe only when it votes,
+// does not recover and does not repair. A node that repairs ignores every
+// other message, and start_repair on a node without a damage is a wrong
+// use.
+TEST_CASE("only a peer that votes answers a probe")
+{
+    auto voting = make(2, storage_of(ballot{}, ballot{}, {}, 0));
+    REQUIRE(voting.handle({1, 2, konsens::repair_request{9, 1, {1}}}));
+    const auto answers = messages_of<konsens::repair_response>(committed_messages_of(voting));
+    REQUIRE(answers.size() == 1);
+    CHECK(answers[0].log_len == 0);
+    CHECK(answers[0].chain_crcs.empty());
+    CHECK_THROWS_AS(static_cast<void>(voting.start_repair(9)), std::logic_error);
+
+    auto too_many = konsens::repair_request{9, 1, std::vector<std::uint64_t>(konsens::repair_probe_count + 1, 1)};
+    REQUIRE(voting.handle({1, 2, too_many}));
+    CHECK(committed_messages_of(voting).empty());
+
+    auto recovering = make(2, storage_with_promise(ballot_of(1, 3)));
+    committed_messages_of(recovering);
+    REQUIRE(recovering.recovering());
+    REQUIRE(recovering.handle({1, 2, konsens::repair_request{9, 1, {1}}}));
+    CHECK(committed_messages_of(recovering).empty());
+
+    auto repairing = damaged_node_with(one_two, 0);
+    REQUIRE(repairing.start_repair(9));
+    committed_messages_of(repairing);
+    REQUIRE(repairing.handle({2, 1, konsens::repair_request{9, 1, {1}}}));
+    REQUIRE(repairing.handle({2, 1, konsens::recovery{4}}));
+    CHECK(committed_messages_of(repairing).empty());
+    CHECK(repairing.append(make_entry(5)) == std::unexpected(make_error_code(konsens::client_errc::recovering)));
+}
+
+// Plan repair-from-peer 2.5 and 2.9: a node whose disk lost its meta record
+// while it ran repairs from the cluster, recovers, and votes again with the
+// log of the cluster.
+TEST_CASE("a follower that found a damage repairs from the cluster and votes again")
+{
+    const auto directory = lmdb_storage::new_directory();
+    auto a = make(1, lmdb_storage::open_in(directory));
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    for (const auto& e : numbered_log(100, 0)) {
+        REQUIRE(c.append(e));
+    }
+    deliver_all(nodes);
+    lmdb_damage::change_in_another_process(
+        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+    CHECK(a.handle({3, 1, konsens::recovery{5}}) ==
+          std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    REQUIRE(a.start_repair(11));
+    deliver_all(nodes);
+    CHECK(a.votes());
+    CHECK_FALSE(a.repairing());
+    CHECK_FALSE(a.recovering());
+    CHECK(log_of(a) == log_of(c));
+    REQUIRE(c.append(make_entry(200)));
+    deliver_all(nodes);
+    CHECK(a.get_decided_idx() == 101);
+}

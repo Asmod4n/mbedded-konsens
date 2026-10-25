@@ -136,7 +136,8 @@ cluster elected()
 {
     cluster c;
     for (node_id p = 1; p <= node_count; ++p) {
-        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), concatenation{}, 0));
+        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                        concatenation{}, 0));
     }
     c.run(rounds, once);
     REQUIRE(c.at(3).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
@@ -167,7 +168,7 @@ TEST_CASE("a start applies the decided log from index 0")
     c.deliver(once);
     auto kept = lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
     REQUIRE(c.at(1).get_applied_idx() == 2);
-    auto n = *node_t::with(config_of(1), std::move(kept), concatenation{}, 0);
+    auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(), concatenation{}, 0);
     CHECK(n.get_applied_idx() == 2);
     CHECK(n.get_state_machine().value == bytes_of("a"));
     REQUIRE(n.get_client_table().contains(s));
