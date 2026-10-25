@@ -116,6 +116,11 @@ enum class storage_errc { crc_mismatch = 1, malformed_record, missing_entry, mis
 const std::error_category& storage_category() noexcept;
 std::error_code make_error_code(storage_errc code) noexcept;
 
+class read_error : public std::system_error {
+public:
+    using std::system_error::system_error;
+};
+
 class write_error : public std::system_error {
 public:
     using std::system_error::system_error;

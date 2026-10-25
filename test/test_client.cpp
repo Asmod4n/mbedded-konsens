@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <ranges>
 #include <span>
 #include <string_view>
@@ -34,20 +35,40 @@ using konsens::role;
 // show which requests it saw. This machine keeps the concatenation of the
 // applied payloads, and a query gives that value.
 struct concatenation {
-    std::vector<std::byte> value;
+    static constexpr std::array key{std::byte{'v'}};
 
-    std::vector<std::byte> apply(const std::span<const std::byte> payload)
+    static std::vector<std::byte> value_in(const konsens::state_view auto& view)
     {
-        value.insert(value.end(), payload.begin(), payload.end());
-        return value;
+        const auto found = view.find(key);
+        if (!found) {
+            return {};
+        }
+        return {found->begin(), found->end()};
     }
 
-    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const { return value; }
+    konsens::applied apply(const std::span<const std::byte> payload, const konsens::state_view auto& view) const
+    {
+        auto value = value_in(view);
+        value.insert(value.end(), payload.begin(), payload.end());
+        return {value, {{{key.begin(), key.end()}, value}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return value_in(view);
+    }
 };
 
 static_assert(konsens::state_machine<concatenation>);
 
 using node_t = konsens::node<persistent_storage, concatenation>;
+
+std::vector<std::byte> concatenation_of(const node_t& n)
+{
+    const auto t = n.get_state_storage().begin_read_only();
+    REQUIRE(t.has_value());
+    return concatenation::value_in(konsens::read_view{*t});
+}
 
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
@@ -137,7 +158,7 @@ cluster elected()
     cluster c;
     for (node_id p = 1; p <= node_count; ++p) {
         c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                        concatenation{}, 0));
+                                        lmdb_storage::open_new_state_storage(), concatenation{}, 0));
     }
     c.run(rounds, once);
     REQUIRE(c.at(3).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
@@ -168,12 +189,11 @@ TEST_CASE("a start applies the decided log from index 0")
     c.deliver(once);
     auto kept = lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
     REQUIRE(c.at(1).get_applied_idx() == 2);
-    auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(), concatenation{}, 0);
+    auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(),
+                           lmdb_storage::open_new_state_storage(), concatenation{}, 0);
     CHECK(n.get_applied_idx() == 2);
-    CHECK(n.get_state_machine().value == bytes_of("a"));
-    REQUIRE(n.get_client_table().contains(s));
-    CHECK(n.get_client_table().at(s).request_number == 1);
-    CHECK(n.get_client_table().at(s).reply == bytes_of("a"));
+    CHECK(concatenation_of(n) == bytes_of("a"));
+    CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of("a")});
     CHECK(n.take_client_replies().empty());
 }
 
@@ -189,7 +209,7 @@ TEST_CASE("only the payload of a client request reaches the state machine")
     c.deliver(once);
     for (const auto& n : c.nodes) {
         CHECK(n.get_applied_idx() == 3);
-        CHECK(n.get_state_machine().value == bytes_of("a"));
+        CHECK(concatenation_of(n) == bytes_of("a"));
     }
 }
 
@@ -268,7 +288,7 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
     CHECK(failed_with(replies[1].response, client_errc::stale_request));
 
     for (const auto& n : c.nodes) {
-        CHECK(n.get_state_machine().value == bytes_of("abc"));
+        CHECK(concatenation_of(n) == bytes_of("abc"));
     }
 }
 
@@ -302,7 +322,7 @@ TEST_CASE("expire_session closes a session at the leader once")
     REQUIRE(replies.size() == 1);
     CHECK(failed_with(replies[0].response, client_errc::session_expired));
     for (const auto& n : c.nodes) {
-        CHECK(n.get_state_machine().value.empty());
+        CHECK(concatenation_of(n).empty());
     }
 }
 
@@ -425,4 +445,92 @@ TEST_CASE("a leader sends a lost heartbeat again")
     const auto replies = c.at(3).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].response == std::vector<std::byte>{});
+}
+
+// Plan state-in-lmdb 3.2 to 3.4: the state of the machine changes in the
+// state storage only after the entry is decided, so a leader that loses
+// its round before the decide keeps no state of the entry.
+TEST_CASE("a state change commits only after the decide")
+{
+    auto c = elected();
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    CHECK(concatenation_of(c.at(3)).empty());
+    CHECK(c.at(3).get_applied_idx() == 1);
+    c.deliver(once);
+    CHECK(concatenation_of(c.at(3)) == bytes_of("a"));
+    CHECK(c.at(3).get_applied_idx() == 2);
+}
+
+namespace {
+
+std::filesystem::path decided_log_of_two_entries(cluster& c)
+{
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.deliver(once);
+    REQUIRE(c.at(1).get_applied_idx() == 2);
+    const auto directory = lmdb_storage::new_directory();
+    REQUIRE(c.at(1).get_sequence_paxos().get_internal_storage().copy(directory));
+    return directory;
+}
+
+}
+
+// Plan state-in-lmdb 1.3: the state storage keeps the applied index over
+// a restart. A start runs only the entries after it, so the second start
+// does not execute the request a second time.
+TEST_CASE("a start runs only the entries after the applied index of the state storage")
+{
+    auto c = elected();
+    const auto log_directory = decided_log_of_two_entries(c);
+    const auto state_directory = lmdb_storage::new_directory();
+    for (std::uint64_t nonce = 1; nonce <= 2; ++nonce) {
+        const auto n =
+            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(),
+                          lmdb_storage::open_state_storage_in(state_directory), concatenation{}, nonce);
+        CHECK(n.get_sequence_paxos().votes());
+        CHECK(n.get_applied_idx() == 2);
+        CHECK(concatenation_of(n) == bytes_of("a"));
+    }
+}
+
+// Plan state-in-lmdb 1.4: the state storage keeps the chain CRC of the
+// log at its applied index. A start whose state belongs to another log,
+// or to a longer log, stops the vote and keeps both CRCs as the proof.
+// The node does not repair its log for it, because the log is not the
+// part that differs.
+TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
+{
+    auto c = elected();
+    const auto log_directory = decided_log_of_two_entries(c);
+    const auto own = c.at(1).get_sequence_paxos().get_prefix_chain_crc(2);
+    REQUIRE(own.has_value());
+    const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
+    REQUIRE(log_len.has_value());
+    const auto differs = make_error_code(konsens::paxos_errc::state_differs_from_log);
+    for (const auto applied : {konsens::applied_record{2, *own + 1}, konsens::applied_record{*log_len + 1, *own}}) {
+        const auto state_directory = lmdb_storage::new_directory();
+        {
+            auto state = lmdb_storage::open_state_storage_in(state_directory);
+            auto w = state.begin();
+            REQUIRE(w.has_value());
+            REQUIRE(w->set_applied(applied));
+            REQUIRE(std::move(*w).commit());
+        }
+        const auto n =
+            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(),
+                          lmdb_storage::open_state_storage_in(state_directory), concatenation{}, 1);
+        CHECK(n.get_sequence_paxos().get_error() == differs);
+        CHECK_FALSE(n.get_sequence_paxos().repairing());
+        CHECK_FALSE(n.waits_for_the_operator());
+        CHECK(n.get_applied_idx() == applied.index);
+        if (applied.index == 2) {
+            const auto fault = n.get_sequence_paxos().get_hardware_fault();
+            REQUIRE(fault.has_value());
+            CHECK(fault->index == 2);
+            CHECK(fault->crc == *own);
+            CHECK(fault->other_crc == *own + 1);
+        }
+    }
 }

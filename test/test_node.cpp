@@ -72,8 +72,8 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(
-            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -107,9 +107,9 @@ TEST_CASE("a tick timeout of 0 is a wrong use")
 {
     auto c = config_of(1);
     c.election_tick_timeout = 0;
-    CHECK_THROWS_AS(
-        static_cast<void>(node_t::with(c, lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0)),
-        std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                                   lmdb_storage::open_new_state_storage(), echo{}, 0)),
+                    std::logic_error);
 }
 
 // Each error value has a message of its own, because a log or a client
@@ -141,8 +141,8 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(
-            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -154,7 +154,8 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
     }
     REQUIRE(nodes[2].get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept});
     auto kept = lmdb_storage::open_copy_of(nodes[2].get_sequence_paxos().get_internal_storage());
-    nodes[2] = *node_t::with(config_of(3), std::move(kept), lmdb_storage::open_new_node_storage(), echo{}, 1);
+    nodes[2] = *node_t::with(config_of(3), std::move(kept), lmdb_storage::open_new_node_storage(),
+                             lmdb_storage::open_new_state_storage(), echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
     static_cast<void>(nodes[2].take_outgoing_messages());
     std::vector<konsens::message> heartbeat;
@@ -231,8 +232,8 @@ std::vector<node_t> elect_three()
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(
-            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -406,9 +407,9 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
     std::array<std::vector<const konsens::entry*>, 3> appended;
     std::vector<recording_node> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*recording_node::with(config_of(p),
-                                              recording_storage{lmdb_storage::open_new(), &appended.at(p - 1)},
-                                              lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*recording_node::with(
+            config_of(p), recording_storage{lmdb_storage::open_new(), &appended.at(p - 1)},
+            lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), echo{}, 0));
     }
     const auto deliver = [&nodes] {
         batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; });
@@ -478,11 +479,12 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
     const auto own_directory = lmdb_storage::new_directory();
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 2; ++p) {
-        nodes.push_back(
-            *node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
+                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
     }
     nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, 0));
+                                  lmdb_storage::open_node_storage_in(own_directory),
+                                  lmdb_storage::open_new_state_storage(), echo{}, 0));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -497,7 +499,8 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
             lose_the_meta_record_in(log_directory);
         }
         nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                 lmdb_storage::open_node_storage_in(own_directory), echo{}, nonce);
+                                 lmdb_storage::open_node_storage_in(own_directory),
+                                 lmdb_storage::open_new_state_storage(), echo{}, nonce);
     };
 
     restart(10, true);
@@ -550,7 +553,8 @@ TEST_CASE("a restart during a repair does not count again")
     }
     lose_the_meta_record_in(log_directory);
     auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                           lmdb_storage::open_node_storage_in(own_directory), echo{}, 5);
+                           lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+                           echo{}, 5);
     CHECK(n.get_sequence_paxos().repairing());
     CHECK(n.get_repair_count() == 1);
     CHECK_FALSE(n.waits_for_the_operator());

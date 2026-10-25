@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <ranges>
 #include <span>
 #include <system_error>
 #include <utility>
@@ -116,7 +117,7 @@ static_assert(konsens::storage<disk_storage>);
 
 // A counter shows how often a request was executed: each apply adds one.
 struct counter {
-    std::uint64_t value;
+    static constexpr std::array key{std::byte{'c'}};
 
     static std::vector<std::byte> bytes_of(const std::uint64_t v)
     {
@@ -124,11 +125,35 @@ struct counter {
         return {b.begin(), b.end()};
     }
 
-    std::vector<std::byte> apply(std::span<const std::byte>) { return bytes_of(++value); }
-    std::vector<std::byte> query(std::span<const std::byte>) const { return bytes_of(value); }
+    static std::uint64_t value_in(const konsens::state_view auto& view)
+    {
+        std::array<std::byte, sizeof(std::uint64_t)> b{};
+        if (const auto found = view.find(key)) {
+            std::ranges::copy(*found | std::views::take(b.size()), b.begin());
+        }
+        return std::bit_cast<std::uint64_t>(b);
+    }
+
+    konsens::applied apply(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        auto next = bytes_of(value_in(view) + 1);
+        return {next, {{{key.begin(), key.end()}, next}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return bytes_of(value_in(view));
+    }
 };
 
 using node_t = konsens::node<disk_storage, counter>;
+
+inline std::uint64_t counter_of(const node_t& n)
+{
+    const auto t = n.get_state_storage().begin_read_only();
+    REQUIRE(t.has_value());
+    return counter::value_in(konsens::read_view{*t});
+}
 
 inline konsens::node_config config_of(const node_id pid)
 {
@@ -160,6 +185,8 @@ inline std::size_t once(const message&)
 
 struct cluster {
     std::array<std::shared_ptr<disk>, node_count> disks{new_disk(), new_disk(), new_disk()};
+    std::array<std::filesystem::path, node_count> states{lmdb_storage::new_directory(), lmdb_storage::new_directory(),
+                                                         lmdb_storage::new_directory()};
     std::vector<node_t> nodes;
     std::uint64_t next_nonce{1};
 
@@ -167,7 +194,7 @@ struct cluster {
     {
         next_nonce += 1;
         return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, lmdb_storage::open_new_node_storage(),
-                             counter{}, next_nonce);
+                             lmdb_storage::open_state_storage_in(states.at(i)), counter{}, next_nonce);
     }
 
     void restart(const std::size_t i)

@@ -85,16 +85,37 @@ enum class batches { single, random };
 // query gives that value. Each payload of a request is the 8 bytes of one
 // value, so the state is the list of the executed requests in their order.
 struct concatenation {
-    std::vector<std::byte> value;
+    static constexpr std::array key{std::byte{'v'}};
 
-    std::vector<std::byte> apply(const std::span<const std::byte> payload)
+    static std::vector<std::byte> value_in(const konsens::state_view auto& view)
     {
-        value.insert(value.end(), payload.begin(), payload.end());
-        return {payload.begin(), payload.end()};
+        const auto found = view.find(key);
+        if (!found) {
+            return {};
+        }
+        return {found->begin(), found->end()};
     }
 
-    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const { return value; }
+    konsens::applied apply(const std::span<const std::byte> payload, const konsens::state_view auto& view) const
+    {
+        auto value = value_in(view);
+        value.insert(value.end(), payload.begin(), payload.end());
+        return {{payload.begin(), payload.end()}, {{{key.begin(), key.end()}, std::move(value)}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return value_in(view);
+    }
 };
+
+template <typename N>
+std::vector<std::byte> concatenation_of(const N& n)
+{
+    const auto t = n.get_state_storage().begin_read_only();
+    REQUIRE(t.has_value());
+    return concatenation::value_in(konsens::read_view{*t});
+}
 
 static_assert(konsens::state_machine<concatenation>);
 
@@ -518,8 +539,9 @@ struct world {
             return cluster.stop(stopped);
         }();
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)),
-                                 lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
+        nodes[i] =
+            *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), lmdb_storage::open_new_node_storage(),
+                          lmdb_storage::open_new_state_storage(), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
     }
@@ -541,8 +563,9 @@ struct world {
         note([&] { return std::string("roll back " + std::to_string(i + 1)); });
         const auto len_before = read_value(nodes[i].get_sequence_paxos().get_accepted_idx());
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second),
-                                 lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
+        nodes[i] =
+            *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), lmdb_storage::open_new_node_storage(),
+                          lmdb_storage::open_new_state_storage(), concatenation{}, nonce);
         if (read_value(nodes[i].get_sequence_paxos().get_accepted_idx()) < len_before) {
             counts.rollbacks += 1;
         }
@@ -780,7 +803,7 @@ struct world {
             if (!executed_once(executed_of(views[i].decided_prefix()))) {
                 return "E1: the decided prefix of node " + std::to_string(i + 1) + " executes one request twice";
             }
-            const auto applied = values_of(nodes[i].get_state_machine().value);
+            const auto applied = values_of(concatenation_of(nodes[i]));
             if (!executed_once(applied)) {
                 return "E1: the state of node " + std::to_string(i + 1) + " executed one request twice";
             }
@@ -892,7 +915,8 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
         w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}),
-                                                  lmdb_storage::open_new_node_storage(), concatenation{}, w.nonce));
+                                                  lmdb_storage::open_new_node_storage(),
+                                                  lmdb_storage::open_new_state_storage(), concatenation{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);

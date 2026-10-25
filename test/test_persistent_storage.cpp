@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -61,6 +62,18 @@ konsens::persistent_storage open_storage(const std::filesystem::path& directory)
     auto opened = konsens::persistent_storage::open(directory, map_size, non_root_user_id);
     REQUIRE(opened.has_value());
     return std::move(*opened);
+}
+
+konsens::state_storage open_state_storage(const std::filesystem::path& directory)
+{
+    auto opened = konsens::state_storage::open(directory, map_size, non_root_user_id);
+    REQUIRE(opened.has_value());
+    return std::move(*opened);
+}
+
+bool finds_no_value(const std::expected<std::optional<std::span<const std::byte>>, std::error_code>& found)
+{
+    return found.has_value() && !found->has_value();
 }
 
 template <typename Writes>
@@ -842,4 +855,73 @@ TEST_CASE("the writes of one step in one transaction leave the store as one tran
     CHECK(stored_state_of(batched) == stored_state_of(single));
     CHECK(stored_state_of(batched).log ==
           std::vector{normal_entry("a"), normal_entry("b"), normal_entry("x"), normal_entry("y"), normal_entry("z")});
+}
+
+// Plan state-in-lmdb 1.1 and 1.2: the state storage keeps the keys of
+// the machine, the client table and the applied record. A write becomes
+// visible to a read only after its commit, and an empty storage has the
+// applied record of an empty log.
+TEST_CASE("the state storage gives back what a committed write wrote")
+{
+    const temporary_directory dir;
+    auto state = open_state_storage(dir.path());
+    const std::array key{std::byte{1}, std::byte{2}};
+    const std::array value{std::byte{3}};
+    const konsens::session_record session{4, {std::byte{5}, std::byte{6}}};
+    {
+        const auto r = state.begin_read_only();
+        REQUIRE(r.has_value());
+        CHECK(r->get_applied() == konsens::applied_record{0, 0});
+        CHECK(finds_no_value(r->find(key)));
+        CHECK(r->find_session(7).value() == std::nullopt);
+    }
+    auto w = state.begin();
+    REQUIRE(w.has_value());
+    REQUIRE(w->insert_or_assign(key, value));
+    REQUIRE(w->insert_or_assign_session(7, session));
+    REQUIRE(w->set_applied({9, 10}));
+    const auto before = [&state] {
+        const auto r = state.begin_read_only();
+        REQUIRE(r.has_value());
+        const auto a = r->get_applied();
+        REQUIRE(a.has_value());
+        return *a;
+    }();
+    CHECK(before == konsens::applied_record{0, 0});
+    REQUIRE(std::move(*w).commit());
+    const auto r = state.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(r->get_applied() == konsens::applied_record{9, 10});
+    const auto found = r->find(key);
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK(std::ranges::equal(**found, value));
+    CHECK(r->find_session(7).value() == session);
+}
+
+// Plan state-in-lmdb 1.2: an erase removes a key and a session, and an
+// erase of an absent key is no error, as for std::map.
+TEST_CASE("the state storage erases a key and a session")
+{
+    const temporary_directory dir;
+    auto state = open_state_storage(dir.path());
+    const std::array key{std::byte{1}};
+    {
+        auto w = state.begin();
+        REQUIRE(w.has_value());
+        REQUIRE(w->insert_or_assign(key, key));
+        REQUIRE(w->insert_or_assign_session(2, {1, {}}));
+        REQUIRE(std::move(*w).commit());
+    }
+    auto w = state.begin();
+    REQUIRE(w.has_value());
+    REQUIRE(w->erase(key));
+    REQUIRE(w->erase(key));
+    REQUIRE(w->erase_session(2));
+    REQUIRE(w->erase_session(2));
+    REQUIRE(std::move(*w).commit());
+    const auto r = state.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(finds_no_value(r->find(key)));
+    CHECK(r->find_session(2).value() == std::nullopt);
 }

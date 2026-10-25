@@ -27,7 +27,7 @@
 namespace {
 
 struct counter {
-    std::uint64_t value;
+    static constexpr std::array key{std::byte{'c'}};
 
     static std::vector<std::byte> bytes_of(const std::uint64_t v)
     {
@@ -35,15 +35,24 @@ struct counter {
         return {b.begin(), b.end()};
     }
 
-    std::vector<std::byte> apply([[maybe_unused]] const std::span<const std::byte> payload)
+    static std::uint64_t value_in(const konsens::state_view auto& view)
     {
-        value += 1;
-        return bytes_of(value);
+        std::array<std::byte, sizeof(std::uint64_t)> b{};
+        if (const auto found = view.find(key); found && found->size() == b.size()) {
+            std::ranges::copy(*found, b.begin());
+        }
+        return std::bit_cast<std::uint64_t>(b);
     }
 
-    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const
+    konsens::applied apply(std::span<const std::byte>, const konsens::state_view auto& view) const
     {
-        return bytes_of(value);
+        auto next = bytes_of(value_in(view) + 1);
+        return {next, {{{key.begin(), key.end()}, next}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return bytes_of(value_in(view));
     }
 };
 
@@ -216,8 +225,12 @@ int run(const std::span<const std::string_view> args)
         if (!own) [[unlikely]] {
             return fail("open the storages", own.error());
         }
+        auto state = konsens::state_storage::open(temporary.create(), map_size, *user_id);
+        if (!state) [[unlikely]] {
+            return fail("open the storages", state.error());
+        }
         auto n = node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), std::move(*storage), std::move(*own),
-                              counter{}, i + 1);
+                              std::move(*state), counter{}, i + 1);
         if (!n) [[unlikely]] {
             return fail("start the nodes", n.error());
         }

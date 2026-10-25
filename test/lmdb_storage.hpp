@@ -65,6 +65,18 @@ inline konsens::node_storage open_new_node_storage()
     return open_node_storage_in(new_directory());
 }
 
+inline konsens::state_storage open_state_storage_in(const std::filesystem::path& directory)
+{
+    auto opened = konsens::state_storage::open(directory, map_size, non_root_user_id);
+    REQUIRE(opened.has_value());
+    return std::move(*opened);
+}
+
+inline konsens::state_storage open_new_state_storage()
+{
+    return open_state_storage_in(new_directory());
+}
+
 inline konsens::persistent_storage open_copy_of(const konsens::persistent_storage& storage)
 {
     const auto directory = new_directory();

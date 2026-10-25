@@ -57,11 +57,6 @@ struct logical_clock {
     }
 };
 
-struct client_session {
-    std::uint64_t request_number;
-    std::vector<std::byte> reply;
-};
-
 struct client_read {
     std::uint64_t client_id;
     std::vector<std::byte> payload;
@@ -103,8 +98,8 @@ public:
     using result = std::expected<void, std::error_code>;
 
     static std::expected<node, std::error_code> with(const node_config& config, S internal_storage,
-                                                     konsens::node_storage own_storage, M machine,
-                                                     const std::uint64_t nonce)
+                                                     konsens::node_storage own_storage, konsens::state_storage state,
+                                                     M machine, const std::uint64_t nonce)
     {
         if (config.configuration_id == 0 || config.election_tick_timeout == 0 ||
             config.resend_message_tick_timeout == 0) [[unlikely]] {
@@ -131,7 +126,15 @@ public:
             return std::unexpected(promise.error());
         }
         auto ble = ballot_leader_election::with(ble_config_of(config), *promise);
-        node n(config, std::move(*sp), std::move(own_storage), std::move(ble), std::move(machine), nonce);
+        node n(config, std::move(*sp), std::move(own_storage), std::move(state), std::move(ble), std::move(machine),
+               nonce);
+        if (n.seq_paxos_.votes()) {
+            if (auto r = n.check_the_applied_state();
+                !r && r.error() != make_error_code(paxos_errc::state_differs_from_log) && !error_is_a_damage(r.error()))
+                [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+        }
         if (auto r = n.repair_after_a_damage(); !r) [[unlikely]] {
             return std::unexpected(r.error());
         }
@@ -194,6 +197,7 @@ public:
                 drop_held_messages_and_replies();
                 return r;
             }
+            static_cast<void>(check_the_applied_state());
         }
         if (!seq_paxos_.votes()) {
             release_messages_and_replies();
@@ -275,11 +279,13 @@ public:
         if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::retry));
         }
-        if (!client_table_.contains(session)) [[unlikely]] {
+        const auto t = read_or_throw(state_.begin_read_only());
+        if (!read_or_throw(t.find_session(session))) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::session_expired));
         }
         const entry expiry{entry_kind::expire_session, {}, session};
-        const auto undecided = seq_paxos_.log_or_buffered_proposals_contain(applied_idx_, expiry);
+        const auto undecided =
+            seq_paxos_.log_or_buffered_proposals_contain(read_or_throw(t.get_applied()).index, expiry);
         if (!undecided) [[unlikely]] {
             return std::unexpected(undecided.error());
         }
@@ -310,7 +316,15 @@ public:
     [[nodiscard]] result allow_one_more_repair() { return own_storage_.allow_one_more_repair(); }
     const ballot_leader_election& get_ballot_leader_election() const { return ble_; }
     const M& get_state_machine() const { return machine_; }
-    std::uint64_t get_applied_idx() const { return applied_idx_; }
+    const konsens::state_storage& get_state_storage() const { return state_; }
+    std::uint64_t get_applied_idx() const
+    {
+        return read_or_throw(read_or_throw(state_.begin_read_only()).get_applied()).index;
+    }
+    std::optional<session_record> find_client_session(const std::uint64_t session) const
+    {
+        return read_or_throw(read_or_throw(state_.begin_read_only()).find_session(session));
+    }
 
     [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
     {
@@ -319,7 +333,6 @@ public:
         }
         return current_transaction();
     }
-    const std::map<std::uint64_t, client_session>& get_client_table() const { return client_table_; }
 
 private:
     template <typename T>
@@ -416,11 +429,33 @@ private:
     }
 
     node(const node_config& config, sequence_paxos<S> seq_paxos, konsens::node_storage own_storage,
-         ballot_leader_election ble, M machine, const std::uint64_t nonce)
-        : seq_paxos_(std::move(seq_paxos)), own_storage_(std::move(own_storage)), ble_(std::move(ble)),
-          ble_config_(ble_config_of(config)), election_clock_{0, config.election_tick_timeout},
+         konsens::state_storage state, ballot_leader_election ble, M machine, const std::uint64_t nonce)
+        : seq_paxos_(std::move(seq_paxos)), own_storage_(std::move(own_storage)), state_(std::move(state)),
+          ble_(std::move(ble)), ble_config_(ble_config_of(config)), election_clock_{0, config.election_tick_timeout},
           resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce)
     {
+    }
+
+    template <typename T>
+    static T read_or_throw(std::expected<T, std::error_code> r)
+    {
+        if (!r) [[unlikely]] {
+            throw read_error(r.error(), "konsens: the state storage failed to read");
+        }
+        return std::move(*r);
+    }
+
+    static void write_or_throw(const std::expected<void, std::error_code>& written)
+    {
+        if (!written) [[unlikely]] {
+            throw write_error(written.error(), "konsens: the state storage failed to write");
+        }
+    }
+
+    result check_the_applied_state()
+    {
+        const auto a = read_or_throw(read_or_throw(state_.begin_read_only()).get_applied());
+        return seq_paxos_.check_applied_chain_crc(a.index, a.chain_crc);
     }
 
     static ble_config ble_config_of(const node_config& config)
@@ -491,28 +526,42 @@ private:
 
     result apply_decided_entries()
     {
-        const auto entries = seq_paxos_.read_decided_suffix(applied_idx_);
+        auto w = state_.begin();
+        if (!w) [[unlikely]] {
+            throw write_error(w.error(), "konsens: the state storage failed to begin a write");
+        }
+        const auto a = read_or_throw(w->get_applied());
+        const auto entries = seq_paxos_.read_decided_suffix(a.index);
         if (!entries) [[unlikely]] {
             return std::unexpected(entries.error());
         }
-        for (const auto& e : *entries) {
-            applied_idx_ += 1;
-            apply_entry(e, applied_idx_);
+        if (entries->empty()) {
+            return {};
         }
-        return {};
+        auto index = a.index;
+        for (const auto& e : *entries) {
+            index += 1;
+            apply_entry(e, index, *w);
+        }
+        const auto crc = seq_paxos_.get_prefix_chain_crc(index);
+        if (!crc) [[unlikely]] {
+            return std::unexpected(crc.error());
+        }
+        write_or_throw(w->set_applied({index, *crc}));
+        return std::move(*w).commit();
     }
 
-    void apply_entry(const entry& e, const std::uint64_t index)
+    void apply_entry(const entry& e, const std::uint64_t index, state_storage::transaction& w)
     {
         switch (e.kind) {
         case entry_kind::register_client:
-            client_table_.emplace(index, client_session{});
+            write_or_throw(w.insert_or_assign_session(index, {}));
             if (e.pid == seq_paxos_.get_pid() && registrations_.erase(e.client_id) > 0) {
                 client_replies_.push_back({e.client_id, index, std::vector<std::byte>{}});
             }
             break;
         case entry_kind::client_request: {
-            auto response = execute_request(e);
+            auto response = execute_request(e, w);
             if (const auto it = requests_.find({e.session, e.request_number}); it != requests_.end()) {
                 client_replies_.push_back({it->second, e.session, std::move(response)});
                 requests_.erase(it);
@@ -520,7 +569,7 @@ private:
             break;
         }
         case entry_kind::expire_session:
-            client_table_.erase(e.session);
+            write_or_throw(w.erase_session(e.session));
             if (const auto it = expirations_.find(e.session); it != expirations_.end()) {
                 client_replies_.push_back({it->second, e.session, std::vector<std::byte>{}});
                 expirations_.erase(it);
@@ -532,19 +581,27 @@ private:
         }
     }
 
-    std::expected<std::vector<std::byte>, std::error_code> execute_request(const entry& e)
+    std::expected<std::vector<std::byte>, std::error_code> execute_request(const entry& e,
+                                                                           state_storage::transaction& w)
     {
-        const auto it = client_table_.find(e.session);
-        if (it == client_table_.end()) [[unlikely]] {
+        const auto s = read_or_throw(w.find_session(e.session));
+        if (!s) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::session_expired));
         }
-        auto& s = it->second;
-        if (e.request_number > s.request_number) {
-            s = {e.request_number, machine_.apply(e.payload)};
-            return s.reply;
+        if (e.request_number > s->request_number) {
+            auto a = machine_.apply(e.payload, write_view{w});
+            for (const auto& m : a.mutations) {
+                if (m.value) {
+                    write_or_throw(w.insert_or_assign(m.key, *m.value));
+                } else {
+                    write_or_throw(w.erase(m.key));
+                }
+            }
+            write_or_throw(w.insert_or_assign_session(e.session, {e.request_number, a.reply}));
+            return std::move(a.reply);
         }
-        if (e.request_number == s.request_number && s.request_number != 0) {
-            return s.reply;
+        if (e.request_number == s->request_number && s->request_number != 0) {
+            return s->reply;
         }
         return std::unexpected(make_error_code(client_errc::stale_request));
     }
@@ -574,11 +631,17 @@ private:
 
     void answer_indexed_reads()
     {
-        std::erase_if(reads_, [this](const auto& r) {
-            if (!r.second.read_index || *r.second.read_index > applied_idx_) {
+        if (reads_.empty()) {
+            return;
+        }
+        const auto t = read_or_throw(state_.begin_read_only());
+        const auto applied_idx = read_or_throw(t.get_applied()).index;
+        const read_view view{t};
+        std::erase_if(reads_, [this, applied_idx, &view](const auto& r) {
+            if (!r.second.read_index || *r.second.read_index > applied_idx) {
                 return false;
             }
-            client_replies_.push_back({r.second.client_id, 0, machine_.query(r.second.payload)});
+            client_replies_.push_back({r.second.client_id, 0, machine_.query(r.second.payload, view)});
             return true;
         });
     }
@@ -602,6 +665,7 @@ private:
 
     sequence_paxos<S> seq_paxos_;
     konsens::node_storage own_storage_;
+    konsens::state_storage state_;
     ballot_leader_election ble_;
     ble_config ble_config_;
     logical_clock election_clock_;
@@ -612,8 +676,6 @@ private:
     std::vector<message> released_messages_;
     std::vector<received> received_batch_;
     std::vector<message> message_batch_;
-    std::uint64_t applied_idx_{};
-    std::map<std::uint64_t, client_session> client_table_;
     std::set<std::uint64_t> registrations_;
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t> requests_;
     std::map<std::uint64_t, std::uint64_t> expirations_;

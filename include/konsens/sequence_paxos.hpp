@@ -29,7 +29,7 @@ class node;
 
 static_assert(std::is_nothrow_move_constructible_v<paxos_message>);
 
-enum class paxos_errc { hardware_fault = 1, inconsistent_storage };
+enum class paxos_errc { hardware_fault = 1, inconsistent_storage, state_differs_from_log };
 
 class paxos_error_category final : public std::error_category {
 public:
@@ -42,6 +42,10 @@ public:
             return "Two nodes disagree on an entry that the protocol keeps equal; the node stops voting";
         case paxos_errc::inconsistent_storage:
             return "The values in the storage of the node break a rule that the protocol keeps; the node stops voting";
+        case paxos_errc::state_differs_from_log:
+            return "The applied index of the state storage is above the log, or its chain CRC differs from the log; "
+                   "the "
+                   "node stops voting";
         }
         return "Unknown paxos error";
     }
@@ -666,6 +670,40 @@ public:
     {
         return read_meta_between_steps().transform([](const meta_record& m) { return m.log_len; });
     }
+    std::expected<std::uint32_t, std::error_code> get_prefix_chain_crc(const std::uint64_t length) const
+    {
+        throw_if_a_step_is_open();
+        const auto t = internal_storage_.begin_read_only();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        return read_prefix_chain_crc_in(*t, length);
+    }
+
+    result check_applied_chain_crc(const std::uint64_t applied_idx, const std::uint32_t applied_chain_crc)
+    {
+        throw_if_a_step_is_open();
+        const auto t = internal_storage_.begin_read_only();
+        if (!t) [[unlikely]] {
+            return stop_voting(t.error());
+        }
+        const auto m = read_checked_meta(*t);
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        if (applied_idx > m->log_len) [[unlikely]] {
+            return stop_voting(make_error_code(paxos_errc::state_differs_from_log));
+        }
+        const auto own = read_prefix_chain_crc_in(*t, applied_idx);
+        if (!own) [[unlikely]] {
+            return stop_voting(own.error());
+        }
+        if (*own != applied_chain_crc) [[unlikely]] {
+            hardware_fault_ = konsens::hardware_fault{applied_idx, pid_, *own, pid_, applied_chain_crc};
+            return stop_voting(make_error_code(paxos_errc::state_differs_from_log));
+        }
+        return {};
+    }
     const leader_state& get_leader_state() const { return leader_state_; }
     const konsens::read_round& get_read_round() const { return read_round_; }
     const S& get_internal_storage() const
@@ -886,10 +924,17 @@ private:
 
     std::expected<std::uint32_t, std::error_code> read_prefix_chain_crc(const std::uint64_t length) const
     {
+        return read_prefix_chain_crc_in(*txn_, length);
+    }
+
+    template <typename T>
+    static std::expected<std::uint32_t, std::error_code> read_prefix_chain_crc_in(const T& t,
+                                                                                  const std::uint64_t length)
+    {
         if (length == 0) {
             return 0;
         }
-        const auto c = txn_->get_chain_crc(length - 1);
+        const auto c = t.get_chain_crc(length - 1);
         if (!c) [[unlikely]] {
             return std::unexpected(c.error());
         }

@@ -10,9 +10,12 @@
 // gives each payload back. The tests need a state machine type for the
 // node, and this one adds no behaviour that a test must check.
 struct echo {
-    std::vector<std::byte> apply(const std::span<const std::byte> payload) { return {payload.begin(), payload.end()}; }
+    konsens::applied apply(const std::span<const std::byte> payload, const konsens::state_view auto&) const
+    {
+        return {{payload.begin(), payload.end()}, {}};
+    }
 
-    std::vector<std::byte> query(const std::span<const std::byte> payload) const
+    std::vector<std::byte> query(const std::span<const std::byte> payload, const konsens::state_view auto&) const
     {
         return {payload.begin(), payload.end()};
     }

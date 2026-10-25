@@ -37,10 +37,9 @@ their own, its TLC runs and a review; D1 is built first.
    `find_session(session)`. The `transaction` also has
    `insert_or_assign(key, value)`, `erase(key)`,
    `insert_or_assign_session(session, record)`, `erase_session(session)`,
-   `set_applied(index, chain_crc)`, `begin_nested()` and `commit() &&`.
-   A nested transaction has the same members and `abort() &&`. The
-   names come from `std::map` and from LMDB (commit, abort). No LMDB
-   name leaves the library: the types are named for the library.
+   `set_applied(index, chain_crc)` and `commit() &&`. The names come
+   from `std::map` and from LMDB (commit). No LMDB name leaves the
+   library: the types are named for the library.
 3. `node::with` takes a `state_storage` after the `node_storage`. The
    node owns it. At a start the node reads the applied index from it
    and runs the decided entries after it.
@@ -59,40 +58,40 @@ their own, its TLC runs and a review; D1 is built first.
 ## 2. The concept (D1)
 
 ```
-struct write {
+struct mutation {
     std::vector<std::byte> key;
     std::optional<std::vector<std::byte>> value;
 };
 
 struct applied {
     std::vector<std::byte> reply;
-    std::vector<write> writes;
+    std::vector<mutation> mutations;
 };
 
-template <typename M, typename V>
-concept state_machine = state_view<V> &&
-    requires(const M& m, std::span<const std::byte> payload, const V& view) {
-        { m.apply(payload, view) } -> std::same_as<std::expected<applied, std::error_code>>;
-        { m.query(payload, view) } -> std::same_as<std::expected<std::vector<std::byte>, std::error_code>>;
+template <typename M>
+concept state_machine = std::movable<M> &&
+    requires(const M& m, std::span<const std::byte> payload, const write_view& w, const read_view& r) {
+        { m.apply(payload, w) } -> std::same_as<applied>;
+        { m.query(payload, r) } -> std::same_as<std::vector<std::byte>>;
     };
 ```
 
 1. `state_view` is a concept with `find(key) ->
-   std::expected<std::optional<std::span<const std::byte>>,
-   std::error_code>`. The span stays valid until the transaction ends;
-   the machine writes nothing during `apply`, so LMDB keeps the page.
-   The node gives a view over the open write transaction to `apply`, and
-   a view over a read transaction to `query`. The machine has no state
-   of its own, so both members are const.
-2. A `write` with no value erases the key.
-3. An error that `apply` returns is a user error. The entry records it
-   as its result, and its writes are empty. The client gets the error.
-4. An error that `find` returns is an error of the storage. The view
-   keeps a mark that a `find` failed. A run in which a `find` failed is
-   a storage failure, whatever `apply` returns (review, question 3). The
-   node then stops voting with that error: a damage when
-   `error_is_a_damage` says so. The leader then proposes nothing from
-   that run.
+   std::optional<std::span<const std::byte>>`. `transaction_view`
+   (provisional) gives it over a transaction of the state storage:
+   `write_view` over the open write transaction for `apply`, `read_view`
+   over a read transaction for `query`. The span stays valid until the
+   transaction ends; the machine writes nothing during `apply`, so LMDB
+   keeps the page. The machine has no state of its own, so both members
+   are const. A machine takes the view as `const state_view auto&`.
+2. The name `mutation` comes from FoundationDB. A mutation with no
+   value erases the key.
+3. A user error is a reply, for example RFC 9290 in CBOR, with no
+   mutations (owner, 2026-10-25 09:23). `apply` returns no error.
+4. A `find` that fails is a fault of the own node: the view throws
+   `read_error`, a type derived from `std::system_error` (owner,
+   2026-10-25 09:26). No machine can turn it into a reply. A write to the
+   state storage that fails throws `write_error`.
 
 ## 3. Apply after the decide (D1)
 
@@ -101,20 +100,18 @@ concept state_machine = state_view<V> &&
 2. It opens one write transaction of the state. For each entry it runs
    the kind: `register_client` inserts a session, `expire_session`
    erases it, `client_request` checks the session and the request
-   number as `execute_request` does now and then runs `apply` in a
-   nested transaction. The nested transaction writes the write list
-   and the new session record and commits; a user error aborts it, and
-   only the session record with the error is written.
+   number as `execute_request` does now, runs `apply`, and writes the
+   mutations and the new session record.
 3. It writes the applied index and the chain CRC at it, and commits.
    A failed commit throws `sync_error`, as for the log.
 4. The replies leave only after that commit.
 5. `client_query` runs `query` on a read transaction of the state,
    after the read index is reached, as now.
 6. `node` keeps no client table and no applied index in memory. It
-   reads them from the state storage. `get_client_table()` and
-   `get_applied_idx()` return `std::expected` and read a read
-   transaction of the state. `expire_session` reads the session from a
-   read transaction too.
+   reads them from the state storage. `find_client_session(session)`
+   and `get_applied_idx()` read a read transaction of the state, and
+   throw `read_error` when the read fails. `expire_session` reads the
+   session from a read transaction too.
 7. `register_client` takes the log index of its entry as the session,
    as now; in D1 the index is known, because the entry runs after the
    decide.
@@ -198,7 +195,6 @@ concept state_machine = state_view<V> &&
 
 - "a state change commits only after the decide";
 - "a read of the state comes from a read transaction";
-- "a user error aborts only its nested transaction";
 - "a write transaction of the log and an open write transaction of the
   state stand in one thread over many steps";
 - "a result after the decide that differs from the entry stops the
@@ -225,7 +221,14 @@ concept state_machine = state_view<V> &&
    of their own. This goes into the model of D2.
 3. Decided in the plan after the review: a run in which a `find` failed
    is a storage failure (2.4).
-4. A user error comes back as a reply with an empty write list, for
-   example RFC 9290 in CBOR, so `apply` returns `applied` and no error;
-   no nested transaction is needed (provisional, card of 2026-10-25).
-   A failed `find` makes the run a storage failure (card of 2026-10-25).
+4. Decided, owner 2026-10-25 09:23: a user error comes back as a reply
+   with no mutations, so `apply` returns `applied` and no error, and no
+   nested transaction is needed.
+5. Decided, owner 2026-10-25 09:26 to 09:30: a fault that a node finds in
+   itself throws. A peer that delivers a wrong value is asked to try
+   again; when the value is still wrong, the peer is told that it is
+   broken. The majority shows which value is right. One repair runs
+   automatically, and each further repair waits for the operator. This
+   goes into the model of D2, together with a damage of the own log as an
+   exception (card of 2026-10-25 09:29: the restart checks the whole log
+   and repairs). It replaces the proposal of item 2.

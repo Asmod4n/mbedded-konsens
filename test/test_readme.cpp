@@ -33,10 +33,24 @@ std::uint64_t value_of(const std::span<const std::byte> bytes)
 }
 
 struct counter {
-    std::uint64_t value;
+    static constexpr std::array key{std::byte{'c'}};
 
-    std::vector<std::byte> apply(std::span<const std::byte>) { return bytes_of(++value); }
-    std::vector<std::byte> query(std::span<const std::byte>) const { return bytes_of(value); }
+    static std::uint64_t value_in(const konsens::state_view auto& view)
+    {
+        const auto found = view.find(key);
+        return found ? value_of(*found) : 0;
+    }
+
+    konsens::applied apply(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        auto next = bytes_of(value_in(view) + 1);
+        return {next, {{{key.begin(), key.end()}, next}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return bytes_of(value_in(view));
+    }
 };
 
 using node_t = konsens::node<konsens::persistent_storage, counter>;
@@ -67,13 +81,16 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
     const std::filesystem::path node_dir{dir.string() + "-node"};
     std::filesystem::create_directories(node_dir);
     auto own_storage = konsens::node_storage::open(node_dir, non_root_user_id).value();
+    const std::filesystem::path state_dir{dir.string() + "-state"};
+    std::filesystem::create_directories(state_dir);
+    auto state = konsens::state_storage::open(state_dir, map_size, non_root_user_id).value();
     return node_t::with({.configuration_id = 1,
                          .pid = pid,
                          .peers = peers,
                          .leader_priority = 0,
                          .election_tick_timeout = 5,
                          .resend_message_tick_timeout = 3},
-                        std::move(storage), std::move(own_storage), counter{}, fresh_nonce())
+                        std::move(storage), std::move(own_storage), std::move(state), counter{}, fresh_nonce())
         .value();
 }
 

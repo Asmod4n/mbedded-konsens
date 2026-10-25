@@ -73,7 +73,7 @@ TEST_CASE("64 requests make one commit of the storage on each node in each pass"
     const auto replies = c.nodes.at(l).take_client_replies();
     REQUIRE(replies.size() == request_count);
     for (const auto& n : c.nodes) {
-        CHECK(n.get_state_machine().value == request_count);
+        CHECK(counter_of(n) == request_count);
     }
 }
 
@@ -117,7 +117,7 @@ TEST_CASE("a crash between the batch and the commit sends nothing, and the retry
     CHECK(replies[0].client_id == retry_call);
     CHECK(replies[0].response == counter::bytes_of(1));
     for (const auto& n : c.nodes) {
-        CHECK(n.get_state_machine().value == 1);
+        CHECK(counter_of(n) == 1);
     }
 }
 

@@ -41,7 +41,7 @@
 namespace {
 
 struct counter {
-    std::uint64_t value;
+    static constexpr std::array key{std::byte{'c'}};
 
     static std::vector<std::byte> bytes_of(const std::uint64_t v)
     {
@@ -49,15 +49,24 @@ struct counter {
         return {b.begin(), b.end()};
     }
 
-    std::vector<std::byte> apply([[maybe_unused]] const std::span<const std::byte> payload)
+    static std::uint64_t value_in(const konsens::state_view auto& view)
     {
-        value += 1;
-        return bytes_of(value);
+        std::array<std::byte, sizeof(std::uint64_t)> b{};
+        if (const auto found = view.find(key); found && found->size() == b.size()) {
+            std::ranges::copy(*found, b.begin());
+        }
+        return std::bit_cast<std::uint64_t>(b);
     }
 
-    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const
+    konsens::applied apply(std::span<const std::byte>, const konsens::state_view auto& view) const
     {
-        return bytes_of(value);
+        auto next = bytes_of(value_in(view) + 1);
+        return {next, {{{key.begin(), key.end()}, next}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return bytes_of(value_in(view));
     }
 };
 
@@ -216,6 +225,17 @@ struct lmdb_cluster {
             return std::unexpected(created);
         }
         return konsens::node_storage::open(directory, effective_user_id);
+    }
+
+    std::expected<konsens::state_storage, std::error_code> start_state_storage(const std::size_t i) const
+    {
+        const std::filesystem::path directory{directories.at(i).string() + "-state"};
+        std::error_code created;
+        std::filesystem::create_directories(directory, created);
+        if (created) [[unlikely]] {
+            return std::unexpected(created);
+        }
+        return konsens::state_storage::open(directory, map_size, effective_user_id);
     }
 };
 
@@ -409,8 +429,13 @@ struct cluster {
         if (!own) [[unlikely]] {
             return std::unexpected(own.error());
         }
+        auto state = storage.start_state_storage(i);
+        if (!state) [[unlikely]] {
+            return std::unexpected(state.error());
+        }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), counter{}, nonce);
+        auto n =
+            node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), std::move(*state), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }

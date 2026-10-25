@@ -29,15 +29,28 @@
 namespace {
 
 struct concatenation {
-    std::vector<std::byte> value;
+    static constexpr std::array key{std::byte{'v'}};
 
-    std::vector<std::byte> apply(const std::span<const std::byte> payload)
+    static std::vector<std::byte> value_in(const konsens::state_view auto& view)
     {
-        value.insert(value.end(), payload.begin(), payload.end());
-        return value;
+        const auto found = view.find(key);
+        if (!found) {
+            return {};
+        }
+        return {found->begin(), found->end()};
     }
 
-    std::vector<std::byte> query([[maybe_unused]] const std::span<const std::byte> payload) const { return value; }
+    konsens::applied apply(const std::span<const std::byte> payload, const konsens::state_view auto& view) const
+    {
+        auto value = value_in(view);
+        value.insert(value.end(), payload.begin(), payload.end());
+        return {value, {{{key.begin(), key.end()}, value}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        return value_in(view);
+    }
 };
 
 using node_t = konsens::node<konsens::persistent_storage, concatenation>;
@@ -135,8 +148,18 @@ struct cluster {
         if (!own) [[unlikely]] {
             return std::unexpected(own.error());
         }
+        const std::filesystem::path state_directory{directories.at(i).string() + "-state"};
+        std::filesystem::create_directories(state_directory, created);
+        if (created) [[unlikely]] {
+            return std::unexpected(created);
+        }
+        auto state = konsens::state_storage::open(state_directory, map_size, effective_user_id);
+        if (!state) [[unlikely]] {
+            return std::unexpected(state.error());
+        }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(*storage), std::move(*own), concatenation{}, nonce);
+        auto n = node_t::with(config_of(i + 1), std::move(*storage), std::move(*own), std::move(*state),
+                              concatenation{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
