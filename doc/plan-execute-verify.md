@@ -336,10 +336,11 @@ violation and a review approves the parts that changed from form 5.
       `AutoRepairs` before `OperatorAllowsRepair`.
     - `VerdictCoversRequest`: each `results` entry covers at least one
       request entry.
+    - `PromiseIsVerified` and `RejectedHasNoMajority` (4.13).
     - S1 to S5, E1, R1, StateIsDecided and EntryRunsOnOnePrefix stay.
 12. Covers, each must be violated by a trace: `NoResults`, `NoReject`
     (with `Spread`), `NoFollowerThrow`, `NoLeaderThrow` (with `Flip`),
-    `NoResultsAfterLeaderChange`, `NoStaleVerdictEntry`, `NoRunAgain`,
+    `NoResultsAfterLeaderChange`, `NoRunAgain`,
     `NoTryAgain`, `NoIdleRead` (a read answered on a log that ends with a
     verdict entry).
 13. Mutations, each must break an invariant:
@@ -349,20 +350,28 @@ violation and a review approves the parts that changed from form 5.
     - `SelectWithoutMajority` (the first answer is selected):
       `ChosenByMajority`.
     - `AcceptWithoutCheck` (2.7 off, with `Flip`): `ChosenByMajority`.
-    - `ThrowWithoutList` (2.8 by own compare, with `Spread`):
-      `ThrowOnlyWrong`.
+    - `ThrowWithoutRerun` (a listed node throws without its second run,
+      with `Flip`): `ThrowOnlyWrong`.
     - `CountProofTwice` (3.3 counts a covered proof): `RepairsBounded`.
     - `VerdictWithoutRequest` (2.1.3 off): the invariant
       `VerdictCoversRequest` (each `results` entry covers a request
       entry).
     - `ListedSkipsCheck` (a listed node accepts without its compare, with
-      `Flip`): `ThrowOnlyWrong`.
+      `Flip`, `MaxFlip = 2`: one flip makes the result bad, one lists a
+      working node): `ChosenByMajority`.
     - `OwnAcceptUnchecked` (the leader counts its own accept at its log
-      end, with `Flip` and a leader change): `ThrowOnlyWrong`.
-    - `StaleVerdictTaken` (`V` takes a verdict that does not start at
-      `p + 1`): `ChosenOnOwnBase`.
-    - `RejectedUnchecked` (2.7.3 off, with `Spread`): `ChosenByMajority`
-      or the cover `NoReject` reached by a `k` that a majority agrees on.
+      end, with `Flip`): the invariant `PromiseIsVerified` (a promise
+      carries no entry above the `verified_idx` of its sender).
+    - `StaleVerdictTaken` together with `VerdictWhileOpen` (`V` takes a
+      verdict that does not start at `p + 1`, and the guard of 2.6.5 is
+      off): `ChosenOnOwnBase`. With the guard on, no stale verdict is
+      decided (reasoning of round 1, not proved), so there is no cover
+      for it.
+    - `RejectedUnchecked` (2.7.3 off, with `Flip`, where a flip turns a
+      selection into `rejected(k)`): `RejectedHasNoMajority` (a decided
+      `rejected(k)` has no result that a majority of runs on its base
+      agree on). This invariant holds only for the provisional form of
+      7.5, not for the option `rejected(k)` in place of a throw.
     - `AppliedIsPointer` (applied index = `p`): the cover `NoIdleRead`
       can not be violated.
 
@@ -386,7 +395,12 @@ class of fault:
 6. `MC_ev_sessions`: 3 nodes, `MaxLog = 6`, `ClientSessions`,
    `MaxClientSend = 4`, `MaxWrong = 1`, `MaxElection = 1`.
 7. `MC_ev_five`: 5 nodes, `MaxLog = 4`, `MaxWrong = 2`.
-8. Each mutation of 4.13 gives a violation in one of these.
+8. Each mutation of 4.13 gives a violation in one of these, or in a
+   configuration made for it.
+9. `MC_ev_damage`: as 1, with a storage fault (4.8), so that the damage
+   path and the proof run with Execute-Verify.
+10. `CountProofTwice` may be shown by a simulated trace to a recovered
+   node that is listed again, then a BFS from that state.
 
 ## 6. What section 5 of the parent plan measures
 
