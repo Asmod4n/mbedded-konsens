@@ -409,6 +409,11 @@ int run(const std::span<const std::string_view> args)
     if (!konsens::can_use_crc32c_instruction()) [[unlikely]] {
         std::cerr << "Warning: the CPU has no CRC32C instruction. Each CRC32C runs without it and is slower.\n";
     }
+    if (std::ranges::contains(args, help_flag)) {
+        std::cout << std::format("Usage: three_nodes [{}] [directory-1 directory-2 directory-3]", allow_root_flag)
+                  << '\n';
+        return EXIT_SUCCESS;
+    }
     bool allow_root = false;
     std::vector<std::filesystem::path> given;
     for (const auto a : args) {

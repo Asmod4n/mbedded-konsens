@@ -117,6 +117,9 @@ target_compile_definitions(
     "KONSENS_LMDB_CHECKSUM_MODULE=\"$<TARGET_FILE:konsens_lmdb_checksum>\"")
 
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50 --allow-root-for-test)
+add_test(NAME counter_help COMMAND counter --help)
+add_test(NAME three_nodes_help COMMAND three_nodes --help)
+add_test(NAME counter_stress_help COMMAND counter_stress --help)
 add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor --allow-root-for-test)
 
 option(KONSENS_FUSE_TESTS "Build and run the tests of a failed fsync and a failed read on a FUSE file system" OFF)

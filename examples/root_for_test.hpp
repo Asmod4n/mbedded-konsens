@@ -6,6 +6,7 @@
 #include <sys/types.h>
 
 constexpr std::string_view allow_root_flag = "--allow-root-for-test";
+constexpr std::string_view help_flag = "--help";
 constexpr uid_t root_user_id = 0;
 constexpr uid_t test_user_id = 65534;
 constexpr int exit_refused_root = 2;

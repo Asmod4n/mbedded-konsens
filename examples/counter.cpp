@@ -205,6 +205,10 @@ int fail(const std::string_view step, const std::error_code& code)
 
 int run(const std::span<const std::string_view> args)
 {
+    if (std::ranges::contains(args, help_flag)) {
+        std::cout << std::format("Usage: counter [{}]", allow_root_flag) << '\n';
+        return EXIT_SUCCESS;
+    }
     const bool allow_root = std::ranges::contains(args, allow_root_flag);
     if (args.size() > (allow_root ? 1u : 0u)) [[unlikely]] {
         std::cerr << std::format("Usage: counter [{}]", allow_root_flag) << '\n';

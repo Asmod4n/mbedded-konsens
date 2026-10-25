@@ -28,6 +28,8 @@ struct counter {
     }
 };
 
+for (const auto* d : {"node-1", "node-1-node", "node-1-state"})
+    std::filesystem::create_directories(d);
 auto storage = konsens::persistent_storage::open("node-1", map_size, geteuid()).value();
 auto own_storage = konsens::node_storage::open("node-1-node", geteuid()).value();
 auto state = konsens::state_storage::open("node-1-state", map_size, geteuid()).value();
@@ -235,6 +237,9 @@ commit released. The compiler refuses a transaction that the program
 drops. A commit of a transaction that is committed, or of a transaction
 of another node, throws `std::logic_error`. At most
 `konsens::max_batch_size` messages wait for one commit.
+
+Each `open` takes a directory that exists. Each storage takes a
+directory of its own.
 
 The nonce is a new random number for each start of the process.
 

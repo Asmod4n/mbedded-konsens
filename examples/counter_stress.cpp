@@ -1128,7 +1128,13 @@ int run_on_lmdb(const options& given)
 int main(const int argc, char** const argv)
 {
     try {
-        const auto given = options_of(std::span<char* const>(argv, static_cast<std::size_t>(argc)));
+        const std::span<char* const> all(argv, static_cast<std::size_t>(argc));
+        if (std::ranges::any_of(all.subspan(std::min(all.size(), std::size_t{1})),
+                                [](const char* const a) { return std::string_view(a) == help_flag; })) {
+            std::cout << usage << '\n';
+            return EXIT_SUCCESS;
+        }
+        const auto given = options_of(all);
         if (!given) [[unlikely]] {
             std::cerr << std::format("{}.\n{}", given.error(), usage) << '\n';
             return usage_exit_code;
