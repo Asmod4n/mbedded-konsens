@@ -141,7 +141,7 @@ concept state_machine = state_view<V> &&
 4. A follower runs each new entry that changes the state from the
    log, in log order, in its open state transaction, before its
    `accepted` leaves. It compares its reply, error and write list with
-   the fields of the entry through `results_agree` (question 1). When they
+   the fields of the entry, floats within 1 ULP (question 1). When they
    agree, it writes the write list of the entry, not its own, so the
    state stays equal on every node (owner, 2026-10-17 12:40). When they
    differ, the follower does not send `accepted` for that index or
@@ -211,11 +211,12 @@ concept state_machine = state_view<V> &&
 
 ## 7. Questions for the owner
 
-1. The compare with a tolerance of 1 ULP for floats (2026-10-17 12:40)
-   needs a compare that reads the bytes. Contracts are a framework of
-   their own, outside this library (owner, 2026-10-25 09:20). Proposal:
-   the `state_machine` concept gets `results_agree(a, b)`, and every
-   state machine, the contract framework among them, gives it.
+1. Decided, owner 2026-10-25 09:20 and 09:22: the library compares
+   internally and invisibly to the state machine. The reply and each
+   value of the write list are deterministic CBOR (RFC 8949 section
+   4.2; owner 2026-10-17). The library walks both items; a float agrees
+   within 1 ULP, every other item byte for byte. The bytes of the leader
+   are stored. Contracts are a framework of their own.
 2. The leader that differs steps down after three tries (2026-10-17
    05:08). When the leader's machine differs, both followers differ,
    heartbeats keep the leader, and nothing is decided. Proposal: a
@@ -224,3 +225,7 @@ concept state_machine = state_view<V> &&
    of their own. This goes into the model of D2.
 3. Decided in the plan after the review: a run in which a `find` failed
    is a storage failure (2.4).
+4. A user error comes back as a reply with an empty write list, for
+   example RFC 9290 in CBOR, so `apply` returns `applied` and no error;
+   no nested transaction is needed (provisional, card of 2026-10-25).
+   A failed `find` makes the run a storage failure (card of 2026-10-25).
