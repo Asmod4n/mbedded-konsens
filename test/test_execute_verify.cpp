@@ -574,3 +574,171 @@ TEST_CASE("a max_in_flight of 0 is a wrong use")
                                        lmdb_storage::open_new_state_storage(), marked{0}, 1),
                     std::logic_error);
 }
+
+namespace {
+
+// batches::deliver with a change of each message on its way, as a fault of
+// the network or of the sender would make it. The node that got a changed
+// entry finds later that its chain CRC differs from the leader and stops
+// voting, so a failed call or commit does not end the delivery.
+template <typename Change>
+void deliver_changed(std::vector<node_t>& nodes, const Change change)
+{
+    for (bool more = true; more;) {
+        more = false;
+        std::vector<std::vector<message>> inbox(nodes.size());
+        for (auto& n : nodes) {
+            for (auto& m : n.take_outgoing_messages()) {
+                more = true;
+                change(m);
+                inbox.at(batches::to_of(m) - 1).push_back(std::move(m));
+            }
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (inbox[i].empty()) {
+                continue;
+            }
+            const auto t = nodes[i].handle_incoming(std::move(inbox[i]));
+            if (t) {
+                static_cast<void>(nodes[i].commit(*t));
+            }
+        }
+    }
+}
+
+// Changes the results entry in each accept_decide to node `to`.
+template <typename ChangeList>
+auto change_the_results_entry_to(const node_id to, const ChangeList change_list)
+{
+    return [to, change_list](message& m) {
+        auto* p = std::get_if<paxos_message>(&m);
+        if (p == nullptr || p->to != to) {
+            return;
+        }
+        auto* a = std::get_if<konsens::accept_decide>(&p->msg);
+        if (a == nullptr) {
+            return;
+        }
+        for (auto& e : a->entries) {
+            if (e.kind == entry_kind::results) {
+                auto list = list_of(e);
+                change_list(list);
+                e.payload = konsens::encode_chosen_results(list);
+            }
+        }
+    };
+}
+
+node_id first_follower_of(const node_id leader)
+{
+    return leader == 1 ? 2 : 1;
+}
+
+}
+
+// Plan 2.7.1, 2.7.4 and 2.7.6: a node accepts a results entry only after
+// it checked it. Here the entry that reaches one follower lists another
+// result, with a CRC that fits it, as a bit flip in the leader would give.
+// The follower runs again, its result still differs, it is not listed, so
+// it refuses with the reason, and its verified_idx stays below the entry:
+// each accepted that it sends stays below it. The leader decides with the
+// other follower.
+TEST_CASE("a follower refuses a results entry whose result differs from its own")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto f = first_follower_of(l);
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    std::uint64_t highest_accepted = 0;
+    const auto flip = change_the_results_entry_to(f, [](std::vector<konsens::chosen_result>& list) {
+        const auto bytes = konsens::encode_result({0, bytes_of('z'), {}});
+        list.at(0).chosen.result = bytes;
+        list.at(0).chosen.crc = konsens::compute_result_crc(list.at(0).chosen.index, bytes);
+    });
+    deliver_changed(c.nodes, [&](message& m) {
+        flip(m);
+        if (const auto* p = std::get_if<paxos_message>(&m); p != nullptr && p->from == f) {
+            if (const auto* a = std::get_if<konsens::accepted>(&p->msg)) {
+                highest_accepted = std::max(highest_accepted, a->accepted_idx);
+            }
+        }
+    });
+    constexpr std::uint64_t verdict_index = 4;
+    const auto& refusal = c.at(f).get_refusal();
+    REQUIRE(refusal.has_value());
+    CHECK(refusal->index == verdict_index);
+    CHECK(refusal->reason == konsens::refusal_reason::result_differs);
+    CHECK(highest_accepted < verdict_index);
+    const auto replies = c.at(l).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].response == bytes_of('a'));
+}
+
+// Plan 2.7.1: a listed node accepts only when its result still does not
+// agree after the second run; when it agrees, the list is wrong and the
+// node refuses. A CRC that does not fit its result is refused before any
+// run.
+TEST_CASE("a follower refuses a results entry with a wrong list or a wrong CRC")
+{
+    for (const auto reason : {konsens::refusal_reason::wrong_list, konsens::refusal_reason::crc_mismatch}) {
+        CAPTURE(int{std::to_underlying(reason)});
+        auto c = elected({0, 0, 0});
+        const auto l = c.leader();
+        const auto f = first_follower_of(l);
+        const auto s = registered(c, l);
+        batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+        deliver_changed(c.nodes, change_the_results_entry_to(f, [f, reason](std::vector<konsens::chosen_result>& list) {
+            if (reason == konsens::refusal_reason::wrong_list) {
+                list.at(0).out.push_back(f);
+            } else {
+                list.at(0).chosen.crc += 1;
+            }
+        }));
+        const auto& refusal = c.at(f).get_refusal();
+        REQUIRE(refusal.has_value());
+        CHECK(refusal->reason == reason);
+    }
+}
+
+// Plan 2.7.4: the leader counts its own accept of a verdict entry only up
+// to its own verified_idx, so it checks its own entry after the append, as
+// every node does (mutation OwnAcceptUnchecked of the model).
+TEST_CASE("the leader passes its own verdict entry only after its check")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    const auto& sp = c.at(l).get_sequence_paxos();
+    batches::deliver(c.nodes, [](const message& m) -> std::size_t {
+        return holds<konsens::accept_decide>(m) && !std::get<konsens::accept_decide>(std::get<paxos_message>(m).msg)
+                                                         .entries.empty() &&
+                       std::get<konsens::accept_decide>(std::get<paxos_message>(m).msg).entries[0].kind ==
+                           entry_kind::results
+                   ? 0
+                   : 1;
+    });
+    const auto accepted = sp.get_accepted_idx();
+    REQUIRE(accepted.has_value());
+    CHECK(*accepted == 4);
+    CHECK(sp.get_verified_idx() == 3);
+    batches::commit(c.at(l), c.at(l).tick());
+    CHECK(sp.get_verified_idx() == 4);
+}
+
+// Plan 2.7.4: verified_idx is not durable. After a start it is the decided
+// index, raised over each entry after it that is not a verdict entry.
+TEST_CASE("after a start the verified index is the decided index and the entries after it that are no verdict")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    c.run(rounds, once);
+    const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
+    REQUIRE(log_len.has_value());
+    auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
+                           lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), marked{0}, 9);
+    CHECK(n.get_sequence_paxos().get_verified_idx() == *log_len);
+}

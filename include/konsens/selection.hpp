@@ -60,6 +60,9 @@ public:
     [[nodiscard]] std::optional<entry> find_the_verdict_entry(const leader_log& log) const;
     [[nodiscard]] bool asked_to_run_again(node_id node, std::uint64_t index) const;
     [[nodiscard]] bool ran_again(node_id node, std::uint64_t index) const;
+    void count_a_refusal(node_id node, std::uint64_t index);
+    void count_an_appended_verdict_entry(std::uint64_t index);
+    [[nodiscard]] std::vector<std::uint64_t> find_the_entries_that_a_majority_refused() const;
 
 private:
     [[nodiscard]] bool holds_a_request(const leader_log& log, std::uint64_t index) const;
@@ -79,6 +82,8 @@ private:
     std::set<std::pair<node_id, std::uint64_t>> tried_;
     std::set<std::pair<node_id, std::uint64_t>> again_;
     std::map<std::uint64_t, selected_result> selected_;
+    std::set<std::uint64_t> appended_;
+    std::set<std::pair<std::uint64_t, node_id>> refusals_;
 };
 
 }

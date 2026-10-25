@@ -285,4 +285,29 @@ bool selection::ran_again(const node_id node, const std::uint64_t index) const
     return again_.contains({node, index});
 }
 
+void selection::count_a_refusal(const node_id node, const std::uint64_t index)
+{
+    if (std::ranges::contains(nodes_, node)) {
+        refusals_.insert({index, node});
+    }
+}
+
+void selection::count_an_appended_verdict_entry(const std::uint64_t index)
+{
+    appended_.insert(index);
+}
+
+std::vector<std::uint64_t> selection::find_the_entries_that_a_majority_refused() const
+{
+    std::vector<std::uint64_t> refused;
+    for (const auto index : appended_) {
+        const auto first = refusals_.lower_bound({index, 0});
+        const auto end = refusals_.lower_bound({index + 1, 0});
+        if (static_cast<std::size_t>(std::distance(first, end)) >= majority()) {
+            refused.push_back(index);
+        }
+    }
+    return refused;
+}
+
 }

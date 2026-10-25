@@ -344,6 +344,7 @@ public:
     const M& get_state_machine() const { return machine_; }
     const konsens::state_storage& get_state_storage() const { return state_; }
     const std::optional<konsens::selection>& get_selection() const { return selection_; }
+    const std::optional<refused>& get_refusal() const { return refusal_; }
     std::vector<std::uint64_t> get_own_result_indexes() const
     {
         std::vector<std::uint64_t> indexes;
@@ -466,6 +467,8 @@ private:
                 answers_in_.emplace_back(from, msg);
             } else if constexpr (std::is_same_v<T, try_again>) {
                 try_agains_in_.emplace_back(from, msg);
+            } else {
+                refusals_in_.emplace_back(from, msg);
             }
             return {};
         } else if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
@@ -621,8 +624,196 @@ private:
         return std::ranges::any_of(*log, entry_is_a_request);
     }
 
+    result check_the_verdict_entries()
+    {
+        if (!seq_paxos_.votes() || seq_paxos_.recovering() || seq_paxos_.get_state().second != phase::accept) {
+            return {};
+        }
+        if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
+            return r;
+        }
+        const auto m = seq_paxos_.read_meta();
+        if (!m) [[unlikely]] {
+            return seq_paxos_.stop_voting(m.error());
+        }
+        if (refusal_ && refusal_->n != m->promise) {
+            refusal_.reset();
+        }
+        const auto a = read_or_throw(read_or_throw(state_.begin_read_only()).get_applied());
+        for (;;) {
+            const auto index = seq_paxos_.get_verified_idx() + 1;
+            if (index > m->log_len || (refusal_ && refusal_->index == index)) {
+                return {};
+            }
+            std::optional<refusal_reason> reason;
+            if (index > m->decided_idx && index > a.index) {
+                const auto log = sequence_paxos<S>::read_range(*seq_paxos_.txn_, a.index, index);
+                if (!log) [[unlikely]] {
+                    return seq_paxos_.stop_voting(log.error());
+                }
+                reason = check_the_verdict_entry(a, *log);
+            }
+            if (!reason) {
+                if (auto r = seq_paxos_.pass_the_checked_verdict_entry(index); !r) [[unlikely]] {
+                    return r;
+                }
+                continue;
+            }
+            refusal_ = refused{m->promise, index, *reason};
+            send_the_refusal(m->promise);
+            return {};
+        }
+    }
+
+    void send_the_refusal(const ballot promise)
+    {
+        if (!refusal_ || refusal_->n != promise) {
+            return;
+        }
+        if (promise.pid == seq_paxos_.get_pid()) {
+            if (selection_ && selection_->get_ballot() == promise) {
+                selection_->count_a_refusal(promise.pid, refusal_->index);
+            }
+            return;
+        }
+        if (promise.pid != 0) {
+            execute_verify_outgoing_.emplace_back(paxos_message{seq_paxos_.get_pid(), promise.pid, *refusal_});
+        }
+    }
+
+    struct check_base {
+        std::uint64_t applied_idx;
+        std::span<const entry> entries;
+        std::map<std::uint64_t, std::span<const std::byte>> results;
+    };
+
+    std::span<const std::byte> find_the_own_result_on(const check_base& b, const std::uint64_t index) const
+    {
+        for (auto k = b.applied_idx + 1; k < index; ++k) {
+            if (!entry_is_a_request(b.entries[k - b.applied_idx - 1])) {
+                continue;
+            }
+            const auto o = own_.find(k);
+            const auto r = b.results.find(k);
+            if (o == own_.end() || r == b.results.end() || !std::ranges::equal(o->second.bytes, r->second)) {
+                return {};
+            }
+        }
+        if (const auto o = own_.find(index); o != own_.end()) {
+            return o->second.bytes;
+        }
+        return {};
+    }
+
+    std::optional<refusal_reason> check_the_verdict_entry(const applied_record& a, const std::span<const entry> log)
+    {
+        const auto index = a.index + log.size();
+        const auto before = find_the_verdicts(a.pointer, a.index + 1, log.first(log.size() - 1));
+        const auto with = find_the_verdicts(a.pointer, a.index + 1, log);
+        if (with.pointer == before.pointer) {
+            return std::nullopt;
+        }
+        const auto& e = log.back();
+        open_.reset();
+        auto w = state_.begin();
+        if (!w) [[unlikely]] {
+            throw write_error(w.error(), "konsens: the state storage failed to begin a write");
+        }
+        check_base b{a.index, log, {}};
+        for (const auto& c : before.chosen) {
+            b.results.emplace(c.chosen.index, c.chosen.result);
+        }
+        for (auto k = a.index + 1; k <= before.pointer; ++k) {
+            const auto& request = log[k - a.index - 1];
+            const auto c = b.results.find(k);
+            if (!entry_is_a_request(request) || c == b.results.end()) {
+                continue;
+            }
+            if (const auto r = decode_result(c->second)) {
+                write_the_result(request, k, *r, *w);
+            }
+        }
+        if (e.kind == entry_kind::rejected) {
+            return check_the_rejected_entry(e, b, *w);
+        }
+        std::vector<const chosen_result*> listed;
+        for (const auto& c : with.chosen) {
+            if (c.chosen.index > before.pointer) {
+                listed.push_back(&c);
+            }
+        }
+        for (auto k = std::max(e.from_idx, a.index + 1); k <= e.to_idx && k < index; ++k) {
+            if (entry_is_a_request(log[k - a.index - 1]) &&
+                std::ranges::none_of(listed, [k](const chosen_result* c) { return c->chosen.index == k; })) {
+                return refusal_reason::wrong_list;
+            }
+        }
+        const auto self = seq_paxos_.get_pid();
+        for (const auto* c : listed) {
+            const auto q = c->chosen.index;
+            if (compute_result_crc(q, c->chosen.result) != c->chosen.crc) [[unlikely]] {
+                return refusal_reason::crc_mismatch;
+            }
+            const auto& request = log[q - a.index - 1];
+            auto own = find_the_own_result_on(b, q);
+            std::vector<std::byte> first;
+            if (own.empty()) {
+                first = run_on_the_base(request, q, *w).bytes;
+                own = first;
+            }
+            const bool again = !results_agree(own, c->chosen.result);
+            const bool still = again && !results_agree(run_on_the_base(request, q, *w).bytes, c->chosen.result);
+            if (std::ranges::contains(c->out, self) ? !still : still) {
+                return std::ranges::contains(c->out, self) ? refusal_reason::wrong_list
+                                                           : refusal_reason::result_differs;
+            }
+            const auto r = decode_result(c->chosen.result);
+            if (!r) [[unlikely]] {
+                return refusal_reason::result_differs;
+            }
+            write_the_result(request, q, *r, *w);
+            b.results.insert_or_assign(q, c->chosen.result);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<refusal_reason> check_the_rejected_entry(const entry& e, const check_base& b,
+                                                           state_storage::transaction& w)
+    {
+        const auto answers = decode_chosen_results(e.payload);
+        if (!answers) [[unlikely]] {
+            return refusal_reason::rejected_has_a_majority;
+        }
+        const auto q = e.from_idx;
+        const auto& request = b.entries[q - b.applied_idx - 1];
+        auto own = find_the_own_result_on(b, q);
+        std::vector<std::byte> ran;
+        if (own.empty()) {
+            ran = run_on_the_base(request, q, w).bytes;
+            own = ran;
+        }
+        const auto self = seq_paxos_.get_pid();
+        std::vector<std::span<const std::byte>> counted{own};
+        for (const auto& c : *answers) {
+            if (c.node != self && c.chosen.index == q) {
+                counted.push_back(c.chosen.result);
+            }
+        }
+        const auto majority = nodes_.size() / 2 + 1;
+        for (const auto& c : counted) {
+            const auto agreeing = std::ranges::count_if(counted, [&c](const auto& x) { return results_agree(x, c); });
+            if (static_cast<std::size_t>(agreeing) >= majority) {
+                return refusal_reason::rejected_has_a_majority;
+            }
+        }
+        return std::nullopt;
+    }
+
     result propose_before_the_step()
     {
+        if (auto r = check_the_verdict_entries(); !r) [[unlikely]] {
+            return r;
+        }
         if (!seq_paxos_.votes() || seq_paxos_.recovering()) {
             return {};
         }
@@ -642,6 +833,11 @@ private:
             return {};
         }
         count_the_answers();
+        for (const auto& [from, x] : std::exchange(refusals_in_, {})) {
+            if (x.n == selection_->get_ballot()) {
+                selection_->count_a_refusal(from, x.index);
+            }
+        }
         if (!leads) {
             return {};
         }
@@ -670,6 +866,7 @@ private:
         if (!verdict) {
             return {};
         }
+        selection_->count_an_appended_verdict_entry(a.pointer + log->size() + 1);
         return seq_paxos_.append(std::move(*verdict));
     }
 
@@ -878,6 +1075,8 @@ private:
         selection_.reset();
         answers_in_.clear();
         try_agains_in_.clear();
+        refusals_in_.clear();
+        refusal_.reset();
     }
 
     state_storage::transaction& open_the_base(const std::uint64_t below)
@@ -1021,6 +1220,9 @@ private:
             send_answer(promise->pid, answer_from(*promise, a.pointer, *first, 0));
             answered_ = answered;
         }
+        if (resend_answer_) {
+            send_the_refusal(*promise);
+        }
         resend_answer_ = false;
         for (const auto& [from, t] : std::exchange(try_agains_in_, {})) {
             if (t.n != *promise || !own_.contains(t.index)) {
@@ -1132,6 +1334,8 @@ private:
     std::optional<konsens::selection> selection_;
     std::vector<std::pair<node_id, answer>> answers_in_;
     std::vector<std::pair<node_id, try_again>> try_agains_in_;
+    std::vector<std::pair<node_id, refused>> refusals_in_;
+    std::optional<refused> refusal_;
     std::vector<message> execute_verify_outgoing_;
     std::vector<entry> waiting_;
     bool resend_answer_{};
