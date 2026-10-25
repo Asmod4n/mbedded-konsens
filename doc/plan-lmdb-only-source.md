@@ -154,7 +154,14 @@ src` is empty, so they apply to the head of this branch.
    and `mdb_txn_renew`, as LMDB documents for that use. It is reset
    before the write transaction of a step begins. The environment
    opens with `MDB_NOTLS`, because a kept read transaction and the
-   write transaction stand in one thread.
+   write transaction stand in one thread. `lmdb.h:98-100` says that a
+   thread uses one transaction at a time; `MDB_NOTLS` lifts this for
+   read-only transactions only (`lmdb.h:1124-1126`). The write
+   transaction of the log and the open write transaction of the state
+   (2.6 item 5) stand in two environments in one thread. Each
+   environment has its own writer (`me_txn0`), and the bench of
+   2026-10-24 ran this form, but the documentation does not cover it.
+   Open question 12 of section 7.
 4. In one transaction, the storage gives the log length as the last
    key plus one, and compares it with the count of entries through the
    continuity function of the start-checks plan (its item 2.1). When
@@ -232,7 +239,12 @@ src` is empty, so they apply to the head of this branch.
    lost last entry. A lost entry in the middle leaves both equal; the
    continuity check of 2.1 item 4 finds it.
 4. The chain CRC of entry `k` stands for the prefix up to `k`. The model
-   compares the prefix itself (`PrefixAt`, `VerifyCrc`).
+   compares the prefix itself (`PrefixAt`, `VerifyCrc`). The code
+   compares the stored chain CRC at `k`. A changed entry below `k` whose
+   stored chain CRC at `k` stays the same (the old leaf page of item 5)
+   is found by the model and not by the code. So the results of
+   `VerifyCrc` hold only for faults that keep the stored chain
+   consistent with the entries.
 5. What no local check finds:
    - the disk gives back an older meta record with a valid CRC while
      the log stays (`stale_meta`);
@@ -300,25 +312,48 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    stays out of the vote at the next damage, reports the proof and waits
    for the operator. A restart, a crash, a sleep of the machine or a
    lost network is no damage: the recovery after each start has no
-   limit. Not decided: whether a damage that the start checks find
-   counts too.
+   limit. Open question 13 of section 7: whether a damage that the start
+   checks find counts too; the model takes "no" now. The count stands
+   in a third environment of the node, which also holds the hidden
+   identity of the node. No repair copies or replaces it, so a copy
+   from a peer brings neither the count nor the identity of the peer.
+   A rollback of that environment can give back an older count; the
+   README states this. The model keeps `repairs` outside the durable
+   tuple, so no fault changes it. The model does not show the operator
+   who lets a waiting node vote again: a node in `refused` stays there.
 9. A write transaction cannot change or delete a key on a page with a
    wrong checksum: it reads the page and gets `MDB_BAD_CHECKSUM`. A
    wrong branch page hides its whole subtree, and `mdb_drop` fails on
    it (test of 2026-10-24). So after `MDB_BAD_CHECKSUM` the node
    replaces the whole environment with the copy that LMDB makes: the
    peer runs `mdb_env_copyfd2` without `MDB_CP_COMPACT` into the
-   connection. The requester writes it to a new file, syncs it, reads
-   every entry of it through LMDB and runs the step check, and then
-   renames it over the old file. For the state environment the peer
-   sends that copy first and the copy of the log after it, so the
-   applied index of the copy is not above its decided index. The copy
-   carries every page, so it is as large as the file of the peer
-   (137 MB for 100000 entries of 1 KiB, against 0.7 MB for the missing
-   range alone; bench/results/2026-10-24-231534Z-lmdb-repair-and-
-   pipeline.txt). `MDB_CP_COMPACT` is not used: with page checksums its
-   copy does not open (`mdb.c:11555-11566` writes no checksum size to
-   page 0, `:5645-5651` checks it).
+   connection. The peer first walks every entry of its own environment
+   and of the free list (a cursor on database 0, as `mdb_stat.c:182-183`
+   does), because the copy checks no checksum (`mdb.c:11631-11744`). The
+   requester writes the copy into a new directory, syncs the files and
+   the directory, and walks every entry and the free list of the copy
+   through LMDB, with the step check. For the state environment the
+   peer sends that copy first and the copy of the log after it, so the
+   applied index of the copy is not above its decided index. The state
+   environment stores the chain CRC of the entry at its applied index;
+   the requester compares it with the log copy at that index. Then the
+   requester commits the name of the new directory in the environment
+   of the node (item 8). That commit is the switch: a start opens the
+   directory that it names, and a crash before it leaves the old pair.
+   The old directory is deleted after the commit. The copy carries every
+   page, so it is as large as the file of the peer (137 MB for 100000
+   entries of 1 KiB, against 0.7 MB for the missing range alone;
+   bench/results/2026-10-24-231534Z-lmdb-repair-and-pipeline.txt).
+   `MDB_CP_COMPACT` is not used: with page checksums its copy does not
+   open (`mdb.c:11555-11566` writes no checksum size to page 0,
+   `:5645-5651` checks it).
+10. A repair by entries (items 1 to 7) keeps the state environment
+    when its applied entries agree with the decided prefix of the
+    repaired log; the chain CRC at the applied index shows it. Else it
+    also takes the state environment of the peer, in the form of item
+    9. When the kept state is ahead of the decided index of the peer,
+    the node keeps it: its entries are decided (model `StateFollows`,
+    `StateIsDecided`, round 13).
 
 ### 2.5 The vote
 
@@ -368,19 +403,41 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    (median 21.5 ms against 33.5 to 33.9 ms for one batch in flight, at 20 ms
    round trip and 10000 requests/s, g++ 16 and clang++ 22; at 1 ms round
    trip 2.2 ms against 2.9 ms; bench/results/2026-10-24-231534Z-lmdb-
-   repair-and-pipeline.txt). The cost of the run again grows with the
-   cost of the work of an entry; the bench ran one counter put.
+   repair-and-pipeline.txt). That bench ran one get and one put of a
+   counter for each request, 64 B log entries, a decide simulated as
+   send time plus round trip, no followers, and up to 64 batches in
+   flight. At each partial decide it ran every batch that was not
+   decided again, so one request can run up to that bound times. The
+   bound is `max_in_flight` (provisional name), a member of the
+   configuration struct. Not measured yet: the runs for each request,
+   the processor time, and a costlier work of an entry; section 5
+   measures them before the bound gets a default.
+   A write transaction that stays open over many steps keeps the mark
+   of each page that it checked once (`mdb.c:6872-6880`). A page that
+   later steps read again in that transaction is not checked again. So
+   the window of section 3.4 grows with the time that the state
+   transaction stays open.
 6. The client gets the result that stands in the decided entry. The run
    after the decide gives the same result, because the entry runs on the
-   same state: the state after the entries before it in the log.
+   same state: the state after the entries before it in the log. At the
+   commit of the state, the node compares the CRC of each result with
+   the CRC in the entry. What a difference does is open question 14 of
+   section 7.
 7. A later `accept_sync` that cuts an entry (`sequence_paxos.hpp:804-810`)
    leaves no effect. The node that sent the work sees that the leader is
    gone and sends the work to the new leader again; the session and the
-   request number keep it from a second run (owner, 2026-10-17). A cut
-   aborts the open state transaction of the node, and the node runs the
-   entries that stay after the decided index again on the committed
-   state. A run counts only in the ballot in which the node accepted the
-   entry (model round 12).
+   request number keep it from a second run (owner, 2026-10-17). One
+   rule covers every cut: before each run and each commit of the state,
+   the node compares the chain CRC of the last entry that ran in the
+   open state transaction with the chain CRC of its log at that index.
+   When they differ, a write cut or replaced the log below the end of
+   the open transaction, and the node aborts it. The writes that cut
+   are `accept_sync`, the sync of the leader in
+   `handle_majority_promises`, the repair of 2.4 items 5 and 9, and the
+   recovery. The node then runs the entries after the applied index
+   again. A run counts only in the ballot in which the node accepted
+   the entry (model rounds 12 and 13, `StateCurrent`, mutation
+   `NoAbortOnCut`).
 8. Both environments keep no `MDB_WRITEMAP`, so nested write
    transactions stay possible.
 
@@ -413,10 +470,10 @@ this.
 
 ### 3.1 Change
 
-- `accepted_idx` stays in `volatile` until round 9.
-  `AcceptedIdxIsLogLen` checks it in each run; round 8 found no
-  difference. After round 9, `accepted_idx` goes, every use reads
-  `Len(log[i])`, and both invariants go (owner rule of 19:38).
+- `accepted_idx` stays in `volatile`. `AcceptedIdxIsLogLen` checks in
+  each run that it equals the log length; rounds 8 to 13 found no
+  difference. It goes, with both invariants, in the change of the model
+  that follows the go of the owner (owner rule of 19:38).
 - `RunningStorageFault(i, kind)`: the durable state of a running node
   changes, with the kinds of the start-checks model (`missing_entry`,
   `missing_accepted`, `missing_promise`, `missing_decided`) and two
@@ -451,13 +508,30 @@ this.
 - `repairs` and `AutoRepairs` (round 9): the durable count of automatic
   repairs of 2.4 item 8, and its limit 1. `OperatorAllowsRepair(i)`
   resets the count. The cover `NoRepairLimitReached` must fail with two
-  faults.
-- `StateInLmdb` (round 12): the client table and the applied index stand
-  in the durable tuple of a node, and the state changes only at a
-  decide. Up to `MaxInFlight` batches run before their decide (2.6
-  item 5). The model checks that the result in a decided entry equals
-  the result of its run after the decide, on every node, also when a
-  leader change cuts batches that ran.
+  faults. It also fails when no peer can be the source, so it does not
+  show by itself that the limit was reached.
+- `VerifyPromise` has no model evidence: no run showed a promise whose
+  verified decided index differs from the highest one, and the check
+  compares with the log after the sync. It stays as a defence.
+- `StateInLmdb` (round 13): `applied[i]`, the entries of the committed
+  state, and `in_txn[i]`, the entries that ran in the open state
+  transaction. `StateRun` runs the next entry of the log, up to
+  `MaxInFlight` entries before their decide. `StateApply` commits up to
+  the decided index and keeps the rest. `StateAbort` and `StateCurrent`
+  are the rule of 2.6 item 7. `StateFollows` gives both to every step
+  of the protocol: a crash or a recovery aborts the open transaction, a
+  wipe loses the state, a repair keeps or copies the state as 2.4 item
+  10 says (`StateRepair` "copy"; "keep" leaves out the copy). Invariants:
+  `StateIsDecided` (the committed state holds only decided entries, in
+  order) and `OpenRunsOnLog`. Covers: `NoTwoInFlight`,
+  `NoPartialDecide`, `NoCutOfOpen`. The mutation `NoAbortOnCut` must
+  break `StateIsDecided`. A result is a function of the entries before
+  it, so the same entries give the same result. The client table is
+  part of the state and is not modelled apart. The state environment
+  has no faults in the model.
+- `EntryRunsOnOnePrefix` (round 12): a node that accepted in the ballot
+  of a decided entry, and holds the same value at that index, holds the
+  same entries before it. Review 3 found that this follows from S5.
 
 ### 3.2 Questions for the model
 
@@ -484,11 +558,23 @@ this.
   S1 to S4 (`MaxStorageFault = 2`)?
 - Round 9: does the decide at the majority of promises keep S1 to S4
   with `VerifyPromise`?
+- Rounds 10 and 11: which form of `MismatchAction` keeps S1 to S4? With
+  every check on, no mismatch is reached; without the high-water mark,
+  S1 fails before a node acts on a mismatch. So the model does not tell
+  the forms apart. "damage" stays because it uses the repair of 2.4;
+  this choice has no model evidence.
+- Round 12: does each node that accepted in the ballot of a decided
+  entry hold the same entries before it?
+- Round 13: does the committed state hold only decided entries, with
+  batches in flight, a cut of the open transaction, a crash, loss and
+  duplicates, faults with a repair, and client sessions with a resend?
+  Does it fail without the abort on a cut?
 
 ### 3.3 Configurations and runs
 
 Nodes {1, 2, 3}, Values {v1, v2}, MaxBallot 2, MaxLog 2, one fault,
-except where round 9 names two. With running faults, S5 and S2b do not
+except where round 9 names two. Rounds 12 and 13 take Values
+{v1, v2, v3}, MaxLog 3 and `MaxInFlight` 2. With running faults, S5 and S2b do not
 hold by definition of the fault, so these runs check S1 S2 S3 S4 and
 the properties `S2Grows` `BuildOnlyFromRunning`. Each run is a
 simulation of 15 min, at most three at a time. Results go to
@@ -503,6 +589,8 @@ after each round.
   limit: a page in a chunk that another live transaction holds is not
   checked again.
 - The cost of the reads. Section 5 measures it.
+- A page that an open write transaction checked once is not checked
+  again in it (2.6 item 5).
 
 ## 4. Tests
 
@@ -534,12 +622,18 @@ after each round.
 - The cost, by the rules of a measurement, before and after, in every
   build: the commit of a step, a read after a step, and the throughput
   for batch sizes 1, 16 and 256. No number is written before the run.
+- The pipeline of 2.6 item 5 with followers, in every build: the runs
+  for each request, the processor time and the latency, for a work of
+  one counter put and for a costlier work, at several values of
+  `max_in_flight`. The default of `max_in_flight` comes from this.
 
 ## 6. Provisional names
 
 `RunningStorageFault`, `StepChecks`, `VerifyCrc`, `ChainCheck`,
 `MetaRecord`, `HighWater`, `RepairFromPeer`, `PeerCheck`,
-`VerifyPromise`, `StateInLmdb`, `repairs`, `AutoRepairs`,
+`VerifyPromise`, `StateInLmdb`, `MaxInFlight`, `max_in_flight`,
+`StateRepair`, `applied`, `in_txn`, `StateCurrent`, the environment of
+the node (2.4 item 8), `repairs`, `AutoRepairs`,
 `OperatorAllowsRepair`, `stale_meta`, `rollback`, `in_work`,
 `committed`, meta record, chain CRC, step check, high-water mark. None
 has a source outside this tree. In Kafka, "high watermark" names the
@@ -574,12 +668,24 @@ there. The owner decides the names.
 11. Decided after the bench of 2026-10-24 23:15: batches in flight
     before the decide, with a run again after a partial decide (2.6
     item 5).
+12. Open: two write transactions, of the log and of the state, in one
+    thread (2.1 item 3). Proposal: keep them, cite `lmdb.h:98-100`, and
+    test it. Other option: one environment, then one batch in flight.
+13. Open: a damage that the start checks find counts toward the one
+    automatic repair (2.4 item 8). Proposal: it counts, because LMDB
+    commits are atomic, so with honest hardware a start finds no
+    damage. Other option: it does not count.
+14. Open: the run after the decide gives another result than the entry
+    (2.6 item 6). Proposal: a damage, with the repair of 2.4. Other
+    option: the process ends.
 
 The owner, 21:27 and 21:30, left these four to the session: take what
 LMDB gives, and where LMDB gives no direct form, work out three
 proposals and test which is best. Items 9 and 10 take the form of LMDB.
 For item 11 LMDB gives no form; three forms were measured. For item 8
-the model compared three forms (keep, damage, stop) in rounds 10 and 11:
-none changes safety, and the high-water mark keeps agreement after a
-rollback (model/results/20261025T000000Z-lmdb-only-source-runs-11.md).
-"damage" stays, because it uses the repair of 2.4.
+the model ran three forms (keep, damage, stop) in rounds 10 and 11. No
+run reached a mismatch with every check on, and without the high-water
+mark S1 failed before any node acted on one
+(model/results/20261025T000000Z-lmdb-only-source-runs-11.md). So the
+model does not tell the forms apart. "damage" stays, because it uses
+the repair of 2.4.
