@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -432,4 +433,82 @@ TEST_CASE("results agree through their data items under the float rule")
     CHECK(konsens::results_agree(ea, eb, twelve_digits));
     CHECK_FALSE(konsens::results_agree(ea, eb, std::nullopt));
     CHECK_FALSE(konsens::results_agree(ea, konsens::encode_result(c), twelve_digits));
+}
+
+namespace {
+
+// RFC 8746 2: a typed array is a tag over one byte string that holds the
+// elements one after the other.
+std::vector<std::byte> typed_array(const std::uint8_t tag, const std::vector<std::byte>& elements)
+{
+    auto out = bytes_of({0xd8, tag, static_cast<std::uint8_t>(0x40 + elements.size())});
+    out.insert(out.end(), elements.begin(), elements.end());
+    return out;
+}
+
+std::vector<std::byte> big_endian_doubles(const std::initializer_list<double> values)
+{
+    std::vector<std::byte> out;
+    for (const auto v : values) {
+        const auto item = double_item(v);
+        out.insert(out.end(), std::next(item.begin()), item.end());
+    }
+    return out;
+}
+
+std::vector<std::byte> little_endian_floats(const std::initializer_list<float> values)
+{
+    std::vector<std::byte> out;
+    for (const auto v : values) {
+        const auto bits = std::bit_cast<std::uint32_t>(v);
+        for (int shift = 0; shift < 32; shift += 8) {
+            out.push_back(static_cast<std::byte>(bits >> shift));
+        }
+    }
+    return out;
+}
+
+}
+
+// A map key identifies a value and is no measured value. The rounding keeps
+// it, and the compare takes it byte for byte, so the key order of RFC 8949
+// 4.2.1 stays as the state machine wrote it.
+TEST_CASE("a map key is not rounded and agrees only byte for byte")
+{
+    const auto key = double_item(1.23456);
+    const auto value = double_item(1.23456);
+    auto map = bytes_of({0xa1});
+    map.insert(map.end(), key.begin(), key.end());
+    map.insert(map.end(), value.begin(), value.end());
+    auto expected = bytes_of({0xa1});
+    expected.insert(expected.end(), key.begin(), key.end());
+    const auto r = double_item(1.23);
+    expected.insert(expected.end(), r.begin(), r.end());
+    CHECK(rounded(map, 2) == expected);
+
+    auto near = bytes_of({0xa1});
+    const auto near_key = double_item(1.23456 * (1 + 1e-15));
+    near.insert(near.end(), near_key.begin(), near_key.end());
+    near.insert(near.end(), value.begin(), value.end());
+    CHECK_FALSE(konsens::data_items_agree(map, near, twelve_digits));
+}
+
+// RFC 8746 2.1: tags 80 to 87 hold IEEE 754 floats; tag 82 is binary64
+// big endian, tag 85 is binary32 little endian. Each element is rounded and
+// compared as any other float, and keeps the type of its array.
+TEST_CASE("the floats of a typed array are rounded and compared")
+{
+    constexpr std::uint8_t binary64_big = 82;
+    constexpr std::uint8_t binary32_little = 85;
+    CHECK(rounded(typed_array(binary64_big, big_endian_doubles({1.23456, 9.9951})), 2) ==
+          typed_array(binary64_big, big_endian_doubles({1.23, 10.0})));
+    CHECK(rounded(typed_array(binary32_little, little_endian_floats({1.5f, 0.125f})), 1) ==
+          typed_array(binary32_little, little_endian_floats({1.5f, static_cast<float>(0.12)})));
+
+    const auto a = typed_array(binary64_big, big_endian_doubles({1.0 / 3, 2.0}));
+    const auto b = typed_array(binary64_big, big_endian_doubles({1.0 / 3 * (1 + 1e-14), 2.0}));
+    CHECK(a != b);
+    CHECK(konsens::data_items_agree(a, b, twelve_digits));
+    CHECK_FALSE(konsens::data_items_agree(a, typed_array(binary64_big, big_endian_doubles({1.0 / 3})), twelve_digits));
+    CHECK_FALSE(konsens::data_items_agree(a, typed_array(86, big_endian_doubles({1.0 / 3, 2.0})), twelve_digits));
 }

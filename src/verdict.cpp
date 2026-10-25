@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -150,6 +151,11 @@ namespace {
 constexpr std::size_t float_chars_size = 64;
 constexpr std::uint64_t encoded_cbor_data_item_tag = 24;
 constexpr std::size_t data_items_per_map_entry = 2;
+constexpr std::uint64_t first_float_typed_array_tag = 80;
+constexpr std::uint64_t last_float_typed_array_tag = 87;
+constexpr std::uint64_t little_endian_field = 0b100;
+constexpr std::uint64_t length_field = 0b11;
+constexpr std::size_t smallest_float_size = 2;
 
 std::string_view chars_of(const std::span<const std::byte> bytes)
 {
@@ -189,15 +195,112 @@ const cbor::item* embedded_in(const cbor::owning<cbor::item>& tree, const cbor::
     return embedded ? &embedded->get() : nullptr;
 }
 
+bool is_a_map_key(const cbor::item& container, const std::size_t position)
+{
+    return container.type == cbor::type::map && position % data_items_per_map_entry == 0;
+}
+
+bool is_a_float_typed_array(const cbor::item& n)
+{
+    if (n.type != cbor::type::typed_array) {
+        return false;
+    }
+    const auto number = n.get<cbor::type::typed_array>()->first;
+    return number >= first_float_typed_array_tag && number <= last_float_typed_array_tag;
+}
+
+template <typename F>
+double element_as(const std::span<const std::byte> element, const bool little_endian)
+{
+    std::array<std::byte, sizeof(F)> bytes{};
+    std::ranges::copy(element, bytes.begin());
+    if (little_endian != (std::endian::native == std::endian::little)) {
+        std::ranges::reverse(bytes);
+    }
+    return static_cast<double>(std::bit_cast<F>(bytes));
+}
+
+template <typename F>
+void append_element_as(const double value, const bool little_endian, std::vector<std::byte>& out)
+{
+    auto bytes = std::bit_cast<std::array<std::byte, sizeof(F)>>(static_cast<F>(value));
+    if (little_endian != (std::endian::native == std::endian::little)) {
+        std::ranges::reverse(bytes);
+    }
+    out.insert(out.end(), bytes.begin(), bytes.end());
+}
+
+std::size_t element_size_of(const std::uint64_t number)
+{
+    return smallest_float_size << (number & length_field);
+}
+
+std::vector<double> floats_in(const cbor::item& typed_array)
+{
+    const auto [number, content] = *typed_array.get<cbor::type::typed_array>();
+    const auto bytes = *content->get<cbor::type::byte_string>();
+    const auto size = element_size_of(number);
+    const bool little = (number & little_endian_field) != 0;
+    std::vector<double> values;
+    for (std::size_t at = 0; at + size <= bytes.size(); at += size) {
+        const auto element = bytes.subspan(at, size);
+        switch (size) {
+        case sizeof(std::float16_t):
+            values.push_back(element_as<std::float16_t>(element, little));
+            break;
+        case sizeof(float):
+            values.push_back(element_as<float>(element, little));
+            break;
+        case sizeof(double):
+            values.push_back(element_as<double>(element, little));
+            break;
+        default:
+            values.push_back(element_as<std::float128_t>(element, little));
+            break;
+        }
+    }
+    return values;
+}
+
+std::vector<std::byte> typed_array_bytes_of(const std::uint64_t number, const std::span<const double> values)
+{
+    const bool little = (number & little_endian_field) != 0;
+    std::vector<std::byte> out;
+    for (const auto v : values) {
+        switch (element_size_of(number)) {
+        case sizeof(std::float16_t):
+            append_element_as<std::float16_t>(v, little, out);
+            break;
+        case sizeof(float):
+            append_element_as<float>(v, little, out);
+            break;
+        case sizeof(double):
+            append_element_as<double>(v, little, out);
+            break;
+        default:
+            append_element_as<std::float128_t>(v, little, out);
+            break;
+        }
+    }
+    return out;
+}
+
 bool holds_a_float(const cbor::owning<cbor::item>& tree, const cbor::item& n)
 {
-    if (is_a_float(n)) {
+    if (is_a_float(n) || is_a_float_typed_array(n)) {
         return true;
     }
     switch (n.type) {
     case cbor::type::array:
-    case cbor::type::map:
-        return std::ranges::any_of(children_of(n), [&tree](const cbor::item& c) { return holds_a_float(tree, c); });
+    case cbor::type::map: {
+        const auto children = children_of(n);
+        for (std::size_t k = 0; k < children.size(); ++k) {
+            if (!is_a_map_key(n, k) && holds_a_float(tree, children[k])) {
+                return true;
+            }
+        }
+        return false;
+    }
     case cbor::type::tag:
         if (const auto* const e = embedded_in(tree, n)) {
             return holds_a_float(tree, *e);
@@ -312,13 +415,30 @@ void write_rounded(const cbor::owning<cbor::item>& tree, const cbor::item& n, co
         write_the_float(round_half_to_even(float_of(n), float_denominator), out);
         return;
     }
+    if (is_a_float_typed_array(n)) {
+        const auto number = n.get<cbor::type::typed_array>()->first;
+        auto values = floats_in(n);
+        for (auto& v : values) {
+            v = round_half_to_even(v, float_denominator);
+        }
+        const auto bytes = typed_array_bytes_of(number, values);
+        write_with_an_encoder(out, [number, &bytes](auto& e) {
+            return e.tag(number).and_then([&e, &bytes] { return e.byte_string(std::span<const std::byte>(bytes)); });
+        });
+        return;
+    }
     if (n.type == cbor::type::array || n.type == cbor::type::map) {
         const auto children = children_of(n);
         write_with_an_encoder(out, [&n, &children](auto& e) {
             return n.type == cbor::type::array ? e.array(children.size()) : e.map(children.size() / data_items_per_map_entry);
         });
-        for (const auto& c : children) {
-            write_rounded(tree, c, float_denominator, out);
+        for (std::size_t k = 0; k < children.size(); ++k) {
+            if (is_a_map_key(n, k)) {
+                const auto key = encoded_bytes_of(children[k]);
+                out.insert(out.end(), key.begin(), key.end());
+            } else {
+                write_rounded(tree, children[k], float_denominator, out);
+            }
         }
         return;
     }
@@ -347,12 +467,26 @@ bool items_agree(const cbor::owning<cbor::item>& ta, const cbor::item& a, const 
     if (a.type != b.type) {
         return false;
     }
+    if (is_a_float_typed_array(a) && is_a_float_typed_array(b)) {
+        const auto fa = floats_in(a);
+        const auto fb = floats_in(b);
+        return a.get<cbor::type::typed_array>()->first == b.get<cbor::type::typed_array>()->first &&
+               std::ranges::equal(fa, fb, [&rule](const double x, const double y) { return floats_agree(x, y, rule); });
+    }
     if (a.type == cbor::type::array || a.type == cbor::type::map) {
         const auto ca = children_of(a);
         const auto cb = children_of(b);
-        return ca.size() == cb.size() && std::ranges::equal(ca, cb, [&](const cbor::item& x, const cbor::item& y) {
-                   return items_agree(ta, x, tb, y, rule);
-               });
+        if (ca.size() != cb.size()) {
+            return false;
+        }
+        for (std::size_t k = 0; k < ca.size(); ++k) {
+            const bool agree = is_a_map_key(a, k) ? encoded_bytes_of(ca[k]) == encoded_bytes_of(cb[k])
+                                                  : items_agree(ta, ca[k], tb, cb[k], rule);
+            if (!agree) {
+                return false;
+            }
+        }
+        return true;
     }
     if (a.type != cbor::type::tag || a.get<cbor::type::tag>()->first != b.get<cbor::type::tag>()->first) {
         return false;
