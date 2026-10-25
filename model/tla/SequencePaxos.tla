@@ -2980,11 +2980,21 @@ Counted(i, j, q) ==
                /\ an.map[k].res = SelRes(i, a, k)
 Ans(i, j, q) == counts[i].ans[j].map[q].res
 
+\* A selection for q holds while its base is the base that chosen and the
+\* selections below q define (provisional fix of 2.6.2 and 2.6.5 after
+\* round 2: p can pass an index whose chosen result differs from the own
+\* selection, and the selections above it then stand on another base).
+SelHolds(i, q) ==
+  LET a == Chosen(i) IN
+  /\ q \in DOMAIN selected[i]
+  /\ \A k \in (a.p + 1)..(q - 1) : IsRequest(log[i][k]) => k \in DOMAIN selected[i]
+  /\ selected[i][q].base = BaseWith(log[i], a, q, LAMBDA k : selected[i][k].res)
+
 \* The request indexes above p that are decided at the leader and have no
-\* selection.
+\* selection that holds.
 OpenIdx(i) ==
   {k \in (Ptr(i) + 1)..Min(decided_idx[i], Len(log[i])) :
-     IsRequest(log[i][k]) /\ k \notin DOMAIN selected[i]}
+     IsRequest(log[i][k]) /\ ~SelHolds(i, k)}
 
 \* 2.6.3, 2.6.4: the leader selects the counted result that agrees with
 \* the most counted results, ties to the lowest node id, once a majority
@@ -3043,7 +3053,7 @@ AppendVerdict(i) ==
   LET a    == Chosen(i)
       lo   == a.p + 1
       reqs == {k \in lo..Len(log[i]) : IsRequest(log[i][k])}
-      gap  == {k \in reqs : k \notin DOMAIN selected[i] \/ SpreadOut(i, k)}
+      gap  == {k \in reqs : ~SelHolds(i, k) \/ SpreadOut(i, k)}
       hi   == IF gap = {} THEN Len(log[i]) ELSE (CHOOSE k \in gap : \A x \in gap : k <= x) - 1
       sel  == {k \in reqs : k <= hi}
       t    == CHOOSE k \in sel : \A x \in sel : x <= k
@@ -3074,8 +3084,8 @@ AppendVerdict(i) ==
         (IF sel # {} THEN {<<ResultsEntry(lo, t, lst), 0>>}
                           \cup {<<ResultsEntry(lo, t, f[1]), f[2]>> : f \in flipped}
          ELSE {})
-        \cup (IF reqs # {} /\ q0 \notin DOMAIN selected[i] /\ noMaj THEN {<<rej, 0>>} ELSE {})
-        \cup (IF reqs # {} /\ q0 \in DOMAIN selected[i] /\ SpreadOut(i, q0)
+        \cup (IF reqs # {} /\ ~SelHolds(i, q0) /\ noMaj THEN {<<rej, 0>>} ELSE {})
+        \cup (IF reqs # {} /\ SelHolds(i, q0) /\ SpreadOut(i, q0)
               THEN {<<RejectedEntry(q0, [x \in {y \in ClusterNodes(i) : Counted(i, y, q0)} |->
                                            Ans(i, x, q0)]), 0>>}
               ELSE {})
@@ -3113,6 +3123,9 @@ AppendVerdict(i) ==
 \* result of the counted answers and the own one has a majority (2.7.3). A
 \* stale verdict entry changes nothing and passes. On accept, verified_idx
 \* passes the entry and the node sends accepted; else it sends refused.
+\* The node checks only in the Accept phase of its promise, so the entry is
+\* the one the leader of that ballot sent (provisional fix of 2.7.1 and
+\* 2.7.6 after round 2: a refusal names a ballot and an index only).
 \* Mutations: AcceptWithoutCheck (2.7 off), ListedSkipsCheck (a listed
 \* node accepts with no compare), RejectedUnchecked (2.7.3 off).
 CheckVerdict(i) ==
@@ -3132,6 +3145,7 @@ CheckVerdict(i) ==
       lead == role[i] = "Leader" /\ phase[i] = "Accept" /\ leader_state[i].n_leader = promise[i]
   IN
   /\ EVNode(i)
+  /\ phase[i] = "Accept"
   /\ m <= Len(log[i])
   /\ IsVerdict(e)
   /\ refusal[i] # [n |-> promise[i], idx |-> m]
