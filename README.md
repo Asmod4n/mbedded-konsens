@@ -69,6 +69,20 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   returns a `konsens::transaction`. `commit()` takes the transaction,
   writes all collected writes in one synchronous LMDB commit, and only
   then gives the messages and the replies to the program.
+- **Execute-verify.** Every node runs every decided request on its own
+  state and sends its result to the leader. The leader appends the
+  result of a majority as a `results` entry. Each node checks that entry
+  before it accepts it, and applies the chosen result when the entry is
+  decided. When no result of a request can get a majority, the leader
+  appends a `rejected` entry, and the request changes no state.
+- **A fault of the own node ends the node.** When a node finds a damage
+  of its own log, a chosen result that fails its CRC on the node, a
+  value that reads back different, or its own result outside the
+  majority when the leader listed it, it writes a proof into the node
+  storage and throws `konsens::node_fault`. The next start counts one
+  automatic repair. A further repair waits until the operator calls
+  `allow_one_more_repair()` and starts the node again. A leader whose
+  `results` entry a majority refused throws in the same way.
 - **Runs on your thread.** Each call runs on the thread of the caller.
   `commit()` returns when its LMDB commit is done.
 
@@ -79,8 +93,11 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
 The leader commits the entry to its own disk and sends it to its
 followers. When one more node has committed it, two of three nodes hold
 it, and the leader decides it. The leader sends Decide to its
-followers, applies the entry and replies. Each follower applies the
-entry when its Decide arrives.
+followers. Each node runs the decided request on its own state and
+sends its result to the leader. The leader appends the result of a
+majority as a `results` entry, and that entry is decided as every
+entry. Each node then applies the chosen result, and the node that took
+the request replies. So a write needs two rounds before its reply.
 
 ## How a node starts
 
@@ -214,6 +231,10 @@ of another node, throws `std::logic_error`. At most
 
 The nonce is a new random number for each start of the process.
 
+`max_in_flight` is the number of decided requests that wait for their
+`results` entry on the leader. The leader holds a new request while
+that many wait. It must not be 0.
+
 At start, the program calls `konsens::can_use_crc32c_instruction()`.
 When it gives false, the CPU has no CRC32C instruction, each CRC32C
 runs without it and is slower, and the program writes a warning.
@@ -248,6 +269,7 @@ of the node reaches the read index.
 | `session_expired` | The session has expired. Register again. |
 | `stale_request` | The request number is below the last request number of the session. |
 | `retry` | The node knows no leader, or its promise changed. Send the call again. |
+| `rejected` | No result of the request got a majority. The request changed no state. |
 
 ## Documentation
 
