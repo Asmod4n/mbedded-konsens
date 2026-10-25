@@ -116,9 +116,15 @@ spread and flip ran before the record fields of result_throws and the
 invariant CoveredProofCountsNothing were added. That change adds ghost
 fields only. wrong, loss, change and damage ran with the invariant.
 
+Run later on 206e8e4, the three at the same time, with
+CoveredProofCountsNothing:
+
+| Config | Touched by | States | Result |
+|---|---|---|---|
+| MC_ev_flip_change | rejected, pointer | 2652997 | no violation |
+| MC_ev_sessions | pointer | 1446706 | no violation |
+| MC_ev_five | pointer | 1008370 | no violation |
+
 ## Not rerun
 
-MC_ev_flip_change, MC_ev_sessions, MC_ev_five, and the covers and
-mutations that are not in the tables above. CoveredProofCountsNothing is
-in the configs of flip_change, sessions and five, but these did not run
-with it.
+The covers and mutations that are not in the tables above.
