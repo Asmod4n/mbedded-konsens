@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -22,8 +23,11 @@
 #include <sys/resource.h>
 
 #include <crc32c/crc32c.h>
+#include <lmdb.h>
 
 #include "konsens/persistent_storage.hpp"
+#include "lmdb_category.hpp"
+#include "lmdb_checksum.hpp"
 #include "temporary_directory.hpp"
 
 static_assert(konsens::storage<konsens::persistent_storage>);
@@ -58,6 +62,85 @@ konsens::persistent_storage open_storage(const std::filesystem::path& directory)
     return std::move(*opened);
 }
 
+template <typename Writes>
+void write(konsens::persistent_storage& storage, const Writes& writes)
+{
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    writes(*t);
+    REQUIRE(std::move(*t).commit().has_value());
+}
+
+konsens::meta_record meta_of(const konsens::persistent_storage& storage)
+{
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    return *m;
+}
+
+std::expected<std::vector<konsens::entry>, std::error_code>
+entries_of(const konsens::persistent_storage& storage, const std::uint64_t from, const std::uint64_t to)
+{
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    return t->get_entries(from, to);
+}
+
+std::optional<konsens::entry_state> state_of(const konsens::persistent_storage& storage, const std::uint64_t index)
+{
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto state = t->get_entry_state(index);
+    REQUIRE(state.has_value());
+    return *state;
+}
+
+std::array<std::byte, sizeof(std::uint64_t)> key_of(const std::uint64_t index)
+{
+    std::array<std::byte, sizeof index> key{};
+    for (std::size_t i = 0; i < key.size(); ++i) {
+        key.at(i) = static_cast<std::byte>(index >> (8 * (key.size() - 1 - i)));
+    }
+    return key;
+}
+
+// A test damages a closed storage as a disk would: it opens the files with
+// LMDB itself, with the page checksum of the library, so that LMDB accepts
+// the pages and only the checks of the library can find the damage.
+void change_with_lmdb(const std::filesystem::path& directory, const std::function<void(MDB_txn*, MDB_dbi, MDB_dbi)>& f)
+{
+    MDB_env* env = nullptr;
+    REQUIRE(mdb_env_create(&env) == MDB_SUCCESS);
+    REQUIRE(mdb_env_set_maxdbs(env, 2) == MDB_SUCCESS);
+    REQUIRE(mdb_env_set_mapsize(env, map_size) == MDB_SUCCESS);
+    REQUIRE(mdb_env_set_checksum(env, konsens::compute_page_checksum, konsens::page_checksum_size) == MDB_SUCCESS);
+    REQUIRE(mdb_env_open(env, directory.c_str(), MDB_NOTLS | MDB_REMAP_CHUNKS, 0600) == MDB_SUCCESS);
+    MDB_txn* txn = nullptr;
+    REQUIRE(mdb_txn_begin(env, nullptr, 0, &txn) == MDB_SUCCESS);
+    MDB_dbi log = 0;
+    MDB_dbi meta = 0;
+    REQUIRE(mdb_dbi_open(txn, "log", 0, &log) == MDB_SUCCESS);
+    REQUIRE(mdb_dbi_open(txn, "meta", 0, &meta) == MDB_SUCCESS);
+    f(txn, log, meta);
+    REQUIRE(mdb_txn_commit(txn) == MDB_SUCCESS);
+    mdb_env_close(env);
+}
+
+void delete_key(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key_bytes)
+{
+    MDB_val key{key_bytes.size(), const_cast<std::byte*>(key_bytes.data())};
+    REQUIRE(mdb_del(txn, dbi, &key, nullptr) == MDB_SUCCESS);
+}
+
+void delete_entry(const std::filesystem::path& directory, const std::uint64_t index)
+{
+    change_with_lmdb(directory, [index](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
+        delete_key(txn, log, key_of(index));
+    });
+}
+
 }
 
 // The durable state must survive a close and a reopen. This is what Crash in
@@ -71,30 +154,36 @@ TEST_CASE("entries and meta values survive a close and a reopen")
     const konsens::ballot accepted{1, 6, 3, 1};
     {
         auto storage = open_storage(dir.path());
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}, konsens::set_promise{promise},
-                                                   konsens::set_decided_index{2},
-                                                   konsens::set_accepted_round{accepted}};
-        REQUIRE(storage.write_atomically(ops).has_value());
+        write(storage, [&](auto& t) {
+            REQUIRE(t.append_entries(written));
+            REQUIRE(t.set_promise(promise));
+            REQUIRE(t.set_decided_index(2));
+            REQUIRE(t.set_accepted_round(accepted));
+        });
     }
     const auto storage = open_storage(dir.path());
-    CHECK(storage.get_log_len() == 3u);
-    CHECK(storage.get_entries(0, 3) == written);
-    CHECK(storage.get_promise() == promise);
-    CHECK(storage.get_decided_idx() == 2u);
-    CHECK(storage.get_accepted_round() == accepted);
+    const auto m = meta_of(storage);
+    CHECK(m.log_len == 3u);
+    CHECK(m.promise == promise);
+    CHECK(m.decided_idx == 2u);
+    CHECK(m.accepted_round == accepted);
+    CHECK(entries_of(storage, 0, 3) == written);
 }
 
 // A user opens a new directory and reads first. A new storage has an empty
-// log and the zero values of the meta data.
-TEST_CASE("a new storage has an empty log and zero meta values")
+// log and a meta record of zero values. The open writes that record, so
+// that a storage with no meta record is a damaged storage.
+TEST_CASE("a new storage has an empty log and a meta record of zero values")
 {
     const temporary_directory dir;
     const auto storage = open_storage(dir.path());
-    CHECK(storage.get_log_len() == 0u);
-    CHECK(storage.get_entries(0, 10) == std::vector<konsens::entry>{});
-    CHECK(storage.get_promise() == konsens::ballot{});
-    CHECK(storage.get_decided_idx() == 0u);
-    CHECK(storage.get_accepted_round() == konsens::ballot{});
+    CHECK(meta_of(storage) == konsens::meta_record{});
+    CHECK(entries_of(storage, 0, 10) == std::vector<konsens::entry>{});
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto last = t->get_last_entry();
+    REQUIRE(last.has_value());
+    CHECK_FALSE(last->has_value());
 }
 
 // append_on_prefix replaces the suffix of a follower log that the leader does
@@ -105,16 +194,14 @@ TEST_CASE("append_on_prefix truncates the log and appends")
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const std::vector four{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")};
-    const std::vector<konsens::storage_op> first{konsens::append_entries{four}};
-    REQUIRE(storage.write_atomically(first).has_value());
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(four)); });
     const std::vector three{normal_entry("x"), normal_entry("y"), normal_entry("z")};
-    const std::vector<konsens::storage_op> second{konsens::append_on_prefix{2, three}};
-    REQUIRE(storage.write_atomically(second).has_value());
-    CHECK(storage.get_log_len() == 5u);
-    CHECK(storage.get_entries(0, 5) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b"),
+    write(storage, [&](auto& t) { REQUIRE(t.append_on_prefix(2, three)); });
+    CHECK(meta_of(storage).log_len == 5u);
+    CHECK(entries_of(storage, 0, 5) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b"),
                                                                    normal_entry("x"), normal_entry("y"),
                                                                    normal_entry("z")});
-    CHECK(storage.get_entries(1, 3) == std::vector<konsens::entry>{normal_entry("b"), normal_entry("x")});
+    CHECK(entries_of(storage, 1, 3) == std::vector<konsens::entry>{normal_entry("b"), normal_entry("x")});
 }
 
 // AppendOnPrefix with k at or beyond the log length keeps the whole log,
@@ -125,42 +212,134 @@ TEST_CASE("append_on_prefix beyond the log keeps the log")
     auto storage = open_storage(dir.path());
     const std::vector one{normal_entry("a")};
     const std::vector two{normal_entry("b")};
-    const std::vector<konsens::storage_op> ops{konsens::append_entries{one}, konsens::append_on_prefix{5, two}};
-    REQUIRE(storage.write_atomically(ops).has_value());
-    CHECK(storage.get_entries(0, 3) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b")});
+    write(storage, [&](auto& t) {
+        REQUIRE(t.append_entries(one));
+        REQUIRE(t.append_on_prefix(5, two));
+    });
+    CHECK(entries_of(storage, 0, 3) == std::vector<konsens::entry>{normal_entry("a"), normal_entry("b")});
 }
 
 // Sequence Paxos reads the entries through one rule for get_entries. A
-// range that reaches past the log gives the stored part of it. A start at or past the end gives no
-// entries. A start after the end of the range is a wrong use.
+// range that reaches past the log gives the stored part of it. A start at
+// or past the end gives no entries. A start after the end of the range is a
+// wrong use.
 TEST_CASE("get_entries returns the stored part of the range")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const std::vector written{normal_entry("a"), normal_entry("b")};
-    const std::vector<konsens::storage_op> ops{konsens::append_entries{written}};
-    REQUIRE(storage.write_atomically(ops).has_value());
-    CHECK(storage.get_entries(0, 0) == std::vector<konsens::entry>{});
-    CHECK(storage.get_entries(0, 1) == std::vector{normal_entry("a")});
-    CHECK(storage.get_entries(1, 5) == std::vector{normal_entry("b")});
-    CHECK(storage.get_entries(0, 5) == std::vector{normal_entry("a"), normal_entry("b")});
-    CHECK(storage.get_entries(2, 5) == std::vector<konsens::entry>{});
-    CHECK(storage.get_entries(3, 5) == std::vector<konsens::entry>{});
-    CHECK_THROWS_AS((void)storage.get_entries(1, 0), std::logic_error);
-    CHECK_THROWS_AS((void)storage.read_entries(1, 0), std::logic_error);
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    CHECK(entries_of(storage, 0, 0) == std::vector<konsens::entry>{});
+    CHECK(entries_of(storage, 0, 1) == std::vector{normal_entry("a")});
+    CHECK(entries_of(storage, 1, 5) == std::vector{normal_entry("b")});
+    CHECK(entries_of(storage, 0, 5) == std::vector{normal_entry("a"), normal_entry("b")});
+    CHECK(entries_of(storage, 2, 5) == std::vector<konsens::entry>{});
+    CHECK(entries_of(storage, 3, 5) == std::vector<konsens::entry>{});
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    CHECK_THROWS_AS((void)t->get_entries(1, 0), std::logic_error);
+    CHECK_THROWS_AS((void)t->read_entries(1, 0), std::logic_error);
 }
 
-// A byte that changes on the disk must not reach the protocol as a valid
-// entry. The CRC32C finds it, and the error names the index of the entry.
-TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index")
+// Plan lmdb-only-source 2.1 item 2: every read of a step goes through its
+// write transaction, so a read sees the writes of the same step before the
+// commit, and a read-only transaction does not see them.
+TEST_CASE("a read in a transaction sees the writes of the same transaction")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector written{normal_entry("a"), normal_entry("b")};
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    REQUIRE(t->append_entries(written));
+    REQUIRE(t->set_promise({1, 2, 0, 3}));
+    CHECK(t->get_entries(0, 2) == written);
+    CHECK(t->get_meta()->log_len == 2u);
+    CHECK(t->get_meta()->promise == konsens::ballot{1, 2, 0, 3});
+    CHECK(meta_of(storage) == konsens::meta_record{});
+    REQUIRE(std::move(*t).commit());
+    CHECK(meta_of(storage).log_len == 2u);
+}
+
+// A transaction that ends without a commit leaves the storage as it was:
+// this is how a node drops the writes of a step that stops the vote.
+TEST_CASE("a transaction that is not committed writes nothing")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        const std::vector written{normal_entry("a")};
+        REQUIRE(t->append_entries(written));
+    }
+    CHECK(meta_of(storage) == konsens::meta_record{});
+    CHECK(entries_of(storage, 0, 1) == std::vector<konsens::entry>{});
+}
+
+// LMDB has one writer for each environment, and a thread that begins a
+// second write transaction waits on itself. A second write transaction or
+// a second read-only transaction of one storage is a wrong use, and so is
+// a use of a transaction after its commit.
+TEST_CASE("a second open transaction and a use after the commit are wrong uses")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        CHECK_THROWS_AS((void)storage.begin(), std::logic_error);
+        auto moved = std::move(*t);
+        CHECK_THROWS_AS((void)t->get_meta(), std::logic_error);
+        REQUIRE(std::move(moved).commit());
+        CHECK_THROWS_AS((void)moved.get_meta(), std::logic_error);
+        CHECK_THROWS_AS((void)std::move(moved).commit(), std::logic_error);
+    }
+    {
+        const auto r = storage.begin_read_only();
+        REQUIRE(r.has_value());
+        CHECK_THROWS_AS((void)storage.begin_read_only(), std::logic_error);
+    }
+    CHECK(storage.begin_read_only().has_value());
+}
+
+// Plan lmdb-only-source 2.1 item 3: the read-only transaction is kept and
+// reused, and it stands in the same thread as a write transaction. A reuse
+// after a commit reads the new state.
+TEST_CASE("a kept read-only transaction reads the state of the last commit at each use")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    for (std::uint64_t step = 1; step <= 3; ++step) {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        const std::vector one{normal_entry("x")};
+        REQUIRE(t->append_entries(one));
+        {
+            const auto r = storage.begin_read_only();
+            REQUIRE(r.has_value());
+            CHECK(r->get_meta()->log_len == step - 1);
+        }
+        REQUIRE(std::move(*t).commit());
+        CHECK(meta_of(storage).log_len == step);
+    }
+}
+
+// Plan lmdb-only-source 2.1 item 11: LMDB checks the checksum of each page
+// that it reads. A byte that changes on the disk is found by LMDB before
+// the CRC of the entry sees it, and the read fails. A test of LMDB alone in
+// this session showed that the first read of a new transaction can give
+// MDB_BAD_TXN and not MDB_BAD_CHECKSUM: mdb_cursor_open meets the bad page,
+// marks the transaction as failed and returns success. So both codes are a
+// failed read here.
+TEST_CASE("a flipped byte in a stored page fails the page checksum")
 {
     const temporary_directory dir;
     constexpr std::string_view marked = "konsens-marked-payload";
     {
         auto storage = open_storage(dir.path());
         const std::vector written{normal_entry("zero"), normal_entry(marked), normal_entry("two")};
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}};
-        REQUIRE(storage.write_atomically(ops).has_value());
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
     const auto data_file = dir.path() / "data.mdb";
     std::vector<char> contents;
@@ -180,57 +359,253 @@ TEST_CASE("a flipped byte in a stored entry is a CRC mismatch at its index")
         out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     }
     const auto storage = open_storage(dir.path());
-    const auto read = storage.read_entries(0, 3);
+    const auto got = entries_of(storage, 0, 3);
+    REQUIRE_FALSE(got.has_value());
+    CHECK(got.error().category() == konsens::lmdb_category());
+    CHECK((got.error().value() == MDB_BAD_CHECKSUM || got.error().value() == MDB_BAD_TXN));
+}
+
+// A value whose page checksum is valid but whose bytes do not agree with the
+// CRC of the entry must not reach the protocol as a valid entry. The error
+// names the index of the entry.
+TEST_CASE("a changed value with a valid page checksum is a CRC mismatch at its index")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("zero"), normal_entry("one"), normal_entry("two")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    change_with_lmdb(dir.path(), [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
+        const auto key_bytes = key_of(1);
+        MDB_val key{key_bytes.size(), const_cast<std::byte*>(key_bytes.data())};
+        MDB_val data{};
+        REQUIRE(mdb_get(txn, log, &key, &data) == MDB_SUCCESS);
+        std::vector<std::byte> changed(static_cast<const std::byte*>(data.mv_data),
+                                       static_cast<const std::byte*>(data.mv_data) + data.mv_size);
+        changed.at(1) ^= std::byte{0x01};
+        MDB_val replaced{changed.size(), changed.data()};
+        REQUIRE(mdb_put(txn, log, &key, &replaced, 0) == MDB_SUCCESS);
+    });
+    const auto storage = open_storage(dir.path());
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto read = t->read_entries(0, 3);
     REQUIRE_FALSE(read.has_value());
     CHECK(read.error().code == konsens::storage_errc::crc_mismatch);
     CHECK(read.error().index == 1u);
     CHECK(read.error().stored_crc != read.error().computed_crc);
     CHECK(read.error().message().find("index 1") != std::string::npos);
-    const auto got = storage.get_entries(0, 3);
-    REQUIRE_FALSE(got.has_value());
-    CHECK(got.error() == konsens::storage_errc::crc_mismatch);
-    CHECK(storage.get_entries(0, 1) == std::vector<konsens::entry>{normal_entry("zero")});
+    CHECK(t->get_entries(0, 1) == std::vector<konsens::entry>{normal_entry("zero")});
+}
+
+// The start-checks plan, item 2.2: a key that is missing in the middle of a
+// range is not a shorter log. The read names the missing index as an error.
+TEST_CASE("a missing key in the middle of a range is missing_entry")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    delete_entry(dir.path(), 1);
+    const auto storage = open_storage(dir.path());
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    CHECK(t->get_entries(0, 1) == std::vector{normal_entry("a")});
+    const auto across = t->read_entries(0, 4);
+    REQUIRE_FALSE(across.has_value());
+    CHECK(across.error().code == konsens::storage_errc::missing_entry);
+    CHECK(across.error().index == 1u);
+    CHECK(t->get_entries(1, 2) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
+    CHECK(t->get_entries(0, 2) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
+    CHECK(t->get_last_entry() == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
+}
+
+// Plan lmdb-only-source 2.3 item 2: the meta record exists from the open on.
+// A storage that lost it is damaged, and the read says so.
+TEST_CASE("a storage that lost its meta record gives missing_meta_record")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("a")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
+        constexpr std::string_view name = "meta";
+        delete_key(txn, meta, std::as_bytes(std::span(name)));
+    });
+    auto storage = open_storage(dir.path());
+    {
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        CHECK(t->get_meta() == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    }
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    CHECK(t->set_promise({1, 1, 0, 1}) ==
+          std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+}
+
+// Plan lmdb-only-source 2.9: the format of the files changed, and no store
+// of an older format exists outside the tests. The open refuses a format
+// that it does not know, and a store with data and no format.
+TEST_CASE("open refuses another format and a store with data and no format")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("a")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
+        constexpr std::string_view name = "format";
+        const std::array<unsigned char, 8> version_2{2, 0, 0, 0, 0, 0, 0, 0};
+        const auto crc = crc32c::Crc32c(version_2.data(), 4);
+        std::array<unsigned char, 8> value = version_2;
+        for (std::size_t i = 0; i < 4; ++i) {
+            value.at(4 + i) = static_cast<unsigned char>(crc >> (8 * i));
+        }
+        MDB_val key{name.size(), const_cast<char*>(name.data())};
+        MDB_val data{value.size(), value.data()};
+        REQUIRE(mdb_put(txn, meta, &key, &data, 0) == MDB_SUCCESS);
+    });
+    const auto other = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
+    REQUIRE_FALSE(other.has_value());
+    CHECK(other.error() == konsens::storage_errc::unsupported_format);
+    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
+        constexpr std::string_view name = "format";
+        delete_key(txn, meta, std::as_bytes(std::span(name)));
+    });
+    const auto none = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
+    REQUIRE_FALSE(none.has_value());
+    CHECK(none.error() == konsens::storage_errc::unsupported_format);
 }
 
 // Recovery after a power loss compares the CRC32C of the last entry of two
 // nodes, so the value must follow the record format and nothing else: the
 // index in 8 bytes little endian, the kind in one byte, the fields of the
-// kind in 8 bytes little endian each, then the payload. An empty log gives
-// 0. Each kind is tried, and the expected records are written by hand from
-// that format, not from the encoder under test.
-TEST_CASE("the CRC32C of the last entry of each kind is the CRC32C of its record")
+// kind in 8 bytes little endian each, then the payload. The chain CRC of an
+// entry is the CRC32C over the chain CRC of the entry before it in 4 bytes
+// little endian (0 for the first entry), the index in 8 bytes little
+// endian, and the same encoded entry. Each kind is tried, and the expected
+// values are computed from records written by hand from that format, not
+// from the encoder under test.
+TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
-    CHECK(storage.get_last_entry_crc() == 0u);
     struct kind_and_record {
         konsens::entry e;
-        std::vector<unsigned char> record;
+        std::vector<unsigned char> encoded;
     };
     const std::vector<kind_and_record> each_kind{
-        {normal_entry("first"), {0, 0, 0, 0, 0, 0, 0, 0, 0, 'f', 'i', 'r', 's', 't'}},
-        {{konsens::entry_kind::stop_sign, {}}, {1, 0, 0, 0, 0, 0, 0, 0, 1}},
+        {normal_entry("first"), {0, 'f', 'i', 'r', 's', 't'}},
+        {{konsens::entry_kind::stop_sign, {}}, {1}},
         {{.kind = konsens::entry_kind::register_client, .client_id = 7, .pid = 3},
-         {2, 0, 0, 0, 0, 0, 0, 0, 2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0}},
-        {{.kind = konsens::entry_kind::expire_session, .session = 1},
-         {3, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0, 0}},
+         {2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0}},
+        {{.kind = konsens::entry_kind::expire_session, .session = 1}, {4, 1, 0, 0, 0, 0, 0, 0, 0}},
         {{konsens::entry_kind::client_request, bytes_of("x"), 1, 2},
-         {4, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'}}};
-    std::uint64_t index = 0;
-    for (const auto& [e, record] : each_kind) {
+         {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'}}};
+    std::uint32_t chain = 0;
+    for (std::uint64_t index = 0; const auto& [e, encoded] : each_kind) {
         const std::vector<konsens::entry> one{e};
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{one}};
-        REQUIRE(storage.write_atomically(ops).has_value());
-        const auto expected = crc32c::Crc32c(record.data(), record.size());
-        CHECK(storage.get_last_entry_crc() == expected);
-        CHECK(konsens::compute_entry_crc(index, e) == expected);
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
+        std::vector<unsigned char> entry_record{static_cast<unsigned char>(index), 0, 0, 0, 0, 0, 0, 0};
+        entry_record.insert(entry_record.end(), encoded.begin(), encoded.end());
+        std::vector<unsigned char> chain_record;
+        for (std::size_t i = 0; i < 4; ++i) {
+            chain_record.push_back(static_cast<unsigned char>(chain >> (8 * i)));
+        }
+        chain_record.insert(chain_record.end(), entry_record.begin(), entry_record.end());
+        const auto entry_crc = crc32c::Crc32c(entry_record.data(), entry_record.size());
+        chain = crc32c::Crc32c(chain_record.data(), chain_record.size());
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        const auto last = t->get_last_entry();
+        REQUIRE(last.has_value());
+        REQUIRE(last->has_value());
+        CHECK(last->value().index == index);
+        CHECK(last->value().entry_crc == entry_crc);
+        CHECK(last->value().chain_crc == chain);
+        CHECK(t->get_meta()->last_chain_crc == chain);
+        CHECK(konsens::compute_entry_crc(index, e) == entry_crc);
         ++index;
     }
 }
 
-// A full map is an error value of write_atomically, which the node raises
-// as write_error (test_group_commit.cpp). The failed write must leave
-// nothing behind, because write_atomically is one transaction.
+// Plan lmdb-only-source 2.3 item 1: after a cut, the chain continues from
+// the entry before the cut, so two logs with the same entries have the same
+// chain CRC whatever was cut before.
+TEST_CASE("the chain CRC after a cut is the chain CRC of the same log written at once")
+{
+    const temporary_directory cut_dir;
+    const temporary_directory once_dir;
+    auto cut = open_storage(cut_dir.path());
+    auto once = open_storage(once_dir.path());
+    const std::vector four{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")};
+    const std::vector two{normal_entry("x"), normal_entry("y")};
+    write(cut, [&](auto& t) {
+        REQUIRE(t.append_entries(four));
+        REQUIRE(t.append_on_prefix(1, two));
+    });
+    const std::vector same{normal_entry("a"), normal_entry("x"), normal_entry("y")};
+    write(once, [&](auto& t) { REQUIRE(t.append_entries(same)); });
+    CHECK(meta_of(cut) == meta_of(once));
+    write(cut, [&](auto& t) { REQUIRE(t.append_on_prefix(0, {})); });
+    CHECK(meta_of(cut) == konsens::meta_record{});
+}
+
+// Plan lmdb-only-source 2.2 item 2: each raise of the decided index from o
+// to d sets the state committed on the entries o to d - 1, and the entries
+// from d on stay in work. A decided index above the log length is
+// missing_entry (the start-checks plan, item 2.5).
+TEST_CASE("set_decided_index commits the entries below it and nothing above")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector four{normal_entry("a"), normal_entry("b"), normal_entry("c"), normal_entry("d")};
+    write(storage, [&](auto& t) {
+        REQUIRE(t.append_entries(four));
+        REQUIRE(t.set_decided_index(1));
+    });
+    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
+    CHECK(state_of(storage, 1) == konsens::entry_state::in_work);
+    write(storage, [&](auto& t) { REQUIRE(t.set_decided_index(3)); });
+    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
+    CHECK(state_of(storage, 1) == konsens::entry_state::committed);
+    CHECK(state_of(storage, 2) == konsens::entry_state::committed);
+    CHECK(state_of(storage, 3) == konsens::entry_state::in_work);
+    CHECK(state_of(storage, 4) == std::nullopt);
+    CHECK(entries_of(storage, 0, 4) == four);
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    CHECK(t->set_decided_index(5) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
+}
+
+// The recovery writes the whole log of the primary again from index 0. An
+// entry that it writes below the decided index is a decided entry, so it is
+// written committed.
+TEST_CASE("an entry written below the decided index is committed")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector three{normal_entry("a"), normal_entry("b"), normal_entry("c")};
+    write(storage, [&](auto& t) {
+        REQUIRE(t.append_entries(three));
+        REQUIRE(t.set_decided_index(2));
+        REQUIRE(t.append_on_prefix(0, three));
+    });
+    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
+    CHECK(state_of(storage, 1) == konsens::entry_state::committed);
+    CHECK(state_of(storage, 2) == konsens::entry_state::in_work);
+}
+
+// A full map is an error value of a write, which the node raises as
+// write_error (test_group_commit.cpp). A transaction that ends without a
+// commit after it leaves nothing behind.
 TEST_CASE("a full map gives no_space_on_device and writes nothing")
 {
     const temporary_directory dir;
@@ -241,19 +616,21 @@ TEST_CASE("a full map gives no_space_on_device and writes nothing")
     for (int i = 0; i < 64; ++i) {
         large.push_back({konsens::entry_kind::normal, std::vector<std::byte>(4096, std::byte{0x5a})});
     }
-    const std::vector<konsens::storage_op> ops{konsens::append_entries{large}};
-    const auto written = storage.write_atomically(ops);
-    REQUIRE_FALSE(written.has_value());
-    CHECK(written.error() == std::errc::no_space_on_device);
-    CHECK(storage.get_log_len() == 0u);
+    {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        const auto written = t->append_entries(large);
+        REQUIRE_FALSE(written.has_value());
+        CHECK(written.error() == std::errc::no_space_on_device);
+    }
+    CHECK(meta_of(storage).log_len == 0u);
     const std::vector fits{normal_entry("fits")};
-    const std::vector<konsens::storage_op> small{konsens::append_entries{fits}};
-    CHECK(storage.write_atomically(small).has_value());
-    CHECK(storage.get_log_len() == 1u);
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(fits)); });
+    CHECK(meta_of(storage).log_len == 1u);
 }
 
 // The decision of the owner (2026-10-21): an LMDB commit that fails is a
-// failure of the machine. write_atomically throws sync_error with the error
+// failure of the machine. The commit throws sync_error with the error
 // code, and nothing in the library catches it. A limit on the size of a
 // file makes the commit fail, because the pages of a write transaction
 // reach the file only in mdb_txn_commit. The limit holds this test process,
@@ -268,12 +645,14 @@ TEST_CASE("a failed LMDB commit throws sync_error and writes nothing")
     limited.rlim_cur = std::filesystem::file_size(dir.path() / "data.mdb");
     const std::vector large{
         konsens::entry{konsens::entry_kind::normal, std::vector<std::byte>(large_entry_size, std::byte{0x5a})}};
-    const std::vector<konsens::storage_op> ops{konsens::append_entries{large}};
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    REQUIRE(t->append_entries(large));
     const auto handler = std::signal(SIGXFSZ, SIG_IGN);
     const int limit_set = setrlimit(RLIMIT_FSIZE, &limited);
     std::optional<std::error_code> thrown;
     try {
-        static_cast<void>(storage.write_atomically(ops));
+        static_cast<void>(std::move(*t).commit());
     } catch (const konsens::sync_error& e) {
         thrown = e.code();
     }
@@ -283,7 +662,7 @@ TEST_CASE("a failed LMDB commit throws sync_error and writes nothing")
     REQUIRE(limit_reset == 0);
     REQUIRE(thrown);
     CHECK((*thrown == std::errc::file_too_large || *thrown == std::errc::io_error));
-    CHECK(storage.get_log_len() == 0u);
+    CHECK(meta_of(storage).log_len == 0u);
 }
 
 // The owner decided that a start as root is refused.
@@ -307,7 +686,9 @@ TEST_CASE("open of a missing directory gives no_such_file_or_directory")
 
 // A rollback in the simulation restores a copy that was made while the node
 // ran. The copy must hold the state of the last commit, and a write after the
-// copy must not reach it.
+// copy must not reach it. The copy is the plain copy of LMDB, because a
+// compact copy of an environment with page checksums does not open (plan
+// lmdb-only-source 2.4 item 9).
 TEST_CASE("copy keeps the state of the last commit and not a later write")
 {
     const temporary_directory dir;
@@ -316,20 +697,24 @@ TEST_CASE("copy keeps the state of the last commit and not a later write")
     const konsens::ballot promise{1, 7, 3, 2};
     {
         auto storage = open_storage(dir.path());
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}, konsens::set_promise{promise},
-                                                   konsens::set_decided_index{1}};
-        REQUIRE(storage.write_atomically(ops).has_value());
+        write(storage, [&](auto& t) {
+            REQUIRE(t.append_entries(written));
+            REQUIRE(t.set_promise(promise));
+            REQUIRE(t.set_decided_index(1));
+        });
         REQUIRE(storage.copy(copied.path()).has_value());
         const std::vector<konsens::entry> later_entries{normal_entry("later")};
-        const std::vector<konsens::storage_op> later{konsens::append_entries{later_entries},
-                                                     konsens::set_decided_index{3}};
-        REQUIRE(storage.write_atomically(later).has_value());
+        write(storage, [&](auto& t) {
+            REQUIRE(t.append_entries(later_entries));
+            REQUIRE(t.set_decided_index(3));
+        });
     }
     const auto storage = open_storage(copied.path());
-    CHECK(storage.get_log_len() == 2u);
-    CHECK(storage.get_entries(0, 3) == written);
-    CHECK(storage.get_promise() == promise);
-    CHECK(storage.get_decided_idx() == 1u);
+    const auto m = meta_of(storage);
+    CHECK(m.log_len == 2u);
+    CHECK(entries_of(storage, 0, 3) == written);
+    CHECK(m.promise == promise);
+    CHECK(m.decided_idx == 1u);
 }
 
 // A user copies twice into the same directory. LMDB does not overwrite a
@@ -363,8 +748,9 @@ TEST_CASE("a moved-from storage throws logic_error")
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
     const auto moved = std::move(storage);
-    CHECK(moved.get_log_len() == 0u);
-    CHECK_THROWS_AS((void)storage.get_log_len(), std::logic_error);
+    CHECK(meta_of(moved).log_len == 0u);
+    CHECK_THROWS_AS((void)storage.begin(), std::logic_error);
+    CHECK_THROWS_AS((void)storage.begin_read_only(), std::logic_error);
     const temporary_directory copied;
     CHECK_THROWS_AS((void)storage.copy(copied.path()), std::logic_error);
 }
@@ -395,13 +781,12 @@ TEST_CASE("an entry of each kind survives a close and a reopen")
     const auto written = entries_of_each_kind();
     {
         auto storage = open_storage(dir.path());
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{written}};
-        REQUIRE(storage.write_atomically(ops).has_value());
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
     const auto storage = open_storage(dir.path());
-    CHECK(storage.get_log_len() == written.size());
-    CHECK(storage.get_entries(0, written.size()) == written);
-    CHECK(storage.get_entries(2, 4) == std::vector<konsens::entry>{written[2], written[3]});
+    CHECK(meta_of(storage).log_len == written.size());
+    CHECK(entries_of(storage, 0, written.size()) == written);
+    CHECK(entries_of(storage, 2, 4) == std::vector<konsens::entry>{written[2], written[3]});
 }
 
 // A field that the kind of an entry does not carry is not stored. Such an
@@ -420,87 +805,75 @@ TEST_CASE("an entry with a field of another kind is a wrong use")
         {static_cast<konsens::entry_kind>(0xff), {}},
     };
     for (const auto& e : wrong) {
-        const std::span<const konsens::entry> one{&e, 1};
-        const std::vector<konsens::storage_op> ops{konsens::append_entries{one}};
-        CHECK_THROWS_AS((void)storage.write_atomically(ops), std::logic_error);
-        const std::vector<konsens::storage_op> on_prefix{konsens::append_on_prefix{0, one}};
-        CHECK_THROWS_AS((void)storage.write_atomically(on_prefix), std::logic_error);
+        const std::vector<konsens::entry> with_a_good_one{normal_entry("good"), e};
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        CHECK_THROWS_AS((void)t->append_entries(with_a_good_one), std::logic_error);
+        CHECK_THROWS_AS((void)t->append_on_prefix(0, with_a_good_one), std::logic_error);
+        CHECK(t->get_meta()->log_len == 0u);
     }
-    CHECK(storage.get_log_len() == 0u);
+    CHECK(meta_of(storage).log_len == 0u);
 }
 
 namespace {
 
 struct stored_state {
     std::vector<konsens::entry> log;
-    konsens::ballot promise;
-    std::uint64_t decided_idx;
-    konsens::ballot accepted_round;
-    std::uint32_t last_entry_crc;
+    konsens::meta_record meta;
 
     friend bool operator==(const stored_state&, const stored_state&) = default;
 };
 
-template <typename S>
-stored_state stored_state_of(const S& s)
+stored_state stored_state_of(const konsens::persistent_storage& s)
 {
-    const auto len = s.get_log_len();
-    REQUIRE(len);
-    const auto log = s.get_entries(0, *len);
-    const auto promise = s.get_promise();
-    const auto decided = s.get_decided_idx();
-    const auto round = s.get_accepted_round();
-    const auto crc = s.get_last_entry_crc();
+    const auto m = meta_of(s);
+    const auto log = entries_of(s, 0, m.log_len);
     REQUIRE(log);
-    REQUIRE(promise);
-    REQUIRE(decided);
-    REQUIRE(round);
-    REQUIRE(crc);
-    return {*log, *promise, *decided, *round, *crc};
+    return {*log, m};
 }
 
-std::vector<konsens::storage_op> ops_of_one_batch(const std::vector<konsens::entry>& first,
-                                                  const std::vector<konsens::entry>& replaced,
-                                                  const std::vector<konsens::entry>& last)
+using one_write = std::function<void(konsens::persistent_storage::transaction&)>;
+
+std::vector<one_write> writes_of_one_step(const std::vector<konsens::entry>& first,
+                                          const std::vector<konsens::entry>& replaced,
+                                          const std::vector<konsens::entry>& last)
 {
-    return {konsens::set_promise{{1, 2, 0, 3}},
-            konsens::append_entries{first},
-            konsens::set_accepted_round{{1, 2, 0, 3}},
-            konsens::set_decided_index{1},
-            konsens::append_on_prefix{2, replaced},
-            konsens::set_decided_index{3},
-            konsens::append_entries{last},
-            konsens::set_promise{{1, 4, 0, 1}}};
-}
-
-void check_one_batch_equals_the_ops_one_by_one(konsens::persistent_storage& batched,
-                                               konsens::persistent_storage& single)
-{
-    const std::vector<konsens::entry> first{normal_entry("a"), normal_entry("b"), normal_entry("c")};
-    const std::vector<konsens::entry> replaced{normal_entry("x"), normal_entry("y")};
-    const std::vector<konsens::entry> last{normal_entry("z")};
-    const auto ops = ops_of_one_batch(first, replaced, last);
-    REQUIRE(batched.write_atomically(ops));
-    for (const auto& op : ops) {
-        REQUIRE(single.write_atomically(std::span(&op, 1)));
-    }
-    CHECK(stored_state_of(batched) == stored_state_of(single));
-    CHECK(stored_state_of(batched).log ==
-          std::vector{normal_entry("a"), normal_entry("b"), normal_entry("x"), normal_entry("y"), normal_entry("z")});
+    return {[](auto& t) { REQUIRE(t.set_promise({1, 2, 0, 3})); },
+            [&first](auto& t) { REQUIRE(t.append_entries(first)); },
+            [](auto& t) { REQUIRE(t.set_accepted_round({1, 2, 0, 3})); },
+            [](auto& t) { REQUIRE(t.set_decided_index(1)); },
+            [&replaced](auto& t) { REQUIRE(t.append_on_prefix(2, replaced)); },
+            [](auto& t) { REQUIRE(t.set_decided_index(3)); },
+            [&last](auto& t) { REQUIRE(t.append_entries(last)); },
+            [](auto& t) { REQUIRE(t.set_promise({1, 4, 0, 1})); }};
 }
 
 }
 
-// R7 of the review of doc/plan-group-commit.md: a commit gives one
-// write_atomically all ops of a batch, where each handler wrote its own ops
-// before. The store must apply the ops of one call in order, an
-// append_on_prefix after an append_entries of the same call included, so
-// that one batch leaves the store as the same ops one by one do.
-TEST_CASE("one write of the ops of a batch leaves the store as the ops one by one do")
+// R7 of the review of doc/plan-group-commit.md: a step writes all its writes
+// in one transaction, where each handler wrote its own before. The store
+// must apply the writes of one transaction in order, an append_on_prefix
+// after an append_entries of the same transaction included, so that one
+// step leaves the store as the same writes in one transaction each do.
+TEST_CASE("the writes of one step in one transaction leave the store as one transaction for each write does")
 {
     const temporary_directory batched_dir;
     const temporary_directory single_dir;
     auto batched = open_storage(batched_dir.path());
     auto single = open_storage(single_dir.path());
-    check_one_batch_equals_the_ops_one_by_one(batched, single);
+    const std::vector<konsens::entry> first{normal_entry("a"), normal_entry("b"), normal_entry("c")};
+    const std::vector<konsens::entry> replaced{normal_entry("x"), normal_entry("y")};
+    const std::vector<konsens::entry> last{normal_entry("z")};
+    const auto writes = writes_of_one_step(first, replaced, last);
+    write(batched, [&writes](auto& t) {
+        for (const auto& w : writes) {
+            w(t);
+        }
+    });
+    for (const auto& w : writes) {
+        write(single, w);
+    }
+    CHECK(stored_state_of(batched) == stored_state_of(single));
+    CHECK(stored_state_of(batched).log ==
+          std::vector{normal_entry("a"), normal_entry("b"), normal_entry("x"), normal_entry("y"), normal_entry("z")});
 }

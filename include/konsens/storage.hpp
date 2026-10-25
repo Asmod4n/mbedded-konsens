@@ -9,7 +9,8 @@
 #include <span>
 #include <stdexcept>
 #include <system_error>
-#include <variant>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace konsens {
@@ -84,28 +85,34 @@ std::uint32_t compute_entry_crc(std::uint64_t index, std::span<const std::byte> 
 std::uint32_t compute_entry_crc(std::uint64_t index, const entry& e);
 bool can_use_crc32c_instruction() noexcept;
 
-struct append_entries {
-    std::span<const entry> entries;
-};
-
-struct append_on_prefix {
-    std::uint64_t from_idx;
-    std::span<const entry> entries;
-};
-
-struct set_promise {
+struct meta_record {
     ballot promise;
-};
-
-struct set_decided_index {
-    std::uint64_t decided_idx;
-};
-
-struct set_accepted_round {
     ballot accepted_round;
+    std::uint64_t decided_idx;
+    std::uint64_t log_len;
+    std::uint32_t last_chain_crc;
+
+    friend bool operator==(const meta_record&, const meta_record&) = default;
 };
 
-using storage_op = std::variant<append_entries, append_on_prefix, set_promise, set_decided_index, set_accepted_round>;
+enum class entry_state : std::uint8_t { in_work, committed };
+
+struct last_entry {
+    std::uint64_t index;
+    std::uint32_t entry_crc;
+    std::uint32_t chain_crc;
+
+    friend bool operator==(const last_entry&, const last_entry&) = default;
+};
+
+std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t index,
+                                std::span<const std::byte> encoded_entry) noexcept;
+std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t index, const entry& e);
+
+enum class storage_errc { crc_mismatch = 1, malformed_record, missing_entry, missing_meta_record, unsupported_format };
+
+const std::error_category& storage_category() noexcept;
+std::error_code make_error_code(storage_errc code) noexcept;
 
 class write_error : public std::system_error {
 public:
@@ -117,15 +124,35 @@ public:
     using write_error::write_error;
 };
 
-template <typename S>
-concept storage = requires(S& s, const S& cs, std::span<const storage_op> ops, std::uint64_t from, std::uint64_t to) {
-    { s.write_atomically(ops) } -> std::same_as<std::expected<void, std::error_code>>;
-    { cs.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
-    { cs.get_log_len() } -> std::same_as<std::expected<std::uint64_t, std::error_code>>;
-    { cs.get_promise() } -> std::same_as<std::expected<ballot, std::error_code>>;
-    { cs.get_decided_idx() } -> std::same_as<std::expected<std::uint64_t, std::error_code>>;
-    { cs.get_accepted_round() } -> std::same_as<std::expected<ballot, std::error_code>>;
-    { cs.get_last_entry_crc() } -> std::same_as<std::expected<std::uint32_t, std::error_code>>;
+template <typename T>
+concept storage_read = requires(const T& t, std::uint64_t from, std::uint64_t to, std::uint64_t index) {
+    { t.get_meta() } -> std::same_as<std::expected<meta_record, std::error_code>>;
+    { t.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
+    { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
+    { t.get_entry_state(index) } -> std::same_as<std::expected<std::optional<entry_state>, std::error_code>>;
 };
 
+template <typename T>
+concept storage_write = storage_read<T> && std::movable<T> &&
+                        requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b) {
+                            { t.append_entries(entries) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.append_on_prefix(index, entries) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.set_promise(b) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.set_accepted_round(b) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.set_decided_index(index) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
+                        };
+
+template <typename S>
+concept storage = storage_write<typename S::transaction> && storage_read<typename S::read_only_transaction> &&
+                  requires(S& s, const S& cs) {
+                      { s.begin() } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
+                      {
+                          cs.begin_read_only()
+                      } -> std::same_as<std::expected<typename S::read_only_transaction, std::error_code>>;
+                  };
+
 }
+
+template <>
+struct std::is_error_code_enum<konsens::storage_errc> : std::true_type {};

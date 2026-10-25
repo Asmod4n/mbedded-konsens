@@ -75,6 +75,12 @@ target_include_directories(konsens PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
 target_include_directories(konsens PUBLIC $<TARGET_PROPERTY:mbedded-cbor,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_options(konsens PRIVATE ${KONSENS_WARNINGS})
 
+add_library(konsens_lmdb_checksum MODULE tools/lmdb_checksum_module.cpp src/lmdb_checksum.cpp)
+target_include_directories(konsens_lmdb_checksum PRIVATE ${PROJECT_SOURCE_DIR}/src ${KONSENS_LMDB_SOURCE_DIR})
+target_link_libraries(konsens_lmdb_checksum PRIVATE crc32c)
+target_compile_options(konsens_lmdb_checksum PRIVATE ${KONSENS_WARNINGS})
+set_target_properties(konsens_lmdb_checksum PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET hidden)
+
 enable_testing()
 file(GLOB KONSENS_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/*.cpp)
 foreach(test_source ${KONSENS_TESTS})
@@ -96,7 +102,8 @@ endforeach()
 target_link_libraries(test_wire PRIVATE mbedded-cbor)
 target_link_libraries(test_crc32c PRIVATE crc32c)
 target_include_directories(test_crc32c PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
-target_link_libraries(test_persistent_storage PRIVATE crc32c)
+target_link_libraries(test_persistent_storage PRIVATE crc32c lmdb)
+target_include_directories(test_persistent_storage PRIVATE ${PROJECT_SOURCE_DIR}/src)
 add_dependencies(test_lmdb_upgrade mdb_dump mdb_load mdb_dump-0.9 mdb_load-0.9)
 target_compile_definitions(
     test_lmdb_upgrade PRIVATE "KONSENS_MDB_DUMP=\"$<TARGET_FILE:mdb_dump>\"" "KONSENS_MDB_LOAD=\"$<TARGET_FILE:mdb_load>\""

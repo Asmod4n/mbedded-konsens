@@ -111,6 +111,22 @@ std::uint32_t compute_entry_crc(const std::uint64_t index, const entry& e)
     return compute_entry_crc(index, encoded);
 }
 
+std::uint32_t compute_chain_crc(const std::uint32_t previous_chain_crc, const std::uint64_t index,
+                                const std::span<const std::byte> encoded_entry) noexcept
+{
+    std::array<std::byte, sizeof previous_chain_crc + sizeof index> head{};
+    std::ranges::copy(to_little_endian(index), std::ranges::copy(to_little_endian(previous_chain_crc), head.begin()).out);
+    return crc32c::Extend(crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(head.data()), head.size()),
+                          reinterpret_cast<const std::uint8_t*>(encoded_entry.data()), encoded_entry.size());
+}
+
+std::uint32_t compute_chain_crc(const std::uint32_t previous_chain_crc, const std::uint64_t index, const entry& e)
+{
+    std::vector<std::byte> encoded(encoded_size_of(e));
+    encode_entry(e, encoded);
+    return compute_chain_crc(previous_chain_crc, index, encoded);
+}
+
 bool can_use_crc32c_instruction() noexcept
 {
 #if HAVE_SSE42 && (defined(_M_X64) || defined(__x86_64__))

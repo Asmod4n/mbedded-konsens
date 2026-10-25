@@ -7,6 +7,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <sys/types.h>
 
@@ -57,6 +58,37 @@ inline konsens::persistent_storage open_copy_of(const konsens::persistent_storag
     const auto directory = new_directory();
     REQUIRE(storage.copy(directory).has_value());
     return open_in(directory);
+}
+
+// A test sets up a storage as a step of a node writes it: every write in
+// one write transaction, and one commit at the end.
+template <typename Writes>
+void write(konsens::persistent_storage& storage, const Writes& writes)
+{
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    writes(*t);
+    REQUIRE(std::move(*t).commit().has_value());
+}
+
+inline konsens::meta_record meta_of(const konsens::persistent_storage& storage)
+{
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    return *m;
+}
+
+inline std::vector<konsens::entry> log_of(const konsens::persistent_storage& storage)
+{
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    const auto log = t->get_entries(0, m->log_len);
+    REQUIRE(log.has_value());
+    return *log;
 }
 
 }

@@ -111,8 +111,12 @@ public:
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
         }
+        const auto promise = sp->get_promise();
+        if (!promise) [[unlikely]] {
+            return std::unexpected(promise.error());
+        }
         auto ble = ballot_leader_election::with(
-            {config.configuration_id, config.pid, config.peers, config.leader_priority}, sp->get_promise());
+            {config.configuration_id, config.pid, config.peers, config.leader_priority}, *promise);
         node n(config, std::move(*sp), std::move(ble), std::move(machine));
         if (auto r = n.apply_decided_entries(); !r) [[unlikely]] {
             return std::unexpected(r.error());
@@ -124,8 +128,12 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> tick()
     {
         if (election_clock_.tick_and_check_timeout()) {
-            if (const auto leader = ble_.hb_timeout(seq_paxos_.get_promise())) {
-                if (auto r = seq_paxos_.handle_leader(ballot_above_promise(*leader)); !r) [[unlikely]] {
+            const auto promise = seq_paxos_.get_promise();
+            if (!promise) [[unlikely]] {
+                return std::unexpected(promise.error());
+            }
+            if (const auto leader = ble_.hb_timeout(*promise)) {
+                if (auto r = seq_paxos_.handle_leader(ballot_above_promise(*leader, *promise)); !r) [[unlikely]] {
                     return std::unexpected(r.error());
                 }
             }
@@ -217,8 +225,12 @@ public:
         if (auto r = seq_paxos_.start_read(read); !r) [[unlikely]] {
             return std::unexpected(r.error());
         }
+        const auto promise = seq_paxos_.get_promise();
+        if (!promise) [[unlikely]] {
+            return std::unexpected(promise.error());
+        }
         last_read_ = read;
-        reads_.emplace(read, client_read{client_id, std::move(payload), seq_paxos_.get_promise(), std::nullopt});
+        reads_.emplace(read, client_read{client_id, std::move(payload), *promise, std::nullopt});
         return current_transaction();
     }
 
@@ -262,9 +274,11 @@ public:
     const M& get_state_machine() const { return machine_; }
     std::uint64_t get_applied_idx() const { return applied_idx_; }
 
-    [[nodiscard]] transaction reconnected(const node_id pid)
+    [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
     {
-        seq_paxos_.reconnected(pid);
+        if (auto r = seq_paxos_.reconnected(pid); !r) [[unlikely]] {
+            return std::unexpected(r.error());
+        }
         return current_transaction();
     }
     const std::map<std::uint64_t, client_session>& get_client_table() const { return client_table_; }
@@ -369,9 +383,8 @@ private:
     {
     }
 
-    ballot ballot_above_promise(const ballot elected) const
+    ballot ballot_above_promise(const ballot elected, const ballot promise) const
     {
-        const auto promise = seq_paxos_.get_promise();
         if (elected.pid != seq_paxos_.get_pid() || elected > promise || seq_paxos_.get_state().first == role::leader) {
             return elected;
         }
@@ -384,7 +397,11 @@ private:
         if (auto r = apply_decided_entries(); !r) [[unlikely]] {
             return r;
         }
-        drop_reads_of_an_old_promise();
+        const auto promise = seq_paxos_.get_promise();
+        if (!promise) [[unlikely]] {
+            return std::unexpected(promise.error());
+        }
+        drop_reads_of_an_old_promise(*promise);
         answer_indexed_reads();
         return {};
     }
@@ -461,9 +478,8 @@ private:
         }
     }
 
-    void drop_reads_of_an_old_promise()
+    void drop_reads_of_an_old_promise(const ballot promise)
     {
-        const auto promise = seq_paxos_.get_promise();
         std::erase_if(reads_, [this, promise](const auto& r) {
             if (r.second.ballot == promise) {
                 return false;
