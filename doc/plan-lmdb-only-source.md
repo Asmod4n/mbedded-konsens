@@ -161,7 +161,8 @@ src` is empty, so they apply to the head of this branch.
    (2.6 item 5) stand in two environments in one thread. Each
    environment has its own writer (`me_txn0`), and the bench of
    2026-10-24 ran this form, but the documentation does not cover it.
-   Open question 12 of section 7.
+   The owner keeps this form, with a test (2026-10-25 03:53; section
+   4).
 4. In one transaction, the storage gives the log length as the last
    key plus one, and compares it with the count of entries through the
    continuity function of the start-checks plan (its item 2.1). When
@@ -312,8 +313,10 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    stays out of the vote at the next damage, reports the proof and waits
    for the operator. A restart, a crash, a sleep of the machine or a
    lost network is no damage: the recovery after each start has no
-   limit. Open question 13 of section 7: whether a damage that the start
-   checks find counts too; the model takes "no" now. The count stands
+   limit. A damage that the start checks find counts too (owner,
+   2026-10-25 03:54): LMDB commits are atomic, so with honest hardware
+   a start finds no damage. The model has this as `StartDamageCounts`
+   (round 14). The count stands
    in a third environment of the node, which also holds the hidden
    identity of the node. No repair copies or replaces it, so a copy
    from a peer brings neither the count nor the identity of the peer.
@@ -421,8 +424,10 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    after the decide gives the same result, because the entry runs on the
    same state: the state after the entries before it in the log. At the
    commit of the state, the node compares the CRC of each result with
-   the CRC in the entry. What a difference does is open question 14 of
-   section 7.
+   the CRC in the entry. A difference is a damage of 2.1 item 5 (owner,
+   2026-10-25 03:54): the node stops voting, reports the entry and both
+   CRCs, and takes the state and the log from a peer by 2.4 item 9. It
+   counts toward the automatic repair of 2.4 item 8.
 7. A later `accept_sync` that cuts an entry (`sequence_paxos.hpp:804-810`)
    leaves no effect. The node that sent the work sees that the leader is
    gone and sends the work to the new leader again; the session and the
@@ -603,6 +608,13 @@ after each round.
 - "a resent promise carries the stored values";
 - "a page with a wrong checksum stops the vote";
 - "a user error aborts only its nested transaction";
+- "a write transaction of the log and an open write transaction of the
+  state stand in one thread over many steps", with commits, aborts and
+  a reader in each environment;
+- "a result after the decide that differs from the entry stops the
+  vote";
+- "a damage that the start checks find counts toward the automatic
+  repair";
 - "a leader does not decide on an accepted with another chain CRC";
 - "each writer of the decided index sets the state of its entries", one
   test for each writer of 2.2 item 2;
@@ -668,16 +680,12 @@ there. The owner decides the names.
 11. Decided after the bench of 2026-10-24 23:15: batches in flight
     before the decide, with a run again after a partial decide (2.6
     item 5).
-12. Open: two write transactions, of the log and of the state, in one
-    thread (2.1 item 3). Proposal: keep them, cite `lmdb.h:98-100`, and
-    test it. Other option: one environment, then one batch in flight.
-13. Open: a damage that the start checks find counts toward the one
-    automatic repair (2.4 item 8). Proposal: it counts, because LMDB
-    commits are atomic, so with honest hardware a start finds no
-    damage. Other option: it does not count.
-14. Open: the run after the decide gives another result than the entry
-    (2.6 item 6). Proposal: a damage, with the repair of 2.4. Other
-    option: the process ends.
+12. Decided, 2026-10-25 03:53: two write transactions, of the log and
+    of the state, in one thread, with a test (2.1 item 3).
+13. Decided, 2026-10-25 03:54: a damage that the start checks find
+    counts toward the one automatic repair (2.4 item 8).
+14. Decided, 2026-10-25 03:54: a result after the decide that differs
+    from the entry is a damage, with the repair of 2.4 (2.6 item 6).
 
 The owner, 21:27 and 21:30, left these four to the session: take what
 LMDB gives, and where LMDB gives no direct form, work out three
