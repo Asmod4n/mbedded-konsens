@@ -1,249 +1,325 @@
 # Plan: Execute-Verify with the majority (stages D2 and D3 of plan-state-in-lmdb.md)
 
 This plan gives the protocol and the model of sections 4 and 5 of
-doc/plan-state-in-lmdb.md, in the form that the owner gave on
-2026-10-25:
+doc/plan-state-in-lmdb.md, in the form that the owner gave:
 
-- A node that finds a fault in itself throws (09:26).
+- A node that finds a fault in itself throws (2026-10-25 09:26).
 - A peer that delivers a wrong value is asked to try again. When the
   value is still wrong, the peer is told that it is broken (09:26).
 - The majority shows which value is right (09:26).
 - One repair runs automatically. Each further repair waits for the
   operator (09:30).
-- The result comes from every node. The leader is one of many (10:20).
+- The result comes from every node. The leader is one of many. When a
+  majority has the same result, it is entered as the result of the
+  request (10:20 to 10:22).
+- The library runs on any consumer hardware, also without ECC (owner, a
+  week before 2026-10-25; repeated 10:25). A single bit flip in RAM can
+  hit the library on any node, not only the state machine.
 
-It replaces items 4.1 to 4.9 of plan-state-in-lmdb.md, the compare in
-its item 5.2, and its tests "a follower whose result differs does not
-accept and reports" and "a follower writes the write list of the
-leader". Items 5.1, 5.3 to 5.5 stay.
+## 0. What this plan replaces
 
-History of this plan:
+- In plan-state-in-lmdb.md: items 4.1 to 4.9, the compare in item 5.2,
+  item 7.2, and the tests "a result after the decide that differs from
+  the entry stops the vote", "a follower whose result differs does not
+  accept and reports" and "a follower writes the write list of the
+  leader". Items 5.1 and 5.3 to 5.5 stay.
+- In plan-repair-from-peer.md: item 4.1 (when the mark closes and what
+  counts), item 4.3 (the repair after a damage in a step becomes a
+  restart), and the close of the open mark at each start that votes
+  (node.hpp, `with`).
+- The format version of the file and of the wire goes up for the two
+  new kinds of entry (plan-lmdb-only-source.md 2.9).
+- The session record of a request is derived from the chosen reply.
+
+## 1. History of this plan
 
 - Form 1 (cd919bb): the leader runs first, the followers check before
   the accept. Rejected: the veto in a new ballot, the own count of the
   leader, the run base, the throw without a durable proof.
 - Forms 2 to 4 (e2eec1f, 90fd61d, 49ecc88): the leader runs first, every
-  node checks after the decide. Rejected or withdrawn: a rejection of the
-  leader's result voided every entry after it, and the void ranges and
-  counts were hard to tie to the log. Form 4 put each verdict into the
-  log; this form keeps that.
-- This form: no node runs first. Every node runs each decided entry, and
-  the result of the majority goes into the log.
+  node checks after the decide. Rejected or withdrawn: a rejection voided
+  every entry after it, and the void ranges were hard to tie to the log.
+  Form 4 put each verdict into the log; this form keeps that.
+- Form 5 (d8b6a53): every node runs, and the result of the majority goes
+  into the log. Approved with fixes: an idle cluster wrote verdicts
+  without end; one bit flip on the leader could get a wrong result
+  decided and make every working node throw; a working node could throw
+  under the 1 ULP rule; the selection changed while answers arrived.
+- This form (6) has those fixes.
 
-Nothing of it is built before the model runs of section 4 show no
-violation and a review approves this plan.
+Nothing of it is built before the model runs of section 5 show no
+violation and a review approves the parts that changed from form 5.
 
-## 1. The protocol
+## 2. The protocol
 
-### 1.1 The entries
+### 2.1 The entries
 
 1. A request entry (`register_client`, `client_request`,
-   `expire_session`) carries the request only, as in D1. These kinds are
-   the entries that change the state.
+   `expire_session`) carries the request only, as in D1.
 2. Two new kinds of entry (names provisional). Only the leader appends
    them, as normal proposals:
-   - `results(from, to, list)`: for each index from `from` to `to`, the
-     result that a majority agreed with: the reply and the mutations.
+   - `results(from, to, list)`: for each request entry from `from` to
+     `to`, the chosen result (the reply and the mutations), the CRC32C of
+     that result as the node that ran it computed it, and the ids of the
+     counted nodes whose result did not agree.
    - `rejected(k)`: no result for `k` has a majority.
-3. The entry CRC and the chain CRC cover both kinds, as every entry.
+3. A `results` entry covers at least one request entry. The entry CRC
+   and the chain CRC cover both kinds, as every entry.
 
-### 1.2 The result and the agreement
+### 2.2 The result and the agreement
 
-1. A run of a request entry on a node gives a result: the reply and the
-   mutations, in deterministic CBOR (RFC 8949 4.2).
+1. A run of a request entry gives a result: the reply and the mutations,
+   in deterministic CBOR (RFC 8949 4.2). The run reads the state through
+   the view and writes nothing (plan-state-in-lmdb.md 2.1), so it needs no
+   nested transaction.
 2. Two results agree when the compare walks the CBOR items and each pair
-   agrees. A float of any width is decoded to `double`, and two floats
-   agree within 1 ULP of `double`: the distance of the bits in binary64,
-   NaN agrees only with NaN, +0 and -0 are 1 ULP apart (owner,
-   2026-10-17 12:43, 2026-10-25 09:22). Every other item, and every key of
-   a mutation, agrees byte for byte.
+   agrees. A float of any width is decoded to `double`; two floats agree
+   when the distance of their bits in binary64 is at most 1; NaN agrees
+   only with NaN; +0 and -0 are 1 apart (owner, 2026-10-17 12:43,
+   2026-10-25 09:22). Every other item, and every key of a mutation,
+   agrees byte for byte.
 3. The assumption: for each entry, the nodes whose run gives a wrong
-   result are fewer than a majority, over all time; and the results of
-   the nodes that work agree with each other. Then a result with a
-   majority exists, and it agrees with each working node. Outside the
-   assumption: a float whose results on working nodes lie more than 1
-   ULP apart. Then no majority can exist, and the entry is rejected.
+   result are fewer than a majority of the configuration, over all time,
+   and the results of the nodes that work agree with each other. Outside
+   it: working nodes whose floats lie more than 1 apart. Then the entry
+   can be rejected.
 
-### 1.3 The verdict function
+### 2.3 The verdict function
 
 1. `V` walks a decided prefix in log order with a pointer `p`, which
    starts at 0, and a map `chosen` from index to result:
-   - `results(from, to, list)` at index `m` with `from = p + 1` and
-     `to < m`: `chosen` takes the list for the request entries in `from
-     .. to`, and `p = to`. An index in that range that holds no request
-     entry has no result in the list.
-   - `rejected(k)` at index `m` with `k = p + 1` and `k < m`: `k` is
-     void, and `p = k`.
+   - `results(from, to, list)` at index `m` with `from = p + 1`, `to <
+     m`, and a request entry in `from .. to`: `chosen` takes the list,
+     and `p = to`.
+   - `rejected(k)` at index `m` with `k = p + 1`, `k < m`, and a request
+     entry at `k`: `k` is void, and `p = k`.
    - Any other `results` or `rejected` entry is stale and changes
      nothing.
+   An index of `from .. to` that holds no request entry has no result in
+   the list.
 2. Every node computes `V` from its own decided prefix. Two nodes with
    the same decided prefix have the same `p` and the same `chosen`.
-3. A node applies the request entries up to `p` that are not void, with
-   the result in `chosen`. Each node writes the bytes of that result, so
-   the state is equal on every node (owner, 2026-10-17 12:40). A void
-   entry keeps its index and changes no state and no session; its client
-   gets `client_errc::rejected` (provisional).
-4. A leader proposes a StopSign only when `p` of its log covers every
+3. The applied index of a node is the highest decided index such that
+   every request entry at or below it is at or below `p`. So an idle log
+   whose last entries are verdict entries is applied to its end, and a
+   read through the read index (the log length of the leader) is
+   answered.
+4. A node applies the request entries up to `p` that are not void, with
+   the bytes in `chosen`. The state is then equal on every node (owner,
+   2026-10-17 12:40). A void entry keeps its index and changes no state
+   and no session; its client gets `client_errc::rejected` (provisional).
+5. Before the node writes a chosen result, it checks the CRC of 2.1.2
+   over the bytes it holds. After it writes the mutations, it reads each
+   value back in the same transaction and checks its CRC again
+   (provisional, measured in section 6). A difference is a fault of the
+   own node and throws.
+6. A leader proposes a StopSign only when `p` of its log covers every
    request entry.
 
-### 1.4 The run
+### 2.4 The base and the run
 
 1. The base of the request entry at index `q` is the committed state
    plus the chosen results of the request entries from the applied index
    up to `q - 1` that are not void. For an entry above `p` that has no
-   verdict yet, a node uses its own result in the base. That is a guess;
-   1.4.4 and 1.5.3 deal with a wrong guess.
+   verdict yet, a node uses its own result in the base. That is a guess.
 2. The open state transaction of D3 holds the base: the committed state,
    then the chosen results, then the own results above `p`.
-3. A run happens in a nested transaction of that write transaction. The
-   node keeps its result, aborts the nested transaction, and writes its
-   result in the parent. The state environment has no `MDB_WRITEMAP`
-   (plan-state-in-lmdb.md 1.1), so LMDB allows nested transactions there.
-4. When a verdict entry for `q` becomes valid by `V`, and the chosen
-   result is not byte for byte the own result, or `q` is void, the node
-   aborts the open transaction. It writes the chosen results from the
-   applied index again, and runs the entries above `p` again. A cut of
-   the log, a crash, a recovery and a repair abort it as well
-   (plan-state-in-lmdb.md 5.3, 5.4).
-5. The open transaction holds at most `max_in_flight` request entries
-   above the applied index. The leader proposes no more request entries
-   while it is full.
+3. When a verdict entry becomes valid by `V`, and a chosen result is not
+   byte for byte the own result, or an entry is void, the node aborts
+   the open transaction, writes the chosen results from the applied index
+   again, and runs the entries above `p` again. A cut of the log, a
+   crash, a recovery and a repair abort it as well (plan-state-in-lmdb.md
+   5.3, 5.4).
+4. Every node runs every decided request entry. The leader proposes no
+   more request entries while its open transaction holds
+   `max_in_flight` of them above its applied index.
 
-### 1.5 The answers and the count
+### 2.5 The answers
 
 1. A node that votes, does not recover and does not repair runs each
-   decided request entry above `p` in log order. When its result does not
-   agree with the result of another node that it holds, it runs the entry
-   a second time on the same base ("try again", question 5.1).
-2. It sends `answer(ballot, from, base_crc, results)` (provisional
+   decided request entry above `p` in log order.
+2. It sends `answer(ballot, p, from, base_crc, results)` (provisional
    message) to the leader of its promise, once in each step, for the
-   indexes that it ran since its last answer. `base_crc` is a CRC over the
-   results in its base above `p`. The leader is a node like every other:
-   it runs, and its answer is counted as one.
-3. The leader counts an answer for index `q` only when `base_crc` equals
-   the CRC over the results that the leader selected for `p + 1 .. q - 1`.
-   So an answer that ran on another base does not count.
-4. For each index above `p`, the leader selects a result with a majority:
-   it takes the answers in the order of the node id, and the first answer
-   that a majority of the counted answers agrees with is selected.
-5. With results selected for `p + 1 .. j`, and no verdict entry of its
-   log above `p` that is not decided, the leader appends `results(p + 1,
-   j, list)`. The list holds the bytes of the selected answers. When the
-   counted answers for `p + 1` leave no result that a majority could
-   still reach, the leader appends `rejected(p + 1)`. The leader appends
-   at most one verdict entry in each step; group commit carries it with
-   the other entries of the step.
-6. The counts belong to one ballot and start at `p` of the leader's log.
-   At each new promise, a node answers again from `p` of its decided
-   prefix. The answers are sent again on the resend timeout until the
-   ballot changes.
+   indexes that it ran since its last answer. `p` is the pointer of its
+   decided prefix. `base_crc` is a CRC over its own results in `p + 1 ..
+   from - 1`. Each result carries its CRC32C, computed on this node.
+3. When `p` of the node rises, it sends its answer again at once, from
+   the new `p`. At each new promise it answers again from `p`. Answers
+   are sent again on the resend timeout until the ballot changes.
 
-### 1.6 The minority
+### 2.6 The selection
 
-1. A node whose own result for `q` does not agree with `chosen[q]` knows
-   that its own machine is wrong. It throws (section 2). A node whose
-   answer for `q` ran on another base does not throw; it runs again from
-   the new base (1.4.4).
-2. A void `q` makes no node throw: no result had a majority, so no node
-   knows that it is the wrong one. The proof goes to the operator.
+1. The leader is a node like every other: it runs, and its answer counts
+   as one.
+2. The leader counts an answer for index `q` only when the answer ran on
+   the selected base: `base_crc` equals the CRC over the selected results
+   in `p + 1 .. from - 1`, and the results of the answer in `from .. q -
+   1` are the selected bytes. An answer whose base is not selected yet
+   is kept and counted later.
+3. For each index above `p`, in order, the leader selects the counted
+   result that agrees with the most counted results, ties broken by the
+   lowest node id, once at least a majority of the configuration agrees
+   with it. A selection holds for the whole ballot.
+4. Before it selects, the leader sends `try_again(q)` (provisional) once
+   to each counted node whose result does not agree with the result it
+   is about to select. Such a node runs `q` again on the same base and
+   answers again. Its second answer counts in place of the first.
+5. With results selected for `p + 1 .. j`, `j` the last of them, and no
+   verdict entry of its log above `p` that is not decided, the leader
+   appends `results(p + 1, j, list)`: the selected bytes with the CRC of
+   the node that sent them, and the counted nodes that did not agree.
+   When the counted answers for `p + 1` leave no result that a majority
+   could still reach, it appends `rejected(p + 1)`. It appends at most one
+   verdict entry in each step; group commit carries it with the other
+   entries of the step.
 
-### 1.7 What a client sees
+### 2.7 Accept means verify, for a verdict entry
+
+1. A node sends `accepted` for a `results` entry only after it checked
+   it: the CRC of each listed result holds; for each index where it is not
+   listed as a node that did not agree, its own result on the base that
+   the list defines agrees with the listed result. If its own result on
+   that base differs, it runs again first.
+2. A `rejected(k)` entry is accepted only when the node's own answers for
+   `k` would not change it (the node has no result for `k` that the
+   counted answers and its own make a majority).
+3. In `sequence_paxos`, a node sends `accepted` only up to its
+   `verified_idx` (provisional), which the node raises after the check
+   (plan-state-in-lmdb.md 4.5, kept for this use). A request entry needs
+   no check, so `verified_idx` passes it at once.
+4. A node that does not accept a verdict entry sends `refused(ballot,
+   index)` (provisional) to the leader, with the reason. A leader that
+   gets `refused` for its own verdict entry from a majority of the
+   configuration knows that its own selection or copy is wrong. It throws
+   (section 3): "you are broken" from the majority.
+5. So a decided verdict has a majority that checked it on their own
+   nodes. A bit flip in the leader's count, compare or copy cannot reach
+   the state.
+
+### 2.8 The minority
+
+1. A node listed in a `results` entry as a node that did not agree, at
+   an index whose result is chosen, knows that its own machine is wrong.
+   It throws (section 3).
+2. A node that was not counted, ran on another base, or is not listed
+   does not throw.
+3. A void `k` makes no node throw. The proof goes to the operator.
+
+### 2.9 What a client sees
 
 1. A request gets its reply when its entry is applied: the reply in
-   `chosen`. This is a second round after the decide of the request: the
-   decide of its `results` entry.
-2. A read through the read index waits until the applied index reaches
-   the read index, as now.
+   `chosen`, with its CRC. This is a second round after the decide of the
+   request: the decide of its `results` entry.
+2. A read through the read index waits until the applied index (2.3.3)
+   reaches the read index, as now.
 
-## 2. A fault of the own node throws, with a proof that stays
+## 3. A fault of the own node throws, with a proof that stays
 
-1. A damage that a step finds (`error_is_a_damage`) and a throw of 1.6.1
-   write a proof into the node storage: the kind, the index, the CRCs or
-   the digests, and the ballot. The proof is one field of the
-   `repair_record`. A failure of that write throws `sync_error`.
+1. A damage that a step finds (`error_is_a_damage`), a read error of LMDB
+   (owner, 2026-10-24 14:39), and a throw of 2.3.5, 2.7.4 and 2.8.1 write
+   a proof into the node storage: the kind, the index, the CRCs or the
+   digests, and the ballot. The proof is one field of the `repair_record`.
+   A failure of that write throws `sync_error`.
 2. Then the node throws `node_fault` (provisional), a type derived from
-   `std::system_error` with an error code of `paxos_errc`. Nothing catches
-   it but `main` and the body of a thread.
-3. The start reads the record. A proof that the open mark does not cover
-   counts as a damage of plan-repair-from-peer.md 4.1: `count_a_repair`
-   sets the count, sets the open mark with the index of the proof, and
-   clears the proof, in one commit. While the count allows it, the node
-   repairs; else it waits for the operator.
+   `std::system_error` with an error code of `paxos_errc`. Nothing
+   catches it but `main` and the body of a thread.
+3. The start reads the record:
+   - A proof whose index is at or below the index of the open mark is
+     covered: the start clears it, in one commit, and counts nothing.
+   - Any other proof counts as a damage: `count_a_repair` sets the count,
+     sets the open mark with the index of the proof, and clears the proof,
+     in one commit. While the count allows it, the node repairs; else it
+     waits for the operator.
 4. For a result proof the repair is the abort of the open transaction and
    the recovery. The node keeps its log. Its `p` covers the index of the
-   proof, so it writes the chosen bytes and does not run that entry again.
-5. The open mark closes when the applied index passes the index of the
-   mark, or after the commit of a repaired log. A throw while the mark is
-   open counts nothing more. A throw after the mark closed counts, and
-   with the count at its limit the node waits for the operator.
+   proof, so it writes the chosen bytes and does not run that entry
+   again.
+5. The open mark closes when the applied index passes its index, or
+   after the commit of a repaired log; never at a start only because the
+   log votes.
 6. The start also runs the scan of plan-repair-from-peer.md 2.3 over the
-   whole log. A damage that it finds counts the same way (question 5.2).
+   whole log. A damage that it finds counts as in 3.3 (question 7.2).
 7. `with` gives no stopped node for a damage any more; it gives a node
    that repairs, or one that waits for the operator.
 
-## 3. The model
+## 4. The model
 
 1. A constant `ExecuteVerify` (Boolean). FALSE keeps every present
-   configuration as it is. The configurations of section 4 set
+   configuration as it is. The configurations of section 5 set
    `StateInLmdb`, `RepairFromPeer` and `StartDamageCounts`.
 2. `Result(v, b)` gives a result for value `v` on base `b`, a sequence of
-   (value, result) pairs. A ghost `wrong`, a set of pairs (node, value).
-   A run of node `i` on `v` gives `Result(v, b)`, or a token `Bad(i)` when
-   `<<i, v>> \in wrong`. A run may add a pair while fewer than a majority
-   of the nodes hold a pair for `v` and the number of pairs is below
-   `MaxWrong`. A second run may give the right result. A constant
-   `Spread` (Boolean) lets two working nodes give results that do not
-   agree, for the case outside 1.2.3.
-3. Verdict entries are values `Results(from, to, list)` and
-   `Rejected(k)`. S3 counts them as proposed.
-4. `V(log)` is an operator, the same as 1.3.1.
-5. The message `Answer` travels in `chan`, so Lose and Duplicate reach
-   it.
-6. Variables: `counts` (per leader), `own` (per node: its results above
-   `p`), `proof` and `open_mark` (durable, per node), `result_throws`.
-7. Actions: `RunEntry(i)`, `HandleAnswer(i, j, m)`, `AppendVerdict(i)`,
-   `ApplyChosen(i)`, `ResultThrow(i)` (writes `proof`, then the start
-   with the node's own durable state in one step, with the count of 2.3;
-   bounded by `MaxResultThrow`).
+   (value, result) pairs. A result is a pair (value, jitter), jitter in
+   {0, 1, 2}; two results agree when their values are equal and their
+   jitters differ by at most 1. A run of a working node gives jitter 0 or
+   1; with `Spread`, also 2. A ghost `wrong`, a set of pairs (node,
+   value): a run of node `i` on `v` gives `Bad(i)` when `<<i, v>> \in
+   wrong`. A run may add a pair while fewer than a majority of the nodes
+   hold a pair for `v` and the number of pairs is below `MaxWrong`. A
+   second run may give the right result.
+3. `Flip` (Boolean): one step of the leader may replace a selected result
+   by `Bad(leader)` before it appends the `results` entry, at most
+   `MaxFlip` times.
+4. Verdict entries are values `Results(from, to, list)` and
+   `Rejected(k)`. S3 counts them as proposed. `V(log)` is an operator, the
+   same as 2.3.1.
+5. `Answer`, `TryAgain` and `Refused` travel in `chan`, so Lose and
+   Duplicate reach them.
+6. Variables: `selected` and `counts` (per leader), `own` (per node),
+   `verified_idx` (per node), `proof` and `open_mark` (durable, per
+   node), `result_throws`.
+7. Actions: `RunEntry(i)`, `HandleAnswer`, `HandleTryAgain`, `Select(i)`,
+   `AppendVerdict(i)`, `CheckVerdict(i)` (2.7), `HandleRefused`,
+   `ApplyChosen(i)`, `ResultThrow(i)` (writes `proof`, then the start with
+   the node's own durable state in one step, with 3.3; bounded by
+   `MaxResultThrow`).
 8. A damage that a step finds also writes `proof` and takes the start in
    one step. `Detected` and the step check use one operator, and the
    start check applies it to the whole log. The high-water mark is lost at
    the throw, as at every restart.
-9. The effective prefix of a node: its decided prefix up to `p`, each
-   void entry kept at its index as a no-op. StateIsDecided, ClientTable,
-   `Opened`, `Executed`, `ClientRegistered`, `ClientReplied`,
-   `ClientSessionExpired`, the guard of `ExpireSession`, E1, ReadReply and
-   R1 read the effective prefix. R1 compares with the history of entries
-   that have a verdict.
-10. A ghost `selections`: every selection a leader made, as (ballot,
-    index, result, the nodes that agreed).
+9. The effective prefix of a node: its decided prefix up to its applied
+   index (2.3.3), each void entry kept at its index as a no-op.
+   StateIsDecided, ClientTable, `Opened`, `Executed`, `ClientRegistered`,
+   `ClientReplied`, `ClientSessionExpired`, the guard of `ExpireSession`,
+   E1, ReadReply and R1 read the effective prefix. R1 compares with the
+   history of entries that have a verdict.
+10. A ghost `runs`: every run of every node, as (node, index, base,
+    result).
 11. Invariants:
-    - `ChosenHasMajority`: each result in `chosen` of a node agrees with
-      a majority of the nodes in its selection.
-    - `ChosenIsRight`: without `Spread`, each result in `chosen` equals
-      `Result(v, b)` on its base.
+    - `ChosenByMajority`: each result in `chosen` of a node agrees with
+      the results of runs on its base by a majority of the configuration
+      (from `runs`).
+    - `ChosenIsRight`: without `Spread`, each result in `chosen` agrees
+      with `Result(v, b)` on its base.
+    - `ChosenOnOwnBase`: each chosen result was selected on the base that
+      the chosen results before it define.
     - `StatesAgree`: the applied states of two nodes are prefixes of one
       another.
-    - `ThrowOnlyWrong`: without `Spread`, only a node with a wrong run of
-      `q` takes a result throw for `q`.
-    - `RepairsBounded`: a node takes at most `AutoRepairs` counted repairs
-      before `OperatorAllowsRepair`.
+    - `ThrowOnlyWrong`: only a node with a wrong run of `q` takes a result
+      throw for `q`, also with `Spread` (the list of 2.1.2).
+    - `RepairsBounded`: `result_throws` that count stay at most
+      `AutoRepairs` before `OperatorAllowsRepair`.
     - S1 to S5, E1, R1, StateIsDecided and EntryRunsOnOnePrefix stay.
 12. Covers, each must be violated by a trace: `NoResults`, `NoReject`
-    (with `Spread`), `NoFollowerThrow`, `NoLeaderThrow`,
-    `NoResultsAfterLeaderChange`, `NoStaleVerdictEntry`,
-    `NoRunAgain` (1.4.4).
+    (with `Spread`), `NoFollowerThrow`, `NoLeaderThrow` (with `Flip`),
+    `NoResultsAfterLeaderChange`, `NoStaleVerdictEntry`, `NoRunAgain`,
+    `NoTryAgain`, `NoIdleRead` (a read answered on a log that ends with a
+    verdict entry).
 13. Mutations, each must break an invariant:
-    - `ApplyOwnResult` (a node applies its own result, not `chosen`):
-      `StatesAgree`.
-    - `CountOtherBase` (the leader ignores `base_crc`): `ChosenIsRight`.
+    - `ApplyOwnResult` (a node applies its own result): `StatesAgree`.
+    - `CountOtherBase` (the leader ignores the base of an answer):
+      `ChosenOnOwnBase`.
     - `SelectWithoutMajority` (the first answer is selected):
-      `ChosenIsRight` or `ChosenHasMajority`.
-    - `StaleVerdictCounts` (`V` takes a verdict entry with `from # p + 1`):
-      `StatesAgree`.
-    - `NoProofAtThrow` (the throw writes no proof): `RepairsBounded`.
+      `ChosenByMajority`.
+    - `AcceptWithoutCheck` (2.7 off, with `Flip`): `ChosenByMajority`.
+    - `ThrowWithoutList` (2.8 by own compare, with `Spread`):
+      `ThrowOnlyWrong`.
+    - `CountProofTwice` (3.3 counts a covered proof): `RepairsBounded`.
+    - `VerdictWithoutRequest` (2.1.3 off): the cover `NoIdleRead` stays
+      violated only through endless verdict entries; the run bounds the
+      log, so this mutation is checked by a state constraint that
+      counts verdict entries above the last request entry.
 
-## 4. The runs
+## 5. The runs
 
 Each configuration runs 15 minutes as a simulation first; a BFS runs only
 where it can end (owner, 2026-10-19 05:55). A cover that a 15-minute
@@ -252,33 +328,41 @@ time, with JOBS=1 for builds while they run. Each configuration holds one
 class of fault:
 
 1. `MC_ev_wrong`: 3 nodes, `MaxLog = 4`, `MaxWrong = 1`, no crash, no
-   Lose, `MaxElection = 1`. Covers `NoResults`, `NoFollowerThrow`,
-   `NoLeaderThrow`, `NoRunAgain`.
-2. `MC_ev_change`: 3 nodes, `MaxLog = 5`, `MaxWrong = 1`, no Lose,
-   `MaxElection = 3`. Covers `NoResultsAfterLeaderChange`,
-   `NoStaleVerdictEntry`.
-3. `MC_ev_loss`: 3 nodes, `MaxLog = 4`, `MaxWrong = 1`, Lose 1,
+   Lose, `MaxElection = 1`.
+2. `MC_ev_flip`: as 1, `MaxWrong = 0`, `Flip`, `MaxFlip = 1`.
+3. `MC_ev_change`: 3 nodes, `MaxLog = 5`, `MaxWrong = 1`, no Lose,
+   `MaxElection = 3`.
+4. `MC_ev_loss`: 3 nodes, `MaxLog = 4`, `MaxWrong = 1`, Lose 1,
    Duplicate 1, one crash, `MaxElection = 2`.
-4. `MC_ev_spread`: 3 nodes, `MaxLog = 3`, `Spread`, `MaxWrong = 0`. Cover
-   `NoReject`.
-5. `MC_ev_sessions`: 3 nodes, `MaxLog = 6`, `ClientSessions`,
+5. `MC_ev_spread`: 3 nodes, `MaxLog = 3`, `Spread`, `MaxWrong = 0`.
+6. `MC_ev_sessions`: 3 nodes, `MaxLog = 6`, `ClientSessions`,
    `MaxClientSend = 4`, `MaxWrong = 1`, `MaxElection = 1`.
-6. `MC_ev_five`: 5 nodes, `MaxLog = 4`, `MaxWrong = 2`.
-7. Each mutation of 3.13 gives a violation in one of these.
+7. `MC_ev_five`: 5 nodes, `MaxLog = 4`, `MaxWrong = 2`.
+8. Each mutation of 4.13 gives a violation in one of these.
 
-## 5. Questions for the owner
+## 6. What section 5 of the parent plan measures
 
-1. "Try again" is a second run on the node whose result does not agree
-   (proposal).
+1. Writes per second, and the p50 and the p99 of the reply latency,
+   with and without Execute-Verify, for a machine with integers only and
+   for one with floats (where the bytes of the nodes differ).
+2. How many runs happen again (2.4.3) per thousand entries, in both
+   cases.
+3. The cost of the read back of 2.3.5.
+4. The time of the full scan at a start, against the log length.
+
+## 7. Questions for the owner
+
+1. "Try again" is a second run on the node whose result does not agree,
+   on the request of the leader (2.6.4).
 2. The full scan of the log at each start grows with the log, and no
-   compaction is planned yet. Proposal: measure it in section 5 of the
-   parent plan, and plan compaction after that.
+   compaction is planned yet. Proposal: measure it (6.4), and plan
+   compaction after that.
 3. Each node sends its whole result to the leader, because results that
-   agree within 1 ULP have different bytes, so a digest cannot show the
-   agreement. A large result costs bandwidth on each node. Proposal:
-   measure it; a digest first, and the bytes only when the digests
-   differ, is the known remedy.
-4. A write needs a second round before its reply: the decide of the
-   request, then the decide of its `results` entry. One `results` entry
-   covers every entry of a step. Section 5 of the parent plan measures
-   writes per second and the p50 and the p99 of the reply latency.
+   agree within 1 ULP have different bytes. Proposal: measure it; a
+   digest first and the bytes only when the digests differ is the known
+   remedy.
+4. A write needs a second round before its reply. With floats, the
+   nodes whose bytes were not selected run again at each verdict. The
+   known remedy: keep the run of each entry in its own nested transaction
+   above a parent that holds the chosen part, so that only that entry is
+   run again. Proposal: measure first (6.1, 6.2).
