@@ -34,6 +34,9 @@ OVERRIDE_PeerCheck == FALSE
 OVERRIDE_HighWater == FALSE
 OVERRIDE_VerifyPromise == FALSE
 OVERRIDE_MismatchAction == "keep"
+OVERRIDE_StateInLmdb == FALSE
+OVERRIDE_MaxInFlight == 0
+OVERRIDE_StateRepair == "copy"
 OVERRIDE_RepairFromPeer == FALSE
 OVERRIDE_StorageFaultKind == {}
 OVERRIDE_ClientSessions == FALSE
@@ -46,8 +49,6 @@ OVERRIDE_MaxReconfigure == 0
 OVERRIDE_SingleNode == FALSE
 OVERRIDE_MaxForceSingle == 0
 OVERRIDE_MaxReadOnly == 0
-OVERRIDE_MaxHalt == 0
-OVERRIDE_StaleReadNode == FALSE
 OVERRIDE_MaxHalt == 0
 OVERRIDE_StaleReadNode == FALSE
 OVERRIDE_Witness == FALSE
@@ -65,6 +66,7 @@ ApaNext ==
      \/ \E i \in Nodes, k \in 1..MaxBallot : HandleLeader(i, k)
      \/ \E i \in Nodes, v \in Values : Propose(i, v)
      \/ \E R \in SUBSET Nodes : Rollback(R)
+  /\ UNCHANGED statevars
   /\ Bounds'
 
 (* S2Grows of MC_F6c.cfg as an action invariant. *)

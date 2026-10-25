@@ -94,6 +94,12 @@ CONSTANTS
   VerifyPromise,
   \* @type: Str;
   MismatchAction,
+  \* @type: Bool;
+  StateInLmdb,
+  \* @type: Int;
+  MaxInFlight,
+  \* @type: Str;
+  StateRepair,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -241,7 +247,11 @@ VARIABLES
   \* @type: Int -> $mark;
   high_water,
   \* @type: Int -> Int;
-  repairs
+  repairs,
+  \* @type: Int -> Seq($entry);
+  applied,
+  \* @type: Int -> Seq($entry);
+  in_txn
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -258,8 +268,11 @@ leasevars  == <<witness_epoch, node_epoch, lease_request, lease_reply, lease_rem
                 wait_remaining>>
 leaseghost == <<forced_decided_at_force, forced_has_decided, old_decided_max,
                 old_decided_after_forced>>
+statevars == <<applied, in_txn>>
+vars_but_state == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
+                    buffered_stopsign, reconfig, leasevars, leaseghost>>
 vars     == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
-              buffered_stopsign, reconfig, leasevars, leaseghost>>
+              buffered_stopsign, reconfig, leasevars, leaseghost, statevars>>
 
 ----------------------------------------------------------------------------
 (* Ballot (n, pid) is the integer n * PidBase + pid. Ballot::default is 0.   *)
@@ -673,6 +686,8 @@ Init ==
   /\ peer_seen = [i \in Servers |-> [j \in Servers |-> NothingSeen]]
   /\ high_water = [i \in Servers |-> NoMark]
   /\ repairs = [i \in Servers |-> 0]
+  /\ applied = [i \in Servers |-> <<>>]
+  /\ in_txn = [i \in Servers |-> <<>>]
   /\ wiped = [i \in Servers |-> FALSE]
   /\ crashes = 0
   /\ wipes = 0
@@ -2417,7 +2432,7 @@ WitnessRestart ==
                  lease_remaining, wait_remaining, leaseghost>>
 
 ----------------------------------------------------------------------------
-Next ==
+ProtocolNext ==
   \/ \E p \in Pairs : Receive(p[1], p[2])
   \/ \E i \in running, k \in 1..MaxBallot : HandleLeader(i, k)
   \/ \E i \in running, v \in Values : Propose(i, v)
@@ -2451,6 +2466,81 @@ Next ==
   \/ \E i \in running : LeaseRequest(i) \/ LeaseReply(i) \/ LeaderDecidesChosen(i)
   \/ \E i \in Nodes : LeaseGrant(i)
   \/ WitnessRestart
+
+\* StateInLmdb (doc/plan-lmdb-only-source.md 2.6). `applied[i]` is the
+\* committed state of node i in its own LMDB environment, as the entries
+\* that it applied. `in_txn[i]` is the open write transaction of the
+\* state: the entries that ran on top of `applied[i]` before their decide. A
+\* step of the protocol leaves both, except: a node that stops running or
+\* starts a recovery aborts the open transaction; a wipe loses the state;
+\* a repair from a peer (2.4) keeps the state when one of the state and
+\* the decided prefix of the repaired log is a prefix of the other, else
+\* takes the state of the peer, up to its decided index
+\* (StateRepair = "copy"). A fault of the log environment leaves the
+\* state environment as it is.
+\* @type: Bool;
+StateFollows ==
+  IF ~StateInLmdb THEN UNCHANGED statevars
+  ELSE
+  /\ applied' = [i \in Servers |->
+        IF wiped'[i] /\ ~wiped[i] THEN <<>>
+        ELSE IF repairs'[i] > repairs[i] /\ StateRepair = "copy"
+                /\ ~Compatible(applied[i], SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i]))))
+             THEN SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i])))
+        ELSE applied[i]]
+  /\ in_txn' = [i \in Servers |->
+        IF (wiped'[i] /\ ~wiped[i]) \/ i \notin running' \/ (recovering'[i] /\ ~recovering[i])
+           \/ repairs'[i] > repairs[i]
+        THEN <<>> ELSE in_txn[i]]
+
+\* 2.6 items 4, 5 and 7. Before each run and each commit, the node compares
+\* the entries of its open transaction with its log (the chain CRC at the
+\* last entry that ran). When they differ, a write cut or replaced the log
+\* below the end of the open transaction, and the node aborts it.
+\* Mutation "NoAbortOnCut" leaves out this comparison.
+\* @type: Int => Bool;
+StateCurrent(i) ==
+  Mutation = "NoAbortOnCut" \/ IsPrefix(applied[i] \o in_txn[i], log[i])
+
+\* @type: Int => Bool;
+StateAbort(i) ==
+  /\ StateInLmdb
+  /\ i \in running
+  /\ in_txn[i] # <<>>
+  /\ ~StateCurrent(i)
+  /\ in_txn' = [in_txn EXCEPT ![i] = <<>>]
+  /\ UNCHANGED <<vars_but_state, applied>>
+
+\* Execute-Verify: the node runs the next entry of its log in the open
+\* transaction, before the decide, up to MaxInFlight entries.
+\* @type: Int => Bool;
+StateRun(i) ==
+  /\ StateInLmdb
+  /\ i \in running /\ ~recovering[i]
+  /\ StateCurrent(i)
+  /\ Len(in_txn[i]) < MaxInFlight
+  /\ Len(applied[i]) + Len(in_txn[i]) < Len(log[i])
+  /\ in_txn' = [in_txn EXCEPT ![i] = Append(@, log[i][Len(applied[i]) + Len(in_txn[i]) + 1])]
+  /\ UNCHANGED <<vars_but_state, applied>>
+
+\* The decide reached the node: it commits the entries of the open
+\* transaction up to the decided index. The entries after it run again on
+\* the committed state, which gives the same entries in in_txn.
+\* @type: Int => Bool;
+StateApply(i) ==
+  /\ StateInLmdb
+  /\ i \in running /\ ~recovering[i]
+  /\ StateCurrent(i)
+  /\ Len(applied[i]) < decided_idx[i]
+  /\ Len(applied[i]) + Len(in_txn[i]) >= decided_idx[i]
+  /\ LET ran == applied[i] \o in_txn[i] IN
+       /\ applied' = [applied EXCEPT ![i] = SubSeq(ran, 1, decided_idx[i])]
+       /\ in_txn' = [in_txn EXCEPT ![i] = SubSeq(ran, decided_idx[i] + 1, Len(ran))]
+  /\ UNCHANGED vars_but_state
+
+Next ==
+  \/ ProtocolNext /\ StateFollows
+  \/ \E i \in Servers : StateRun(i) \/ StateApply(i) \/ StateAbort(i)
 
 Spec == Init /\ [][Next]_vars
 
@@ -2528,7 +2618,7 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
                      "NoDecideOnResend", "DecideOnResendOldSeq",
                      "PowerLossWithF", "PowerLossStartAtAccepted",
-                     "StartCheckMissing", "StartAsNewNode"}
+                     "StartCheckMissing", "StartAsNewNode", "NoAbortOnCut"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -2548,6 +2638,9 @@ ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0
 ASSUME HighWater \in BOOLEAN
 ASSUME VerifyPromise \in BOOLEAN
 ASSUME MismatchAction \in {"keep", "damage", "stop"}
+ASSUME StateInLmdb \in BOOLEAN
+ASSUME MaxInFlight \in Nat
+ASSUME StateRepair \in {"keep", "copy"}
 ASSUME RepairFromPeer \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided", "stale_meta", "rollback"}
@@ -2621,6 +2714,23 @@ EntryRunsOnOnePrefix ==
     Votes(i) /\ Votes(j) /\ n_accepted[j] = n_accepted[i] =>
       \A k \in 1..Min(decided_idx[i], Len(log[j])) :
         log[j][k] = log[i][k] => SubSeq(log[j], 1, k - 1) = SubSeq(log[i], 1, k - 1)
+
+\* StateInLmdb: the committed state of each node holds only decided
+\* entries, in the decided order. A read from the state then gives a
+\* decided result.
+StateIsDecided == \A i \in Servers : IsPrefix(applied[i], decided_history)
+
+\* The open transaction of a node that compared it with its log holds the
+\* entries of its log in order (2.6 item 5).
+OpenRunsOnLog == \A i \in running : StateCurrent(i) => IsPrefix(applied[i] \o in_txn[i], log[i])
+
+\* Covers of StateInLmdb: two entries run before their decide; a decide
+\* covers only part of the entries that ran; a write cut the log below the
+\* end of an open transaction.
+NoTwoInFlight == \A i \in Servers : Len(in_txn[i]) < 2
+NoPartialDecide == \A i \in Servers :
+  ~(Len(applied[i]) < decided_idx[i] /\ decided_idx[i] < Len(applied[i]) + Len(in_txn[i]))
+NoCutOfOpen == \A i \in running : in_txn[i] # <<>> => IsPrefix(applied[i] \o in_txn[i], log[i])
 
 \* Cover: a leader holds two entries that are not decided.
 NoPipeline == \A i \in Servers : role[i] = "Leader" => Len(log[i]) < decided_idx[i] + 2
