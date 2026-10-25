@@ -1,0 +1,340 @@
+# counter_stress, seeds 1 to 300, --cbor --power-loss 50
+
+What: the check of plan-lmdb-only-source.md section 5, item 2. This is a
+check of correctness, not a measurement of speed.
+Command, in podman, image localhost/cxx-matrix-fuse, for each seed S:
+  ./counter_stress --seed S --cbor --power-loss 50 --allow-root-for-test
+Three seeds ran at the same time (xargs -P3); one cpu stayed free.
+TMPDIR was a tmpfs of the container (--tmpfs /tmpfs, size 2 GiB).
+The process ran as root inside the container, with --allow-root-for-test, as ctest runs it.
+
+Result: 300 of 300 seeds exit 0. Each seed printed "passed" for
+checks 1 to 4. No seed failed.
+
+## Context
+
+# commit 4e11084de8c7cc6c0099567ac19d0fabfa141c08 clean, branch lmdb-single-source
+# container podman 4.9.3, image localhost/cxx-matrix-fuse b75330d2a883 created 2026-10-24 09:11:56 UTC
+# os Ubuntu Stonking Stingray (development branch)
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0, gcc-16 for C
+# build CMake Release, CMAKE_CXX_FLAGS_RELEASE -O3 -DNDEBUG, CMAKE_C_FLAGS_RELEASE -O3 -DNDEBUG
+# instruction set -march=x86-64 -mtune=generic
+# binary counter_stress sha256 90ec023f31881747, .comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1
+# kernel 6.18.44-fc-v153 #1 SMP PREEMPT_DYNAMIC @0
+# virtual machine Firecracker, hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor nproc 4, cpu flags sha256 733bd6f8a6de28df
+
+## One line for each seed
+
+seed exit summary line of the process
+1 0 checks_passed=4 Seed 1: 1914 rounds (1911 with faults), 56729 messages, 581 lost, 575 duplicates, 304 restarts, 97 restarts of every node, 2 changes of leader.
+2 0 checks_passed=4 Seed 2: 1973 rounds (1970 with faults), 57210 messages, 539 lost, 566 duplicates, 292 restarts, 92 restarts of every node, 10 changes of leader.
+3 0 checks_passed=4 Seed 3: 2043 rounds (2040 with faults), 56718 messages, 550 lost, 557 duplicates, 327 restarts, 104 restarts of every node, 14 changes of leader.
+4 0 checks_passed=4 Seed 4: 1925 rounds (1922 with faults), 57075 messages, 640 lost, 568 duplicates, 287 restarts, 92 restarts of every node, 4 changes of leader.
+5 0 checks_passed=4 Seed 5: 1845 rounds (1842 with faults), 55854 messages, 539 lost, 549 duplicates, 266 restarts, 86 restarts of every node, 2 changes of leader.
+6 0 checks_passed=4 Seed 6: 1892 rounds (1889 with faults), 57111 messages, 584 lost, 549 duplicates, 270 restarts, 88 restarts of every node, 4 changes of leader.
+7 0 checks_passed=4 Seed 7: 1878 rounds (1875 with faults), 56424 messages, 557 lost, 553 duplicates, 289 restarts, 93 restarts of every node, 2 changes of leader.
+8 0 checks_passed=4 Seed 8: 1919 rounds (1916 with faults), 56352 messages, 548 lost, 534 duplicates, 296 restarts, 96 restarts of every node, 4 changes of leader.
+9 0 checks_passed=4 Seed 9: 1878 rounds (1875 with faults), 56176 messages, 588 lost, 564 duplicates, 277 restarts, 88 restarts of every node, 2 changes of leader.
+10 0 checks_passed=4 Seed 10: 1902 rounds (1899 with faults), 57023 messages, 581 lost, 596 duplicates, 274 restarts, 88 restarts of every node, 6 changes of leader.
+11 0 checks_passed=4 Seed 11: 1960 rounds (1957 with faults), 57012 messages, 557 lost, 579 duplicates, 308 restarts, 101 restarts of every node, 4 changes of leader.
+12 0 checks_passed=4 Seed 12: 1753 rounds (1750 with faults), 56271 messages, 555 lost, 536 duplicates, 216 restarts, 70 restarts of every node, 2 changes of leader.
+13 0 checks_passed=4 Seed 13: 1748 rounds (1745 with faults), 55314 messages, 528 lost, 516 duplicates, 233 restarts, 75 restarts of every node, 4 changes of leader.
+14 0 checks_passed=4 Seed 14: 2041 rounds (2038 with faults), 58451 messages, 557 lost, 565 duplicates, 330 restarts, 107 restarts of every node, 6 changes of leader.
+15 0 checks_passed=4 Seed 15: 1754 rounds (1751 with faults), 55926 messages, 542 lost, 566 duplicates, 233 restarts, 76 restarts of every node, 4 changes of leader.
+16 0 checks_passed=4 Seed 16: 2081 rounds (2078 with faults), 57663 messages, 583 lost, 617 duplicates, 358 restarts, 115 restarts of every node, 10 changes of leader.
+17 0 checks_passed=4 Seed 17: 1781 rounds (1778 with faults), 56195 messages, 558 lost, 575 duplicates, 236 restarts, 77 restarts of every node, 4 changes of leader.
+18 0 checks_passed=4 Seed 18: 1806 rounds (1803 with faults), 55293 messages, 530 lost, 525 duplicates, 253 restarts, 81 restarts of every node, 6 changes of leader.
+19 0 checks_passed=4 Seed 19: 1945 rounds (1942 with faults), 56952 messages, 559 lost, 531 duplicates, 309 restarts, 99 restarts of every node, 4 changes of leader.
+20 0 checks_passed=4 Seed 20: 1873 rounds (1870 with faults), 56473 messages, 610 lost, 560 duplicates, 305 restarts, 98 restarts of every node, 4 changes of leader.
+21 0 checks_passed=4 Seed 21: 1973 rounds (1970 with faults), 57153 messages, 564 lost, 601 duplicates, 310 restarts, 99 restarts of every node, 6 changes of leader.
+22 0 checks_passed=4 Seed 22: 2145 rounds (2142 with faults), 58475 messages, 590 lost, 546 duplicates, 369 restarts, 118 restarts of every node, 8 changes of leader.
+23 0 checks_passed=4 Seed 23: 2082 rounds (2079 with faults), 57921 messages, 576 lost, 566 duplicates, 331 restarts, 105 restarts of every node, 6 changes of leader.
+24 0 checks_passed=4 Seed 24: 1979 rounds (1976 with faults), 56894 messages, 541 lost, 572 duplicates, 294 restarts, 94 restarts of every node, 4 changes of leader.
+25 0 checks_passed=4 Seed 25: 1897 rounds (1894 with faults), 55867 messages, 539 lost, 562 duplicates, 309 restarts, 101 restarts of every node, 4 changes of leader.
+26 0 checks_passed=4 Seed 26: 1818 rounds (1815 with faults), 55539 messages, 553 lost, 551 duplicates, 231 restarts, 73 restarts of every node, 8 changes of leader.
+27 0 checks_passed=4 Seed 27: 1983 rounds (1980 with faults), 57153 messages, 545 lost, 548 duplicates, 292 restarts, 94 restarts of every node, 6 changes of leader.
+28 0 checks_passed=4 Seed 28: 1903 rounds (1900 with faults), 56311 messages, 589 lost, 554 duplicates, 311 restarts, 101 restarts of every node, 8 changes of leader.
+29 0 checks_passed=4 Seed 29: 1907 rounds (1904 with faults), 56747 messages, 567 lost, 590 duplicates, 271 restarts, 88 restarts of every node, 2 changes of leader.
+30 0 checks_passed=4 Seed 30: 1861 rounds (1858 with faults), 56454 messages, 552 lost, 542 duplicates, 260 restarts, 83 restarts of every node, 2 changes of leader.
+31 0 checks_passed=4 Seed 31: 1927 rounds (1924 with faults), 56710 messages, 584 lost, 563 duplicates, 270 restarts, 88 restarts of every node, 6 changes of leader.
+32 0 checks_passed=4 Seed 32: 1802 rounds (1799 with faults), 55197 messages, 540 lost, 516 duplicates, 227 restarts, 72 restarts of every node, 6 changes of leader.
+33 0 checks_passed=4 Seed 33: 1840 rounds (1837 with faults), 55816 messages, 525 lost, 536 duplicates, 283 restarts, 90 restarts of every node, 5 changes of leader.
+34 0 checks_passed=4 Seed 34: 1886 rounds (1883 with faults), 56033 messages, 556 lost, 546 duplicates, 282 restarts, 90 restarts of every node, 3 changes of leader.
+35 0 checks_passed=4 Seed 35: 1781 rounds (1778 with faults), 55897 messages, 543 lost, 577 duplicates, 234 restarts, 75 restarts of every node, 0 changes of leader.
+36 0 checks_passed=4 Seed 36: 1910 rounds (1907 with faults), 56973 messages, 565 lost, 596 duplicates, 267 restarts, 86 restarts of every node, 6 changes of leader.
+37 0 checks_passed=4 Seed 37: 1915 rounds (1912 with faults), 56428 messages, 623 lost, 541 duplicates, 274 restarts, 87 restarts of every node, 6 changes of leader.
+38 0 checks_passed=4 Seed 38: 1945 rounds (1942 with faults), 57342 messages, 613 lost, 591 duplicates, 298 restarts, 97 restarts of every node, 4 changes of leader.
+39 0 checks_passed=4 Seed 39: 1941 rounds (1938 with faults), 56768 messages, 588 lost, 547 duplicates, 278 restarts, 89 restarts of every node, 4 changes of leader.
+40 0 checks_passed=4 Seed 40: 1912 rounds (1909 with faults), 56091 messages, 513 lost, 554 duplicates, 293 restarts, 95 restarts of every node, 2 changes of leader.
+41 0 checks_passed=4 Seed 41: 1857 rounds (1854 with faults), 56178 messages, 611 lost, 550 duplicates, 257 restarts, 83 restarts of every node, 2 changes of leader.
+42 0 checks_passed=4 Seed 42: 1924 rounds (1921 with faults), 56134 messages, 539 lost, 524 duplicates, 297 restarts, 95 restarts of every node, 0 changes of leader.
+43 0 checks_passed=4 Seed 43: 1902 rounds (1899 with faults), 56263 messages, 535 lost, 552 duplicates, 296 restarts, 97 restarts of every node, 2 changes of leader.
+44 0 checks_passed=4 Seed 44: 1810 rounds (1807 with faults), 56380 messages, 539 lost, 543 duplicates, 248 restarts, 81 restarts of every node, 0 changes of leader.
+45 0 checks_passed=4 Seed 45: 2060 rounds (2057 with faults), 57861 messages, 516 lost, 608 duplicates, 344 restarts, 111 restarts of every node, 8 changes of leader.
+46 0 checks_passed=4 Seed 46: 2029 rounds (2026 with faults), 57289 messages, 554 lost, 505 duplicates, 319 restarts, 104 restarts of every node, 8 changes of leader.
+47 0 checks_passed=4 Seed 47: 1804 rounds (1801 with faults), 55505 messages, 532 lost, 573 duplicates, 237 restarts, 75 restarts of every node, 0 changes of leader.
+48 0 checks_passed=4 Seed 48: 2009 rounds (2006 with faults), 56966 messages, 567 lost, 569 duplicates, 314 restarts, 104 restarts of every node, 0 changes of leader.
+49 0 checks_passed=4 Seed 49: 2047 rounds (2044 with faults), 57505 messages, 556 lost, 596 duplicates, 369 restarts, 120 restarts of every node, 4 changes of leader.
+50 0 checks_passed=4 Seed 50: 1890 rounds (1887 with faults), 56916 messages, 580 lost, 576 duplicates, 295 restarts, 96 restarts of every node, 2 changes of leader.
+51 0 checks_passed=4 Seed 51: 1962 rounds (1959 with faults), 56776 messages, 558 lost, 588 duplicates, 286 restarts, 93 restarts of every node, 4 changes of leader.
+52 0 checks_passed=4 Seed 52: 1984 rounds (1981 with faults), 57062 messages, 592 lost, 589 duplicates, 294 restarts, 96 restarts of every node, 2 changes of leader.
+53 0 checks_passed=4 Seed 53: 2105 rounds (2102 with faults), 58325 messages, 568 lost, 575 duplicates, 366 restarts, 118 restarts of every node, 2 changes of leader.
+54 0 checks_passed=4 Seed 54: 2063 rounds (2060 with faults), 58013 messages, 565 lost, 555 duplicates, 343 restarts, 110 restarts of every node, 8 changes of leader.
+55 0 checks_passed=4 Seed 55: 2121 rounds (2118 with faults), 57841 messages, 571 lost, 530 duplicates, 366 restarts, 119 restarts of every node, 6 changes of leader.
+56 0 checks_passed=4 Seed 56: 1880 rounds (1877 with faults), 56255 messages, 534 lost, 509 duplicates, 271 restarts, 86 restarts of every node, 4 changes of leader.
+57 0 checks_passed=4 Seed 57: 1964 rounds (1961 with faults), 57252 messages, 567 lost, 552 duplicates, 322 restarts, 105 restarts of every node, 2 changes of leader.
+58 0 checks_passed=4 Seed 58: 1949 rounds (1946 with faults), 56867 messages, 587 lost, 592 duplicates, 320 restarts, 105 restarts of every node, 2 changes of leader.
+59 0 checks_passed=4 Seed 59: 1749 rounds (1746 with faults), 55844 messages, 562 lost, 526 duplicates, 209 restarts, 67 restarts of every node, 2 changes of leader.
+60 0 checks_passed=4 Seed 60: 1736 rounds (1733 with faults), 55106 messages, 504 lost, 576 duplicates, 216 restarts, 71 restarts of every node, 2 changes of leader.
+61 0 checks_passed=4 Seed 61: 1922 rounds (1919 with faults), 57168 messages, 569 lost, 517 duplicates, 298 restarts, 95 restarts of every node, 0 changes of leader.
+62 0 checks_passed=4 Seed 62: 1833 rounds (1830 with faults), 56192 messages, 529 lost, 541 duplicates, 258 restarts, 84 restarts of every node, 6 changes of leader.
+63 0 checks_passed=4 Seed 63: 1992 rounds (1989 with faults), 57457 messages, 575 lost, 548 duplicates, 309 restarts, 99 restarts of every node, 8 changes of leader.
+64 0 checks_passed=4 Seed 64: 2046 rounds (2043 with faults), 57706 messages, 607 lost, 561 duplicates, 369 restarts, 120 restarts of every node, 2 changes of leader.
+65 0 checks_passed=4 Seed 65: 1976 rounds (1973 with faults), 57084 messages, 573 lost, 576 duplicates, 334 restarts, 109 restarts of every node, 8 changes of leader.
+66 0 checks_passed=4 Seed 66: 2092 rounds (2089 with faults), 57083 messages, 544 lost, 582 duplicates, 362 restarts, 116 restarts of every node, 14 changes of leader.
+67 0 checks_passed=4 Seed 67: 1906 rounds (1903 with faults), 56017 messages, 593 lost, 557 duplicates, 290 restarts, 95 restarts of every node, 2 changes of leader.
+68 0 checks_passed=4 Seed 68: 2077 rounds (2074 with faults), 57837 messages, 599 lost, 583 duplicates, 380 restarts, 122 restarts of every node, 4 changes of leader.
+69 0 checks_passed=4 Seed 69: 2134 rounds (2131 with faults), 58281 messages, 574 lost, 601 duplicates, 353 restarts, 114 restarts of every node, 6 changes of leader.
+70 0 checks_passed=4 Seed 70: 1789 rounds (1786 with faults), 55363 messages, 544 lost, 554 duplicates, 250 restarts, 81 restarts of every node, 4 changes of leader.
+71 0 checks_passed=4 Seed 71: 1782 rounds (1779 with faults), 55629 messages, 545 lost, 533 duplicates, 252 restarts, 82 restarts of every node, 4 changes of leader.
+72 0 checks_passed=4 Seed 72: 1805 rounds (1802 with faults), 57133 messages, 555 lost, 580 duplicates, 254 restarts, 83 restarts of every node, 4 changes of leader.
+73 0 checks_passed=4 Seed 73: 1831 rounds (1828 with faults), 56335 messages, 560 lost, 539 duplicates, 255 restarts, 83 restarts of every node, 4 changes of leader.
+74 0 checks_passed=4 Seed 74: 1890 rounds (1887 with faults), 56410 messages, 552 lost, 562 duplicates, 284 restarts, 91 restarts of every node, 6 changes of leader.
+75 0 checks_passed=4 Seed 75: 2037 rounds (2034 with faults), 57426 messages, 547 lost, 561 duplicates, 334 restarts, 108 restarts of every node, 4 changes of leader.
+76 0 checks_passed=4 Seed 76: 2157 rounds (2154 with faults), 58580 messages, 610 lost, 557 duplicates, 377 restarts, 121 restarts of every node, 8 changes of leader.
+77 0 checks_passed=4 Seed 77: 2046 rounds (2043 with faults), 57350 messages, 579 lost, 584 duplicates, 348 restarts, 113 restarts of every node, 2 changes of leader.
+78 0 checks_passed=4 Seed 78: 1908 rounds (1905 with faults), 56850 messages, 572 lost, 619 duplicates, 284 restarts, 92 restarts of every node, 4 changes of leader.
+79 0 checks_passed=4 Seed 79: 1996 rounds (1993 with faults), 57667 messages, 576 lost, 577 duplicates, 304 restarts, 96 restarts of every node, 10 changes of leader.
+80 0 checks_passed=4 Seed 80: 1979 rounds (1976 with faults), 57044 messages, 530 lost, 542 duplicates, 316 restarts, 103 restarts of every node, 6 changes of leader.
+81 0 checks_passed=4 Seed 81: 1902 rounds (1899 with faults), 56728 messages, 592 lost, 593 duplicates, 264 restarts, 84 restarts of every node, 10 changes of leader.
+82 0 checks_passed=4 Seed 82: 1888 rounds (1885 with faults), 56501 messages, 552 lost, 538 duplicates, 259 restarts, 82 restarts of every node, 6 changes of leader.
+83 0 checks_passed=4 Seed 83: 1947 rounds (1944 with faults), 57121 messages, 551 lost, 544 duplicates, 316 restarts, 103 restarts of every node, 5 changes of leader.
+84 0 checks_passed=4 Seed 84: 1814 rounds (1811 with faults), 56166 messages, 599 lost, 530 duplicates, 237 restarts, 76 restarts of every node, 4 changes of leader.
+85 0 checks_passed=4 Seed 85: 1871 rounds (1868 with faults), 56382 messages, 547 lost, 542 duplicates, 274 restarts, 89 restarts of every node, 6 changes of leader.
+86 0 checks_passed=4 Seed 86: 1894 rounds (1891 with faults), 56916 messages, 597 lost, 534 duplicates, 263 restarts, 84 restarts of every node, 6 changes of leader.
+87 0 checks_passed=4 Seed 87: 1930 rounds (1927 with faults), 56211 messages, 527 lost, 580 duplicates, 292 restarts, 94 restarts of every node, 8 changes of leader.
+88 0 checks_passed=4 Seed 88: 1909 rounds (1906 with faults), 56031 messages, 561 lost, 553 duplicates, 300 restarts, 98 restarts of every node, 6 changes of leader.
+89 0 checks_passed=4 Seed 89: 1857 rounds (1854 with faults), 56014 messages, 547 lost, 575 duplicates, 273 restarts, 89 restarts of every node, 2 changes of leader.
+90 0 checks_passed=4 Seed 90: 2054 rounds (2051 with faults), 57490 messages, 574 lost, 552 duplicates, 313 restarts, 100 restarts of every node, 10 changes of leader.
+91 0 checks_passed=4 Seed 91: 2022 rounds (2019 with faults), 57196 messages, 556 lost, 590 duplicates, 339 restarts, 109 restarts of every node, 2 changes of leader.
+92 0 checks_passed=4 Seed 92: 1967 rounds (1964 with faults), 56976 messages, 575 lost, 563 duplicates, 310 restarts, 100 restarts of every node, 6 changes of leader.
+93 0 checks_passed=4 Seed 93: 1985 rounds (1982 with faults), 57242 messages, 584 lost, 552 duplicates, 328 restarts, 105 restarts of every node, 8 changes of leader.
+94 0 checks_passed=4 Seed 94: 1799 rounds (1796 with faults), 55606 messages, 536 lost, 531 duplicates, 229 restarts, 73 restarts of every node, 2 changes of leader.
+95 0 checks_passed=4 Seed 95: 1849 rounds (1846 with faults), 56401 messages, 535 lost, 592 duplicates, 283 restarts, 91 restarts of every node, 8 changes of leader.
+96 0 checks_passed=4 Seed 96: 1956 rounds (1953 with faults), 56716 messages, 558 lost, 528 duplicates, 290 restarts, 94 restarts of every node, 10 changes of leader.
+97 0 checks_passed=4 Seed 97: 1825 rounds (1822 with faults), 56503 messages, 575 lost, 582 duplicates, 265 restarts, 85 restarts of every node, 5 changes of leader.
+98 0 checks_passed=4 Seed 98: 2014 rounds (2011 with faults), 57396 messages, 538 lost, 624 duplicates, 340 restarts, 110 restarts of every node, 10 changes of leader.
+99 0 checks_passed=4 Seed 99: 1758 rounds (1755 with faults), 55410 messages, 553 lost, 523 duplicates, 216 restarts, 69 restarts of every node, 0 changes of leader.
+100 0 checks_passed=4 Seed 100: 1819 rounds (1816 with faults), 56194 messages, 570 lost, 568 duplicates, 258 restarts, 85 restarts of every node, 2 changes of leader.
+101 0 checks_passed=4 Seed 101: 2021 rounds (2018 with faults), 56958 messages, 554 lost, 577 duplicates, 324 restarts, 106 restarts of every node, 2 changes of leader.
+102 0 checks_passed=4 Seed 102: 1850 rounds (1847 with faults), 56152 messages, 578 lost, 587 duplicates, 250 restarts, 81 restarts of every node, 0 changes of leader.
+103 0 checks_passed=4 Seed 103: 2079 rounds (2076 with faults), 57069 messages, 540 lost, 524 duplicates, 355 restarts, 115 restarts of every node, 4 changes of leader.
+104 0 checks_passed=4 Seed 104: 1890 rounds (1887 with faults), 56448 messages, 546 lost, 529 duplicates, 272 restarts, 87 restarts of every node, 5 changes of leader.
+105 0 checks_passed=4 Seed 105: 1833 rounds (1830 with faults), 56279 messages, 605 lost, 532 duplicates, 239 restarts, 78 restarts of every node, 4 changes of leader.
+106 0 checks_passed=4 Seed 106: 2125 rounds (2122 with faults), 57793 messages, 571 lost, 582 duplicates, 390 restarts, 127 restarts of every node, 4 changes of leader.
+107 0 checks_passed=4 Seed 107: 2053 rounds (2050 with faults), 57599 messages, 556 lost, 546 duplicates, 334 restarts, 106 restarts of every node, 6 changes of leader.
+108 0 checks_passed=4 Seed 108: 2070 rounds (2067 with faults), 57731 messages, 577 lost, 589 duplicates, 332 restarts, 106 restarts of every node, 10 changes of leader.
+109 0 checks_passed=4 Seed 109: 2094 rounds (2091 with faults), 57942 messages, 580 lost, 543 duplicates, 353 restarts, 114 restarts of every node, 4 changes of leader.
+110 0 checks_passed=4 Seed 110: 1930 rounds (1927 with faults), 56484 messages, 569 lost, 544 duplicates, 282 restarts, 91 restarts of every node, 10 changes of leader.
+111 0 checks_passed=4 Seed 111: 1961 rounds (1958 with faults), 56500 messages, 566 lost, 545 duplicates, 274 restarts, 90 restarts of every node, 6 changes of leader.
+112 0 checks_passed=4 Seed 112: 1868 rounds (1865 with faults), 56110 messages, 502 lost, 571 duplicates, 263 restarts, 84 restarts of every node, 6 changes of leader.
+113 0 checks_passed=4 Seed 113: 1873 rounds (1870 with faults), 56401 messages, 570 lost, 568 duplicates, 246 restarts, 79 restarts of every node, 4 changes of leader.
+114 0 checks_passed=4 Seed 114: 1882 rounds (1879 with faults), 56842 messages, 630 lost, 561 duplicates, 286 restarts, 91 restarts of every node, 4 changes of leader.
+115 0 checks_passed=4 Seed 115: 2048 rounds (2045 with faults), 58124 messages, 618 lost, 583 duplicates, 335 restarts, 109 restarts of every node, 2 changes of leader.
+116 0 checks_passed=4 Seed 116: 1783 rounds (1780 with faults), 55358 messages, 526 lost, 541 duplicates, 247 restarts, 81 restarts of every node, 2 changes of leader.
+117 0 checks_passed=4 Seed 117: 1910 rounds (1907 with faults), 56621 messages, 547 lost, 561 duplicates, 310 restarts, 100 restarts of every node, 5 changes of leader.
+118 0 checks_passed=4 Seed 118: 1912 rounds (1909 with faults), 56257 messages, 539 lost, 521 duplicates, 300 restarts, 96 restarts of every node, 2 changes of leader.
+119 0 checks_passed=4 Seed 119: 1889 rounds (1886 with faults), 57003 messages, 590 lost, 562 duplicates, 279 restarts, 90 restarts of every node, 2 changes of leader.
+120 0 checks_passed=4 Seed 120: 1889 rounds (1886 with faults), 55757 messages, 540 lost, 539 duplicates, 288 restarts, 94 restarts of every node, 4 changes of leader.
+121 0 checks_passed=4 Seed 121: 1823 rounds (1820 with faults), 55080 messages, 529 lost, 522 duplicates, 272 restarts, 89 restarts of every node, 4 changes of leader.
+122 0 checks_passed=4 Seed 122: 2179 rounds (2176 with faults), 58154 messages, 556 lost, 544 duplicates, 422 restarts, 137 restarts of every node, 4 changes of leader.
+123 0 checks_passed=4 Seed 123: 1773 rounds (1770 with faults), 55533 messages, 505 lost, 558 duplicates, 239 restarts, 76 restarts of every node, 4 changes of leader.
+124 0 checks_passed=4 Seed 124: 2110 rounds (2107 with faults), 58119 messages, 600 lost, 560 duplicates, 346 restarts, 110 restarts of every node, 14 changes of leader.
+125 0 checks_passed=4 Seed 125: 1872 rounds (1869 with faults), 56714 messages, 629 lost, 539 duplicates, 284 restarts, 89 restarts of every node, 4 changes of leader.
+126 0 checks_passed=4 Seed 126: 1772 rounds (1769 with faults), 55579 messages, 564 lost, 534 duplicates, 241 restarts, 77 restarts of every node, 0 changes of leader.
+127 0 checks_passed=4 Seed 127: 1813 rounds (1810 with faults), 56126 messages, 558 lost, 575 duplicates, 239 restarts, 77 restarts of every node, 6 changes of leader.
+128 0 checks_passed=4 Seed 128: 2048 rounds (2045 with faults), 57735 messages, 614 lost, 550 duplicates, 314 restarts, 102 restarts of every node, 8 changes of leader.
+129 0 checks_passed=4 Seed 129: 1918 rounds (1915 with faults), 56750 messages, 557 lost, 590 duplicates, 292 restarts, 95 restarts of every node, 4 changes of leader.
+130 0 checks_passed=4 Seed 130: 1881 rounds (1878 with faults), 56507 messages, 556 lost, 564 duplicates, 269 restarts, 87 restarts of every node, 6 changes of leader.
+131 0 checks_passed=4 Seed 131: 1797 rounds (1794 with faults), 55255 messages, 528 lost, 546 duplicates, 227 restarts, 73 restarts of every node, 4 changes of leader.
+132 0 checks_passed=4 Seed 132: 1874 rounds (1871 with faults), 56514 messages, 581 lost, 567 duplicates, 267 restarts, 86 restarts of every node, 6 changes of leader.
+133 0 checks_passed=4 Seed 133: 2011 rounds (2008 with faults), 56967 messages, 567 lost, 557 duplicates, 312 restarts, 100 restarts of every node, 2 changes of leader.
+134 0 checks_passed=4 Seed 134: 1936 rounds (1933 with faults), 57224 messages, 573 lost, 570 duplicates, 285 restarts, 92 restarts of every node, 4 changes of leader.
+135 0 checks_passed=4 Seed 135: 2081 rounds (2078 with faults), 57867 messages, 576 lost, 560 duplicates, 355 restarts, 114 restarts of every node, 6 changes of leader.
+136 0 checks_passed=4 Seed 136: 1965 rounds (1962 with faults), 57589 messages, 599 lost, 598 duplicates, 280 restarts, 91 restarts of every node, 6 changes of leader.
+137 0 checks_passed=4 Seed 137: 2035 rounds (2032 with faults), 57637 messages, 575 lost, 573 duplicates, 334 restarts, 107 restarts of every node, 8 changes of leader.
+138 0 checks_passed=4 Seed 138: 1754 rounds (1751 with faults), 55808 messages, 564 lost, 563 duplicates, 205 restarts, 67 restarts of every node, 0 changes of leader.
+139 0 checks_passed=4 Seed 139: 2000 rounds (1997 with faults), 56162 messages, 526 lost, 544 duplicates, 310 restarts, 100 restarts of every node, 6 changes of leader.
+140 0 checks_passed=4 Seed 140: 1870 rounds (1867 with faults), 57074 messages, 548 lost, 606 duplicates, 293 restarts, 94 restarts of every node, 6 changes of leader.
+141 0 checks_passed=4 Seed 141: 2186 rounds (2183 with faults), 58442 messages, 571 lost, 602 duplicates, 384 restarts, 125 restarts of every node, 4 changes of leader.
+142 0 checks_passed=4 Seed 142: 1879 rounds (1876 with faults), 56041 messages, 564 lost, 569 duplicates, 248 restarts, 80 restarts of every node, 6 changes of leader.
+143 0 checks_passed=4 Seed 143: 1898 rounds (1895 with faults), 57094 messages, 599 lost, 564 duplicates, 294 restarts, 93 restarts of every node, 2 changes of leader.
+144 0 checks_passed=4 Seed 144: 1955 rounds (1952 with faults), 56963 messages, 584 lost, 591 duplicates, 325 restarts, 103 restarts of every node, 6 changes of leader.
+145 0 checks_passed=4 Seed 145: 1872 rounds (1869 with faults), 56523 messages, 567 lost, 530 duplicates, 268 restarts, 87 restarts of every node, 2 changes of leader.
+146 0 checks_passed=4 Seed 146: 1858 rounds (1855 with faults), 56543 messages, 506 lost, 525 duplicates, 260 restarts, 84 restarts of every node, 4 changes of leader.
+147 0 checks_passed=4 Seed 147: 1812 rounds (1809 with faults), 56300 messages, 506 lost, 559 duplicates, 251 restarts, 82 restarts of every node, 2 changes of leader.
+148 0 checks_passed=4 Seed 148: 1847 rounds (1844 with faults), 56309 messages, 625 lost, 583 duplicates, 265 restarts, 85 restarts of every node, 2 changes of leader.
+149 0 checks_passed=4 Seed 149: 1890 rounds (1887 with faults), 56036 messages, 555 lost, 558 duplicates, 279 restarts, 90 restarts of every node, 10 changes of leader.
+150 0 checks_passed=4 Seed 150: 1788 rounds (1785 with faults), 55861 messages, 585 lost, 507 duplicates, 232 restarts, 75 restarts of every node, 2 changes of leader.
+151 0 checks_passed=4 Seed 151: 2124 rounds (2121 with faults), 58094 messages, 618 lost, 569 duplicates, 360 restarts, 116 restarts of every node, 2 changes of leader.
+152 0 checks_passed=4 Seed 152: 1799 rounds (1796 with faults), 55633 messages, 560 lost, 549 duplicates, 239 restarts, 78 restarts of every node, 4 changes of leader.
+153 0 checks_passed=4 Seed 153: 1885 rounds (1882 with faults), 55684 messages, 559 lost, 539 duplicates, 287 restarts, 94 restarts of every node, 0 changes of leader.
+154 0 checks_passed=4 Seed 154: 1858 rounds (1855 with faults), 56858 messages, 548 lost, 554 duplicates, 245 restarts, 80 restarts of every node, 2 changes of leader.
+155 0 checks_passed=4 Seed 155: 1938 rounds (1935 with faults), 56849 messages, 563 lost, 559 duplicates, 299 restarts, 95 restarts of every node, 8 changes of leader.
+156 0 checks_passed=4 Seed 156: 1887 rounds (1884 with faults), 56264 messages, 525 lost, 542 duplicates, 264 restarts, 86 restarts of every node, 4 changes of leader.
+157 0 checks_passed=4 Seed 157: 1849 rounds (1846 with faults), 55405 messages, 545 lost, 536 duplicates, 250 restarts, 80 restarts of every node, 5 changes of leader.
+158 0 checks_passed=4 Seed 158: 2013 rounds (2010 with faults), 58095 messages, 610 lost, 641 duplicates, 309 restarts, 99 restarts of every node, 2 changes of leader.
+159 0 checks_passed=4 Seed 159: 1903 rounds (1900 with faults), 56539 messages, 607 lost, 549 duplicates, 267 restarts, 87 restarts of every node, 4 changes of leader.
+160 0 checks_passed=4 Seed 160: 2036 rounds (2033 with faults), 57059 messages, 597 lost, 540 duplicates, 325 restarts, 106 restarts of every node, 6 changes of leader.
+161 0 checks_passed=4 Seed 161: 1919 rounds (1916 with faults), 55926 messages, 493 lost, 542 duplicates, 282 restarts, 89 restarts of every node, 0 changes of leader.
+162 0 checks_passed=4 Seed 162: 1969 rounds (1966 with faults), 57188 messages, 577 lost, 568 duplicates, 322 restarts, 104 restarts of every node, 10 changes of leader.
+163 0 checks_passed=4 Seed 163: 1937 rounds (1934 with faults), 56320 messages, 537 lost, 599 duplicates, 296 restarts, 95 restarts of every node, 4 changes of leader.
+164 0 checks_passed=4 Seed 164: 1789 rounds (1786 with faults), 55574 messages, 499 lost, 561 duplicates, 224 restarts, 71 restarts of every node, 3 changes of leader.
+165 0 checks_passed=4 Seed 165: 1963 rounds (1960 with faults), 57116 messages, 571 lost, 532 duplicates, 291 restarts, 93 restarts of every node, 10 changes of leader.
+166 0 checks_passed=4 Seed 166: 1751 rounds (1748 with faults), 55569 messages, 565 lost, 560 duplicates, 223 restarts, 72 restarts of every node, 2 changes of leader.
+167 0 checks_passed=4 Seed 167: 1976 rounds (1973 with faults), 57097 messages, 618 lost, 566 duplicates, 308 restarts, 100 restarts of every node, 6 changes of leader.
+168 0 checks_passed=4 Seed 168: 1924 rounds (1921 with faults), 56592 messages, 568 lost, 571 duplicates, 296 restarts, 96 restarts of every node, 6 changes of leader.
+169 0 checks_passed=4 Seed 169: 2133 rounds (2130 with faults), 58142 messages, 584 lost, 576 duplicates, 356 restarts, 112 restarts of every node, 14 changes of leader.
+170 0 checks_passed=4 Seed 170: 1905 rounds (1902 with faults), 56085 messages, 564 lost, 565 duplicates, 278 restarts, 90 restarts of every node, 6 changes of leader.
+171 0 checks_passed=4 Seed 171: 1916 rounds (1913 with faults), 57380 messages, 600 lost, 556 duplicates, 293 restarts, 93 restarts of every node, 8 changes of leader.
+172 0 checks_passed=4 Seed 172: 1850 rounds (1847 with faults), 56480 messages, 541 lost, 550 duplicates, 239 restarts, 77 restarts of every node, 2 changes of leader.
+173 0 checks_passed=4 Seed 173: 2062 rounds (2059 with faults), 57465 messages, 596 lost, 596 duplicates, 337 restarts, 109 restarts of every node, 8 changes of leader.
+174 0 checks_passed=4 Seed 174: 1801 rounds (1798 with faults), 55653 messages, 571 lost, 567 duplicates, 232 restarts, 75 restarts of every node, 4 changes of leader.
+175 0 checks_passed=4 Seed 175: 1909 rounds (1906 with faults), 56863 messages, 563 lost, 542 duplicates, 288 restarts, 93 restarts of every node, 4 changes of leader.
+176 0 checks_passed=4 Seed 176: 1963 rounds (1960 with faults), 57185 messages, 610 lost, 564 duplicates, 293 restarts, 95 restarts of every node, 6 changes of leader.
+177 0 checks_passed=4 Seed 177: 1882 rounds (1879 with faults), 56885 messages, 548 lost, 554 duplicates, 280 restarts, 90 restarts of every node, 8 changes of leader.
+178 0 checks_passed=4 Seed 178: 1735 rounds (1732 with faults), 55542 messages, 585 lost, 535 duplicates, 211 restarts, 69 restarts of every node, 4 changes of leader.
+179 0 checks_passed=4 Seed 179: 1792 rounds (1789 with faults), 55837 messages, 582 lost, 554 duplicates, 220 restarts, 71 restarts of every node, 2 changes of leader.
+180 0 checks_passed=4 Seed 180: 1933 rounds (1930 with faults), 56801 messages, 560 lost, 539 duplicates, 281 restarts, 92 restarts of every node, 0 changes of leader.
+181 0 checks_passed=4 Seed 181: 2059 rounds (2056 with faults), 57854 messages, 596 lost, 539 duplicates, 328 restarts, 105 restarts of every node, 6 changes of leader.
+182 0 checks_passed=4 Seed 182: 1913 rounds (1910 with faults), 56606 messages, 568 lost, 547 duplicates, 289 restarts, 92 restarts of every node, 6 changes of leader.
+183 0 checks_passed=4 Seed 183: 2119 rounds (2116 with faults), 57912 messages, 578 lost, 561 duplicates, 347 restarts, 112 restarts of every node, 10 changes of leader.
+184 0 checks_passed=4 Seed 184: 2021 rounds (2018 with faults), 57763 messages, 592 lost, 609 duplicates, 338 restarts, 110 restarts of every node, 0 changes of leader.
+185 0 checks_passed=4 Seed 185: 1848 rounds (1845 with faults), 55660 messages, 527 lost, 533 duplicates, 254 restarts, 81 restarts of every node, 8 changes of leader.
+186 0 checks_passed=4 Seed 186: 1844 rounds (1841 with faults), 56943 messages, 564 lost, 559 duplicates, 269 restarts, 89 restarts of every node, 4 changes of leader.
+187 0 checks_passed=4 Seed 187: 2016 rounds (2013 with faults), 57085 messages, 534 lost, 578 duplicates, 347 restarts, 111 restarts of every node, 6 changes of leader.
+188 0 checks_passed=4 Seed 188: 1852 rounds (1849 with faults), 56220 messages, 520 lost, 534 duplicates, 281 restarts, 91 restarts of every node, 6 changes of leader.
+189 0 checks_passed=4 Seed 189: 1774 rounds (1771 with faults), 55931 messages, 525 lost, 536 duplicates, 225 restarts, 74 restarts of every node, 2 changes of leader.
+190 0 checks_passed=4 Seed 190: 1930 rounds (1927 with faults), 55860 messages, 548 lost, 553 duplicates, 291 restarts, 93 restarts of every node, 6 changes of leader.
+191 0 checks_passed=4 Seed 191: 1994 rounds (1991 with faults), 57164 messages, 548 lost, 572 duplicates, 316 restarts, 102 restarts of every node, 6 changes of leader.
+192 0 checks_passed=4 Seed 192: 1947 rounds (1944 with faults), 56950 messages, 539 lost, 546 duplicates, 307 restarts, 99 restarts of every node, 8 changes of leader.
+193 0 checks_passed=4 Seed 193: 1809 rounds (1806 with faults), 55819 messages, 563 lost, 592 duplicates, 253 restarts, 83 restarts of every node, 0 changes of leader.
+194 0 checks_passed=4 Seed 194: 1833 rounds (1830 with faults), 56463 messages, 562 lost, 568 duplicates, 235 restarts, 76 restarts of every node, 4 changes of leader.
+195 0 checks_passed=4 Seed 195: 2171 rounds (2168 with faults), 57926 messages, 584 lost, 574 duplicates, 375 restarts, 121 restarts of every node, 2 changes of leader.
+196 0 checks_passed=4 Seed 196: 1973 rounds (1970 with faults), 57170 messages, 590 lost, 605 duplicates, 323 restarts, 104 restarts of every node, 7 changes of leader.
+197 0 checks_passed=4 Seed 197: 1861 rounds (1858 with faults), 56234 messages, 537 lost, 569 duplicates, 262 restarts, 85 restarts of every node, 10 changes of leader.
+198 0 checks_passed=4 Seed 198: 2060 rounds (2057 with faults), 57740 messages, 585 lost, 569 duplicates, 350 restarts, 113 restarts of every node, 0 changes of leader.
+199 0 checks_passed=4 Seed 199: 1846 rounds (1843 with faults), 56193 messages, 529 lost, 558 duplicates, 260 restarts, 83 restarts of every node, 6 changes of leader.
+200 0 checks_passed=4 Seed 200: 1806 rounds (1803 with faults), 55670 messages, 551 lost, 555 duplicates, 256 restarts, 82 restarts of every node, 6 changes of leader.
+201 0 checks_passed=4 Seed 201: 1922 rounds (1919 with faults), 56340 messages, 592 lost, 509 duplicates, 298 restarts, 95 restarts of every node, 8 changes of leader.
+202 0 checks_passed=4 Seed 202: 1897 rounds (1894 with faults), 57044 messages, 599 lost, 560 duplicates, 290 restarts, 95 restarts of every node, 0 changes of leader.
+203 0 checks_passed=4 Seed 203: 1869 rounds (1866 with faults), 56514 messages, 563 lost, 570 duplicates, 268 restarts, 85 restarts of every node, 2 changes of leader.
+204 0 checks_passed=4 Seed 204: 1963 rounds (1960 with faults), 57096 messages, 568 lost, 579 duplicates, 315 restarts, 103 restarts of every node, 6 changes of leader.
+205 0 checks_passed=4 Seed 205: 1973 rounds (1970 with faults), 56567 messages, 529 lost, 555 duplicates, 300 restarts, 98 restarts of every node, 4 changes of leader.
+206 0 checks_passed=4 Seed 206: 2007 rounds (2004 with faults), 57271 messages, 583 lost, 575 duplicates, 326 restarts, 105 restarts of every node, 6 changes of leader.
+207 0 checks_passed=4 Seed 207: 1785 rounds (1782 with faults), 55708 messages, 609 lost, 556 duplicates, 219 restarts, 70 restarts of every node, 4 changes of leader.
+208 0 checks_passed=4 Seed 208: 2078 rounds (2075 with faults), 57740 messages, 576 lost, 560 duplicates, 357 restarts, 114 restarts of every node, 8 changes of leader.
+209 0 checks_passed=4 Seed 209: 2111 rounds (2108 with faults), 58148 messages, 603 lost, 566 duplicates, 357 restarts, 114 restarts of every node, 10 changes of leader.
+210 0 checks_passed=4 Seed 210: 1968 rounds (1965 with faults), 56640 messages, 561 lost, 572 duplicates, 315 restarts, 103 restarts of every node, 2 changes of leader.
+211 0 checks_passed=4 Seed 211: 1930 rounds (1927 with faults), 56398 messages, 559 lost, 566 duplicates, 302 restarts, 97 restarts of every node, 2 changes of leader.
+212 0 checks_passed=4 Seed 212: 1804 rounds (1801 with faults), 55984 messages, 586 lost, 542 duplicates, 227 restarts, 73 restarts of every node, 8 changes of leader.
+213 0 checks_passed=4 Seed 213: 1994 rounds (1991 with faults), 57400 messages, 596 lost, 561 duplicates, 285 restarts, 91 restarts of every node, 4 changes of leader.
+214 0 checks_passed=4 Seed 214: 2031 rounds (2028 with faults), 57774 messages, 545 lost, 587 duplicates, 332 restarts, 107 restarts of every node, 0 changes of leader.
+215 0 checks_passed=4 Seed 215: 2029 rounds (2026 with faults), 57593 messages, 598 lost, 571 duplicates, 332 restarts, 107 restarts of every node, 6 changes of leader.
+216 0 checks_passed=4 Seed 216: 1825 rounds (1822 with faults), 55749 messages, 577 lost, 543 duplicates, 241 restarts, 79 restarts of every node, 2 changes of leader.
+217 0 checks_passed=4 Seed 217: 2066 rounds (2063 with faults), 57071 messages, 572 lost, 602 duplicates, 330 restarts, 106 restarts of every node, 8 changes of leader.
+218 0 checks_passed=4 Seed 218: 2097 rounds (2094 with faults), 58033 messages, 576 lost, 580 duplicates, 337 restarts, 108 restarts of every node, 6 changes of leader.
+219 0 checks_passed=4 Seed 219: 1716 rounds (1713 with faults), 55407 messages, 565 lost, 539 duplicates, 225 restarts, 72 restarts of every node, 4 changes of leader.
+220 0 checks_passed=4 Seed 220: 1806 rounds (1803 with faults), 56216 messages, 527 lost, 547 duplicates, 246 restarts, 79 restarts of every node, 4 changes of leader.
+221 0 checks_passed=4 Seed 221: 1672 rounds (1669 with faults), 54806 messages, 553 lost, 534 duplicates, 208 restarts, 68 restarts of every node, 2 changes of leader.
+222 0 checks_passed=4 Seed 222: 1828 rounds (1825 with faults), 55836 messages, 543 lost, 556 duplicates, 252 restarts, 81 restarts of every node, 6 changes of leader.
+223 0 checks_passed=4 Seed 223: 1851 rounds (1848 with faults), 56463 messages, 558 lost, 495 duplicates, 232 restarts, 75 restarts of every node, 6 changes of leader.
+224 0 checks_passed=4 Seed 224: 1715 rounds (1712 with faults), 55411 messages, 586 lost, 541 duplicates, 216 restarts, 69 restarts of every node, 2 changes of leader.
+225 0 checks_passed=4 Seed 225: 1843 rounds (1840 with faults), 56061 messages, 593 lost, 573 duplicates, 257 restarts, 83 restarts of every node, 4 changes of leader.
+226 0 checks_passed=4 Seed 226: 1943 rounds (1940 with faults), 56530 messages, 581 lost, 550 duplicates, 280 restarts, 90 restarts of every node, 2 changes of leader.
+227 0 checks_passed=4 Seed 227: 1909 rounds (1906 with faults), 56523 messages, 553 lost, 538 duplicates, 284 restarts, 91 restarts of every node, 0 changes of leader.
+228 0 checks_passed=4 Seed 228: 1739 rounds (1736 with faults), 54879 messages, 553 lost, 524 duplicates, 214 restarts, 68 restarts of every node, 5 changes of leader.
+229 0 checks_passed=4 Seed 229: 1920 rounds (1917 with faults), 57332 messages, 600 lost, 578 duplicates, 282 restarts, 90 restarts of every node, 4 changes of leader.
+230 0 checks_passed=4 Seed 230: 1983 rounds (1980 with faults), 57283 messages, 509 lost, 576 duplicates, 339 restarts, 111 restarts of every node, 0 changes of leader.
+231 0 checks_passed=4 Seed 231: 1933 rounds (1930 with faults), 57249 messages, 566 lost, 574 duplicates, 288 restarts, 93 restarts of every node, 4 changes of leader.
+232 0 checks_passed=4 Seed 232: 1920 rounds (1917 with faults), 56515 messages, 538 lost, 530 duplicates, 287 restarts, 93 restarts of every node, 6 changes of leader.
+233 0 checks_passed=4 Seed 233: 1971 rounds (1968 with faults), 57081 messages, 565 lost, 584 duplicates, 289 restarts, 93 restarts of every node, 8 changes of leader.
+234 0 checks_passed=4 Seed 234: 1931 rounds (1928 with faults), 56311 messages, 574 lost, 545 duplicates, 312 restarts, 101 restarts of every node, 2 changes of leader.
+235 0 checks_passed=4 Seed 235: 1910 rounds (1907 with faults), 56379 messages, 550 lost, 555 duplicates, 283 restarts, 92 restarts of every node, 4 changes of leader.
+236 0 checks_passed=4 Seed 236: 1824 rounds (1821 with faults), 56330 messages, 610 lost, 536 duplicates, 255 restarts, 82 restarts of every node, 0 changes of leader.
+237 0 checks_passed=4 Seed 237: 1901 rounds (1898 with faults), 56844 messages, 543 lost, 541 duplicates, 297 restarts, 95 restarts of every node, 4 changes of leader.
+238 0 checks_passed=4 Seed 238: 1859 rounds (1856 with faults), 56387 messages, 538 lost, 567 duplicates, 257 restarts, 83 restarts of every node, 0 changes of leader.
+239 0 checks_passed=4 Seed 239: 2024 rounds (2021 with faults), 56943 messages, 567 lost, 556 duplicates, 326 restarts, 106 restarts of every node, 8 changes of leader.
+240 0 checks_passed=4 Seed 240: 2018 rounds (2015 with faults), 57218 messages, 594 lost, 597 duplicates, 333 restarts, 109 restarts of every node, 4 changes of leader.
+241 0 checks_passed=4 Seed 241: 1907 rounds (1904 with faults), 57102 messages, 601 lost, 567 duplicates, 295 restarts, 95 restarts of every node, 6 changes of leader.
+242 0 checks_passed=4 Seed 242: 1649 rounds (1646 with faults), 54830 messages, 498 lost, 542 duplicates, 201 restarts, 65 restarts of every node, 0 changes of leader.
+243 0 checks_passed=4 Seed 243: 2049 rounds (2046 with faults), 57939 messages, 540 lost, 623 duplicates, 343 restarts, 110 restarts of every node, 4 changes of leader.
+244 0 checks_passed=4 Seed 244: 2127 rounds (2124 with faults), 58214 messages, 594 lost, 570 duplicates, 380 restarts, 123 restarts of every node, 4 changes of leader.
+245 0 checks_passed=4 Seed 245: 2186 rounds (2183 with faults), 58751 messages, 593 lost, 539 duplicates, 409 restarts, 132 restarts of every node, 4 changes of leader.
+246 0 checks_passed=4 Seed 246: 2225 rounds (2222 with faults), 58834 messages, 595 lost, 566 duplicates, 392 restarts, 127 restarts of every node, 4 changes of leader.
+247 0 checks_passed=4 Seed 247: 1753 rounds (1750 with faults), 55671 messages, 549 lost, 567 duplicates, 219 restarts, 70 restarts of every node, 2 changes of leader.
+248 0 checks_passed=4 Seed 248: 1928 rounds (1925 with faults), 56757 messages, 586 lost, 593 duplicates, 297 restarts, 94 restarts of every node, 10 changes of leader.
+249 0 checks_passed=4 Seed 249: 1834 rounds (1831 with faults), 56412 messages, 577 lost, 576 duplicates, 248 restarts, 80 restarts of every node, 4 changes of leader.
+250 0 checks_passed=4 Seed 250: 1650 rounds (1647 with faults), 55322 messages, 542 lost, 522 duplicates, 184 restarts, 58 restarts of every node, 2 changes of leader.
+251 0 checks_passed=4 Seed 251: 1934 rounds (1931 with faults), 56834 messages, 589 lost, 555 duplicates, 308 restarts, 100 restarts of every node, 2 changes of leader.
+252 0 checks_passed=4 Seed 252: 1882 rounds (1879 with faults), 56549 messages, 555 lost, 530 duplicates, 250 restarts, 81 restarts of every node, 4 changes of leader.
+253 0 checks_passed=4 Seed 253: 2161 rounds (2158 with faults), 57908 messages, 556 lost, 579 duplicates, 398 restarts, 128 restarts of every node, 16 changes of leader.
+254 0 checks_passed=4 Seed 254: 1937 rounds (1934 with faults), 56865 messages, 581 lost, 572 duplicates, 302 restarts, 98 restarts of every node, 4 changes of leader.
+255 0 checks_passed=4 Seed 255: 2086 rounds (2083 with faults), 57338 messages, 524 lost, 559 duplicates, 363 restarts, 118 restarts of every node, 0 changes of leader.
+256 0 checks_passed=4 Seed 256: 1987 rounds (1984 with faults), 56996 messages, 563 lost, 587 duplicates, 312 restarts, 101 restarts of every node, 6 changes of leader.
+257 0 checks_passed=4 Seed 257: 1963 rounds (1960 with faults), 56083 messages, 508 lost, 614 duplicates, 306 restarts, 97 restarts of every node, 10 changes of leader.
+258 0 checks_passed=4 Seed 258: 2068 rounds (2065 with faults), 58337 messages, 614 lost, 577 duplicates, 350 restarts, 112 restarts of every node, 4 changes of leader.
+259 0 checks_passed=4 Seed 259: 1870 rounds (1867 with faults), 56604 messages, 534 lost, 566 duplicates, 280 restarts, 90 restarts of every node, 4 changes of leader.
+260 0 checks_passed=4 Seed 260: 1904 rounds (1901 with faults), 56593 messages, 566 lost, 553 duplicates, 291 restarts, 94 restarts of every node, 8 changes of leader.
+261 0 checks_passed=4 Seed 261: 1907 rounds (1904 with faults), 56397 messages, 564 lost, 591 duplicates, 282 restarts, 90 restarts of every node, 8 changes of leader.
+262 0 checks_passed=4 Seed 262: 2057 rounds (2054 with faults), 57163 messages, 573 lost, 590 duplicates, 356 restarts, 116 restarts of every node, 2 changes of leader.
+263 0 checks_passed=4 Seed 263: 1925 rounds (1922 with faults), 56385 messages, 570 lost, 563 duplicates, 268 restarts, 87 restarts of every node, 6 changes of leader.
+264 0 checks_passed=4 Seed 264: 1906 rounds (1903 with faults), 56637 messages, 553 lost, 585 duplicates, 282 restarts, 91 restarts of every node, 2 changes of leader.
+265 0 checks_passed=4 Seed 265: 2064 rounds (2061 with faults), 58176 messages, 606 lost, 573 duplicates, 337 restarts, 108 restarts of every node, 6 changes of leader.
+266 0 checks_passed=4 Seed 266: 1739 rounds (1736 with faults), 55992 messages, 560 lost, 540 duplicates, 210 restarts, 68 restarts of every node, 6 changes of leader.
+267 0 checks_passed=4 Seed 267: 1955 rounds (1952 with faults), 56699 messages, 523 lost, 581 duplicates, 306 restarts, 98 restarts of every node, 10 changes of leader.
+268 0 checks_passed=4 Seed 268: 1802 rounds (1799 with faults), 57000 messages, 561 lost, 575 duplicates, 244 restarts, 80 restarts of every node, 2 changes of leader.
+269 0 checks_passed=4 Seed 269: 1879 rounds (1876 with faults), 56946 messages, 611 lost, 571 duplicates, 272 restarts, 88 restarts of every node, 0 changes of leader.
+270 0 checks_passed=4 Seed 270: 1862 rounds (1859 with faults), 56224 messages, 555 lost, 555 duplicates, 259 restarts, 83 restarts of every node, 4 changes of leader.
+271 0 checks_passed=4 Seed 271: 1785 rounds (1782 with faults), 54977 messages, 475 lost, 590 duplicates, 247 restarts, 80 restarts of every node, 2 changes of leader.
+272 0 checks_passed=4 Seed 272: 1868 rounds (1865 with faults), 55799 messages, 545 lost, 554 duplicates, 257 restarts, 82 restarts of every node, 4 changes of leader.
+273 0 checks_passed=4 Seed 273: 1984 rounds (1981 with faults), 56727 messages, 602 lost, 560 duplicates, 309 restarts, 99 restarts of every node, 4 changes of leader.
+274 0 checks_passed=4 Seed 274: 1962 rounds (1959 with faults), 56953 messages, 572 lost, 601 duplicates, 282 restarts, 91 restarts of every node, 2 changes of leader.
+275 0 checks_passed=4 Seed 275: 2012 rounds (2009 with faults), 57654 messages, 594 lost, 529 duplicates, 311 restarts, 99 restarts of every node, 12 changes of leader.
+276 0 checks_passed=4 Seed 276: 2017 rounds (2014 with faults), 57627 messages, 590 lost, 595 duplicates, 315 restarts, 100 restarts of every node, 8 changes of leader.
+277 0 checks_passed=4 Seed 277: 1923 rounds (1920 with faults), 56668 messages, 579 lost, 560 duplicates, 284 restarts, 93 restarts of every node, 4 changes of leader.
+278 0 checks_passed=4 Seed 278: 1691 rounds (1688 with faults), 55248 messages, 534 lost, 502 duplicates, 202 restarts, 65 restarts of every node, 2 changes of leader.
+279 0 checks_passed=4 Seed 279: 2147 rounds (2144 with faults), 57851 messages, 568 lost, 584 duplicates, 348 restarts, 112 restarts of every node, 10 changes of leader.
+280 0 checks_passed=4 Seed 280: 1859 rounds (1856 with faults), 55486 messages, 545 lost, 583 duplicates, 263 restarts, 84 restarts of every node, 6 changes of leader.
+281 0 checks_passed=4 Seed 281: 1978 rounds (1975 with faults), 57011 messages, 567 lost, 584 duplicates, 334 restarts, 109 restarts of every node, 4 changes of leader.
+282 0 checks_passed=4 Seed 282: 2093 rounds (2090 with faults), 57458 messages, 561 lost, 582 duplicates, 401 restarts, 132 restarts of every node, 0 changes of leader.
+283 0 checks_passed=4 Seed 283: 1951 rounds (1948 with faults), 57192 messages, 590 lost, 561 duplicates, 311 restarts, 102 restarts of every node, 0 changes of leader.
+284 0 checks_passed=4 Seed 284: 2058 rounds (2055 with faults), 57719 messages, 581 lost, 570 duplicates, 319 restarts, 102 restarts of every node, 4 changes of leader.
+285 0 checks_passed=4 Seed 285: 1942 rounds (1939 with faults), 56802 messages, 574 lost, 574 duplicates, 275 restarts, 88 restarts of every node, 10 changes of leader.
+286 0 checks_passed=4 Seed 286: 1995 rounds (1992 with faults), 56917 messages, 583 lost, 550 duplicates, 313 restarts, 98 restarts of every node, 8 changes of leader.
+287 0 checks_passed=4 Seed 287: 1853 rounds (1850 with faults), 56214 messages, 547 lost, 538 duplicates, 276 restarts, 89 restarts of every node, 6 changes of leader.
+288 0 checks_passed=4 Seed 288: 1870 rounds (1867 with faults), 56660 messages, 583 lost, 559 duplicates, 266 restarts, 85 restarts of every node, 6 changes of leader.
+289 0 checks_passed=4 Seed 289: 1846 rounds (1843 with faults), 56646 messages, 586 lost, 532 duplicates, 268 restarts, 84 restarts of every node, 2 changes of leader.
+290 0 checks_passed=4 Seed 290: 2197 rounds (2194 with faults), 58389 messages, 629 lost, 597 duplicates, 406 restarts, 132 restarts of every node, 2 changes of leader.
+291 0 checks_passed=4 Seed 291: 1646 rounds (1643 with faults), 54290 messages, 545 lost, 527 duplicates, 181 restarts, 58 restarts of every node, 2 changes of leader.
+292 0 checks_passed=4 Seed 292: 1966 rounds (1963 with faults), 55874 messages, 551 lost, 527 duplicates, 316 restarts, 101 restarts of every node, 8 changes of leader.
+293 0 checks_passed=4 Seed 293: 2018 rounds (2015 with faults), 57936 messages, 615 lost, 583 duplicates, 324 restarts, 104 restarts of every node, 8 changes of leader.
+294 0 checks_passed=4 Seed 294: 2098 rounds (2095 with faults), 58103 messages, 595 lost, 545 duplicates, 354 restarts, 115 restarts of every node, 4 changes of leader.
+295 0 checks_passed=4 Seed 295: 1881 rounds (1878 with faults), 56830 messages, 561 lost, 589 duplicates, 292 restarts, 95 restarts of every node, 4 changes of leader.
+296 0 checks_passed=4 Seed 296: 1971 rounds (1968 with faults), 56462 messages, 559 lost, 515 duplicates, 318 restarts, 103 restarts of every node, 2 changes of leader.
+297 0 checks_passed=4 Seed 297: 2104 rounds (2101 with faults), 57555 messages, 603 lost, 560 duplicates, 371 restarts, 120 restarts of every node, 6 changes of leader.
+298 0 checks_passed=4 Seed 298: 2010 rounds (2007 with faults), 58004 messages, 607 lost, 599 duplicates, 312 restarts, 101 restarts of every node, 8 changes of leader.
+299 0 checks_passed=4 Seed 299: 2124 rounds (2121 with faults), 58197 messages, 605 lost, 575 duplicates, 376 restarts, 124 restarts of every node, 2 changes of leader.
+300 0 checks_passed=4 Seed 300: 1930 rounds (1927 with faults), 56433 messages, 572 lost, 542 duplicates, 284 restarts, 93 restarts of every node, 6 changes of leader.
+
+## Full output of seed 1
+
+Check 1 (each increment executed once): passed. The replies are the numbers 1 to 4000.
+Check 2 (final read): passed. The read at each node gives 4000.
+Check 3 (equal decided logs): passed. Each log holds 5899 entries.
+Check 4 (reads during the faults): passed. 400 reads gave at least the count of increments that were confirmed before the read started.
+Requests that the decided log holds more than once: 23.
+Seed 1: 1914 rounds (1911 with faults), 56729 messages, 581 lost, 575 duplicates, 304 restarts, 97 restarts of every node, 2 changes of leader.
+Messages through CBOR by kind: 0:2993 1:903 2:642 3:619 4:10313 5:14122 6:10964 7:1 8:2745 9:618 10:620 11:0 12:0 13:380 14:977 15:977 16:303 17:0 18:0 19:0 20:0 21:4784 22:0 23:0 24:2677 25:2085
