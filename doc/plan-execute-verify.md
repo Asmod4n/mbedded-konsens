@@ -74,15 +74,27 @@ violation and a review approves the parts that changed from form 5.
    nested transaction.
 2. Two results agree when the compare walks the CBOR items and each pair
    agrees. A float of any width is decoded to `double`; two floats agree
-   when the distance of their bits in binary64 is at most 1; NaN agrees
-   only with NaN; +0 and -0 are 1 apart (owner, 2026-10-17 12:43,
-   2026-10-25 09:22). Every other item, and every key of a mutation,
-   agrees byte for byte.
+   when they are equal to `float_digits` significant decimal digits
+   (relative compare, provisional default 12); NaN agrees only with NaN;
+   +0 and -0 agree (owner, 2026-10-25 10:54, replaces 1 ULP of
+   2026-10-17 12:40; measured in
+   actor-raft/floats/results/20261025T1045Z-ulp-spread.md: 1 ULP is too
+   narrow, glibc 2.39 against 2.44 gives up to 4 ULP). Every other item,
+   and every key of a mutation, agrees byte for byte.
+2a. After the selection, each float of the chosen result is rounded to
+   `float_denominator` (optional) with round half to even, before it is
+   stored (owner, 2026-10-25 10:52-10:54). The rounding works on the one
+   chosen value, so every node stores the same bytes. The form:
+   `std::to_chars` in scientific form with the precision, then
+   `std::from_chars` (both correctly rounded; one run measured 58 ns per
+   value with g++ 16 and clang 22, noise floor not measured).
+   `float_digits` and `float_denominator` are fields of the state machine
+   (provisional).
 3. The assumption: for each entry, the nodes whose run gives a wrong
    result are fewer than a majority of the configuration, over all time,
    and the results of the nodes that work agree with each other. Outside
-   it: working nodes whose floats lie more than 1 apart. Then the entry
-   can be rejected.
+   it: working nodes whose floats differ in more than `float_digits`
+   digits. Then the entry can be rejected.
 
 ### 2.3 The verdict function
 
