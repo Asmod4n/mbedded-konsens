@@ -13,8 +13,6 @@
 
 namespace konsens {
 
-using node_id = std::uint64_t;
-
 inline void validate_cluster(node_id pid, std::span<const node_id> peers)
 {
     if (pid == 0 || peers.empty() || std::ranges::contains(peers, node_id{0}) || std::ranges::contains(peers, pid))

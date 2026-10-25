@@ -31,6 +31,10 @@ entry_fields fields_of(const entry& e) noexcept
         return {e.session, e.request_number};
     case entry_kind::expire_session:
         return {e.session, 0};
+    case entry_kind::results:
+        return {e.from_idx, e.to_idx};
+    case entry_kind::rejected:
+        return {e.from_idx, 0};
     case entry_kind::normal:
     case entry_kind::stop_sign:
         break;
@@ -52,6 +56,13 @@ entry entry_of(const entry_kind kind, const entry_fields& fields, const std::spa
         break;
     case entry_kind::expire_session:
         e.session = fields[0];
+        break;
+    case entry_kind::results:
+        e.from_idx = fields[0];
+        e.to_idx = fields[1];
+        break;
+    case entry_kind::rejected:
+        e.from_idx = fields[0];
         break;
     case entry_kind::normal:
     case entry_kind::stop_sign:

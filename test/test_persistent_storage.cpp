@@ -441,9 +441,9 @@ TEST_CASE("open refuses another format and a store with data and no format")
     }
     change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
         constexpr std::string_view name = "format";
-        const std::array<unsigned char, 8> version_2{2, 0, 0, 0, 0, 0, 0, 0};
-        const auto crc = crc32c::Crc32c(version_2.data(), 4);
-        std::array<unsigned char, 8> value = version_2;
+        const std::array<unsigned char, 8> version_3{3, 0, 0, 0, 0, 0, 0, 0};
+        const auto crc = crc32c::Crc32c(version_3.data(), 4);
+        std::array<unsigned char, 8> value = version_3;
         for (std::size_t i = 0; i < 4; ++i) {
             value.at(4 + i) = static_cast<unsigned char>(crc >> (8 * i));
         }
@@ -487,7 +487,11 @@ TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format
          {2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0}},
         {{.kind = konsens::entry_kind::expire_session, .session = 1}, {4, 1, 0, 0, 0, 0, 0, 0, 0}},
         {{konsens::entry_kind::client_request, bytes_of("x"), 1, 2},
-         {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'}}};
+         {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'}},
+        {{.kind = konsens::entry_kind::results, .payload = bytes_of("y"), .from_idx = 4, .to_idx = 5},
+         {5, 4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 'y'}},
+        {{.kind = konsens::entry_kind::rejected, .payload = bytes_of("z"), .from_idx = 6},
+         {6, 6, 0, 0, 0, 0, 0, 0, 0, 'z'}}};
     std::uint32_t chain = 0;
     for (std::uint64_t index = 0; const auto& [e, encoded] : each_kind) {
         const std::vector<konsens::entry> one{e};
@@ -746,7 +750,12 @@ std::vector<konsens::entry> entries_of_each_kind()
             {.kind = konsens::entry_kind::register_client, .client_id = 0x0102030405060708, .pid = 3},
             {konsens::entry_kind::client_request, bytes_of("request"), 1, 0x1112131415161718},
             {konsens::entry_kind::client_request, {}, 2, 1},
-            {.kind = konsens::entry_kind::expire_session, .session = 0x2122232425262728}};
+            {.kind = konsens::entry_kind::expire_session, .session = 0x2122232425262728},
+            {.kind = konsens::entry_kind::results,
+             .payload = bytes_of("results"),
+             .from_idx = 0x3132333435363738,
+             .to_idx = 0x4142434445464748},
+            {.kind = konsens::entry_kind::rejected, .payload = bytes_of("rejected"), .from_idx = 0x5152535455565758}};
 }
 
 }
@@ -781,6 +790,10 @@ TEST_CASE("an entry with a field of another kind is a wrong use")
         {.kind = konsens::entry_kind::register_client, .session = 1, .client_id = 1, .pid = 1},
         {.kind = konsens::entry_kind::client_request, .session = 1, .request_number = 1, .pid = 1},
         {.kind = konsens::entry_kind::expire_session, .session = 1, .request_number = 1},
+        {.kind = konsens::entry_kind::normal, .from_idx = 1},
+        {.kind = konsens::entry_kind::client_request, .session = 1, .request_number = 1, .to_idx = 1},
+        {.kind = konsens::entry_kind::results, .session = 1, .from_idx = 1, .to_idx = 1},
+        {.kind = konsens::entry_kind::rejected, .from_idx = 1, .to_idx = 1},
         {static_cast<konsens::entry_kind>(0xff), {}},
     };
     for (const auto& e : wrong) {
@@ -871,7 +884,7 @@ TEST_CASE("the state storage gives back what a committed write wrote")
     {
         const auto r = state.begin_read_only();
         REQUIRE(r.has_value());
-        CHECK(r->get_applied() == konsens::applied_record{0, 0});
+        CHECK(r->get_applied() == konsens::applied_record{0, 0, 0});
         CHECK(finds_no_value(r->find(key)));
         CHECK(r->find_session(7).value() == std::nullopt);
     }
@@ -879,7 +892,7 @@ TEST_CASE("the state storage gives back what a committed write wrote")
     REQUIRE(w.has_value());
     REQUIRE(w->insert_or_assign(key, value));
     REQUIRE(w->insert_or_assign_session(7, session));
-    REQUIRE(w->set_applied({9, 10}));
+    REQUIRE(w->set_applied({9, 10, 8}));
     const auto before = [&state] {
         const auto r = state.begin_read_only();
         REQUIRE(r.has_value());
@@ -887,11 +900,11 @@ TEST_CASE("the state storage gives back what a committed write wrote")
         REQUIRE(a.has_value());
         return *a;
     }();
-    CHECK(before == konsens::applied_record{0, 0});
+    CHECK(before == konsens::applied_record{0, 0, 0});
     REQUIRE(std::move(*w).commit());
     const auto r = state.begin_read_only();
     REQUIRE(r.has_value());
-    CHECK(r->get_applied() == konsens::applied_record{9, 10});
+    CHECK(r->get_applied() == konsens::applied_record{9, 10, 8});
     const auto found = r->find(key);
     REQUIRE(found.has_value());
     REQUIRE(found->has_value());

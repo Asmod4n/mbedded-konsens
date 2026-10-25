@@ -260,6 +260,10 @@ std::string text_of(const entry& e)
         return "request(" + std::to_string(e.session) + "." + std::to_string(e.request_number) + ")";
     case konsens::entry_kind::expire_session:
         return "expire(" + std::to_string(e.session) + ")";
+    case konsens::entry_kind::results:
+        return "results(" + std::to_string(e.from_idx) + ".." + std::to_string(e.to_idx) + ")";
+    case konsens::entry_kind::rejected:
+        return "rejected(" + std::to_string(e.from_idx) + ")";
     case konsens::entry_kind::normal:
     case konsens::entry_kind::stop_sign:
         break;

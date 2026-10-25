@@ -24,7 +24,17 @@ struct ballot {
     friend auto operator<=>(const ballot&, const ballot&) = default;
 };
 
-enum class entry_kind : std::uint8_t { normal, stop_sign, register_client, client_request, expire_session };
+using node_id = std::uint64_t;
+
+enum class entry_kind : std::uint8_t {
+    normal,
+    stop_sign,
+    register_client,
+    client_request,
+    expire_session,
+    results,
+    rejected
+};
 
 struct entry {
     entry_kind kind;
@@ -33,6 +43,8 @@ struct entry {
     std::uint64_t request_number{};
     std::uint64_t client_id{};
     std::uint64_t pid{};
+    std::uint64_t from_idx{};
+    std::uint64_t to_idx{};
 
     friend bool operator==(const entry&, const entry&) = default;
 };
@@ -45,11 +57,24 @@ inline std::optional<std::size_t> field_count_of(const entry_kind kind) noexcept
         return 0;
     case entry_kind::register_client:
     case entry_kind::client_request:
+    case entry_kind::results:
         return 2;
     case entry_kind::expire_session:
+    case entry_kind::rejected:
         return 1;
     }
     return std::nullopt;
+}
+
+constexpr bool entry_is_a_request(const entry& e) noexcept
+{
+    return e.kind == entry_kind::register_client || e.kind == entry_kind::client_request ||
+           e.kind == entry_kind::expire_session;
+}
+
+constexpr bool entry_is_a_verdict(const entry& e) noexcept
+{
+    return e.kind == entry_kind::results || e.kind == entry_kind::rejected;
 }
 
 inline bool entry_has_a_field_of_another_kind(const entry& e) noexcept
@@ -57,16 +82,22 @@ inline bool entry_has_a_field_of_another_kind(const entry& e) noexcept
     const bool has_session = e.session != 0;
     const bool has_request_number = e.request_number != 0;
     const bool has_registration = e.client_id != 0 || e.pid != 0;
+    const bool has_range = e.from_idx != 0 || e.to_idx != 0;
+    const bool has_request = has_session || has_request_number || has_registration;
     switch (e.kind) {
     case entry_kind::normal:
     case entry_kind::stop_sign:
-        return has_session || has_request_number || has_registration;
+        return has_request || has_range;
     case entry_kind::register_client:
-        return has_session || has_request_number;
+        return has_session || has_request_number || has_range;
     case entry_kind::client_request:
-        return has_registration;
+        return has_registration || has_range;
     case entry_kind::expire_session:
-        return has_request_number || has_registration;
+        return has_request_number || has_registration || has_range;
+    case entry_kind::results:
+        return has_request;
+    case entry_kind::rejected:
+        return has_request || e.to_idx != 0;
     }
     return true;
 }

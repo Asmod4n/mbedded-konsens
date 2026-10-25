@@ -547,7 +547,7 @@ private:
         if (!crc) [[unlikely]] {
             return std::unexpected(crc.error());
         }
-        write_or_throw(w->set_applied({index, *crc}));
+        write_or_throw(w->set_applied({index, *crc, 0}));
         return std::move(*w).commit();
     }
 
@@ -577,6 +577,8 @@ private:
             break;
         case entry_kind::normal:
         case entry_kind::stop_sign:
+        case entry_kind::results:
+        case entry_kind::rejected:
             break;
         }
     }

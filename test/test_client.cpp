@@ -509,7 +509,7 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
     const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
     REQUIRE(log_len.has_value());
     const auto differs = make_error_code(konsens::paxos_errc::state_differs_from_log);
-    for (const auto applied : {konsens::applied_record{2, *own + 1}, konsens::applied_record{*log_len + 1, *own}}) {
+    for (const auto applied : {konsens::applied_record{2, *own + 1, 0}, konsens::applied_record{*log_len + 1, *own, 0}}) {
         const auto state_directory = lmdb_storage::new_directory();
         {
             auto state = lmdb_storage::open_state_storage_in(state_directory);

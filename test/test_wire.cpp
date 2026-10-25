@@ -122,7 +122,7 @@ constexpr konsens::node_id paxos_to = 102;
 constexpr konsens::node_id ble_from = 103;
 constexpr konsens::node_id ble_to = 104;
 constexpr std::size_t uint8_values = std::size_t{std::numeric_limits<std::uint8_t>::max()} + 1;
-constexpr std::size_t entry_kind_count = 5;
+constexpr std::size_t entry_kind_count = 7;
 
 std::string head(const std::uint8_t major, const std::uint64_t argument)
 {
@@ -203,11 +203,13 @@ std::string ballot_bytes(const ballot& b)
 }
 
 std::string entry_bytes(const std::uint64_t kind, const std::string_view payload, const std::uint64_t session,
-                        const std::uint64_t request_number, const std::uint64_t client_id, const std::uint64_t pid)
+                        const std::uint64_t request_number, const std::uint64_t client_id, const std::uint64_t pid,
+                        const std::uint64_t from_idx = 0, const std::uint64_t to_idx = 0)
 {
-    return head(map, 6) + text("pid") + integer(pid) + text("kind") + integer(kind) + text("payload") +
-           bytes_tagged(typed_array_uint8, payload) + text("session") + integer(session) + text("client_id") +
-           integer(client_id) + text("request_number") + integer(request_number);
+    return head(map, 8) + text("pid") + integer(pid) + text("kind") + integer(kind) + text("to_idx") +
+           integer(to_idx) + text("payload") + bytes_tagged(typed_array_uint8, payload) + text("session") +
+           integer(session) + text("from_idx") + integer(from_idx) + text("client_id") + integer(client_id) +
+           text("request_number") + integer(request_number);
 }
 
 std::string proposal_forward_bytes(const std::string& one_entry)
@@ -563,21 +565,25 @@ TEST_CASE("an entry kind that is not a value of entry_kind gives unknown_entry_k
 // another node, so decode refuses it before it reaches storage. The fields of
 // each kind come from the definition of entry: normal and stop_sign carry
 // none, register_client carries client_id and pid, client_request carries
-// session and request_number, expire_session carries session.
+// session and request_number, expire_session carries session, results
+// carries from_idx and to_idx, and rejected carries from_idx (plan
+// execute-verify 2.1.2: results(from, to, list) and rejected(k)).
 TEST_CASE("an entry with a field that its kind does not carry gives entry_field_of_another_kind")
 {
     constexpr std::uint64_t proposal_forward_kind = 8;
-    enum field : std::uint8_t { session, request_number, client_id, pid, field_count };
+    enum field : std::uint8_t { session, request_number, client_id, pid, from_idx, to_idx, field_count };
     struct carried {
         entry_kind kind;
         std::array<bool, field_count> fields;
     };
     const std::array<carried, entry_kind_count> table{{
-        {entry_kind::normal, {false, false, false, false}},
-        {entry_kind::stop_sign, {false, false, false, false}},
-        {entry_kind::register_client, {false, false, true, true}},
-        {entry_kind::client_request, {true, true, false, false}},
-        {entry_kind::expire_session, {true, false, false, false}},
+        {entry_kind::normal, {false, false, false, false, false, false}},
+        {entry_kind::stop_sign, {false, false, false, false, false, false}},
+        {entry_kind::register_client, {false, false, true, true, false, false}},
+        {entry_kind::client_request, {true, true, false, false, false, false}},
+        {entry_kind::expire_session, {true, false, false, false, false, false}},
+        {entry_kind::results, {false, false, false, false, true, true}},
+        {entry_kind::rejected, {false, false, false, false, true, false}},
     }};
     for (const auto& [kind, fields] : table) {
         for (std::uint8_t f = 0; f < field_count; ++f) {
@@ -585,7 +591,8 @@ TEST_CASE("an entry with a field that its kind does not carry gives entry_field_
             const auto one = [f](const field which) { return f == which ? std::uint64_t{1} : std::uint64_t{0}; };
             const auto bytes = header_bytes(proposal_forward_kind, paxos_from, paxos_to) +
                                proposal_forward_bytes(entry_bytes(std::to_underlying(kind), "", one(session),
-                                                                  one(request_number), one(client_id), one(pid)));
+                                                                  one(request_number), one(client_id), one(pid),
+                                                                  one(from_idx), one(to_idx)));
             if (fields.at(f)) {
                 CHECK(konsens::decode(bytes).has_value());
             } else {

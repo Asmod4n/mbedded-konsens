@@ -101,6 +101,7 @@ endforeach()
 
 target_link_libraries(test_wire PRIVATE mbedded-cbor)
 target_link_libraries(test_crc32c PRIVATE crc32c)
+target_link_libraries(test_verdict PRIVATE crc32c)
 target_include_directories(test_crc32c PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
 target_link_libraries(test_persistent_storage PRIVATE crc32c lmdb)
 target_include_directories(test_persistent_storage PRIVATE ${PROJECT_SOURCE_DIR}/src)

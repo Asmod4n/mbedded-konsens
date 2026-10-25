@@ -32,14 +32,16 @@ constexpr const char* log_database_name = "log";
 constexpr const char* meta_database_name = "meta";
 constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
-constexpr std::uint32_t format_version = 1;
+constexpr std::uint32_t format_version = 2;
 constexpr std::size_t node_storage_map_size = std::size_t{1} << 20;
 constexpr unsigned int state_database_count = 3;
 constexpr const char* state_database_name = "state";
 constexpr const char* sessions_database_name = "sessions";
 constexpr const char* applied_database_name = "applied";
 constexpr std::string_view applied_key = "applied";
-constexpr std::size_t applied_record_size = sizeof(applied_record::index) + sizeof(applied_record::chain_crc);
+constexpr std::size_t applied_chain_crc_offset = sizeof(applied_record::index);
+constexpr std::size_t applied_pointer_offset = applied_chain_crc_offset + sizeof(applied_record::chain_crc);
+constexpr std::size_t applied_record_size = applied_pointer_offset + sizeof(applied_record::pointer);
 constexpr std::size_t session_head_size = sizeof(session_record::request_number);
 constexpr unsigned int node_database_count = 1;
 constexpr const char* node_database_name = "node";
@@ -1242,12 +1244,13 @@ std::expected<applied_record, std::error_code> get_applied_in(const state_databa
         return std::unexpected(body.error());
     }
     if (!body->has_value()) {
-        return applied_record{0, 0};
+        return applied_record{0, 0, 0};
     }
     const auto bytes = body->value();
-    return applied_record{from_little_endian<std::uint64_t>(bytes.first<sizeof(applied_record::index)>()),
-                          from_little_endian<std::uint32_t>(
-                              bytes.subspan<sizeof(applied_record::index), sizeof(applied_record::chain_crc)>())};
+    return applied_record{
+        from_little_endian<std::uint64_t>(bytes.first<sizeof(applied_record::index)>()),
+        from_little_endian<std::uint32_t>(bytes.subspan<applied_chain_crc_offset, sizeof(applied_record::chain_crc)>()),
+        from_little_endian<std::uint64_t>(bytes.subspan<applied_pointer_offset, sizeof(applied_record::pointer)>())};
 }
 
 }
@@ -1423,8 +1426,11 @@ std::expected<void, std::error_code> state_storage::transaction::set_applied(con
 {
     throw_if_no_environment(env_);
     std::array<std::byte, applied_record_size> body{};
-    std::ranges::copy(to_little_endian(applied.chain_crc),
-                      std::ranges::copy(to_little_endian(applied.index), body.begin()).out);
+    std::ranges::copy(
+        to_little_endian(applied.pointer),
+        std::ranges::copy(to_little_endian(applied.chain_crc),
+                          std::ranges::copy(to_little_endian(applied.index), body.begin()).out)
+            .out);
     return put_checked(env_->writer.get(), env_->applied_dbi, applied_key, body);
 }
 

@@ -121,6 +121,7 @@ struct session_record {
 struct applied_record {
     std::uint64_t index;
     std::uint32_t chain_crc;
+    std::uint64_t pointer;
 
     friend bool operator==(const applied_record&, const applied_record&) = default;
 };
