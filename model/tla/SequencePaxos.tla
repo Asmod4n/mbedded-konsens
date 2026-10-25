@@ -100,6 +100,8 @@ CONSTANTS
   MaxInFlight,
   \* @type: Str;
   StateRepair,
+  \* @type: Bool;
+  StartDamageCounts,
   \* @type: Set(Str);
   StorageFaultKind,
   \* @type: Bool;
@@ -500,6 +502,10 @@ DurableOf(k) ==
 (* whole: a suffix from index 0.                                            *)
 \* The kinds of RunningStorageFault that StorageFault at a start does not take.
 RunningOnlyKinds == {"stale_meta", "rollback"}
+
+\* The number of automatic repairs of a node before the operator acts
+\* (owner, 2026-10-24 20:55).
+AutoRepairs == 1
 
 NothingSeen == [n |-> DefaultBallot, idx |-> 0]
 
@@ -1664,7 +1670,10 @@ Detected(i, kind, d, k) ==
 \* Mutation StartAsNewNode is the code at 4c57d44: (Follower, None), no
 \* recovery, no message (sequence_paxos.hpp:268-271). A refused
 \* node leaves running with its state, as Halt does; it takes no further
-\* step. Only a node of Nodes gets a storage fault.
+\* step. Only a node of Nodes gets a storage fault. With StartDamageCounts
+\* (owner, 2026-10-25 03:54), a damage that the start checks find is a
+\* damage of 2.4 item 8: the node repairs itself from a peer while its
+\* count allows it, and the repair counts. Else it is refused.
 \* @type: (Int, Str) => Bool;
 StorageFault(i, kind) ==
   /\ i \in Nodes
@@ -1675,7 +1684,16 @@ StorageFault(i, kind) ==
   /\ \E k \in 0..Len(log[i]), d \in DamagedStates(i, kind) :
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
-       /\ IF Detected(i, kind, d, k)
+       /\ IF Detected(i, kind, d, k) /\ StartDamageCounts /\ RepairFromPeer
+             /\ repairs[i] < AutoRepairs
+             /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
+          THEN \E src \in running \ {i} :
+                 /\ Votes(src) /\ ~recovering[src]
+                 /\ Restart({i}, [j \in {i} |-> DurableOf(src)], {j \in {i} : Quiet(j)}, Recovery)
+                 /\ UNCHANGED <<refused, wiped, crashes, wipes, losses, duplicates, timeouts,
+                                elections, proposed, rolled_back, client, reconfig>>
+                 /\ GhostUpdateRP({i}, {i})
+          ELSE IF Detected(i, kind, d, k)
           THEN /\ running' = running \ {i}
                /\ refused' = refused \cup {i}
                /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
@@ -1707,7 +1725,6 @@ StorageFault(i, kind) ==
 \* times; after that it leaves running, and the operator acts (owner,
 \* 2026-10-24 20:55). This counts only a damage that the checks find, not
 \* a restart.
-AutoRepairs == 1
 
 \* The node stops voting and leaves running, as stop_voting does.
 \* @type: Int => Bool;
@@ -2641,6 +2658,7 @@ ASSUME MismatchAction \in {"keep", "damage", "stop"}
 ASSUME StateInLmdb \in BOOLEAN
 ASSUME MaxInFlight \in Nat
 ASSUME StateRepair \in {"keep", "copy"}
+ASSUME StartDamageCounts \in BOOLEAN
 ASSUME RepairFromPeer \in BOOLEAN
 ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
                                    "missing_decided", "stale_meta", "rollback"}

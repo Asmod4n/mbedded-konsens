@@ -37,6 +37,7 @@ OVERRIDE_MismatchAction == "keep"
 OVERRIDE_StateInLmdb == FALSE
 OVERRIDE_MaxInFlight == 0
 OVERRIDE_StateRepair == "copy"
+OVERRIDE_StartDamageCounts == FALSE
 OVERRIDE_RepairFromPeer == FALSE
 OVERRIDE_StorageFaultKind == {}
 OVERRIDE_ClientSessions == FALSE
