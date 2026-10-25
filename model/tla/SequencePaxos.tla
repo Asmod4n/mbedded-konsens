@@ -131,7 +131,21 @@ CONSTANTS
   \* @type: Bool;
   Witness,
   \* @type: Int;
-  LeaseLength
+  LeaseLength,
+  \* @type: Bool;
+  ExecuteVerify,
+  \* @type: Int;
+  MaxWrong,
+  \* @type: Bool;
+  Spread,
+  \* @type: Bool;
+  Flip,
+  \* @type: Int;
+  MaxFlip,
+  \* @type: Int;
+  MaxResultThrow,
+  \* @type: Str;
+  SpreadAction
 
 VARIABLES
   \* @type: Int -> Int;
@@ -253,7 +267,21 @@ VARIABLES
   \* @type: Int -> Seq($entry);
   applied,
   \* @type: Int -> Seq($entry);
-  in_txn
+  in_txn,
+  selected,
+  counts,
+  own,
+  \* @type: Int -> Int;
+  verified_idx,
+  proof,
+  \* @type: Int -> Int;
+  open_mark,
+  result_throws,
+  answered,
+  refusal,
+  wrong,
+  runs,
+  flips
 
 durable  == <<promise, n_accepted, log, decided_idx>>
 volatile == <<role, phase, accepted_idx, current_seq_num,
@@ -271,10 +299,12 @@ leasevars  == <<witness_epoch, node_epoch, lease_request, lease_reply, lease_rem
 leaseghost == <<forced_decided_at_force, forced_has_decided, old_decided_max,
                 old_decided_after_forced>>
 statevars == <<applied, in_txn>>
+evvars    == <<selected, counts, own, verified_idx, proof, open_mark, result_throws, answered,
+               refusal, wrong, runs, flips>>
 vars_but_state == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
                     buffered_stopsign, reconfig, leasevars, leaseghost>>
 vars     == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
-              buffered_stopsign, reconfig, leasevars, leaseghost, statevars>>
+              buffered_stopsign, reconfig, leasevars, leaseghost, statevars, evvars>>
 
 ----------------------------------------------------------------------------
 (* Ballot (n, pid) is the integer n * PidBase + pid. Ballot::default is 0.   *)
