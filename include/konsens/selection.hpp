@@ -47,7 +47,8 @@ struct try_again_target {
 
 class selection {
 public:
-    static selection with(ballot n, std::span<const node_id> nodes, std::uint64_t pointer);
+    static selection with(ballot n, std::span<const node_id> nodes, std::uint64_t pointer,
+                          std::optional<float_rule> rule);
 
     ballot get_ballot() const { return n_; }
     std::uint64_t get_pointer() const { return pointer_; }
@@ -78,6 +79,7 @@ private:
     ballot n_;
     std::vector<node_id> nodes_;
     std::uint64_t pointer_;
+    std::optional<float_rule> rule_;
     std::map<node_id, counted_answer> answers_;
     std::set<std::pair<node_id, std::uint64_t>> tried_;
     std::set<std::pair<node_id, std::uint64_t>> again_;

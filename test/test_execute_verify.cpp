@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -81,7 +82,7 @@ entry request(const std::uint64_t n)
 
 konsens::selection new_selection()
 {
-    return konsens::selection::with(leader_ballot, three_nodes, 0);
+    return konsens::selection::with(leader_ballot, three_nodes, 0, std::nullopt);
 }
 
 std::vector<konsens::chosen_result> list_of(const entry& e)
@@ -981,4 +982,166 @@ TEST_CASE("a damage that a step finds throws after its proof is durable")
     REQUIRE(record.has_value());
     REQUIRE(record->proof.has_value());
     CHECK(record->proof->kind == konsens::proof_kind::damage);
+}
+
+namespace {
+
+// RFC 8949 3.3: a double is the initial byte 0xfb and the 8 bytes of the
+// binary64 value in network byte order.
+std::vector<std::byte> double_item(const double value)
+{
+    const auto bits = std::bit_cast<std::uint64_t>(value);
+    std::vector<std::byte> out{std::byte{0xfb}};
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::byte>(bits >> shift));
+    }
+    return out;
+}
+
+// A state machine with the float rule. Its reply and its value are one
+// encoded CBOR data item each: a double of one third, with an error of the
+// node in its last digits, as two libraries of the same function give.
+struct floating {
+    static constexpr std::array key{std::byte{'f'}};
+    std::uint32_t float_digits;
+    std::optional<std::uint32_t> float_denominator;
+    double error;
+    bool raw;
+
+    konsens::applied apply(std::span<const std::byte>, const konsens::state_view auto&) const
+    {
+        const auto item = raw ? std::vector<std::byte>{std::byte{0x61}} : double_item(1.0 / 3 * (1 + error));
+        return {item, {{{key.begin(), key.end()}, item}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        const auto found = view.find(key);
+        return found ? std::vector<std::byte>{found->begin(), found->end()} : std::vector<std::byte>{};
+    }
+};
+
+using floating_node = konsens::node<konsens::persistent_storage, floating>;
+
+std::vector<floating_node> floating_cluster(const std::array<floating, 3>& machines)
+{
+    std::vector<floating_node> nodes;
+    for (const auto p : three_nodes) {
+        nodes.push_back(*floating_node::with(config_of(p, 16), lmdb_storage::open_new(),
+                                             lmdb_storage::open_new_node_storage(),
+                                             lmdb_storage::open_new_state_storage(), machines.at(p - 1), p));
+    }
+    return nodes;
+}
+
+void run_floating(std::vector<floating_node>& nodes, const int count)
+{
+    for (int i = 0; i < count; ++i) {
+        batches::deliver(nodes, once);
+        for (auto& n : nodes) {
+            batches::tick_and_commit(n);
+        }
+    }
+    batches::deliver(nodes, once);
+}
+
+floating_node& leader_of(std::vector<floating_node>& nodes)
+{
+    for (auto& n : nodes) {
+        if (n.get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept}) {
+            return n;
+        }
+    }
+    FAIL("no node leads in Accept");
+    return nodes.front();
+}
+
+std::vector<std::byte> stored_value(const floating_node& n)
+{
+    const auto t = n.get_state_storage().begin_read_only();
+    REQUIRE(t.has_value());
+    const auto found = konsens::read_view{*t}.find(floating::key);
+    REQUIRE(found.has_value());
+    return {found->begin(), found->end()};
+}
+
+std::vector<konsens::client_reply> write_once(std::vector<floating_node>& nodes)
+{
+    run_floating(nodes, rounds);
+    auto& l = leader_of(nodes);
+    batches::commit(l, l.register_client(client_a));
+    run_floating(nodes, rounds);
+    const auto registration = l.take_client_replies();
+    REQUIRE(registration.size() == 1);
+    batches::commit(l, l.client_request(client_a, registration[0].session, 1, bytes_of('a')));
+    run_floating(nodes, rounds);
+    return l.take_client_replies();
+}
+
+}
+
+// Plan 2.2.2: the results of the three nodes differ in their last bits and
+// agree to float_digits digits. The leader selects one of them, asks no
+// node to run again, and every node stores the chosen bytes.
+TEST_CASE("results whose floats agree to float_digits digits give one chosen result")
+{
+    auto nodes = floating_cluster({floating{12, std::nullopt, 0, false}, floating{12, std::nullopt, 1e-14, false},
+                                   floating{12, std::nullopt, -1e-14, false}});
+    const auto replies = write_once(nodes);
+    REQUIRE(replies.size() == 1);
+    REQUIRE(replies[0].response.has_value());
+    for (const auto& n : nodes) {
+        CHECK(stored_value(n) == *replies[0].response);
+    }
+}
+
+// Plan 2.2a: each node rounds its own result to float_denominator before
+// the CRC. One third with an error in its last digits rounds to 3.333333e-01
+// on every node, so the three results have the same bytes.
+TEST_CASE("each node rounds its own result to float_denominator")
+{
+    auto nodes = floating_cluster(
+        {floating{12, 6, 0, false}, floating{12, 6, 1e-14, false}, floating{12, 6, -1e-14, false}});
+    const auto replies = write_once(nodes);
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].response == double_item(0.3333333));
+    for (const auto& n : nodes) {
+        CHECK(stored_value(n) == double_item(0.3333333));
+    }
+}
+
+// Plan 2.2b: a state machine with the float rule gives its reply and each
+// value as one encoded CBOR data item. A reply that is no such item is a
+// wrong use.
+TEST_CASE("a reply that is no CBOR data item under the float rule is a wrong use")
+{
+    auto nodes = floating_cluster(
+        {floating{12, 6, 0, true}, floating{12, 6, 0, true}, floating{12, 6, 0, true}});
+    run_floating(nodes, rounds);
+    auto& l = leader_of(nodes);
+    batches::commit(l, l.register_client(client_a));
+    run_floating(nodes, rounds);
+    const auto registration = l.take_client_replies();
+    REQUIRE(registration.size() == 1);
+    batches::commit(l, l.client_request(client_a, registration[0].session, 1, bytes_of('a')));
+    // The run of the request happens in a commit after the decide.
+    const auto run_without_checks = [&nodes] {
+        for (int i = 0; i < rounds; ++i) {
+            std::vector<std::vector<message>> inbox(nodes.size());
+            for (auto& n : nodes) {
+                for (auto& m : n.take_outgoing_messages()) {
+                    inbox.at(batches::to_of(m) - 1).push_back(std::move(m));
+                }
+            }
+            for (std::size_t k = 0; k < nodes.size(); ++k) {
+                if (const auto t = nodes[k].handle_incoming(std::move(inbox[k]))) {
+                    static_cast<void>(nodes[k].commit(*t));
+                }
+                if (const auto t = nodes[k].tick()) {
+                    static_cast<void>(nodes[k].commit(*t));
+                }
+            }
+        }
+    };
+    CHECK_THROWS_AS(run_without_checks(), std::logic_error);
 }

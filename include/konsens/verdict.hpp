@@ -56,6 +56,19 @@ struct verdicts {
 [[nodiscard]] std::uint32_t extend_base_crc(std::uint32_t base_crc, std::uint64_t index,
                                             std::uint32_t result_crc) noexcept;
 
-[[nodiscard]] bool results_agree(std::span<const std::byte> a, std::span<const std::byte> b) noexcept;
+struct float_rule {
+    std::uint32_t float_digits;
+    std::optional<std::uint32_t> float_denominator;
+
+    friend bool operator==(const float_rule&, const float_rule&) = default;
+};
+
+[[nodiscard]] bool holds_one_data_item(std::span<const std::byte> encoded);
+[[nodiscard]] std::optional<std::vector<std::byte>> round_each_float(std::span<const std::byte> data_item,
+                                                                    std::uint32_t float_denominator);
+[[nodiscard]] bool floats_agree(double a, double b, const float_rule& rule);
+[[nodiscard]] bool data_items_agree(std::span<const std::byte> a, std::span<const std::byte> b, const float_rule& rule);
+[[nodiscard]] bool results_agree(std::span<const std::byte> a, std::span<const std::byte> b,
+                                 const std::optional<float_rule>& rule);
 
 }

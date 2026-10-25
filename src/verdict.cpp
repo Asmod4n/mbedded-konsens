@@ -2,11 +2,18 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
+#include <stdfloat>
 #include <string>
 #include <string_view>
 
+#include <cbor/decode.hpp>
+#include <cbor/encode.hpp>
+#include <cbor/item_size.hpp>
 #include <cbor/structs.hpp>
 #include <crc32c/crc32c.h>
 
@@ -138,9 +145,294 @@ std::uint32_t extend_base_crc(const std::uint32_t base_crc, const std::uint64_t 
     return crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(head.data()), head.size());
 }
 
-bool results_agree(const std::span<const std::byte> a, const std::span<const std::byte> b) noexcept
+namespace {
+
+constexpr std::size_t float_chars_size = 64;
+constexpr std::uint64_t encoded_cbor_data_item_tag = 24;
+constexpr std::size_t data_items_per_map_entry = 2;
+
+std::string_view chars_of(const std::span<const std::byte> bytes)
 {
-    return std::ranges::equal(a, b);
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+bool is_a_float(const cbor::item& n)
+{
+    return n.type == cbor::type::half_float || n.type == cbor::type::single_float ||
+           n.type == cbor::type::double_float;
+}
+
+double float_of(const cbor::item& n)
+{
+    switch (n.type) {
+    case cbor::type::half_float:
+        return *n.get<cbor::type::half_float>();
+    case cbor::type::single_float:
+        return *n.get<cbor::type::single_float>();
+    default:
+        return *n.get<cbor::type::double_float>();
+    }
+}
+
+std::span<const cbor::item> children_of(const cbor::item& n)
+{
+    return n.type == cbor::type::array ? *n.get<cbor::type::array>() : *n.get<cbor::type::map>();
+}
+
+const cbor::item* embedded_in(const cbor::owning<cbor::item>& tree, const cbor::item& n)
+{
+    const auto tagged = n.get<cbor::type::tag>();
+    if (!tagged || tagged->first != encoded_cbor_data_item_tag) {
+        return nullptr;
+    }
+    const auto embedded = cbor::encoded_cbor_data_item(tree, n);
+    return embedded ? &embedded->get() : nullptr;
+}
+
+bool holds_a_float(const cbor::owning<cbor::item>& tree, const cbor::item& n)
+{
+    if (is_a_float(n)) {
+        return true;
+    }
+    switch (n.type) {
+    case cbor::type::array:
+    case cbor::type::map:
+        return std::ranges::any_of(children_of(n), [&tree](const cbor::item& c) { return holds_a_float(tree, c); });
+    case cbor::type::tag:
+        if (const auto* const e = embedded_in(tree, n)) {
+            return holds_a_float(tree, *e);
+        }
+        return holds_a_float(tree, *n.get<cbor::type::tag>()->second);
+    default:
+        return false;
+    }
+}
+
+std::optional<cbor::owning<cbor::item>> decode_one_data_item(const std::span<const std::byte> encoded)
+{
+    if (!holds_one_data_item(encoded)) {
+        return std::nullopt;
+    }
+    auto tree = cbor::decode(chars_of(encoded));
+    if (!tree) [[unlikely]] {
+        return std::nullopt;
+    }
+    return std::move(*tree);
+}
+
+std::vector<std::byte> encoded_bytes_of(const cbor::item& n)
+{
+    std::vector<std::byte> out;
+    if (!cbor::encode(n, out)) [[unlikely]] {
+        throw std::logic_error("konsens: a decoded CBOR item has no encoding");
+    }
+    return out;
+}
+
+template <typename Write>
+void write_with_an_encoder(std::vector<std::byte>& out, const Write write)
+{
+    cbor::encoder e(out);
+    if (!write(e) || !e.finish()) [[unlikely]] {
+        throw std::logic_error("konsens: the CBOR encoder refused an item");
+    }
+}
+
+double power_of_ten(const int exponent)
+{
+    const auto text = "1e" + std::to_string(exponent);
+    double value = exponent < 0 ? 0.0 : std::numeric_limits<double>::infinity();
+    static_cast<void>(std::from_chars(text.data(), text.data() + text.size(), value));
+    return value;
+}
+
+double round_half_to_even(const double value, const std::uint32_t float_denominator)
+{
+    if (!std::isfinite(value) || float_denominator > std::numeric_limits<double>::max_digits10) {
+        return value;
+    }
+    std::array<char, float_chars_size> text{};
+    const auto written = std::to_chars(text.data(), text.data() + text.size(), value, std::chars_format::scientific,
+                                       static_cast<int>(float_denominator));
+    if (written.ec != std::errc{}) [[unlikely]] {
+        throw std::logic_error("konsens: a float has no scientific form in the buffer");
+    }
+    double rounded = value;
+    static_cast<void>(std::from_chars(text.data(), written.ptr, rounded));
+    return rounded;
+}
+
+int decimal_exponent_of(const double value, const std::uint32_t float_denominator)
+{
+    std::array<char, float_chars_size> text{};
+    const auto written = std::to_chars(text.data(), text.data() + text.size(), value, std::chars_format::scientific,
+                                       static_cast<int>(float_denominator));
+    if (written.ec != std::errc{}) [[unlikely]] {
+        throw std::logic_error("konsens: a float has no scientific form in the buffer");
+    }
+    const std::string_view form(text.data(), written.ptr);
+    const auto e = form.find('e');
+    const auto sign = form[e + 1] == '+' ? e + 2 : e + 1;
+    int exponent = 0;
+    static_cast<void>(std::from_chars(form.data() + sign, form.data() + form.size(), exponent));
+    return exponent;
+}
+
+double unit_in_the_last_place(const double value)
+{
+    const auto magnitude = std::abs(value);
+    return std::nextafter(magnitude, std::numeric_limits<double>::infinity()) - magnitude;
+}
+
+void write_the_float(const double value, std::vector<std::byte>& out)
+{
+    write_with_an_encoder(out, [value](auto& e) {
+        if (std::isnan(value)) {
+            return e.floating_point(std::numeric_limits<std::float16_t>::quiet_NaN());
+        }
+        if (static_cast<double>(static_cast<std::float16_t>(value)) == value) {
+            return e.floating_point(static_cast<std::float16_t>(value));
+        }
+        if (static_cast<double>(static_cast<float>(value)) == value) {
+            return e.floating_point(static_cast<float>(value));
+        }
+        return e.floating_point(value);
+    });
+}
+
+void write_rounded(const cbor::owning<cbor::item>& tree, const cbor::item& n, const std::uint32_t float_denominator,
+                   std::vector<std::byte>& out)
+{
+    if (!holds_a_float(tree, n)) {
+        const auto bytes = encoded_bytes_of(n);
+        out.insert(out.end(), bytes.begin(), bytes.end());
+        return;
+    }
+    if (is_a_float(n)) {
+        write_the_float(round_half_to_even(float_of(n), float_denominator), out);
+        return;
+    }
+    if (n.type == cbor::type::array || n.type == cbor::type::map) {
+        const auto children = children_of(n);
+        write_with_an_encoder(out, [&n, &children](auto& e) {
+            return n.type == cbor::type::array ? e.array(children.size()) : e.map(children.size() / data_items_per_map_entry);
+        });
+        for (const auto& c : children) {
+            write_rounded(tree, c, float_denominator, out);
+        }
+        return;
+    }
+    const auto tagged = *n.get<cbor::type::tag>();
+    if (const auto* const embedded = embedded_in(tree, n)) {
+        std::vector<std::byte> inner;
+        write_rounded(tree, *embedded, float_denominator, inner);
+        write_with_an_encoder(out, [&tagged, &inner](auto& e) {
+            return e.tag(tagged.first).and_then([&e, &inner] { return e.byte_string(std::span<const std::byte>(inner)); });
+        });
+        return;
+    }
+    write_with_an_encoder(out, [&tagged](auto& e) { return e.tag(tagged.first); });
+    write_rounded(tree, *tagged.second, float_denominator, out);
+}
+
+bool items_agree(const cbor::owning<cbor::item>& ta, const cbor::item& a, const cbor::owning<cbor::item>& tb,
+                 const cbor::item& b, const float_rule& rule)
+{
+    if (is_a_float(a) && is_a_float(b)) {
+        return floats_agree(float_of(a), float_of(b), rule);
+    }
+    if (!holds_a_float(ta, a) && !holds_a_float(tb, b)) {
+        return encoded_bytes_of(a) == encoded_bytes_of(b);
+    }
+    if (a.type != b.type) {
+        return false;
+    }
+    if (a.type == cbor::type::array || a.type == cbor::type::map) {
+        const auto ca = children_of(a);
+        const auto cb = children_of(b);
+        return ca.size() == cb.size() && std::ranges::equal(ca, cb, [&](const cbor::item& x, const cbor::item& y) {
+                   return items_agree(ta, x, tb, y, rule);
+               });
+    }
+    if (a.type != cbor::type::tag || a.get<cbor::type::tag>()->first != b.get<cbor::type::tag>()->first) {
+        return false;
+    }
+    const auto* const ea = embedded_in(ta, a);
+    const auto* const eb = embedded_in(tb, b);
+    if (ea != nullptr && eb != nullptr) {
+        return items_agree(ta, *ea, tb, *eb, rule);
+    }
+    return ea == nullptr && eb == nullptr &&
+           items_agree(ta, *a.get<cbor::type::tag>()->second, tb, *b.get<cbor::type::tag>()->second, rule);
+}
+
+}
+
+bool holds_one_data_item(const std::span<const std::byte> encoded)
+{
+    const auto size = cbor::item_size(chars_of(encoded));
+    return size && *size == encoded.size();
+}
+
+std::optional<std::vector<std::byte>> round_each_float(const std::span<const std::byte> data_item,
+                                                       const std::uint32_t float_denominator)
+{
+    const auto tree = decode_one_data_item(data_item);
+    if (!tree) [[unlikely]] {
+        return std::nullopt;
+    }
+    std::vector<std::byte> out;
+    write_rounded(*tree, **tree, float_denominator, out);
+    return out;
+}
+
+bool floats_agree(const double a, const double b, const float_rule& rule)
+{
+    if (std::isnan(a) || std::isnan(b)) {
+        return std::isnan(a) && std::isnan(b);
+    }
+    if (a == b) {
+        return true;
+    }
+    if (!std::isfinite(a) || !std::isfinite(b)) {
+        return false;
+    }
+    const auto larger = std::max(std::abs(a), std::abs(b));
+    auto allowed = larger * power_of_ten(1 - static_cast<int>(rule.float_digits));
+    if (rule.float_denominator && *rule.float_denominator <= std::numeric_limits<double>::max_digits10) {
+        const auto step =
+            power_of_ten(decimal_exponent_of(larger, *rule.float_denominator) - static_cast<int>(*rule.float_denominator));
+        allowed = std::max(allowed, step + unit_in_the_last_place(a) + unit_in_the_last_place(b));
+    }
+    return std::abs(a - b) <= allowed;
+}
+
+bool data_items_agree(const std::span<const std::byte> a, const std::span<const std::byte> b, const float_rule& rule)
+{
+    const auto ta = decode_one_data_item(a);
+    const auto tb = decode_one_data_item(b);
+    if (!ta || !tb) {
+        return std::ranges::equal(a, b);
+    }
+    return items_agree(*ta, **ta, *tb, **tb, rule);
+}
+
+bool results_agree(const std::span<const std::byte> a, const std::span<const std::byte> b,
+                   const std::optional<float_rule>& rule)
+{
+    if (!rule || std::ranges::equal(a, b)) {
+        return std::ranges::equal(a, b);
+    }
+    const auto ra = decode_result(a);
+    const auto rb = decode_result(b);
+    if (!ra || !rb || ra->error != rb->error || ra->mutations.size() != rb->mutations.size() ||
+        !data_items_agree(ra->reply, rb->reply, *rule)) {
+        return false;
+    }
+    return std::ranges::equal(ra->mutations, rb->mutations, [&rule](const mutation& x, const mutation& y) {
+        return x.key == y.key && x.value.has_value() == y.value.has_value() &&
+               (!x.value || data_items_agree(*x.value, *y.value, *rule));
+    });
 }
 
 }

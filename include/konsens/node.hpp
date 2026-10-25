@@ -836,8 +836,9 @@ private:
                 first = run_on_the_base(request, q, *w).bytes;
                 own = first;
             }
-            const bool again = !results_agree(own, c->chosen.result);
-            const bool still = again && !results_agree(run_on_the_base(request, q, *w).bytes, c->chosen.result);
+            const bool again = !results_agree(own, c->chosen.result, float_rule_of(machine_));
+            const bool still =
+                again && !results_agree(run_on_the_base(request, q, *w).bytes, c->chosen.result, float_rule_of(machine_));
             if (std::ranges::contains(c->out, self) ? !still : still) {
                 return std::ranges::contains(c->out, self) ? refusal_reason::wrong_list
                                                            : refusal_reason::result_differs;
@@ -876,7 +877,8 @@ private:
         }
         const auto majority = nodes_.size() / 2 + 1;
         for (const auto& c : counted) {
-            const auto agreeing = std::ranges::count_if(counted, [&c](const auto& x) { return results_agree(x, c); });
+            const auto agreeing = std::ranges::count_if(
+                counted, [this, &c](const auto& x) { return results_agree(x, c, float_rule_of(machine_)); });
             if (static_cast<std::size_t>(agreeing) >= majority) {
                 return refusal_reason::rejected_has_a_majority;
             }
@@ -1025,7 +1027,7 @@ private:
                 const auto own = encode_result(run_request(e, *w));
                 const fault_proof proof{proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise, chosen.crc,
                                         compute_result_crc(k, own)};
-                if (!results_agree(own, chosen.result)) [[unlikely]] {
+                if (!results_agree(own, chosen.result, float_rule_of(machine_))) [[unlikely]] {
                     write_the_proof_and_throw(proof, make_error_code(paxos_errc::result_differs),
                                               "konsens: the result of this node differs from the chosen result");
                 }
@@ -1113,6 +1115,29 @@ private:
         }
     }
 
+    static std::optional<float_rule> float_rule_of(const M& m)
+    {
+        if constexpr (requires { m.float_digits; m.float_denominator; }) {
+            return float_rule{m.float_digits, m.float_denominator};
+        } else if constexpr (requires { m.float_digits; }) {
+            return float_rule{m.float_digits, std::nullopt};
+        } else {
+            return std::nullopt;
+        }
+    }
+
+    static std::vector<std::byte> round_the_data_item(std::vector<std::byte> data_item, const float_rule& rule)
+    {
+        if (!holds_one_data_item(data_item)) [[unlikely]] {
+            throw std::logic_error(
+                "konsens: a state machine with float_digits gives its reply and each value as one encoded CBOR data item");
+        }
+        if (!rule.float_denominator) {
+            return data_item;
+        }
+        return round_each_float(data_item, *rule.float_denominator).value();
+    }
+
     request_result run_request(const entry& e, const state_storage::transaction& t) const
     {
         if (e.kind != entry_kind::client_request) {
@@ -1124,6 +1149,14 @@ private:
         }
         if (e.request_number > s->request_number) {
             auto a = machine_.apply(e.payload, write_view{t});
+            if constexpr (requires { machine_.float_digits; }) {
+                a.reply = round_the_data_item(std::move(a.reply), *float_rule_of(machine_));
+                for (auto& m : a.mutations) {
+                    if (m.value) {
+                        m.value = round_the_data_item(std::move(*m.value), *float_rule_of(machine_));
+                    }
+                }
+            }
             return {0, std::move(a.reply), std::move(a.mutations)};
         }
         if (e.request_number == s->request_number && s->request_number != 0) {
@@ -1272,7 +1305,7 @@ private:
         }
         const auto n = seq_paxos_.get_leader_state().n_leader;
         if (!selection_ || selection_->get_ballot() != n) {
-            selection_ = selection::with(n, nodes_, pointer);
+            selection_ = selection::with(n, nodes_, pointer, float_rule_of(machine_));
             return;
         }
         selection_->move_pointer(pointer, chosen);

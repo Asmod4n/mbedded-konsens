@@ -2,8 +2,10 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -275,4 +277,159 @@ TEST_CASE("a first index at or below the pointer is a wrong use")
 {
     CHECK_THROWS_AS((void)konsens::find_the_verdicts(1, 1, {}), std::logic_error);
     CHECK_THROWS_AS((void)konsens::find_the_verdicts(0, 0, {}), std::logic_error);
+}
+
+namespace {
+
+// RFC 8949 3.3: a double is the initial byte 0xfb and the 8 bytes of the
+// binary64 value in network byte order.
+std::vector<std::byte> double_item(const double value)
+{
+    const auto bits = std::bit_cast<std::uint64_t>(value);
+    std::vector<std::byte> out{std::byte{0xfb}};
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::byte>(bits >> shift));
+    }
+    return out;
+}
+
+std::vector<std::byte> rounded(const std::vector<std::byte>& item, const std::uint32_t float_denominator)
+{
+    const auto r = konsens::round_each_float(item, float_denominator);
+    REQUIRE(r.has_value());
+    return *r;
+}
+
+constexpr konsens::float_rule twelve_digits{12, std::nullopt};
+constexpr konsens::float_rule two_decimals{12, 2};
+
+}
+
+// Plan 2.2b: the library takes a reply or a value only as one encoded CBOR
+// data item. A head without its content, and two items, are no such item.
+TEST_CASE("holds_one_data_item takes exactly one well-formed item")
+{
+    CHECK(konsens::holds_one_data_item(bytes_of({0x01})));
+    CHECK(konsens::holds_one_data_item(bytes_of({0x61, 0x61})));
+    CHECK_FALSE(konsens::holds_one_data_item(bytes_of({0x61})));
+    CHECK_FALSE(konsens::holds_one_data_item(bytes_of({0x01, 0x01})));
+    CHECK_FALSE(konsens::holds_one_data_item({}));
+}
+
+// Plan 2.2a: round half to even. 0.125, 0.375, 2.5 and 3.5 are exact in
+// binary, so each one is a tie. The written form is the shortest float of
+// RFC 8949 4.2.2 that holds the value: 2.0 and 4.0 fit a half (RFC 8949
+// Appendix A: 2.0 is not listed, 1.5 is 0xf93e00, 4.0 is 0xf94400 by the
+// same binary16 layout).
+TEST_CASE("a tie rounds to the even digit")
+{
+    CHECK(rounded(double_item(0.125), 1) == double_item(0.12));
+    CHECK(rounded(double_item(0.375), 1) == double_item(0.38));
+    CHECK(rounded(double_item(2.5), 0) == bytes_of({0xf9, 0x40, 0x00}));
+    CHECK(rounded(double_item(3.5), 0) == bytes_of({0xf9, 0x44, 0x00}));
+    CHECK(rounded(double_item(1.5), 1) == bytes_of({0xf9, 0x3e, 0x00}));
+}
+
+// Plan 2.2a: two nodes near an edge round to two neighbouring steps. 9.9949
+// gives 9.99, and 9.9951 gives 1.00e+01. The compare allows one step of the
+// coarser value, so the two agree. Two steps away from an edge do not.
+TEST_CASE("two values one step apart near an edge agree")
+{
+    const auto low = rounded(double_item(9.9949), 2);
+    const auto high = rounded(double_item(9.9951), 2);
+    CHECK(low == double_item(9.99));
+    CHECK(high == bytes_of({0xf9, 0x49, 0x00}));
+    CHECK(konsens::data_items_agree(low, high, two_decimals));
+    CHECK(konsens::floats_agree(9.99, 10.0, two_decimals));
+    CHECK_FALSE(konsens::floats_agree(1.23, 1.25, two_decimals));
+    CHECK_FALSE(konsens::floats_agree(9.99, 10.2, two_decimals));
+    CHECK_FALSE(konsens::floats_agree(9.99, 10.0, twelve_digits));
+}
+
+// Plan 2.2.2: two floats agree when they are equal to float_digits
+// significant digits.
+TEST_CASE("floats agree to float_digits significant digits")
+{
+    CHECK(konsens::floats_agree(1.0, 1.0 + 1e-12, twelve_digits));
+    CHECK(konsens::floats_agree(-3e200, -3e200 * (1 + 1e-13), twelve_digits));
+    CHECK_FALSE(konsens::floats_agree(1.0, 1.0001, twelve_digits));
+    CHECK_FALSE(konsens::floats_agree(1.0, -1.0, twelve_digits));
+}
+
+// Plan 2.2.2: NaN agrees only with NaN. A rounded NaN is the half NaN
+// 0xf97e00 of RFC 8949 4.2.2.
+TEST_CASE("NaN agrees only with NaN")
+{
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    CHECK(konsens::floats_agree(nan, -nan, twelve_digits));
+    CHECK_FALSE(konsens::floats_agree(nan, 1.0, twelve_digits));
+    CHECK_FALSE(konsens::floats_agree(0.0, nan, two_decimals));
+    CHECK(rounded(double_item(nan), 2) == bytes_of({0xf9, 0x7e, 0x00}));
+    CHECK(konsens::data_items_agree(bytes_of({0xf9, 0x7e, 0x00}), double_item(nan), twelve_digits));
+}
+
+// Plan 2.2.2: +0 and -0 agree. The rounding keeps the sign: RFC 8949
+// Appendix A gives 0xf90000 for 0.0 and 0xf98000 for -0.0.
+TEST_CASE("plus zero and minus zero agree and keep their sign")
+{
+    CHECK(konsens::floats_agree(0.0, -0.0, twelve_digits));
+    CHECK(rounded(double_item(0.0), 2) == bytes_of({0xf9, 0x00, 0x00}));
+    CHECK(rounded(double_item(-0.0), 2) == bytes_of({0xf9, 0x80, 0x00}));
+}
+
+// An infinity agrees only with the same infinity. RFC 8949 Appendix A
+// gives 0xf97c00 and 0xf9fc00.
+TEST_CASE("an infinity agrees only with the same infinity")
+{
+    const auto inf = std::numeric_limits<double>::infinity();
+    CHECK(konsens::floats_agree(inf, inf, two_decimals));
+    CHECK_FALSE(konsens::floats_agree(inf, -inf, two_decimals));
+    CHECK_FALSE(konsens::floats_agree(inf, std::numeric_limits<double>::max(), two_decimals));
+    CHECK(rounded(double_item(inf), 2) == bytes_of({0xf9, 0x7c, 0x00}));
+    CHECK(rounded(double_item(-inf), 2) == bytes_of({0xf9, 0xfc, 0x00}));
+}
+
+// Plan 2.2.2 and 2.2a: the compare and the rounding walk into arrays, maps
+// and the embedded item of a tag 24 (RFC 8949 3.4.5.1). Every item that is
+// no float stays as it is, and agrees only byte for byte.
+TEST_CASE("a float inside nested CBOR is rounded and compared")
+{
+    const auto f = double_item(1.23456);
+    auto nested = bytes_of({0x82, 0x01, 0xa1, 0x61, 0x61});
+    nested.insert(nested.end(), f.begin(), f.end());
+    auto expected = bytes_of({0x82, 0x01, 0xa1, 0x61, 0x61});
+    const auto r = double_item(1.23);
+    expected.insert(expected.end(), r.begin(), r.end());
+    CHECK(rounded(nested, 2) == expected);
+
+    auto embedded = bytes_of({0xd8, 0x18, 0x49});
+    embedded.insert(embedded.end(), f.begin(), f.end());
+    auto embedded_expected = bytes_of({0xd8, 0x18, 0x49});
+    embedded_expected.insert(embedded_expected.end(), r.begin(), r.end());
+    CHECK(rounded(embedded, 2) == embedded_expected);
+
+    auto close = bytes_of({0x82, 0x01, 0xa1, 0x61, 0x61});
+    const auto g = double_item(1.23456 * (1 + 1e-13));
+    close.insert(close.end(), g.begin(), g.end());
+    CHECK(close != nested);
+    CHECK(konsens::data_items_agree(nested, close, twelve_digits));
+    auto other_key = bytes_of({0x82, 0x01, 0xa1, 0x61, 0x62});
+    other_key.insert(other_key.end(), g.begin(), g.end());
+    CHECK_FALSE(konsens::data_items_agree(nested, other_key, twelve_digits));
+    CHECK_FALSE(konsens::data_items_agree(bytes_of({0x01}), bytes_of({0x18, 0x01}), twelve_digits));
+}
+
+// Plan 2.2.2: with the float rule, two results agree when their replies and
+// values agree as CBOR items. Without it, they agree only byte for byte.
+TEST_CASE("results agree through their data items under the float rule")
+{
+    const std::vector<std::byte> key{std::byte{'k'}};
+    const konsens::request_result a{0, double_item(2.0 / 3), {{key, double_item(1.0 / 3)}}};
+    const konsens::request_result b{0, double_item(2.0 / 3 * (1 + 1e-14)), {{key, double_item(1.0 / 3)}}};
+    const konsens::request_result c{0, double_item(2.0 / 3), {{key, std::nullopt}}};
+    const auto ea = konsens::encode_result(a);
+    const auto eb = konsens::encode_result(b);
+    CHECK(konsens::results_agree(ea, eb, twelve_digits));
+    CHECK_FALSE(konsens::results_agree(ea, eb, std::nullopt));
+    CHECK_FALSE(konsens::results_agree(ea, konsens::encode_result(c), twelve_digits));
 }

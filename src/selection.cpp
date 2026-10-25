@@ -5,13 +5,15 @@
 
 namespace konsens {
 
-selection selection::with(const ballot n, const std::span<const node_id> nodes, const std::uint64_t pointer)
+selection selection::with(const ballot n, const std::span<const node_id> nodes, const std::uint64_t pointer,
+                          const std::optional<float_rule> rule)
 {
     selection s;
     s.n_ = n;
     s.nodes_.assign(nodes.begin(), nodes.end());
     std::ranges::sort(s.nodes_);
     s.pointer_ = pointer;
+    s.rule_ = rule;
     return s;
 }
 
@@ -162,7 +164,7 @@ std::size_t selection::count_the_agreeing(const std::span<const node_id> counted
                                           const std::span<const std::byte> result) const
 {
     return static_cast<std::size_t>(std::ranges::count_if(
-        counted, [this, index, result](const node_id j) { return results_agree(result_of(j, index), result); }));
+        counted, [this, index, result](const node_id j) { return results_agree(result_of(j, index), result, rule_); }));
 }
 
 std::vector<try_again_target> selection::select_results(const leader_log& log)
@@ -193,7 +195,7 @@ std::vector<try_again_target> selection::select_results(const leader_log& log)
         }
         const auto chosen = result_of(candidate, q);
         for (const auto j : counted) {
-            if (!results_agree(result_of(j, q), chosen) && tried_.insert({j, q}).second) {
+            if (!results_agree(result_of(j, q), chosen, rule_) && tried_.insert({j, q}).second) {
                 targets.push_back({j, q});
             }
         }
@@ -214,7 +216,7 @@ std::vector<node_id> selection::find_the_nodes_out(const leader_log& log, const 
     const auto& chosen = selected_.at(index).chosen.result;
     for (const auto x : nodes_) {
         if (tried_.contains({x, index}) && again_.contains({x, index}) && counts(log, x, index) &&
-            !results_agree(result_of(x, index), chosen)) {
+            !results_agree(result_of(x, index), chosen, rule_)) {
             out.push_back(x);
         }
     }
