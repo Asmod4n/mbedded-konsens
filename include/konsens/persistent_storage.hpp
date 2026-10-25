@@ -40,6 +40,8 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
         get_entry_state(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
+        get_chain_crc(std::uint64_t index) const;
 
         read_only_transaction(read_only_transaction&& other) noexcept;
         read_only_transaction& operator=(read_only_transaction&& other) noexcept;
@@ -63,6 +65,8 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
         get_entry_state(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
+        get_chain_crc(std::uint64_t index) const;
 
         [[nodiscard]] std::expected<void, std::error_code> append_entries(std::span<const entry> entries);
         [[nodiscard]] std::expected<void, std::error_code> append_on_prefix(std::uint64_t from_idx,

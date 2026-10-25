@@ -130,13 +130,16 @@ concept storage_read = requires(const T& t, std::uint64_t from, std::uint64_t to
     { t.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
     { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
     { t.get_entry_state(index) } -> std::same_as<std::expected<std::optional<entry_state>, std::error_code>>;
+    { t.get_chain_crc(index) } -> std::same_as<std::expected<std::optional<std::uint32_t>, std::error_code>>;
 };
 
 template <typename T>
 concept storage_write = storage_read<T> && std::movable<T> &&
                         requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b) {
                             { t.append_entries(entries) } -> std::same_as<std::expected<void, std::error_code>>;
-                            { t.append_on_prefix(index, entries) } -> std::same_as<std::expected<void, std::error_code>>;
+                            {
+                                t.append_on_prefix(index, entries)
+                            } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_promise(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_accepted_round(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_decided_index(index) } -> std::same_as<std::expected<void, std::error_code>>;

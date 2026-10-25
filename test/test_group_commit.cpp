@@ -182,11 +182,11 @@ TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the A
     const ballot first{config_id, 1, 0, 3};
     const ballot second{config_id, 2, 0, 2};
     REQUIRE(sp.handle({3, 1, konsens::prepare{first, 0, ballot{}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::accept_sync{first, {1, 1}, 0, {{}, 0}}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{first, {1, 1}, 0, {{}, 0}, 0}}));
     REQUIRE(sp.commit());
     static_cast<void>(sp.take_outgoing_messages());
     const auto commits = d->commits;
-    REQUIRE(sp.handle({3, 1, konsens::accept_decide{first, {1, 2}, 0, {make_entry(7)}}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{first, {1, 2}, 0, {make_entry(7)}, 0}}));
     REQUIRE(sp.handle({2, 1, konsens::prepare{second, 0, ballot{}, 0}}));
     REQUIRE(sp.commit());
     CHECK(d->commits - commits == 1);

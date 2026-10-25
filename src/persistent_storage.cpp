@@ -212,8 +212,7 @@ meta_record decode_meta(const std::span<const std::byte, meta_record_size> bytes
         decode_ballot(bytes.subspan<accepted_round_offset, ballot_size>()),
         from_little_endian<std::uint64_t>(bytes.subspan<decided_idx_offset, sizeof(meta_record::decided_idx)>()),
         from_little_endian<std::uint64_t>(bytes.subspan<log_len_offset, sizeof(meta_record::log_len)>()),
-        from_little_endian<std::uint32_t>(
-            bytes.subspan<last_chain_crc_offset, sizeof(meta_record::last_chain_crc)>()),
+        from_little_endian<std::uint32_t>(bytes.subspan<last_chain_crc_offset, sizeof(meta_record::last_chain_crc)>()),
     };
 }
 
@@ -448,10 +447,18 @@ std::expected<std::optional<stored_record>, std::error_code> read_record(const d
 }
 
 std::expected<std::optional<entry_state>, std::error_code> read_entry_state(const databases& d,
-                                                                             const std::uint64_t index)
+                                                                            const std::uint64_t index)
 {
     return read_record(d, index).transform([](const std::optional<stored_record>& r) {
         return r.transform([](const stored_record& x) { return x.state; });
+    });
+}
+
+std::expected<std::optional<std::uint32_t>, std::error_code> read_chain_crc(const databases& d,
+                                                                            const std::uint64_t index)
+{
+    return read_record(d, index).transform([](const std::optional<stored_record>& r) {
+        return r.transform([](const stored_record& x) { return x.chain_crc; });
     });
 }
 
@@ -638,7 +645,9 @@ std::string read_failure::message() const
     return std::format("The read of the log entry at index {} failed: {}", index, code.message());
 }
 
-persistent_storage::read_only_transaction::read_only_transaction(environment* const env) noexcept : env_{env} {}
+persistent_storage::read_only_transaction::read_only_transaction(environment* const env) noexcept : env_{env}
+{
+}
 
 persistent_storage::read_only_transaction::read_only_transaction(read_only_transaction&& other) noexcept
     : env_{std::exchange(other.env_, nullptr)}
@@ -699,7 +708,16 @@ persistent_storage::read_only_transaction::get_entry_state(const std::uint64_t i
     return read_entry_state(env_->of_reader(), index);
 }
 
-persistent_storage::transaction::transaction(environment* const env) noexcept : env_{env} {}
+std::expected<std::optional<std::uint32_t>, std::error_code>
+persistent_storage::read_only_transaction::get_chain_crc(const std::uint64_t index) const
+{
+    throw_if_no_environment(env_);
+    return read_chain_crc(env_->of_reader(), index);
+}
+
+persistent_storage::transaction::transaction(environment* const env) noexcept : env_{env}
+{
+}
 
 persistent_storage::transaction::transaction(transaction&& other) noexcept : env_{std::exchange(other.env_, nullptr)}
 {
@@ -755,7 +773,15 @@ persistent_storage::transaction::get_entry_state(const std::uint64_t index) cons
     return read_entry_state(env_->of_writer(), index);
 }
 
-std::expected<void, std::error_code> persistent_storage::transaction::append_entries(const std::span<const entry> entries)
+std::expected<std::optional<std::uint32_t>, std::error_code>
+persistent_storage::transaction::get_chain_crc(const std::uint64_t index) const
+{
+    throw_if_no_environment(env_);
+    return read_chain_crc(env_->of_writer(), index);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::transaction::append_entries(const std::span<const entry> entries)
 {
     throw_if_no_environment(env_);
     throw_if_an_entry_has_a_field_of_another_kind(entries);
@@ -859,7 +885,9 @@ persistent_storage::~persistent_storage()
     }
 }
 
-persistent_storage::persistent_storage(std::unique_ptr<environment> env) noexcept : env_{std::move(env)} {}
+persistent_storage::persistent_storage(std::unique_ptr<environment> env) noexcept : env_{std::move(env)}
+{
+}
 
 void persistent_storage::throw_if_moved_from() const
 {

@@ -66,6 +66,17 @@ struct hardware_fault {
     std::uint32_t other_crc;
 };
 
+struct peer_seen {
+    ballot n;
+    std::uint64_t accepted_idx;
+};
+
+struct peer_step_back {
+    node_id pid;
+    peer_seen seen;
+    peer_seen received;
+};
+
 enum class role : std::uint8_t { follower, leader };
 
 enum class phase : std::uint8_t { prepare, accept, recover, none };
@@ -75,6 +86,7 @@ struct promise_meta_data {
     std::uint64_t accepted_idx;
     std::uint64_t decided_idx;
     node_id pid;
+    std::uint32_t decided_chain_crc;
 };
 
 struct not_promised {};
@@ -148,17 +160,6 @@ struct leader_state {
     void lost_promise(node_id pid) { promises_meta[pid_to_idx(pid)] = promised_higher{}; }
 
     std::optional<konsens::log_sync> take_max_promise_sync() { return std::exchange(max_promise_sync, std::nullopt); }
-
-    std::uint64_t get_max_decided_idx() const
-    {
-        std::uint64_t max = 0;
-        for (const auto& p : promises_meta) {
-            if (const auto* m = std::get_if<promise_meta_data>(&p)) {
-                max = std::max(max, m->decided_idx);
-            }
-        }
-        return max;
-    }
 
     const promise_meta_data& get_promise_meta(node_id pid) const
     {
@@ -347,6 +348,11 @@ private:
         if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) [[unlikely]] {
             return {};
         }
+        if constexpr (carries_a_ballot_of_the_sender<T>) {
+            if (!raise_peer_seen(from, msg)) [[unlikely]] {
+                return {};
+            }
+        }
         if (recovering_ && !std::is_same_v<T, recovery> && !std::is_same_v<T, recovery_response> &&
             !std::is_same_v<T, konsens::get_state> && !std::is_same_v<T, new_state>) {
             return {};
@@ -422,9 +428,14 @@ public:
             state_.first = role::follower;
             return {};
         }
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
+        }
         write_or_throw(txn_->set_promise(n));
         leader_state_ = leader_state::with(n, nodes_);
-        leader_state_.set_promise({m->accepted_round, m->log_len, m->decided_idx, pid_}, std::nullopt, true);
+        leader_state_.set_promise({m->accepted_round, m->log_len, m->decided_idx, pid_, *decided_chain}, std::nullopt,
+                                  true);
         state_ = {role::leader, phase::prepare};
         for (const auto peer : peers_) {
             send_prepare(peer, *m);
@@ -483,8 +494,12 @@ public:
                 }
             }
             if (state_.second == phase::accept) {
+                const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+                if (!decided_chain) [[unlikely]] {
+                    return stop_voting(decided_chain.error());
+                }
                 for (const auto f : leader_state_.get_promised_followers()) {
-                    send_decide(f, m->decided_idx);
+                    send_decide(f, m->decided_idx, *decided_chain);
                 }
             }
             return {};
@@ -625,11 +640,15 @@ public:
     bool recovering() const { return recovering_; }
     std::optional<std::error_code> get_error() const { return error_; }
     std::optional<konsens::hardware_fault> get_hardware_fault() const { return hardware_fault_; }
+    std::vector<peer_step_back> take_peer_step_backs() { return std::exchange(peer_step_backs_, {}); }
 
     result reconnected(const node_id pid)
     {
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
+        }
+        if (pid != pid_) {
+            peers_seen_.at(node_index_of(pid)) = {};
         }
         if (pid == pid_ || recovering_) {
             return {};
@@ -650,6 +669,7 @@ private:
         : pid_(config.pid), peers_(config.peers), internal_storage_(std::move(internal_storage))
     {
         nodes_ = peers_;
+        peers_seen_.assign(peers_.size() + 1, peer_seen{});
         nodes_.push_back(pid_);
         std::ranges::sort(nodes_);
     }
@@ -780,6 +800,89 @@ private:
         return stop_voting(make_error_code(paxos_errc::hardware_fault));
     }
 
+    std::expected<std::uint32_t, std::error_code> read_prefix_chain_crc(const std::uint64_t length) const
+    {
+        if (length == 0) {
+            return 0;
+        }
+        const auto c = txn_->get_chain_crc(length - 1);
+        if (!c) [[unlikely]] {
+            return std::unexpected(c.error());
+        }
+        if (!*c) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::missing_entry));
+        }
+        return **c;
+    }
+
+    result check_decided_chain_crc(const std::uint64_t decided_idx, const std::uint32_t decided_chain_crc,
+                                   const node_id from)
+    {
+        const auto own = read_prefix_chain_crc(decided_idx);
+        if (!own) [[unlikely]] {
+            return stop_voting(own.error());
+        }
+        if (*own != decided_chain_crc) [[unlikely]] {
+            return stop_voting(konsens::hardware_fault{decided_idx, pid_, *own, from, decided_chain_crc});
+        }
+        return {};
+    }
+
+    std::expected<std::uint64_t, std::error_code> read_highest_verified_decided_idx(const std::uint64_t own) const
+    {
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return std::unexpected(m.error());
+        }
+        auto highest = own;
+        for (const auto& p : leader_state_.promises_meta) {
+            const auto* meta = std::get_if<promise_meta_data>(&p);
+            if (meta == nullptr || meta->decided_idx <= highest || meta->decided_idx > m->log_len) {
+                continue;
+            }
+            const auto chain = read_prefix_chain_crc(meta->decided_idx);
+            if (!chain) [[unlikely]] {
+                return std::unexpected(chain.error());
+            }
+            if (*chain == meta->decided_chain_crc) {
+                highest = meta->decided_idx;
+            }
+        }
+        return highest;
+    }
+
+    template <typename T>
+    static constexpr bool carries_a_ballot_of_the_sender =
+        std::is_same_v<T, prepare> || std::is_same_v<T, konsens::promise> || std::is_same_v<T, accept_sync> ||
+        std::is_same_v<T, accept_decide> || std::is_same_v<T, accepted> || std::is_same_v<T, decide>;
+
+    template <typename T>
+    bool raise_peer_seen(const node_id from, const T& msg)
+    {
+        auto& seen = peers_seen_.at(node_index_of(from));
+        peer_seen received{msg.n, 0};
+        if constexpr (std::is_same_v<T, accepted>) {
+            received.accepted_idx = msg.accepted_idx;
+        }
+        constexpr bool counts_the_index = std::is_same_v<T, accepted>;
+        if (received.n < seen.n ||
+            (counts_the_index && received.n == seen.n && received.accepted_idx < seen.accepted_idx)) [[unlikely]] {
+            peer_step_backs_.push_back({from, seen, received});
+            return false;
+        }
+        if (received.n > seen.n) {
+            seen = received;
+        } else {
+            seen.accepted_idx = std::max(seen.accepted_idx, received.accepted_idx);
+        }
+        return true;
+    }
+
+    std::size_t node_index_of(const node_id pid) const
+    {
+        return static_cast<std::size_t>(std::ranges::distance(nodes_.begin(), std::ranges::find(nodes_, pid)));
+    }
+
     std::expected<konsens::log_sync, std::error_code> create_log_sync(const std::uint64_t common_prefix_idx,
                                                                       const meta_record& m) const
     {
@@ -810,7 +913,12 @@ private:
             }
             sync = std::move(*s);
         }
-        return konsens::promise{prep.n, m->accepted_round, m->decided_idx, m->log_len, std::move(sync)};
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return std::unexpected(decided_chain.error());
+        }
+        return konsens::promise{prep.n,          m->accepted_round, m->decided_idx,   m->log_len,
+                                std::move(sync), *decided_chain,    m->last_chain_crc};
     }
 
     void send_preparereq_to_all_peers(const ballot promise)
@@ -832,9 +940,10 @@ private:
         outgoing_.push_back({pid_, to, prepare{leader_state_.n_leader, m.decided_idx, m.accepted_round, m.log_len}});
     }
 
-    void send_decide(const node_id to, const std::uint64_t decided_idx)
+    void send_decide(const node_id to, const std::uint64_t decided_idx, const std::uint32_t decided_chain_crc)
     {
-        outgoing_.push_back({pid_, to, decide{leader_state_.n_leader, leader_state_.next_seq_num(to), decided_idx}});
+        outgoing_.push_back(
+            {pid_, to, decide{leader_state_.n_leader, leader_state_.next_seq_num(to), decided_idx, decided_chain_crc}});
     }
 
     void reconnected(const node_id pid, const meta_record& m)
@@ -893,13 +1002,18 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
+        }
         leader_state_.set_accepted_idx(pid_, m->log_len);
         for (const auto f : leader_state_.get_promised_followers()) {
             outgoing_.push_back({pid_, f,
                                  accept_decide{leader_state_.n_leader,
                                                leader_state_.next_seq_num(f),
                                                m->decided_idx,
-                                               {entries.begin(), entries.end()}}});
+                                               {entries.begin(), entries.end()},
+                                               *decided_chain}});
         }
         return {};
     }
@@ -944,7 +1058,8 @@ private:
         if (prom.n != leader_state_.n_leader) {
             return {};
         }
-        const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from};
+        const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from,
+                                     prom.decided_chain_crc};
         if (leader_state_.set_promise(meta, prom.log_sync, true)) {
             return handle_majority_promises();
         }
@@ -956,7 +1071,8 @@ private:
         if (prom.n != leader_state_.n_leader) {
             return {};
         }
-        const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from};
+        const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from,
+                                     prom.decided_chain_crc};
         leader_state_.set_promise(meta, std::nullopt, false);
         return send_accsync(from);
     }
@@ -968,14 +1084,17 @@ private:
             return stop_voting(m.error());
         }
         auto sync = leader_state_.take_max_promise_sync();
-        const auto decided_idx = leader_state_.get_max_decided_idx();
         const auto sync_idx = sync ? sync->sync_idx : m->log_len;
         const auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
         const auto proposals = std::exchange(buffered_proposals_, {});
         write_or_throw(txn_->append_on_prefix(sync_idx, suffix));
+        const auto decided_idx = read_highest_verified_decided_idx(m->decided_idx);
+        if (!decided_idx) [[unlikely]] {
+            return stop_voting(decided_idx.error());
+        }
         write_or_throw(txn_->append_entries(proposals));
         write_or_throw(txn_->set_accepted_round(leader_state_.n_leader));
-        write_or_throw(txn_->set_decided_index(decided_idx));
+        write_or_throw(txn_->set_decided_index(*decided_idx));
         const auto after = read_meta();
         if (!after) [[unlikely]] {
             return stop_voting(after.error());
@@ -1005,9 +1124,14 @@ private:
         if (!sync) [[unlikely]] {
             return stop_voting(sync.error());
         }
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
+        }
         leader_state_.increment_seq_num_session(to);
         const auto seq_num = leader_state_.next_seq_num(to);
-        outgoing_.push_back({pid_, to, accept_sync{leader_state_.n_leader, seq_num, m->decided_idx, std::move(*sync)}});
+        outgoing_.push_back(
+            {pid_, to, accept_sync{leader_state_.n_leader, seq_num, m->decided_idx, std::move(*sync), *decided_chain}});
         return {};
     }
 
@@ -1026,8 +1150,14 @@ private:
             return {};
         }
         write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
+        if (accsync.decided_idx > m->decided_idx) {
+            if (auto r = check_decided_chain_crc(accsync.decided_idx, accsync.decided_chain_crc, from); !r)
+                [[unlikely]] {
+                return r;
+            }
+            write_or_throw(txn_->set_decided_index(accsync.decided_idx));
+        }
         write_or_throw(txn_->set_accepted_round(accsync.n));
-        write_or_throw(txn_->set_decided_index(std::max(m->decided_idx, accsync.decided_idx)));
         const auto after = read_meta();
         if (!after) [[unlikely]] {
             return stop_voting(after.error());
@@ -1039,7 +1169,7 @@ private:
         state_ = {role::follower, phase::accept};
         current_seq_num_ = accsync.seq_num;
         applied_sync_ = {accsync.n, accsync.seq_num.session};
-        outgoing_.push_back({pid_, from, accepted{accsync.n, after->log_len}});
+        outgoing_.push_back({pid_, from, accepted{accsync.n, after->log_len, after->last_chain_crc}});
         return {};
     }
 
@@ -1058,7 +1188,11 @@ private:
         if (count > 0) {
             write_or_throw(txn_->append_entries(acc_dec.entries));
         }
-        if (u.decided_idx != m->decided_idx) {
+        if (u.decided_idx == acc_dec.decided_idx && u.decided_idx != m->decided_idx) {
+            if (auto r = check_decided_chain_crc(u.decided_idx, acc_dec.decided_chain_crc, acc_dec.n.pid); !r)
+                [[unlikely]] {
+                return r;
+            }
             write_or_throw(txn_->set_decided_index(u.decided_idx));
         }
         if (count > 0 || u.flushed) {
@@ -1066,7 +1200,7 @@ private:
             if (!after) [[unlikely]] {
                 return stop_voting(after.error());
             }
-            outgoing_.push_back({pid_, acc_dec.n.pid, accepted{acc_dec.n, after->log_len}});
+            outgoing_.push_back({pid_, acc_dec.n.pid, accepted{acc_dec.n, after->log_len, after->last_chain_crc}});
         }
         return {};
     }
@@ -1082,11 +1216,14 @@ private:
             return {};
         }
         const auto u = update_decided(m->decided_idx, m->log_len, dec.decided_idx);
-        if (u.decided_idx != m->decided_idx) {
+        if (u.decided_idx == dec.decided_idx && u.decided_idx != m->decided_idx) {
+            if (auto r = check_decided_chain_crc(u.decided_idx, dec.decided_chain_crc, dec.n.pid); !r) [[unlikely]] {
+                return r;
+            }
             write_or_throw(txn_->set_decided_index(u.decided_idx));
         }
         if (u.flushed) {
-            outgoing_.push_back({pid_, dec.n.pid, accepted{dec.n, m->log_len}});
+            outgoing_.push_back({pid_, dec.n.pid, accepted{dec.n, m->log_len, m->last_chain_crc}});
         }
         return {};
     }
@@ -1103,6 +1240,13 @@ private:
         if (acc.accepted_idx > m->log_len) [[unlikely]] {
             return {};
         }
+        const auto own_chain = read_prefix_chain_crc(acc.accepted_idx);
+        if (!own_chain) [[unlikely]] {
+            return stop_voting(own_chain.error());
+        }
+        if (*own_chain != acc.accepted_chain_crc) [[unlikely]] {
+            return {};
+        }
         leader_state_.set_accepted_idx(from, acc.accepted_idx);
         leader_state_.set_accepted_idx(pid_, m->log_len);
         if (acc.accepted_idx <= m->decided_idx || !leader_state_.is_chosen(acc.accepted_idx)) {
@@ -1110,15 +1254,9 @@ private:
         }
         write_or_throw(txn_->set_decided_index(acc.accepted_idx));
         for (const auto f : leader_state_.get_promised_followers()) {
-            send_decide(f, acc.accepted_idx);
+            send_decide(f, acc.accepted_idx, *own_chain);
         }
         return {};
-    }
-
-    std::expected<std::uint32_t, std::error_code> read_last_entry_crc() const
-    {
-        return txn_->get_last_entry().transform(
-            [](const std::optional<last_entry>& l) { return l ? l->entry_crc : std::uint32_t{0}; });
     }
 
     result handle_recovery(const recovery& rec, const node_id from)
@@ -1127,9 +1265,9 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto last_crc = read_last_entry_crc();
-        if (!last_crc) [[unlikely]] {
-            return stop_voting(last_crc.error());
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
         }
         const bool primary = !recovering_ && state_ == std::pair{role::leader, phase::accept};
         std::vector<entry> log;
@@ -1140,9 +1278,10 @@ private:
             }
             log = std::move(*l);
         }
-        outgoing_.push_back({pid_, from,
-                             recovery_response{rec.nonce, m->promise, primary, m->accepted_round, std::move(log),
-                                               m->decided_idx, recovering_, m->log_len, *last_crc}});
+        outgoing_.push_back(
+            {pid_, from,
+             recovery_response{rec.nonce, m->promise, primary, m->accepted_round, std::move(log), m->decided_idx,
+                               recovering_, m->log_len, m->last_chain_crc, *decided_chain}});
         return {};
     }
 
@@ -1164,12 +1303,14 @@ private:
     result select_recovery_source()
     {
         state_request_.reset();
-        if (const auto* l = find_recovery_primary()) {
+        if (const auto* primary = find_recovery_primary()) {
             const auto m = read_meta();
             if (!m) [[unlikely]] {
                 return stop_voting(m.error());
             }
-            return complete_recovery(0, l->log, std::max(m->promise, l->promise), l->n_accepted, l->decided_idx);
+            const auto& [source, l] = *primary;
+            return complete_recovery(0, l.log, std::max(m->promise, l.promise), l.n_accepted, l.decided_idx,
+                                     l.decided_chain_crc, source);
         }
         if (recovery_responses_.size() < peers_.size() ||
             std::ranges::any_of(recovery_responses_, [](const auto& r) { return r.second.primary; })) {
@@ -1179,14 +1320,17 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto last_crc = read_last_entry_crc();
-        if (!last_crc) [[unlikely]] {
-            return stop_voting(last_crc.error());
-        }
         auto all = recovery_responses_;
-        all.emplace_back(
-            pid_, recovery_response{
-                      nonce_, m->promise, false, m->accepted_round, {}, m->decided_idx, true, m->log_len, *last_crc});
+        all.emplace_back(pid_, recovery_response{nonce_,
+                                                 m->promise,
+                                                 false,
+                                                 m->accepted_round,
+                                                 {},
+                                                 m->decided_idx,
+                                                 true,
+                                                 m->log_len,
+                                                 m->last_chain_crc,
+                                                 0});
         if (const auto fault = find_hardware_fault(all)) [[unlikely]] {
             return stop_voting(*fault);
         }
@@ -1204,7 +1348,7 @@ private:
             return x.first < y.first;
         });
         if (source == pid_) {
-            return complete_recovery(m->log_len, {}, pr, m->accepted_round, m->decided_idx);
+            return complete_recovery(m->log_len, {}, pr, m->accepted_round, m->decided_idx, 0, pid_);
         }
         const auto from_idx = m->accepted_round == l.n_accepted ? m->log_len : m->decided_idx;
         state_request_.emplace(source, konsens::get_state{nonce_, l.n_accepted, l.accepted_idx, from_idx});
@@ -1218,10 +1362,10 @@ private:
         for (const auto& [i, a] : std::views::enumerate(all)) {
             for (const auto& b : all.subspan(static_cast<std::size_t>(i) + 1)) {
                 if (a.second.accepted_idx > 0 && a.second.n_accepted == b.second.n_accepted &&
-                    a.second.accepted_idx == b.second.accepted_idx && a.second.last_crc != b.second.last_crc)
-                    [[unlikely]] {
-                    return konsens::hardware_fault{a.second.accepted_idx, a.first, a.second.last_crc, b.first,
-                                                   b.second.last_crc};
+                    a.second.accepted_idx == b.second.accepted_idx &&
+                    a.second.last_chain_crc != b.second.last_chain_crc) [[unlikely]] {
+                    return konsens::hardware_fault{a.second.accepted_idx, a.first, a.second.last_chain_crc, b.first,
+                                                   b.second.last_chain_crc};
                 }
             }
         }
@@ -1234,9 +1378,9 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto last_crc = read_last_entry_crc();
-        if (!last_crc) [[unlikely]] {
-            return stop_voting(last_crc.error());
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
         }
         std::vector<entry> entries;
         if (m->accepted_round == req.n_accepted && m->log_len == req.accepted_idx) {
@@ -1247,8 +1391,8 @@ private:
             entries = std::move(*e);
         }
         outgoing_.push_back({pid_, from,
-                             new_state{req.nonce, m->promise, m->accepted_round, m->log_len, m->decided_idx, *last_crc,
-                                       req.from_idx, std::move(entries)}});
+                             new_state{req.nonce, m->promise, m->accepted_round, m->log_len, m->decided_idx,
+                                       m->last_chain_crc, req.from_idx, std::move(entries), *decided_chain}});
         return {};
     }
 
@@ -1272,27 +1416,25 @@ private:
                                                            ns.decided_idx,
                                                            source_recovering,
                                                            ns.accepted_idx,
-                                                           ns.last_crc});
+                                                           ns.last_chain_crc,
+                                                           ns.decided_chain_crc});
             return select_recovery_source();
         }
         if (ns.entries.empty() && ns.from_idx < ns.accepted_idx) {
             return {};
         }
         if (ns.from_idx > ns.accepted_idx || ns.from_idx + ns.entries.size() != ns.accepted_idx) [[unlikely]] {
-            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, 0, from, ns.last_crc});
+            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, 0, from, ns.last_chain_crc});
         }
-        std::uint32_t crc = 0;
-        if (!ns.entries.empty()) {
-            crc = compute_entry_crc(ns.accepted_idx - 1, ns.entries.back());
-        } else if (ns.accepted_idx > 0) {
-            const auto own = read_range(*txn_, ns.accepted_idx - 1, ns.accepted_idx);
-            if (!own) [[unlikely]] {
-                return stop_voting(own.error());
-            }
-            crc = compute_entry_crc(ns.accepted_idx - 1, own->front());
+        auto crc = read_prefix_chain_crc(ns.from_idx);
+        if (!crc) [[unlikely]] {
+            return stop_voting(crc.error());
         }
-        if (crc != ns.last_crc) [[unlikely]] {
-            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, crc, from, ns.last_crc});
+        for (const auto& [i, e] : std::views::enumerate(ns.entries)) {
+            *crc = compute_chain_crc(*crc, ns.from_idx + static_cast<std::uint64_t>(i), e);
+        }
+        if (*crc != ns.last_chain_crc) [[unlikely]] {
+            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, *crc, from, ns.last_chain_crc});
         }
         const auto m = read_meta();
         if (!m) [[unlikely]] {
@@ -1301,10 +1443,11 @@ private:
         const auto answered = std::ranges::max(recovery_responses_ | std::views::values |
                                                std::views::transform(&recovery_response::promise));
         const auto pr = std::max({m->promise, ns.promise, answered});
-        return complete_recovery(ns.from_idx, ns.entries, pr, ns.n_accepted, ns.decided_idx);
+        return complete_recovery(ns.from_idx, ns.entries, pr, ns.n_accepted, ns.decided_idx, ns.decided_chain_crc,
+                                 from);
     }
 
-    const recovery_response* find_recovery_primary()
+    const std::pair<node_id, recovery_response>* find_recovery_primary()
     {
         auto normal = recovery_responses_ | std::views::filter([](const auto& r) { return !r.second.recovering; });
         if (static_cast<std::size_t>(std::ranges::distance(normal)) < leader_state_.majority()) {
@@ -1315,19 +1458,26 @@ private:
         const auto l = std::ranges::find_if(normal, [highest](const auto& r) {
             return r.second.primary && r.second.promise == highest && highest.pid == r.first;
         });
-        return l == normal.end() ? nullptr : &l->second;
+        return l == normal.end() ? nullptr : &*l;
     }
 
     result complete_recovery(const std::uint64_t from_idx, const std::span<const entry> entries, const ballot pr,
-                             const ballot n_accepted, const std::uint64_t source_decided_idx)
+                             const ballot n_accepted, const std::uint64_t source_decided_idx,
+                             const std::uint32_t source_decided_chain_crc, const node_id source)
     {
         const auto m = read_meta();
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
         write_or_throw(txn_->append_on_prefix(from_idx, entries));
+        if (source_decided_idx > m->decided_idx) {
+            if (auto r = check_decided_chain_crc(source_decided_idx, source_decided_chain_crc, source); !r)
+                [[unlikely]] {
+                return r;
+            }
+            write_or_throw(txn_->set_decided_index(source_decided_idx));
+        }
         write_or_throw(txn_->set_accepted_round(n_accepted));
-        write_or_throw(txn_->set_decided_index(std::max(m->decided_idx, source_decided_idx)));
         write_or_throw(txn_->set_promise(pr));
         state_ = {role::follower, phase::recover};
         current_seq_num_ = {};
@@ -1478,6 +1628,8 @@ private:
     std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
     std::optional<std::pair<node_id, konsens::get_state>> state_request_;
     std::optional<konsens::hardware_fault> hardware_fault_;
+    std::vector<peer_seen> peers_seen_;
+    std::vector<peer_step_back> peer_step_backs_;
     std::vector<pending_read> read_pending_;
     konsens::read_round read_round_{};
     std::vector<indexed_read> indexed_reads_;

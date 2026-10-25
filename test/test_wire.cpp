@@ -36,9 +36,8 @@
 // Provisional names of the recovery after a power loss
 // (doc/plan-power-loss-code.md): the messages get_state and new_state (from
 // the state transfer of VR Revisited, section not checked); their members
-// from_idx and entries; the members recovering, accepted_idx and last_crc of
-// recovery_response; get_last_entry_crc of the storage concept and
-// compute_entry_crc, encode_entry, decode_entry and encoded_size_of of
+// from_idx and entries; the members recovering, accepted_idx and
+// last_chain_crc of recovery_response; compute_entry_crc, encode_entry, decode_entry and encoded_size_of of
 // storage.hpp; in src/persistent_storage.cpp record_size_of, encode_record
 // and decode_record; src/byte_order.hpp; in sequence_paxos.hpp paxos_errc
 // and its value hardware_fault, paxos_error_category, paxos_category, the
@@ -48,6 +47,12 @@
 // complete_recovery, handle_get_state, handle_new_state and state_request_;
 // in counter_stress the flag --power-loss, lose_power, power_losses and
 // check_decided_logs; ballot_above_promise of node.hpp.
+//
+// Provisional names of the vote with the chain CRC
+// (doc/plan-lmdb-only-source.md 2.5): the members decided_chain_crc,
+// last_chain_crc and accepted_chain_crc of the messages; get_chain_crc of
+// the storage; peer_seen, peer_step_back and take_peer_step_backs of
+// sequence_paxos.
 //
 // Provisional form: decode gives each body in the cbor::ref that
 // mbedded-cbor made, with no copy. node::handle_incoming takes a batch of
@@ -250,21 +255,21 @@ std::vector<message> every_kind()
     return {
         paxos(konsens::prepare_req{ballot_from(10)}),
         paxos(konsens::prepare{ballot_from(10), 20, ballot_from(30), 40}),
-        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt}),
-        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, konsens::log_sync{five_entries(), 32}}),
-        paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{five_entries(), 23}}),
-        paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries()}),
-        paxos(konsens::accepted{ballot_from(10), 20}),
-        paxos(konsens::decide{ballot_from(10), {20, 21}, 22}),
+        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt, 0, 0}),
+        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, konsens::log_sync{five_entries(), 32}, 0, 0}),
+        paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{five_entries(), 23}, 0}),
+        paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries(), 0}),
+        paxos(konsens::accepted{ballot_from(10), 20, 0}),
+        paxos(konsens::decide{ballot_from(10), {20, 21}, 22, 0}),
         paxos(konsens::not_accepted{ballot_from(10)}),
         paxos(konsens::proposal_forward{five_entries()}),
         paxos(konsens::recovery{10}),
-        paxos(
-            konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40, false, 41, 42}),
-        paxos(
-            konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40, true, 41, 42}),
+        paxos(konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40, false, 41, 42,
+                                         0}),
+        paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40, true, 41, 42,
+                                         0}),
         paxos(konsens::get_state{10, ballot_from(20), 30, 31}),
-        paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, five_entries()}),
+        paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, five_entries(), 0}),
         paxos(konsens::read_index_request{10}),
         paxos(konsens::heartbeat{ballot_from(10), 20}),
         paxos(konsens::heartbeat_ack{ballot_from(10), 20}),
@@ -340,17 +345,17 @@ TEST_CASE("each kind of message has its fixed kind byte")
     const std::vector<std::pair<message, std::uint8_t>> table{
         {paxos(konsens::prepare_req{ballot_from(10)}), 0},
         {paxos(konsens::prepare{ballot_from(10), 20, ballot_from(30), 40}), 1},
-        {paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt}), 2},
-        {paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{{}, 23}}), 3},
-        {paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, {}}), 4},
-        {paxos(konsens::accepted{ballot_from(10), 20}), 5},
-        {paxos(konsens::decide{ballot_from(10), {20, 21}, 22}), 6},
+        {paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt, 0, 0}), 2},
+        {paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{{}, 23}, 0}), 3},
+        {paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, {}, 0}), 4},
+        {paxos(konsens::accepted{ballot_from(10), 20, 0}), 5},
+        {paxos(konsens::decide{ballot_from(10), {20, 21}, 22, 0}), 6},
         {paxos(konsens::not_accepted{ballot_from(10)}), 7},
         {paxos(konsens::proposal_forward{{}}), 8},
         {paxos(konsens::recovery{10}), 9},
-        {paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), {}, 40, true, 41, 42}), 10},
+        {paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), {}, 40, true, 41, 42, 0}), 10},
         {paxos(konsens::get_state{10, ballot_from(20), 30, 31}), 11},
-        {paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, {}}), 12},
+        {paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, {}, 0}), 12},
         {paxos(konsens::read_index_request{10}), 13},
         {paxos(konsens::heartbeat{ballot_from(10), 20}), 14},
         {paxos(konsens::heartbeat_ack{ballot_from(10), 20}), 15},
@@ -376,13 +381,13 @@ TEST_CASE("an accept_decide with a payload has the bytes of RFC 8949 and RFC 874
 {
     constexpr std::uint64_t accept_decide_kind = 4;
     const auto m = paxos(konsens::accept_decide{
-        ballot_from(10), {20, 21}, 22, {entry{entry_kind::client_request, payload_of({0xaa}), 23, 24}}});
+        ballot_from(10), {20, 21}, 22, {entry{entry_kind::client_request, payload_of({0xaa}), 23, 24}}, 25});
     const auto n = ballot_from(10);
-    const auto expected = header_bytes(accept_decide_kind, paxos_from, paxos_to) + head(map, 4) + text("n") +
+    const auto expected = header_bytes(accept_decide_kind, paxos_from, paxos_to) + head(map, 5) + text("n") +
                           ballot_bytes(n) + text("entries") + head(array, 1) +
                           entry_bytes(std::to_underlying(entry_kind::client_request), "\xaa", 23, 24, 0, 0) +
                           text("seq_num") + head(map, 2) + text("counter") + integer(21) + text("session") +
-                          integer(20) + text("decided_idx") + integer(22);
+                          integer(20) + text("decided_idx") + integer(22) + text("decided_chain_crc") + integer(25);
     CHECK(konsens::kind_of(m) == accept_decide_kind);
     CHECK(konsens::encode(m) == expected);
     CHECK(decoded_message(expected) == m);
@@ -424,7 +429,7 @@ TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 TEST_CASE("an empty input and each cut input give too_little_data")
 {
     CHECK(error_of("") == cbor::error::too_little_data);
-    const auto bytes = konsens::encode(paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries()}));
+    const auto bytes = konsens::encode(paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries(), 0}));
     REQUIRE(bytes.has_value());
     for (std::size_t length = 0; length < bytes->size(); ++length) {
         CAPTURE(length);

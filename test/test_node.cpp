@@ -348,6 +348,7 @@ struct recording_storage {
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
+        auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
 
         auto append_entries(const std::span<const konsens::entry> entries)
         {
