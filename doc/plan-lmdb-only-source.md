@@ -376,7 +376,11 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
 7. A later `accept_sync` that cuts an entry (`sequence_paxos.hpp:804-810`)
    leaves no effect. The node that sent the work sees that the leader is
    gone and sends the work to the new leader again; the session and the
-   request number keep it from a second run (owner, 2026-10-17).
+   request number keep it from a second run (owner, 2026-10-17). A cut
+   aborts the open state transaction of the node, and the node runs the
+   entries that stay after the decided index again on the committed
+   state. A run counts only in the ballot in which the node accepted the
+   entry (model round 12).
 8. Both environments keep no `MDB_WRITEMAP`, so nested write
    transactions stay possible.
 

@@ -26,9 +26,9 @@ every local check on, `MismatchAction = "damage"`. TLC simulation, depth
   request number of 2.6 item 7 make its second run a no-op.
 - Form 2 compared every node. Node 2 had accepted <<v3, v1>> in the
   older round 12 while the leader decided <<v2, v1>> in round 23. The run
-  of node 2 counts only in round 12, and the sync of round 23 cuts it.
+  of node 2 counts only in ballot 12, and the sync of ballot 23 cuts it.
   So the plan needs: a cut by a sync aborts the state transaction and
   runs the entries again (2.6 item 7).
 - Form 3 (current) compares only nodes that accepted in the same round.
-  It held in every run. The crash and fault runs held form 1, which is
+  (same ballot). It held in every run. The crash and fault runs held form 1, which is
   stronger.
