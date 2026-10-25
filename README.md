@@ -75,6 +75,13 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   before it accepts it, and applies the chosen result when the entry is
   decided. When no result of a request can get a majority, the leader
   appends a `rejected` entry, and the request changes no state.
+- **Floats.** A state machine with the fields `float_digits` and
+  `float_denominator` gives its reply and each value as one encoded CBOR
+  data item. The library rounds each float of the result to
+  `float_denominator` digits with round half to even, before the CRC.
+  Two results agree when each float agrees to `float_digits`
+  significant digits or to one step of the denominator, and every other
+  item agrees byte for byte.
 - **A fault of the own node ends the node.** When a node finds a damage
   of its own log, a chosen result that fails its CRC on the node, a
   value that reads back different, or its own result outside the
