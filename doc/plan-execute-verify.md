@@ -352,7 +352,10 @@ violation and a review approves the parts that changed from form 5.
 13. Mutations, each must break an invariant:
     - `ApplyOwnResult` (a node applies its own result): `StatesAgree`.
     - `CountOtherBase` (the leader ignores the base of an answer):
-      `ChosenOnOwnBase`.
+      `ChosenOnOwnBase`. Round 2 of the model: the hold rule of 2.6.3
+      prevents the same error, so this mutation has no target; the run of
+      `MC_ev_loss` without that rule (round 2, before the fix) shows the
+      violation.
     - `SelectWithoutMajority` (the first answer is selected):
       `ChosenByMajority`.
     - `AcceptWithoutCheck` (2.7 off, with `Flip`): `ChosenByMajority`.
@@ -362,17 +365,17 @@ violation and a review approves the parts that changed from form 5.
     - `VerdictWithoutRequest` (2.1.3 off): the invariant
       `VerdictCoversRequest` (each `results` entry covers a request
       entry).
-    - `ListedSkipsCheck` (a listed node accepts without its compare, with
-      `Flip`, `MaxFlip = 2`: one flip makes the result bad, one lists a
-      working node): `ChosenByMajority`.
+    - `ListedSkipsCheck`: removed. Round 2: with 2.8.1 a listed node
+      that accepts a bad result gives no majority to it, so safety does
+      not rest on the compare of a listed node at the accept. The compare
+      stays, because it gives the refusal that reports a wrong list.
     - `OwnAcceptUnchecked` (the leader counts its own accept at its log
       end, with `Flip`): the invariant `PromiseIsVerified` (a promise
       carries no entry above the `verified_idx` of its sender).
-    - `StaleVerdictTaken` together with `VerdictWhileOpen` (`V` takes a
-      verdict that does not start at `p + 1`, and the guard of 2.6.5 is
-      off): `ChosenOnOwnBase`. With the guard on, no stale verdict is
-      decided (reasoning of round 1, not proved), so there is no cover
-      for it.
+    - `StaleVerdictTaken` and `VerdictWhileOpen`: not reached in round 2,
+      also with `MaxLog = 4`, `MaxElection = 2`. Both rules stay as they
+      are; that no trace reaches a stale verdict is shown only by
+      simulation, not proved.
     - `RejectedUnchecked` (2.7.3 off, with `Flip`, where a flip turns a
       selection into `rejected(k)`): `RejectedHasNoMajority` (a decided
       `rejected(k)` has no result that a majority of runs on its base
