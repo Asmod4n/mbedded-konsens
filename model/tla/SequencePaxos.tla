@@ -2612,10 +2612,13 @@ S2 == \A i \in Servers : Votes(i) => IsPrefix(DecidedPrefix(i), decided_history)
 \* at its index holds it after the same entries, so its run gives the
 \* result that the decided entry carries. A duplicated forward can put the
 \* same value at a second index (round 12); there the session and the
-\* request number make the second run a no-op (2.6 item 7).
+\* request number make the second run a no-op (2.6 item 7). A node that
+\* accepted in an older round can hold the value after other entries; its
+\* run counts only in that round, and the sync of the new round cuts it
+\* (round 12, 2.6 item 7). So j is a node that accepted in the round of i.
 EntryRunsOnOnePrefix ==
   \A i, j \in Servers :
-    Votes(i) /\ Votes(j) =>
+    Votes(i) /\ Votes(j) /\ n_accepted[j] = n_accepted[i] =>
       \A k \in 1..Min(decided_idx[i], Len(log[j])) :
         log[j][k] = log[i][k] => SubSeq(log[j], 1, k - 1) = SubSeq(log[i], 1, k - 1)
 
