@@ -645,6 +645,20 @@ InFlightOk(i) ==
 StopSignAllowed(i) ==
   ~ExecuteVerify \/ \A k \in 1..Len(log[i]) : IsRequest(log[i][k]) => k <= V(DecidedPrefix(i)).p
 
+\* The state of a decided prefix: one item for each index up to the applied
+\* index, with the chosen result of each request entry that is not void.
+StateItems(l) ==
+  LET a == V(l) IN
+  [k \in 1..AppliedIdxOf(l) |->
+     [e |-> IF k \in a.void THEN VoidEntry ELSE l[k],
+      r |-> IF IsRequest(l[k]) /\ k \notin a.void THEN a.chosen[k].res ELSE NoResult]]
+
+NoAnswer == [ptr |-> -1, map |-> EmptyFn]
+NoCounts == [ans |-> [j \in Servers |-> NoAnswer], tried |-> {}, again |-> {},
+             refusals |-> {}, appended |-> {}]
+NoAnswered == [n |-> -1, ptr |-> -1]
+NoRefusal == [n |-> -1, idx |-> 0]
+
 (* Recovery of Viewstamped Replication Revisited (Liskov, Cowling,         *)
 (* MIT-CSAIL-TR-2012-021, section 4.3), applied to Sequence Paxos (plan     *)
 (* item 26). Names from that paper: Recovery, RecoveryResponse, nonce. A    *)
@@ -888,6 +902,18 @@ Init ==
   /\ forced_has_decided = FALSE
   /\ old_decided_max = 0
   /\ old_decided_after_forced = FALSE
+  /\ selected = [i \in Servers |-> EmptyFn]
+  /\ counts = [i \in Servers |-> NoCounts]
+  /\ own = [i \in Servers |-> EmptyFn]
+  /\ verified_idx = [i \in Servers |-> 0]
+  /\ proof = [i \in Servers |-> {}]
+  /\ open_mark = [i \in Servers |-> 0]
+  /\ result_throws = <<>>
+  /\ answered = [i \in Servers |-> NoAnswered]
+  /\ refusal = [i \in Servers |-> NoRefusal]
+  /\ wrong = {}
+  /\ runs = {}
+  /\ flips = {}
 
 ----------------------------------------------------------------------------
 (* Shared steps. Each sets the primed node variables it changes and chan'. *)
@@ -2679,11 +2705,12 @@ StateFollows ==
   IF ~StateInLmdb THEN UNCHANGED statevars
   ELSE
   /\ applied' = [i \in Servers |->
-        IF wiped'[i] /\ ~wiped[i] THEN <<>>
-        ELSE IF repairs'[i] > repairs[i] /\ StateRepair = "copy"
-                /\ ~Compatible(applied[i], SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i]))))
-             THEN SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i])))
-        ELSE applied[i]]
+        LET dp == SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i])))
+            st == IF ExecuteVerify THEN StateItems(dp) ELSE dp
+        IN IF wiped'[i] /\ ~wiped[i] THEN <<>>
+           ELSE IF repairs'[i] > repairs[i] /\ StateRepair = "copy" /\ ~Compatible(applied[i], st)
+           THEN st
+           ELSE applied[i]]
   /\ in_txn' = [i \in Servers |->
         IF (wiped'[i] /\ ~wiped[i]) \/ i \notin running' \/ (recovering'[i] /\ ~recovering[i])
            \/ repairs'[i] > repairs[i]
@@ -2711,7 +2738,7 @@ StateAbort(i) ==
 \* transaction, before the decide, up to MaxInFlight entries.
 \* @type: Int => Bool;
 StateRun(i) ==
-  /\ StateInLmdb
+  /\ StateInLmdb /\ ~ExecuteVerify
   /\ i \in running /\ ~recovering[i]
   /\ StateCurrent(i)
   /\ Len(in_txn[i]) < MaxInFlight
@@ -2724,7 +2751,7 @@ StateRun(i) ==
 \* the committed state, which gives the same entries in in_txn.
 \* @type: Int => Bool;
 StateApply(i) ==
-  /\ StateInLmdb
+  /\ StateInLmdb /\ ~ExecuteVerify
   /\ i \in running /\ ~recovering[i]
   /\ StateCurrent(i)
   /\ Len(applied[i]) < decided_idx[i]
@@ -2734,9 +2761,573 @@ StateApply(i) ==
        /\ in_txn' = [in_txn EXCEPT ![i] = SubSeq(ran, decided_idx[i] + 1, Len(ran))]
   /\ UNCHANGED vars_but_state
 
+
+----------------------------------------------------------------------------
+(* Execute-Verify actions (doc/plan-execute-verify.md 4.5 to 4.8). Every     *)
+(* node runs every decided request entry above its pointer p, in log order,  *)
+(* and answers the leader of its promise. own[i] maps an index to the run of *)
+(* node i: the entry, the result and the base. The leader keeps the latest   *)
+(* answer of each node in counts[i].ans, selects a result for each index in  *)
+(* selected[i], and appends one verdict entry at a time. Each node checks a  *)
+(* verdict entry before verified_idx passes it. runs, wrong and flips are    *)
+(* ghosts. result_throws lists each result throw. A list item of a Results  *)
+(* entry carries, as a ghost, the base on which its result ran.             *)
+
+\* @type: Int => Bool;
+EVNode(i) ==
+  /\ ExecuteVerify
+  /\ i \in running /\ ~recovering[i] /\ Votes(i)
+  /\ ~deactivated[i] /\ ~SingleNodeMode(i)
+
+Chosen(i) == V(DecidedPrefix(i))
+Ptr(i) == Chosen(i).p
+AppliedIdx(i) == AppliedIdxOf(DecidedPrefix(i))
+
+\* The base of index q at node i with the own results o (plan 2.4.1).
+NodeBaseOk(i, o, q) ==
+  LET a  == Chosen(i)
+      ks == ReqIdx(log[i], a.void, q)
+  IN \A n \in 1..Len(ks) : ks[n] <= a.p \/ ks[n] \in DOMAIN o
+NodeBase(i, o, q) == BaseWith(log[i], Chosen(i), q, LAMBDA k : o[k].res)
+
+\* 2.4.3: the own results above p ran on the current log and base.
+OwnCurrent(i) ==
+  \A k \in DOMAIN own[i] :
+    k > Ptr(i) =>
+      /\ k <= Len(log[i]) /\ own[i][k].v = log[i][k]
+      /\ NodeBaseOk(i, own[i], k) /\ own[i][k].base = NodeBase(i, own[i], k)
+
+\* The own results from lo up, as an answer carries them.
+MapOf(o, lo, hi) ==
+  [k \in {x \in DOMAIN o : lo <= x /\ x <= hi} |-> [res |-> o[k].res, base |-> o[k].base]]
+
+\* 2.5.2: answer(ballot, p, from, base, results). The base is sent whole in
+\* place of its CRC. idx names the index of a second run (2.6.4), else 0.
+AnswerMsg(i, o, f, x) ==
+  [EmptyMessage EXCEPT !.type = "Answer", !.n = promise[i], !.ptr = Ptr(i),
+   !.base = MapOf(o, Ptr(i) + 1, f - 1), !.results = MapOf(o, f, MaxLog), !.idx = x]
+
+\* The leader of the promise of i takes the answer: a message to a peer, or
+\* its own entry in counts.
+AnswerOut(i, m) ==
+  LET ld == BallotPid(promise[i]) IN
+  IF ld = i
+  THEN /\ counts' = IF role[i] = "Leader" /\ leader_state[i].n_leader = promise[i]
+                    THEN [counts EXCEPT ![i].ans[i] = [ptr |-> m.ptr, map |-> m.base @@ m.results],
+                                        ![i].again = IF m.idx > 0 THEN @ \cup {<<i, m.idx>>} ELSE @]
+                    ELSE counts
+       /\ UNCHANGED chan
+  ELSE /\ chan' = IF ld > 0 THEN Send(chan, i, One(ld, m)) ELSE chan
+       /\ UNCHANGED counts
+
+EVOnly == <<durable, volatile, env, ghost, recovery, rollback, client, readvars,
+            buffered_stopsign, reconfig, leasevars, leaseghost, statevars>>
+
+RunOf(i, e, b, r) == [node |-> i, v |-> e, base |-> b, res |-> r]
+
+\* 2.5.1, 2.5.2: node i runs the lowest decided request entry above p that
+\* it has not run, and answers at once.
+RunEntry(i) ==
+  LET a  == Chosen(i)
+      d  == Min(decided_idx[i], Len(log[i]))
+      qs == {k \in (a.p + 1)..d : IsRequest(log[i][k]) /\ k \notin DOMAIN own[i]}
+      q  == CHOOSE k \in qs : \A x \in qs : k <= x
+  IN
+  /\ EVNode(i)
+  /\ OwnCurrent(i)
+  /\ qs # {}
+  /\ NodeBaseOk(i, own[i], q)
+  /\ LET b == NodeBase(i, own[i], q) IN
+     \E w \in WrongAfter(i, log[i][q], wrong) :
+     \E r \in RunResults(i, log[i][q], b, w) :
+       LET o1 == (q :> [v |-> log[i][q], res |-> r, base |-> b]) @@ own[i] IN
+       /\ wrong' = w
+       /\ own' = [own EXCEPT ![i] = o1]
+       /\ runs' = runs \cup {RunOf(i, log[i][q], b, r)}
+       /\ answered' = [answered EXCEPT ![i] = [n |-> promise[i], ptr |-> a.p]]
+       /\ AnswerOut(i, AnswerMsg(i, o1, q, 0))
+  /\ UNCHANGED <<selected, verified_idx, proof, open_mark, result_throws, refusal, flips>>
+  /\ UNCHANGED EVOnly
+
+\* 2.4.3: a verdict, a cut of the log or a second run changed the base of
+\* an own result: the node aborts the open transaction.
+OwnAbort(i) ==
+  /\ ExecuteVerify
+  /\ i \in running
+  /\ DOMAIN own[i] # {}
+  /\ ~OwnCurrent(i)
+  /\ own' = [own EXCEPT ![i] = EmptyFn]
+  /\ UNCHANGED <<selected, counts, verified_idx, proof, open_mark, result_throws, answered,
+                 refusal, wrong, runs, flips>>
+  /\ UNCHANGED <<EVOnly, chan>>
+
+\* 2.5.3: when p rises or the promise changes, the node answers again from p.
+Reanswer(i) ==
+  /\ EVNode(i)
+  /\ OwnCurrent(i)
+  /\ promise[i] # DefaultBallot
+  /\ answered[i] # [n |-> promise[i], ptr |-> Ptr(i)]
+  /\ MapOf(own[i], Ptr(i) + 1, MaxLog) # EmptyFn
+  /\ answered' = [answered EXCEPT ![i] = [n |-> promise[i], ptr |-> Ptr(i)]]
+  /\ AnswerOut(i, AnswerMsg(i, own[i], Ptr(i) + 1, 0))
+  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, result_throws, refusal, wrong,
+                 runs, flips>>
+  /\ UNCHANGED EVOnly
+
+\* 2.6.4: the second run of index q on the same base. When its bytes differ,
+\* the own results above q ran on another base and go.
+Rerun(o, q, r) ==
+  IF r = o[q].res THEN o
+  ELSE [k \in {x \in DOMAIN o : x <= q} |-> IF k = q THEN [o[q] EXCEPT !.res = r] ELSE o[k]]
+
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
+HandleAnswer(i, j, m, c) ==
+  /\ counts' = IF role[i] = "Leader" /\ m.n = leader_state[i].n_leader
+               THEN [counts EXCEPT ![i].ans[j] = [ptr |-> m.ptr, map |-> m.base @@ m.results],
+                                   ![i].again = IF m.idx > 0 THEN @ \cup {<<j, m.idx>>} ELSE @]
+               ELSE counts
+  /\ chan' = c
+  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, result_throws, answered, refusal,
+                 wrong, runs, flips>>
+
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
+HandleTryAgain(i, j, m, c) ==
+  LET q == m.idx IN
+  IF EVNode(i) /\ m.n = promise[i] /\ q \in DOMAIN own[i] /\ q > Ptr(i) /\ OwnCurrent(i)
+  THEN \E w \in WrongAfter(i, own[i][q].v, wrong) :
+       \E r \in RunResults(i, own[i][q].v, own[i][q].base, w) :
+         LET o2 == Rerun(own[i], q, r) IN
+         /\ wrong' = w
+         /\ own' = [own EXCEPT ![i] = o2]
+         /\ runs' = runs \cup {RunOf(i, own[i][q].v, own[i][q].base, r)}
+         /\ chan' = Send(c, i, One(j, AnswerMsg(i, o2, q, q)))
+         /\ UNCHANGED <<selected, counts, verified_idx, proof, open_mark, result_throws, answered,
+                        refusal, flips>>
+  ELSE /\ chan' = c
+       /\ UNCHANGED evvars
+
+\* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
+HandleRefused(i, j, m, c) ==
+  /\ counts' = IF role[i] = "Leader" /\ m.n = leader_state[i].n_leader
+               THEN [counts EXCEPT ![i].refusals = @ \cup {<<j, m.idx>>}]
+               ELSE counts
+  /\ chan' = c
+  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, result_throws, answered, refusal,
+                 wrong, runs, flips>>
+
+\* The head of the channel from j to i is a message of Execute-Verify.
+ReceiveEV(j, i) ==
+  /\ ExecuteVerify
+  /\ i \in running
+  /\ chan[<<j, i>>] # <<>>
+  /\ LET m == Head(chan[<<j, i>>])
+         c == [chan EXCEPT ![<<j, i>>] = Tail(@)]
+     IN /\ m.type \in EVMessages
+        /\ IF recovering[i] \/ deactivated[i]
+           THEN /\ chan' = c
+                /\ UNCHANGED evvars
+           ELSE CASE m.type = "Answer"   -> HandleAnswer(i, j, m, c)
+                  [] m.type = "TryAgain" -> HandleTryAgain(i, j, m, c)
+                  [] m.type = "Refused"  -> HandleRefused(i, j, m, c)
+  /\ UNCHANGED EVOnly
+
+\* The leader runs again an index of its own that it asked itself to run again.
+LeaderRunAgain(i) ==
+  /\ EVNode(i)
+  /\ role[i] = "Leader"
+  /\ OwnCurrent(i)
+  /\ \E q \in DOMAIN own[i] :
+       /\ q > Ptr(i)
+       /\ <<i, q>> \in counts[i].tried /\ <<i, q>> \notin counts[i].again
+       /\ \E w \in WrongAfter(i, own[i][q].v, wrong) :
+          \E r \in RunResults(i, own[i][q].v, own[i][q].base, w) :
+            LET o2 == Rerun(own[i], q, r) IN
+            /\ wrong' = w
+            /\ own' = [own EXCEPT ![i] = o2]
+            /\ runs' = runs \cup {RunOf(i, own[i][q].v, own[i][q].base, r)}
+            /\ AnswerOut(i, AnswerMsg(i, o2, q, q))
+  /\ UNCHANGED <<selected, verified_idx, proof, open_mark, result_throws, answered, refusal, flips>>
+  /\ UNCHANGED EVOnly
+
+\* 2.6.2: the leader counts the result of j for q only when j ran it on the
+\* selected base. Mutation CountOtherBase leaves out the base.
+SelRes(i, a, k) == IF k <= a.p THEN a.chosen[k].res ELSE selected[i][k].res
+Counted(i, j, q) ==
+  LET an == counts[i].ans[j]
+      a  == Chosen(i)
+  IN /\ an.ptr >= 0 /\ an.ptr <= a.p
+     /\ q \in DOMAIN an.map /\ q <= Min(decided_idx[i], Len(log[i]))
+     /\ \/ Mutation = "CountOtherBase"
+        \/ \A k \in (an.ptr + 1)..(q - 1) :
+             IsRequest(log[i][k]) =>
+               /\ k \notin a.void
+               /\ k <= a.p \/ k \in DOMAIN selected[i]
+               /\ k \in DOMAIN an.map
+               /\ an.map[k].res = SelRes(i, a, k)
+Ans(i, j, q) == counts[i].ans[j].map[q].res
+
+\* The request indexes above p that are decided at the leader and have no
+\* selection.
+OpenIdx(i) ==
+  {k \in (Ptr(i) + 1)..Min(decided_idx[i], Len(log[i])) :
+     IsRequest(log[i][k]) /\ k \notin DOMAIN selected[i]}
+
+\* 2.6.3, 2.6.4: the leader selects the counted result that agrees with
+\* the most counted results, ties to the lowest node id, once a majority
+\* agrees with it. Before, it asks each counted node that does not agree to
+\* run again, once. Mutation SelectWithoutMajority takes any counted result.
+Select(i) ==
+  LET qs   == OpenIdx(i)
+      q    == CHOOSE k \in qs : \A x \in qs : k <= x
+      CR   == {j \in ClusterNodes(i) : Counted(i, j, q)}
+      Ag(c) == {j \in CR : Agree(Ans(i, j, q), Ans(i, c, q))}
+      best == {c \in CR : \A x \in CR : Cardinality(Ag(c)) >= Cardinality(Ag(x))}
+      cand == CHOOSE c \in best : \A x \in best : c <= x
+  IN
+  /\ EVNode(i)
+  /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  /\ qs # {}
+  /\ CR # {}
+  /\ \E c \in (IF Mutation = "SelectWithoutMajority" THEN CR ELSE {cand}) :
+       /\ Mutation = "SelectWithoutMajority" \/ Cardinality(Ag(c)) >= Majority(i)
+       /\ LET dis == {j \in CR : ~Agree(Ans(i, j, q), Ans(i, c, q)) /\ <<j, q>> \notin counts[i].tried}
+          IN /\ counts' = [counts EXCEPT ![i].tried = @ \cup {<<j, q>> : j \in dis}]
+             /\ chan' = Send(chan, i, [j \in dis \ {i} |->
+                          <<[EmptyMessage EXCEPT !.type = "TryAgain", !.n = leader_state[i].n_leader,
+                                                 !.idx = q]>>])
+       /\ selected' = [selected EXCEPT ![i] =
+                         (q :> [res |-> Ans(i, c, q), node |-> c,
+                                base |-> counts[i].ans[c].map[q].base]) @@ @]
+  /\ UNCHANGED <<own, verified_idx, proof, open_mark, result_throws, answered, refusal, wrong,
+                 runs, flips>>
+  /\ UNCHANGED EVOnly
+
+\* 2.6.4: the counted nodes that did not agree, also in their second answer.
+Out(i, q) ==
+  {x \in ClusterNodes(i) :
+     /\ <<x, q>> \in counts[i].tried /\ <<x, q>> \in counts[i].again
+     /\ Counted(i, x, q)
+     /\ ~Agree(Ans(i, x, q), selected[i][q].res)}
+
+\* Question 7.5, option: the leader appends rejected(k) in place of a throw
+\* of a node whose result lies 2 apart with the same value.
+SpreadOut(i, q) ==
+  SpreadAction = "reject" /\ \E x \in Out(i, q) : Ans(i, x, q).rv = selected[i][q].res.rv
+
+\* 2.6.5: with results selected for p + 1 .. t, and no verdict entry above
+\* p that is not decided, the leader appends results(p + 1, t, list); when
+\* the counted answers for p + 1 leave no result that a majority could
+\* reach, rejected(p + 1). With Flip, one step may replace a selected
+\* result by a wrong one or move a node into or out of the list (4.3).
+\* Mutation VerdictWithoutRequest appends a results entry over a range with
+\* no request entry.
+AppendVerdict(i) ==
+  LET a    == Chosen(i)
+      lo   == a.p + 1
+      reqs == {k \in lo..Len(log[i]) : IsRequest(log[i][k])}
+      gap  == {k \in reqs : k \notin DOMAIN selected[i] \/ SpreadOut(i, k)}
+      hi   == IF gap = {} THEN Len(log[i]) ELSE (CHOOSE k \in gap : \A x \in gap : k <= x) - 1
+      sel  == {k \in reqs : k <= hi}
+      t    == CHOOSE k \in sel : \A x \in sel : x <= k
+      q0   == CHOOSE k \in reqs : \A x \in reqs : k <= x
+      lst  == [q \in sel |-> [res |-> selected[i][q].res, node |-> selected[i][q].node,
+                              out |-> Out(i, q), base |-> selected[i][q].base]]
+      flipped ==
+        IF Flip /\ Cardinality(flips) < MaxFlip
+        THEN {[lst EXCEPT ![q].res = [rv |-> BadRv(i, log[i][q]), j |-> 0]] : q \in sel}
+             \cup {[lst EXCEPT ![q].out = (@ \ {x}) \cup ({x} \ @)] : q \in sel, x \in ClusterNodes(i)}
+        ELSE {}
+      CR0  == {j \in ClusterNodes(i) :
+                 Counted(i, j, q0) /\ (<<j, q0>> \in counts[i].tried => <<j, q0>> \in counts[i].again)}
+      U    == ClusterNodes(i) \ CR0
+      Ag0(c) == {j \in CR0 : Agree(Ans(i, j, q0), Ans(i, c, q0))}
+      noMaj == /\ Cardinality(U) < Majority(i)
+               /\ \A c \in CR0 : Cardinality(Ag0(c)) + Cardinality(U) < Majority(i)
+      rej  == RejectedEntry(q0, [x \in CR0 |-> Ans(i, x, q0)])
+      m    == Len(log[i]) + 1
+      cands ==
+        (IF sel # {} THEN {<<ResultsEntry(lo, t, lst), FALSE>>}
+                          \cup {<<ResultsEntry(lo, t, f), TRUE>> : f \in flipped}
+         ELSE {})
+        \cup (IF reqs # {} /\ q0 \notin DOMAIN selected[i] /\ noMaj THEN {<<rej, FALSE>>} ELSE {})
+        \cup (IF reqs # {} /\ q0 \in DOMAIN selected[i] /\ SpreadOut(i, q0)
+              THEN {<<RejectedEntry(q0, [x \in {y \in ClusterNodes(i) : Counted(i, y, q0)} |->
+                                           Ans(i, x, q0)]), FALSE>>}
+              ELSE {})
+        \cup (IF Mutation = "VerdictWithoutRequest" /\ reqs = {} /\ lo <= Len(log[i])
+              THEN {<<ResultsEntry(lo, Len(log[i]), EmptyFn), FALSE>>} ELSE {})
+  IN
+  /\ EVNode(i)
+  /\ role[i] = "Leader" /\ phase[i] = "Accept"
+  /\ ~AcceptedReconfiguration(i)
+  /\ \A k \in lo..Len(log[i]) : IsVerdict(log[i][k]) => k <= decided_idx[i]
+  /\ \E x \in cands :
+       /\ AcceptEntriesLeader(i, <<x[1]>>, chan)
+       /\ proposed' = proposed \cup {x[1]}
+       /\ flips' = IF x[2] THEN flips \cup {<<i, m, leader_state[i].n_leader>>} ELSE flips
+       /\ counts' = [counts EXCEPT ![i].appended = @ \cup {m}]
+       /\ verified_idx' = [verified_idx EXCEPT ![i] = NewVerified(i, log[i] \o <<x[1]>>)]
+  /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
+                 cached_promise_message, buffered_proposals>>
+  /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
+                 leasevars, statevars>>
+  /\ UNCHANGED <<selected, own, proof, open_mark, result_throws, answered, refusal, wrong, runs>>
+  /\ GhostUpdate
+
+\* 2.7: node i checks the verdict entry at verified_idx + 1 on the check
+\* base, V over its log before it. It uses its own result where it ran on
+\* that base, else runs; where the result differs, it runs again. A node
+\* that is not listed accepts when its result agrees; a listed node only
+\* when its result still differs. A rejected(k) is accepted only when no
+\* result of the counted answers and the own one has a majority (2.7.3). A
+\* stale verdict entry changes nothing and passes. On accept, verified_idx
+\* passes the entry and the node sends accepted; else it sends refused.
+\* Mutations: AcceptWithoutCheck (2.7 off), ListedSkipsCheck (a listed
+\* node accepts with no compare), RejectedUnchecked (2.7.3 off).
+CheckVerdict(i) ==
+  LET m    == verified_idx[i] + 1
+      pre  == SubSeq(log[i], 1, m - 1)
+      e    == log[i][m]
+      cv   == V(pre)
+      valid == VStep(SubSeq(log[i], 1, m), m, cv) # cv
+      Qs   == IF ~valid THEN {}
+              ELSE IF e.type = "Results" THEN DOMAIN e.list ELSE {e.from}
+      full == e.type = "Results" =>
+                \A k \in e.from..e.to : k < m /\ IsRequest(pre[k]) => k \in DOMAIN e.list
+      BaseQ(q) == BaseWith(pre, cv, q, LAMBDA k : e.list[k].res)
+      OwnOk(q) == /\ q \in DOMAIN own[i] /\ own[i][q].v = pre[q]
+                  /\ own[i][q].base = BaseQ(q)
+      ld   == BallotPid(promise[i])
+      lead == role[i] = "Leader" /\ phase[i] = "Accept" /\ leader_state[i].n_leader = promise[i]
+  IN
+  /\ EVNode(i)
+  /\ m <= Len(log[i])
+  /\ IsVerdict(e)
+  /\ refusal[i] # [n |-> promise[i], idx |-> m]
+  /\ \E w \in {wrong} \cup UNION {WrongAfter(i, pre[q], wrong) : q \in (IF full THEN Qs ELSE {})} :
+     LET RC(q) == RunResults(i, pre[q], BaseQ(q), w)
+         All   == UNION {RC(q) \X RC(q) : q \in (IF full THEN Qs ELSE {})}
+     IN
+     \E f \in [(IF full THEN Qs ELSE {}) -> All] :
+       /\ \A q \in DOMAIN f : f[q][1] \in RC(q) /\ f[q][2] \in RC(q)
+       /\ LET R1(q) == IF OwnOk(q) THEN own[i][q].res ELSE f[q][1]
+              Again(q) == ~Agree(R1(q), e.list[q].res)
+              Listed(q) == i \in e.list[q].out
+              OkResults(q) ==
+                CASE Mutation = "AcceptWithoutCheck" -> TRUE
+                  [] Listed(q) /\ Mutation = "ListedSkipsCheck" -> TRUE
+                  [] Listed(q) -> Again(q) /\ ~Agree(f[q][2], e.list[q].res)
+                  [] OTHER -> ~Again(q) \/ Agree(f[q][2], e.list[q].res)
+              C == [x \in DOMAIN e.list \ {i} |-> e.list[x]] @@ (i :> R1(e.from))
+              OkRejected ==
+                \/ Mutation \in {"AcceptWithoutCheck", "RejectedUnchecked"}
+                \/ \A c \in DOMAIN C :
+                     Cardinality({x \in DOMAIN C : Agree(C[x], C[c])}) < Majority(i)
+                \/ SpreadAction = "reject"
+                   /\ \E x, y \in DOMAIN C : C[x].rv = C[y].rv /\ C[x].j - C[y].j \in {-2, 2}
+              ok == \/ ~valid
+                    \/ Mutation = "AcceptWithoutCheck"
+                    \/ full /\ IF e.type = "Results" THEN \A q \in Qs : OkResults(q) ELSE OkRejected
+              ran == IF Mutation = "AcceptWithoutCheck" \/ ~full THEN {}
+                     ELSE {RunOf(i, pre[q], BaseQ(q), f[q][1]) : q \in {x \in Qs : ~OwnOk(x)}}
+                          \cup (IF e.type = "Results"
+                                THEN {RunOf(i, pre[q], BaseQ(q), f[q][2]) : q \in {x \in Qs : Again(x)}}
+                                ELSE {})
+              nv == VerifiedAfter(log[i], m)
+              acc == [EmptyMessage EXCEPT !.type = "Accepted", !.n = promise[i],
+                                          !.accepted_idx = nv, !.last = PrefixAt(log[i], nv)]
+          IN /\ wrong' = w
+             /\ runs' = runs \cup ran
+             /\ IF ok
+                THEN /\ verified_idx' = [verified_idx EXCEPT ![i] = nv]
+                     /\ UNCHANGED <<refusal, counts>>
+                     /\ IF lead
+                        THEN HandleAccepted(i, i,
+                               [acc EXCEPT !.accepted_idx = Max(nv, leader_state[i].accepted_indexes[i]),
+                                           !.last = PrefixAt(log[i], Max(nv, leader_state[i].accepted_indexes[i]))],
+                               chan)
+                        ELSE /\ chan' = IF role[i] = "Follower" /\ phase[i] = "Accept" /\ ld # 0 /\ ld # i
+                                        THEN Send(chan, i, One(ld, acc)) ELSE chan
+                             /\ UNCHANGED <<durable, volatile>>
+                ELSE /\ refusal' = [refusal EXCEPT ![i] = [n |-> promise[i], idx |-> m]]
+                     /\ UNCHANGED <<verified_idx, durable, volatile>>
+                     /\ IF lead
+                        THEN /\ counts' = [counts EXCEPT ![i].refusals = @ \cup {<<i, m>>}]
+                             /\ UNCHANGED chan
+                        ELSE /\ chan' = IF ld # 0 /\ ld # i
+                                        THEN Send(chan, i, One(ld, [EmptyMessage EXCEPT !.type = "Refused",
+                                                                    !.n = promise[i], !.idx = m]))
+                                        ELSE chan
+                             /\ UNCHANGED counts
+  /\ UNCHANGED <<selected, own, proof, open_mark, result_throws, answered, flips>>
+  /\ UNCHANGED <<buffered_stopsign, env, proposed, recovery, rolled_back, client, readvars,
+                 reconfig, leasevars, statevars>>
+  /\ GhostUpdate
+
+\* The base of index q in a decided prefix: chosen results only.
+ChosenBase(l, a, q) == BaseWith(l, a, q, LAMBDA k : NoResult)
+
+\* 2.8.1: node i is listed at an index whose result is chosen and that it
+\* has not applied. Mutation ThrowWithoutList: the node compares its own
+\* result with the chosen one in place of the list.
+WouldThrow(i, a, q) ==
+  IF Mutation = "ThrowWithoutList"
+  THEN q \in DOMAIN own[i] /\ ~Agree(own[i][q].res, a.chosen[q].res)
+  ELSE i \in a.chosen[q].out
+ListedAt(i) ==
+  LET a == Chosen(i) IN
+  {q \in DOMAIN a.chosen : q > Len(applied[i]) /\ WouldThrow(i, a, q)}
+\* 2.7.6: refused by a majority, for a verdict entry of its own ballot.
+RefusedAt(i) ==
+  IF role[i] = "Leader"
+  THEN {x \in counts[i].appended :
+          Cardinality({j \in Servers : <<j, x>> \in counts[i].refusals}) >= Majority(i)}
+  ELSE {}
+
+\* Section 3: the throw writes the proof, and the start reads it in the same
+\* step. A covered proof counts nothing. Else the count rises, the open mark
+\* takes the index, and the node repairs while the count allows it (3.4:
+\* the abort of the open transaction and the recovery, with its own log),
+\* else it waits for the operator. proof[i] keeps each proof that counted
+\* (provisional: the plan clears it; the ghost serves RepairsBounded).
+\* Mutation CountProofTwice counts a covered proof.
+ThrowStart(i, t) ==
+  LET cov == Covered(i, t.idx)
+      cnt == repairs[i] + 1
+  IN
+  /\ IF cov \/ cnt <= AutoRepairs
+     THEN /\ Restart({i}, [k \in {i} |-> DurableOf(k)], {k \in {i} : Quiet(k)}, Recovery)
+          /\ UNCHANGED <<storage_faults, refused, wiped, crashes, wipes, losses, duplicates,
+                         timeouts, elections, proposed, rolled_back, client, reconfig>>
+          /\ GhostUpdateRP({i}, IF cov THEN {} ELSE {i})
+     ELSE /\ running' = running \ {i}
+          /\ refused' = refused \cup {i}
+          /\ repairs' = [repairs EXCEPT ![i] = cnt]
+          /\ stage1_ghost' = [j \in Nodes |-> IF j # i /\ read_only[j]
+                                               THEN [stage1_ghost[j] EXCEPT !.down = @ \cup {i}]
+                                               ELSE stage1_ghost[j]]
+          /\ UNCHANGED <<durable, volatile, chan, wiped, crashes, wipes, losses, duplicates,
+                         timeouts, elections, storage_faults, ghost, recovery, rolled_back,
+                         past_durable, peer_seen, high_water, client, readvars,
+                         buffered_stopsign, first_log, reconfigurations, force_single,
+                         read_only, deactivated, halts, read_only_entries, build_source,
+                         leasevars, leaseghost>>
+  /\ open_mark' = IF cov THEN open_mark ELSE [open_mark EXCEPT ![i] = t.idx]
+  /\ proof' = IF cov THEN proof ELSE [proof EXCEPT ![i] = @ \cup {[kind |-> t.kind, idx |-> t.idx]}]
+  /\ own' = [own EXCEPT ![i] = EmptyFn]
+  /\ verified_idx' = [verified_idx EXCEPT ![i] = VerifiedAfter(log[i], Min(decided_idx[i], Len(log[i])))]
+  /\ answered' = [answered EXCEPT ![i] = NoAnswered]
+  /\ refusal' = [refusal EXCEPT ![i] = NoRefusal]
+  /\ counts' = [counts EXCEPT ![i] = NoCounts]
+  /\ selected' = [selected EXCEPT ![i] = EmptyFn]
+  /\ UNCHANGED <<wrong, runs, flips, statevars>>
+
+\* 2.8.1 and 2.7.6, bounded by MaxResultThrow.
+ResultThrow(i) ==
+  LET a == Chosen(i) IN
+  /\ EVNode(i)
+  /\ Len(result_throws) < MaxResultThrow
+  /\ \E t \in {[node |-> i, idx |-> q, kind |-> "listed", v |-> log[i][q],
+                base |-> ChosenBase(DecidedPrefix(i), a, q), chosen |-> a.chosen[q].res] :
+                 q \in ListedAt(i)}
+              \cup {[node |-> i, idx |-> x, kind |-> "refused", v |-> VoidEntry, base |-> <<>>,
+                     chosen |-> NoResult] : x \in RefusedAt(i)} :
+       /\ result_throws' = Append(result_throws, t)
+       /\ ThrowStart(i, t)
+
+\* 2.3.4: the node applies the chosen results up to its applied index. It
+\* does not apply an index where it is listed, unless the open mark covers
+\* it. The open mark closes when the applied index passes it (3.5).
+\* Mutation ApplyOwnResult applies the own result.
+ApplyChosen(i) ==
+  LET a  == Chosen(i)
+      l  == DecidedPrefix(i)
+      d  == AppliedIdx(i)
+      lo == Len(applied[i]) + 1
+      Item(k) == [e |-> IF k \in a.void THEN VoidEntry ELSE l[k],
+                  r |-> IF IsRequest(l[k]) /\ k \notin a.void
+                        THEN IF Mutation = "ApplyOwnResult" /\ k \in DOMAIN own[i]
+                             THEN own[i][k].res ELSE a.chosen[k].res
+                        ELSE NoResult]
+  IN
+  /\ ExecuteVerify
+  /\ i \in running /\ ~recovering[i]
+  /\ d >= lo
+  /\ \A k \in lo..d : k \in DOMAIN a.chosen /\ WouldThrow(i, a, k) =>
+                        open_mark[i] # 0 /\ k <= open_mark[i]
+  /\ applied' = [applied EXCEPT ![i] = @ \o [n \in 1..(d - lo + 1) |-> Item(lo + n - 1)]]
+  /\ own' = [own EXCEPT ![i] = [k \in {x \in DOMAIN own[i] : x > d} |-> own[i][k]]]
+  /\ open_mark' = IF open_mark[i] # 0 /\ d >= open_mark[i]
+                  THEN [open_mark EXCEPT ![i] = 0] ELSE open_mark
+  /\ UNCHANGED <<selected, counts, verified_idx, proof, result_throws, answered, refusal, wrong,
+                 runs, flips, in_txn>>
+  /\ UNCHANGED vars_but_state
+
+\* 2.5.3, 2.7.6: on the resend timeout a node sends its answer and its
+\* refusal again.
+ResendVerify(i) ==
+  LET ld == BallotPid(promise[i])
+      ms == (IF OwnCurrent(i) /\ MapOf(own[i], Ptr(i) + 1, MaxLog) # EmptyFn
+             THEN <<AnswerMsg(i, own[i], Ptr(i) + 1, 0)>> ELSE <<>>)
+            \o (IF refusal[i].n = promise[i]
+                THEN <<[EmptyMessage EXCEPT !.type = "Refused", !.n = promise[i],
+                                            !.idx = refusal[i].idx]>>
+                ELSE <<>>)
+  IN
+  /\ EVNode(i)
+  /\ timeouts < MaxTimeout
+  /\ ld # 0 /\ ld # i
+  /\ ms # <<>>
+  /\ timeouts' = timeouts + 1
+  /\ chan' = Send(chan, i, [k \in {ld} |-> ms])
+  /\ UNCHANGED <<durable, volatile, wiped, crashes, wipes, losses, duplicates, elections,
+                 storage_faults, refused, ghost, recovery, rollback, client, readvars,
+                 buffered_stopsign, reconfig, leasevars, leaseghost, statevars, evvars>>
+
+EVNext ==
+  \/ \E i \in Servers : \/ RunEntry(i) \/ OwnAbort(i) \/ Reanswer(i) \/ LeaderRunAgain(i)
+                        \/ Select(i) \/ AppendVerdict(i) \/ CheckVerdict(i)
+                        \/ ResultThrow(i) \/ ApplyChosen(i) \/ ResendVerify(i)
+  \/ \E p \in Pairs : ReceiveEV(p[1], p[2])
+
+\* The variables of Execute-Verify after a step of the protocol: a restart,
+\* a recovery, a repair or a stop aborts the open transaction (own) and
+\* forgets the verified index, which then holds the decided prefix
+\* (provisional); a new log keeps the verified part that it shares with
+\* the old one. A node that is no leader, or a new ballot, has no counts
+\* and no selection. A repair that counts sets the open mark at the length
+\* of the log (plan 4.8); the operator clears the proofs.
+EVFollows ==
+  IF ~ExecuteVerify THEN UNCHANGED evvars
+  ELSE
+  LET Reset(i) == \/ wiped'[i] /\ ~wiped[i]
+                  \/ i \notin running'
+                  \/ recovering'[i] /\ ~recovering[i]
+                  \/ repairs'[i] > repairs[i]
+      Leads(i) == /\ role'[i] = "Leader" /\ ~Reset(i)
+                  /\ leader_state'[i].n_leader = leader_state[i].n_leader
+  IN
+  /\ own' = [i \in Servers |-> IF Reset(i) THEN EmptyFn ELSE own[i]]
+  /\ verified_idx' = [i \in Servers |->
+                        IF Reset(i) THEN VerifiedAfter(log'[i], Min(decided_idx'[i], Len(log'[i])))
+                        ELSE NewVerified(i, log'[i])]
+  /\ answered' = [i \in Servers |-> IF Reset(i) \/ promise'[i] # promise[i] THEN NoAnswered
+                                   ELSE answered[i]]
+  /\ refusal' = [i \in Servers |-> IF Reset(i) \/ promise'[i] # promise[i] THEN NoRefusal
+                                  ELSE refusal[i]]
+  /\ counts' = [i \in Servers |-> IF Leads(i) THEN counts[i] ELSE NoCounts]
+  /\ selected' = [i \in Servers |-> IF Leads(i) THEN selected[i] ELSE EmptyFn]
+  /\ open_mark' = [i \in Servers |-> IF repairs'[i] > repairs[i] THEN Len(log[i]) ELSE open_mark[i]]
+  /\ proof' = [i \in Servers |->
+                 IF repairs'[i] > repairs[i] THEN proof[i] \cup {[kind |-> "damage", idx |-> Len(log[i])]}
+                 ELSE IF repairs'[i] < repairs[i] THEN {}
+                 ELSE proof[i]]
+  /\ UNCHANGED <<result_throws, wrong, runs, flips>>
+
 Next ==
-  \/ ProtocolNext /\ StateFollows
-  \/ \E i \in Servers : StateRun(i) \/ StateApply(i) \/ StateAbort(i)
+  \/ ProtocolNext /\ StateFollows /\ EVFollows
+  \/ (\E i \in Servers : StateRun(i) \/ StateApply(i) \/ StateAbort(i)) /\ UNCHANGED evvars
+  \/ EVNext
 
 Spec == Init /\ [][Next]_vars
 
@@ -2800,6 +3391,15 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* DecideOnResendOldSeq: the Decide at a resend timeout carries the sequence
 \* number of the last message and does not raise it, as leader.rs:371-403
 \* with resend = true (S5).
+\* The mutations of Execute-Verify, doc/plan-execute-verify.md 4.13, with the
+\* invariant that each must break: ApplyOwnResult (StatesAgree),
+\* CountOtherBase (ChosenOnOwnBase), SelectWithoutMajority (ChosenByMajority),
+\* AcceptWithoutCheck (ChosenByMajority), ThrowWithoutList (ThrowOnlyWrong),
+\* CountProofTwice (RepairsBounded), VerdictWithoutRequest
+\* (VerdictCoversRequest), ListedSkipsCheck (ThrowOnlyWrong),
+\* OwnAcceptUnchecked (ThrowOnlyWrong), StaleVerdictTaken (ChosenOnOwnBase),
+\* RejectedUnchecked (ChosenByMajority or RejectedWithoutMajority),
+\* AppliedIsPointer (the cover NoIdleRead holds).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
@@ -2814,7 +3414,11 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
                      "NoDecideOnResend", "DecideOnResendOldSeq",
                      "PowerLossWithF", "PowerLossStartAtAccepted",
-                     "StartCheckMissing", "StartAsNewNode", "NoAbortOnCut"}
+                     "StartCheckMissing", "StartAsNewNode", "NoAbortOnCut",
+                     "ApplyOwnResult", "CountOtherBase", "SelectWithoutMajority",
+                     "AcceptWithoutCheck", "ThrowWithoutList", "CountProofTwice",
+                     "VerdictWithoutRequest", "ListedSkipsCheck", "OwnAcceptUnchecked",
+                     "StaleVerdictTaken", "RejectedUnchecked", "AppliedIsPointer"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -2849,6 +3453,13 @@ ASSUME \A i \in Servers : 0 < i /\ i < PidBase
 ASSUME MaxReconfigure \in Nat
 ASSUME Witness \in BOOLEAN
 ASSUME LeaseLength \in Nat
+ASSUME ExecuteVerify \in BOOLEAN
+ASSUME MaxWrong \in Nat
+ASSUME Spread \in BOOLEAN
+ASSUME Flip \in BOOLEAN
+ASSUME MaxFlip \in Nat
+ASSUME MaxResultThrow \in Nat
+ASSUME SpreadAction \in {"throw", "reject"}
 
 ----------------------------------------------------------------------------
 (* Bounds of the model, used as a state constraint. *)
@@ -3217,6 +3828,102 @@ ForcedAgreesWithOld ==
 \* The witness refuses a request after ForceSingle.
 \* @type: Bool;
 NoRefusalAfterForce == ~ (force_single.node # 0 /\ \E i \in Nodes : lease_reply[i] = 0)
+
+(* Invariants and covers of Execute-Verify, doc/plan-execute-verify.md     *)
+(* 4.11 and 4.12. Each cover must be violated by a trace.                    *)
+
+\* Each chosen result agrees with the runs on its base of a majority.
+ChosenByMajority ==
+  \A i \in Servers :
+    LET l == DecidedPrefix(i)
+        a == V(l)
+    IN \A q \in DOMAIN a.chosen :
+         Cardinality({n \in Servers :
+                        \E r \in runs : /\ r.node = n /\ r.v = l[q]
+                                       /\ r.base = ChosenBase(l, a, q)
+                                       /\ Agree(r.res, a.chosen[q].res)}) >= Majority(i)
+
+\* Without Spread, each chosen result agrees with the right result on its base.
+ChosenIsRight ==
+  Spread \/
+  \A i \in Servers :
+    LET l == DecidedPrefix(i)
+        a == V(l)
+    IN \A q \in DOMAIN a.chosen : a.chosen[q].res.rv = RightRv(l[q], ChosenBase(l, a, q))
+
+\* Each chosen result ran on the base that the chosen results before it define.
+ChosenOnOwnBase ==
+  \A i \in Servers :
+    LET l == DecidedPrefix(i)
+        a == V(l)
+    IN \A q \in DOMAIN a.chosen : a.chosen[q].base = ChosenBase(l, a, q)
+
+StatesAgree == \A i, j \in Servers : Compatible(applied[i], applied[j])
+
+\* Only a node with a wrong run of the entry on the chosen base takes a
+\* listed throw; with Spread a run 2 away from the chosen result counts as
+\* wrong (provisional, question 7.5). A leader throws for a refused entry
+\* only where it flipped that entry.
+ThrowOnlyWrong ==
+  \A n \in 1..Len(result_throws) :
+    LET t == result_throws[n] IN
+    IF t.kind = "listed"
+    THEN \E r \in runs :
+           /\ r.node = t.node /\ r.v = t.v /\ r.base = t.base
+           /\ \/ r.res.rv.bad # 0
+              \/ Spread /\ r.res.rv = t.chosen.rv /\ r.res.j - t.chosen.j \in {-2, 2}
+    ELSE \E f \in flips : f[1] = t.node /\ f[2] = t.idx
+
+\* The count of a node never passes the proofs that counted, and a node that
+\* runs has a count of at most AutoRepairs.
+RepairsBounded ==
+  \A i \in Nodes :
+    /\ repairs[i] <= Cardinality(proof[i])
+    /\ i \in running => repairs[i] <= AutoRepairs
+
+\* Each results entry covers a request entry below it.
+VerdictCoversRequest ==
+  \A i \in Servers : \A k \in 1..Len(log[i]) :
+    IsVerdict(log[i][k]) /\ log[i][k].type = "Results" =>
+      HasRequest(log[i], log[i][k].from, Min(log[i][k].to, k - 1))
+
+\* A void entry has no result that a majority of the runs on its base
+\* agrees with (provisional, for the mutation RejectedUnchecked).
+RejectedWithoutMajority ==
+  \A i \in Servers :
+    LET l == DecidedPrefix(i)
+        a == V(l)
+    IN \A k \in a.void :
+         \A c \in runs :
+           c.v = l[k] /\ c.base = ChosenBase(l, a, k) =>
+             Cardinality({n \in Servers :
+                            \E r \in runs : /\ r.node = n /\ r.v = l[k]
+                                           /\ r.base = ChosenBase(l, a, k)
+                                           /\ Agree(r.res, c.res)}) < Majority(i)
+
+NoResults == \A i \in Servers : V(DecidedPrefix(i)).chosen = EmptyFn
+NoReject == \A i \in Servers : V(DecidedPrefix(i)).void = {}
+NoFollowerThrow == \A n \in 1..Len(result_throws) : result_throws[n].kind # "listed"
+NoLeaderThrow == \A n \in 1..Len(result_throws) : result_throws[n].kind # "refused"
+\* A results entry is decided in a later ballot than the first entry.
+NoResultsAfterLeaderChange ==
+  \A k \in 1..Len(decided_history) :
+    IsVerdict(decided_history[k]) /\ decided_history[k].type = "Results" =>
+      decided_ballot[k] = decided_ballot[1]
+\* A decided verdict entry that V does not take.
+NoStaleVerdictEntry ==
+  \A i \in Servers :
+    LET l == DecidedPrefix(i) IN
+    \A m \in 1..Len(l) :
+      IsVerdict(l[m]) => VStep(SubSeq(l, 1, m), m, V(SubSeq(l, 1, m - 1))) # V(SubSeq(l, 1, m - 1))
+\* A node runs one entry on two bases (2.4.3).
+NoRunAgain == \A r1, r2 \in runs : r1.node = r2.node /\ r1.v = r2.v => r1.base = r2.base
+NoTryAgain == \A i \in Servers : counts[i].tried = {}
+\* A read answered on a prefix that ends with a verdict entry.
+NoIdleRead ==
+  \A r \in DOMAIN reads :
+    reads[r].state = "done" /\ ~reads[r].stale /\ reads[r].result # <<>> =>
+      ~IsVerdict(reads[r].result[Len(reads[r].result)])
 
 ValueSymmetry == Permutations(Values)
 

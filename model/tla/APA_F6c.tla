@@ -54,6 +54,13 @@ OVERRIDE_MaxHalt == 0
 OVERRIDE_StaleReadNode == FALSE
 OVERRIDE_Witness == FALSE
 OVERRIDE_LeaseLength == 0
+OVERRIDE_ExecuteVerify == FALSE
+OVERRIDE_MaxWrong == 0
+OVERRIDE_Spread == FALSE
+OVERRIDE_Flip == FALSE
+OVERRIDE_MaxFlip == 0
+OVERRIDE_MaxResultThrow == 0
+OVERRIDE_SpreadAction == "throw"
 
 (* The disjuncts of Next that the constants above enable. Each other        *)
 (* disjunct of Next needs a crash, a wipe, a loss, a duplicate, a timeout, a *)
@@ -67,7 +74,7 @@ ApaNext ==
      \/ \E i \in Nodes, k \in 1..MaxBallot : HandleLeader(i, k)
      \/ \E i \in Nodes, v \in Values : Propose(i, v)
      \/ \E R \in SUBSET Nodes : Rollback(R)
-  /\ UNCHANGED statevars
+  /\ UNCHANGED <<statevars, evvars>>
   /\ Bounds'
 
 (* S2Grows of MC_F6c.cfg as an action invariant. *)
