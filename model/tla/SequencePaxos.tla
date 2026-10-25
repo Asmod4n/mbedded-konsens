@@ -273,10 +273,12 @@ VARIABLES
   own,
   \* @type: Int -> Int;
   verified_idx,
-  \* @type: Int -> Set({kind: Str, idx: Int});
+  \* @type: Int -> Set({kind: Str, idx: Int, n: Int});
   proof,
   \* @type: Int -> Int;
   open_mark,
+  \* @type: Int -> Bool;
+  mark_covered,
   result_throws,
   \* @type: Int -> {n: Int, ptr: Int};
   answered,
@@ -305,7 +307,7 @@ leasevars  == <<witness_epoch, node_epoch, lease_request, lease_reply, lease_rem
 leaseghost == <<forced_decided_at_force, forced_has_decided, old_decided_max,
                 old_decided_after_forced>>
 statevars == <<applied, in_txn>>
-evvars    == <<selected, counts, own, verified_idx, proof, open_mark, result_throws, answered,
+evvars    == <<selected, counts, own, verified_idx, proof, open_mark, mark_covered, mark_covered, result_throws, answered,
                refusal, wrong, runs, flips, reported>>
 vars_but_state == <<durable, volatile, chan, env, ghost, recovery, rollback, client, readvars,
                     buffered_stopsign, reconfig, leasevars, leaseghost>>
@@ -581,6 +583,10 @@ DecidedPrefix(i) == SubSeq(log[i], 1, Min(decided_idx[i], Len(log[i])))
 \* The verdict function V of plan 2.3.1 over a sequence of entries.
 NoChoice == [p |-> 0, chosen |-> EmptyFn, void |-> {}]
 HasRequest(l, f, t) == \E q \in f..t : q \in 1..Len(l) /\ IsRequest(l[q])
+\* 2.6.5: the first request entry of l above p and below m, else 0.
+FirstRequestAbove(l, p, m) ==
+  LET rs == {q \in (p + 1)..(m - 1) : q \in 1..Len(l) /\ IsRequest(l[q])}
+  IN IF rs = {} THEN 0 ELSE CHOOSE q \in rs : \A x \in rs : q <= x
 VStep(l, m, a) ==
   LET e == l[m] IN
   IF ~IsVerdict(e) THEN a
@@ -589,7 +595,7 @@ VStep(l, m, a) ==
              \/ Mutation = "StaleVerdictTaken" /\ e.from <= a.p + 1
           /\ e.to < m /\ HasRequest(l, e.from, e.to)
   THEN [a EXCEPT !.chosen = e.list @@ @, !.p = Max(@, e.to)]
-  ELSE IF e.type = "Rejected" /\ e.from = a.p + 1 /\ e.from < m /\ IsRequest(l[e.from])
+  ELSE IF e.type = "Rejected" /\ e.from = FirstRequestAbove(l, a.p, m)
   THEN [a EXCEPT !.void = @ \cup {e.from}, !.p = e.from]
   ELSE a
 RECURSIVE VFrom(_, _, _)
@@ -914,6 +920,7 @@ Init ==
   /\ verified_idx = [i \in Servers |-> 0]
   /\ proof = [i \in Servers |-> {}]
   /\ open_mark = [i \in Servers |-> 0]
+  /\ mark_covered = [i \in Servers |-> FALSE]
   /\ result_throws = <<>>
   /\ answered = [i \in Servers |-> NoAnswered]
   /\ refusal = [i \in Servers |-> NoRefusal]
@@ -1870,11 +1877,14 @@ DetectedAtStart(i, kind, d, k) ==
   ELSE Detected(i, kind, d, k)
 
 \* Plan 3.3: a proof at or below the open mark is covered and counts
-\* nothing. The proof of a damage carries the length of the log.
+\* nothing, once for each open mark; mark_covered says that the open mark
+\* covered a proof (provisional name). The proof of a damage carries the
+\* length of the log.
 \* @type: (Int, Int) => Bool;
 Covered(i, q) ==
   /\ ExecuteVerify
   /\ open_mark[i] # 0 /\ q <= open_mark[i]
+  /\ ~mark_covered[i]
   /\ Mutation # "CountProofTwice"
 
 \* A node that reads no promise gets a full copy of the durable state of a
@@ -2859,7 +2869,7 @@ RunEntry(i) ==
        /\ runs' = runs \cup {RunOf(i, log[i][q], b, r)}
        /\ answered' = [answered EXCEPT ![i] = [n |-> promise[i], ptr |-> a.p]]
        /\ AnswerOut(i, AnswerMsg(i, o1, q, 0))
-  /\ UNCHANGED <<selected, verified_idx, proof, open_mark, result_throws, refusal, flips,
+  /\ UNCHANGED <<selected, verified_idx, proof, open_mark, mark_covered, result_throws, refusal, flips,
                  reported>>
   /\ UNCHANGED EVOnly
 
@@ -2871,7 +2881,7 @@ OwnAbort(i) ==
   /\ DOMAIN own[i] # {}
   /\ ~OwnCurrent(i)
   /\ own' = [own EXCEPT ![i] = EmptyFn]
-  /\ UNCHANGED <<selected, counts, verified_idx, proof, open_mark, result_throws, answered,
+  /\ UNCHANGED <<selected, counts, verified_idx, proof, open_mark, mark_covered, result_throws, answered,
                  refusal, wrong, runs, flips, reported>>
   /\ UNCHANGED <<EVOnly, chan>>
 
@@ -2884,7 +2894,7 @@ Reanswer(i) ==
   /\ MapOf(own[i], Ptr(i) + 1, MaxLog) # EmptyFn
   /\ answered' = [answered EXCEPT ![i] = [n |-> promise[i], ptr |-> Ptr(i)]]
   /\ AnswerOut(i, AnswerMsg(i, own[i], Ptr(i) + 1, 0))
-  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, result_throws, refusal, wrong,
+  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, mark_covered, result_throws, refusal, wrong,
                  runs, flips, reported>>
   /\ UNCHANGED EVOnly
 
@@ -2900,7 +2910,7 @@ HandleAnswer(i, j, m, c) ==
                THEN [counts EXCEPT ![i] = CountAnswer(@, j, m)]
                ELSE counts
   /\ chan' = c
-  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, result_throws, answered, refusal,
+  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, mark_covered, result_throws, answered, refusal,
                  wrong, runs, flips, reported>>
 
 \* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
@@ -2914,7 +2924,7 @@ HandleTryAgain(i, j, m, c) ==
          /\ own' = [own EXCEPT ![i] = o2]
          /\ runs' = runs \cup {RunOf(i, own[i][q].v, own[i][q].base, r)}
          /\ chan' = Send(c, i, One(j, AnswerMsg(i, o2, q, q)))
-         /\ UNCHANGED <<selected, counts, verified_idx, proof, open_mark, result_throws, answered,
+         /\ UNCHANGED <<selected, counts, verified_idx, proof, open_mark, mark_covered, result_throws, answered,
                         refusal, flips, reported>>
   ELSE /\ chan' = c
        /\ UNCHANGED evvars
@@ -2925,7 +2935,7 @@ HandleRefused(i, j, m, c) ==
                THEN [counts EXCEPT ![i] = [@ EXCEPT !.refusals = @ \cup {<<j, m.idx>>}]]
                ELSE counts
   /\ chan' = c
-  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, result_throws, answered, refusal,
+  /\ UNCHANGED <<selected, own, verified_idx, proof, open_mark, mark_covered, result_throws, answered, refusal,
                  wrong, runs, flips, reported>>
 
 \* The head of the channel from j to i is a message of Execute-Verify.
@@ -2959,17 +2969,18 @@ LeaderRunAgain(i) ==
             /\ own' = [own EXCEPT ![i] = o2]
             /\ runs' = runs \cup {RunOf(i, own[i][q].v, own[i][q].base, r)}
             /\ AnswerOut(i, AnswerMsg(i, o2, q, q))
-  /\ UNCHANGED <<selected, verified_idx, proof, open_mark, result_throws, answered, refusal, flips,
+  /\ UNCHANGED <<selected, verified_idx, proof, open_mark, mark_covered, result_throws, answered, refusal, flips,
                  reported>>
   /\ UNCHANGED EVOnly
 
 \* 2.6.2: the leader counts the result of j for q only when j ran it on the
-\* selected base. Mutation CountOtherBase leaves out the base.
+\* selected base and the pointer of the answer equals the pointer of the
+\* leader. Mutation CountOtherBase leaves out the base.
 SelRes(i, a, k) == IF k <= a.p THEN a.chosen[k].res ELSE selected[i][k].res
 Counted(i, j, q) ==
   LET an == counts[i].ans[j]
       a  == Chosen(i)
-  IN /\ an.ptr >= 0 /\ an.ptr <= a.p
+  IN /\ an.ptr = a.p
      /\ q \in DOMAIN an.map /\ q <= Min(decided_idx[i], Len(log[i]))
      /\ \/ Mutation = "CountOtherBase"
         \/ \A k \in (an.ptr + 1)..(q - 1) :
@@ -3021,7 +3032,7 @@ Select(i) ==
        /\ selected' = [selected EXCEPT ![i] =
                          (q :> [res |-> Ans(i, c, q), node |-> c,
                                 base |-> counts[i].ans[c].map[q].base]) @@ @]
-  /\ UNCHANGED <<own, verified_idx, proof, open_mark, result_throws, answered, refusal, wrong,
+  /\ UNCHANGED <<own, verified_idx, proof, open_mark, mark_covered, result_throws, answered, refusal, wrong,
                  runs, flips, reported>>
   /\ UNCHANGED EVOnly
 
@@ -3039,13 +3050,14 @@ SpreadOut(i, q) ==
 
 \* 2.6.5: with results selected for p + 1 .. t, and no verdict entry above
 \* p that is not decided, the leader appends results(p + 1, t, list); when
-\* the counted answers for p + 1 leave no result that a majority could
-\* reach, rejected(p + 1). With Flip, one step may replace a selected
-\* result by a wrong one, move a node into or out of the list, or turn
-\* the selection for p + 1 into rejected(p + 1) (4.3, 4.13); with two
-\* flips left, it may replace a result and move a node in one entry. Each
-\* change counts one flip. Mutation VerdictWithoutRequest appends a
-\* results entry over a range with no request entry. Mutations
+\* the counted answers for k, the first request entry above p, leave no
+\* result that a majority could reach, rejected(k). V takes rejected(k)
+\* for that k (provisional: plan 2.3.1 still names p + 1). With Flip, one
+\* step may replace a selected result by a wrong one, move a node into or
+\* out of the list, or turn the selection for k into rejected(k) (4.3,
+\* 4.13); with two flips left, it may replace a result and move a node in
+\* one entry. Each change counts one flip. Mutation VerdictWithoutRequest
+\* appends a results entry over a range with no request entry. Mutations
 \* VerdictWhileOpen and StaleVerdictTaken leave out the guard on verdict
 \* entries that are not decided.
 AppendVerdict(i) ==
@@ -3110,7 +3122,7 @@ AppendVerdict(i) ==
                  cached_promise_message, buffered_proposals>>
   /\ UNCHANGED <<env, recovery, rolled_back, client, readvars, buffered_stopsign, reconfig,
                  leasevars, statevars>>
-  /\ UNCHANGED <<selected, own, proof, open_mark, result_throws, answered, refusal, wrong, runs,
+  /\ UNCHANGED <<selected, own, proof, open_mark, mark_covered, result_throws, answered, refusal, wrong, runs,
                  reported>>
   /\ GhostUpdate
 
@@ -3202,7 +3214,7 @@ CheckVerdict(i) ==
                                                                     !.n = promise[i], !.idx = m]))
                                         ELSE chan
                              /\ UNCHANGED counts
-  /\ UNCHANGED <<selected, own, proof, open_mark, result_throws, answered, flips, reported>>
+  /\ UNCHANGED <<selected, own, proof, open_mark, mark_covered, result_throws, answered, flips, reported>>
   /\ UNCHANGED <<buffered_stopsign, env, proposed, recovery, rolled_back, client, readvars,
                  reconfig, leasevars, statevars>>
   /\ GhostUpdate
@@ -3228,8 +3240,10 @@ RefusedAt(i) ==
 \* step. A covered proof counts nothing. Else the count rises, the open mark
 \* takes the index, and the node repairs while the count allows it (3.4:
 \* the abort of the open transaction and the recovery, with its own log),
-\* else it waits for the operator. proof[i] keeps each proof that counted
-\* (provisional: the plan clears it; the ghost serves RepairsBounded).
+\* else it waits for the operator. A second covered proof while the same
+\* mark is open counts. proof[i] keeps each proof that counted, with the
+\* count n that it set (provisional: the plan clears it; the ghost serves
+\* RepairsBounded). result_throws records whether the throw was covered.
 \* Mutation CountProofTwice counts a covered proof.
 ThrowStart(i, t) ==
   LET cov == Covered(i, t.idx)
@@ -3253,7 +3267,10 @@ ThrowStart(i, t) ==
                          read_only, deactivated, halts, read_only_entries, build_source,
                          leasevars, leaseghost>>
   /\ open_mark' = IF cov THEN open_mark ELSE [open_mark EXCEPT ![i] = t.idx]
-  /\ proof' = IF cov THEN proof ELSE [proof EXCEPT ![i] = @ \cup {[kind |-> t.kind, idx |-> t.idx]}]
+  /\ mark_covered' = [mark_covered EXCEPT ![i] = cov]
+  /\ proof' = IF cov THEN proof
+              ELSE [proof EXCEPT ![i] = @ \cup {[kind |-> t.kind, idx |-> t.idx, n |-> cnt]}]
+  /\ result_throws' = Append(result_throws, t @@ [cov |-> cov])
   /\ own' = [own EXCEPT ![i] = EmptyFn]
   /\ verified_idx' = [verified_idx EXCEPT ![i] = VerifiedAfter(log[i], Min(decided_idx[i], Len(log[i])))]
   /\ answered' = [answered EXCEPT ![i] = NoAnswered]
@@ -3280,7 +3297,6 @@ ResultThrow(i) ==
           IN
           IF Mutation = "ThrowWithoutRerun"
           THEN /\ Len(result_throws) < MaxResultThrow
-               /\ result_throws' = Append(result_throws, t)
                /\ ThrowStart(i, t)
                /\ UNCHANGED <<wrong, runs>>
           ELSE \E w \in WrongAfter(i, l[q], wrong) :
@@ -3290,18 +3306,16 @@ ResultThrow(i) ==
                  /\ IF Agree(r, a.chosen[q].res)
                     THEN /\ reported' = reported \cup {[node |-> i, idx |-> q, chosen |-> a.chosen[q],
                                                         leader |-> a.chosen[q].by]}
-                         /\ UNCHANGED <<selected, counts, own, verified_idx, proof, open_mark,
+                         /\ UNCHANGED <<selected, counts, own, verified_idx, proof, open_mark, mark_covered,
                                         result_throws, answered, refusal, flips, statevars>>
                          /\ UNCHANGED vars_but_state
                     ELSE /\ Len(result_throws) < MaxResultThrow
-                         /\ result_throws' = Append(result_throws, t)
                          /\ ThrowStart(i, t)
      \/ \E x \in RefusedAt(i) :
           LET t == [node |-> i, idx |-> x, kind |-> "refused", v |-> VoidEntry, base |-> <<>>,
                     chosen |-> NoResult]
           IN
           /\ Len(result_throws) < MaxResultThrow
-          /\ result_throws' = Append(result_throws, t)
           /\ ThrowStart(i, t)
           /\ UNCHANGED <<wrong, runs>>
 
@@ -3329,8 +3343,8 @@ ApplyChosen(i) ==
   /\ own' = [own EXCEPT ![i] = [k \in {x \in DOMAIN own[i] : x > d} |-> own[i][k]]]
   /\ open_mark' = IF open_mark[i] # 0 /\ d >= open_mark[i]
                   THEN [open_mark EXCEPT ![i] = 0] ELSE open_mark
-  /\ UNCHANGED <<selected, counts, verified_idx, proof, result_throws, answered, refusal, wrong,
-                 runs, flips, reported, in_txn>>
+  /\ UNCHANGED <<selected, counts, verified_idx, proof, mark_covered, result_throws, answered,
+                 refusal, wrong, runs, flips, reported, in_txn>>
   /\ UNCHANGED vars_but_state
 
 \* 2.5.3, 2.7.6: on the resend timeout a node sends its answer and its
@@ -3388,8 +3402,10 @@ EVFollows ==
   /\ counts' = [i \in Servers |-> IF Leads(i) THEN counts[i] ELSE NoCounts]
   /\ selected' = [i \in Servers |-> IF Leads(i) THEN selected[i] ELSE EmptyFn]
   /\ open_mark' = [i \in Servers |-> IF repairs'[i] > repairs[i] THEN Len(log[i]) ELSE open_mark[i]]
+  /\ mark_covered' = [i \in Servers |-> IF repairs'[i] > repairs[i] THEN FALSE ELSE mark_covered[i]]
   /\ proof' = [i \in Servers |->
-                 IF repairs'[i] > repairs[i] THEN proof[i] \cup {[kind |-> "damage", idx |-> Len(log[i])]}
+                 IF repairs'[i] > repairs[i]
+                 THEN proof[i] \cup {[kind |-> "damage", idx |-> Len(log[i]), n |-> repairs'[i]]}
                  ELSE IF repairs'[i] < repairs[i] THEN {}
                  ELSE proof[i]]
   /\ UNCHANGED <<result_throws, wrong, runs, flips, reported>>
@@ -3995,6 +4011,14 @@ NoResultsAfterLeaderChange ==
 \* A node runs one entry on two bases (2.4.3).
 NoRunAgain == \A r1, r2 \in runs : r1.node = r2.node /\ r1.v = r2.v => r1.base = r2.base
 NoTryAgain == \A i \in Servers : counts[i].tried = {}
+\* 3.3: a node whose throws all name one index, one of them covered, waits
+\* for the operator.
+NoOperatorWait ==
+  ~ \E i \in Nodes :
+      LET ts == {n \in 1..Len(result_throws) : result_throws[n].node = i} IN
+      /\ i \in refused /\ repairs[i] > AutoRepairs
+      /\ \E n \in ts : result_throws[n].cov
+      /\ \A n, x \in ts : result_throws[n].idx = result_throws[x].idx
 \* A read answered on a prefix that ends with a verdict entry.
 NoIdleRead ==
   \A r \in DOMAIN reads :
