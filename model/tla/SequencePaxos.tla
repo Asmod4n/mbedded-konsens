@@ -273,14 +273,19 @@ VARIABLES
   own,
   \* @type: Int -> Int;
   verified_idx,
+  \* @type: Int -> Set({kind: Str, idx: Int});
   proof,
   \* @type: Int -> Int;
   open_mark,
   result_throws,
+  \* @type: Int -> {n: Int, ptr: Int};
   answered,
+  \* @type: Int -> {n: Int, idx: Int};
   refusal,
+  \* @type: Set(<<Int, $entry>>);
   wrong,
   runs,
+  \* @type: Set(<<Int, Int, Int, Int>>);
   flips,
   reported
 
@@ -639,12 +644,12 @@ PromiseAcc(i) == IF ExecuteVerify THEN Len(PromiseLog(i)) ELSE accepted_idx[i]
 \* Plan 2.4.4: a leader proposes no more request entries while it holds
 \* MaxInFlight results above its applied index.
 InFlightOk(i) ==
-  \/ ~ExecuteVerify
-  \/ ~(role[i] = "Leader" /\ phase[i] = "Accept")
-  \/ Cardinality({k \in DOMAIN own[i] : k > AppliedIdxOf(DecidedPrefix(i))}) < MaxInFlight
+  IF ~ExecuteVerify \/ ~(role[i] = "Leader" /\ phase[i] = "Accept") THEN TRUE
+  ELSE Cardinality({k \in DOMAIN own[i] : k > AppliedIdxOf(DecidedPrefix(i))}) < MaxInFlight
 \* Plan 2.3.6: a StopSign only when p covers every request entry.
 StopSignAllowed(i) ==
-  ~ExecuteVerify \/ \A k \in 1..Len(log[i]) : IsRequest(log[i][k]) => k <= V(DecidedPrefix(i)).p
+  IF ~ExecuteVerify THEN TRUE
+  ELSE \A k \in 1..Len(log[i]) : IsRequest(log[i][k]) => k <= V(DecidedPrefix(i)).p
 
 \* The state of a decided prefix: one item for each index up to the applied
 \* index, with the chosen result of each request entry that is not void.
@@ -1895,7 +1900,7 @@ StorageFault(i, kind) ==
        /\ kind = "missing_entry" => k > 0 /\ d.log = LogWithout(log[i], k)
        /\ kind # "missing_entry" => k = 0
        /\ IF DetectedAtStart(i, kind, d, k) /\ StartDamageCounts /\ RepairFromPeer
-             /\ (repairs[i] < AutoRepairs \/ Covered(i, Len(log[i])))
+             /\ IF repairs[i] < AutoRepairs THEN TRUE ELSE Covered(i, Len(log[i]))
              /\ \E src \in running \ {i} : Votes(src) /\ ~recovering[src]
           THEN \E src \in running \ {i} :
                  /\ Votes(src) /\ ~recovering[src]
@@ -3027,9 +3032,13 @@ SpreadOut(i, q) ==
 \* p that is not decided, the leader appends results(p + 1, t, list); when
 \* the counted answers for p + 1 leave no result that a majority could
 \* reach, rejected(p + 1). With Flip, one step may replace a selected
-\* result by a wrong one or move a node into or out of the list (4.3).
-\* Mutation VerdictWithoutRequest appends a results entry over a range with
-\* no request entry.
+\* result by a wrong one, move a node into or out of the list, or turn
+\* the selection for p + 1 into rejected(p + 1) (4.3, 4.13); with two
+\* flips left, it may replace a result and move a node in one entry. Each
+\* change counts one flip. Mutation VerdictWithoutRequest appends a
+\* results entry over a range with no request entry. Mutations
+\* VerdictWhileOpen and StaleVerdictTaken leave out the guard on verdict
+\* entries that are not decided.
 AppendVerdict(i) ==
   LET a    == Chosen(i)
       lo   == a.p + 1
@@ -3041,11 +3050,18 @@ AppendVerdict(i) ==
       q0   == CHOOSE k \in reqs : \A x \in reqs : k <= x
       lst  == [q \in sel |-> [res |-> selected[i][q].res, node |-> selected[i][q].node,
                               out |-> Out(i, q), base |-> selected[i][q].base, by |-> i]]
+      left == IF Flip THEN MaxFlip - Cardinality(flips) ELSE 0
+      Bad(q) == [rv |-> BadRv(i, log[i][q]), j |-> 0]
+      Moved(o, x) == (o \ {x}) \cup ({x} \ o)
       flipped ==
-        IF Flip /\ Cardinality(flips) < MaxFlip
-        THEN {[lst EXCEPT ![q].res = [rv |-> BadRv(i, log[i][q]), j |-> 0]] : q \in sel}
-             \cup {[lst EXCEPT ![q].out = (@ \ {x}) \cup ({x} \ @)] : q \in sel, x \in ClusterNodes(i)}
-        ELSE {}
+        (IF left >= 1
+         THEN {<<[lst EXCEPT ![q].res = Bad(q)], 1>> : q \in sel}
+              \cup {<<[lst EXCEPT ![q].out = Moved(@, x)], 1>> : q \in sel, x \in ClusterNodes(i)}
+         ELSE {})
+        \cup (IF left >= 2
+               THEN {<<[lst EXCEPT ![q].res = Bad(q), ![q].out = Moved(@, x)], 2>> :
+                       q \in sel, x \in ClusterNodes(i)}
+               ELSE {})
       CR0  == {j \in ClusterNodes(i) :
                  Counted(i, j, q0) /\ (<<j, q0>> \in counts[i].tried => <<j, q0>> \in counts[i].again)}
       U    == ClusterNodes(i) \ CR0
@@ -3055,25 +3071,30 @@ AppendVerdict(i) ==
       rej  == RejectedEntry(q0, [x \in CR0 |-> Ans(i, x, q0)])
       m    == Len(log[i]) + 1
       cands ==
-        (IF sel # {} THEN {<<ResultsEntry(lo, t, lst), FALSE>>}
-                          \cup {<<ResultsEntry(lo, t, f), TRUE>> : f \in flipped}
+        (IF sel # {} THEN {<<ResultsEntry(lo, t, lst), 0>>}
+                          \cup {<<ResultsEntry(lo, t, f[1]), f[2]>> : f \in flipped}
          ELSE {})
-        \cup (IF reqs # {} /\ q0 \notin DOMAIN selected[i] /\ noMaj THEN {<<rej, FALSE>>} ELSE {})
+        \cup (IF reqs # {} /\ q0 \notin DOMAIN selected[i] /\ noMaj THEN {<<rej, 0>>} ELSE {})
         \cup (IF reqs # {} /\ q0 \in DOMAIN selected[i] /\ SpreadOut(i, q0)
               THEN {<<RejectedEntry(q0, [x \in {y \in ClusterNodes(i) : Counted(i, y, q0)} |->
-                                           Ans(i, x, q0)]), FALSE>>}
+                                           Ans(i, x, q0)]), 0>>}
+              ELSE {})
+        \cup (IF reqs # {} /\ q0 \in sel /\ left >= 1
+              THEN {<<RejectedEntry(q0, [x \in {y \in ClusterNodes(i) : Counted(i, y, q0)} |->
+                                           Ans(i, x, q0)]), 1>>}
               ELSE {})
         \cup (IF Mutation = "VerdictWithoutRequest" /\ reqs = {} /\ lo <= Len(log[i])
-              THEN {<<ResultsEntry(lo, Len(log[i]), EmptyFn), FALSE>>} ELSE {})
+              THEN {<<ResultsEntry(lo, Len(log[i]), EmptyFn), 0>>} ELSE {})
   IN
   /\ EVNode(i)
   /\ role[i] = "Leader" /\ phase[i] = "Accept"
   /\ ~AcceptedReconfiguration(i)
-  /\ \A k \in lo..Len(log[i]) : IsVerdict(log[i][k]) => k <= decided_idx[i]
+  /\ IF Mutation \in {"VerdictWhileOpen", "StaleVerdictTaken"} THEN TRUE
+     ELSE \A k \in lo..Len(log[i]) : IsVerdict(log[i][k]) => k <= decided_idx[i]
   /\ \E x \in cands :
        /\ AcceptEntriesLeader(i, <<x[1]>>, chan)
        /\ proposed' = proposed \cup {x[1]}
-       /\ flips' = IF x[2] THEN flips \cup {<<i, m, leader_state[i].n_leader>>} ELSE flips
+       /\ flips' = flips \cup {<<i, m, leader_state[i].n_leader, c>> : c \in 1..x[2]}
        /\ counts' = [counts EXCEPT ![i] = [@ EXCEPT !.appended = @ \cup {m}]]
        /\ verified_idx' = [verified_idx EXCEPT ![i] = NewVerified(i, log[i] \o <<x[1]>>)]
   /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
@@ -3433,9 +3454,10 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* CountOtherBase (ChosenOnOwnBase), SelectWithoutMajority (ChosenByMajority),
 \* AcceptWithoutCheck (ChosenByMajority), ThrowWithoutRerun (ThrowOnlyWrong),
 \* CountProofTwice (RepairsBounded), VerdictWithoutRequest
-\* (VerdictCoversRequest), ListedSkipsCheck (ThrowOnlyWrong),
-\* OwnAcceptUnchecked (ThrowOnlyWrong), StaleVerdictTaken (ChosenOnOwnBase),
-\* RejectedUnchecked (ChosenByMajority or RejectedWithoutMajority),
+\* (VerdictCoversRequest), ListedSkipsCheck (ChosenByMajority, MaxFlip 2),
+\* OwnAcceptUnchecked (PromiseIsVerified), StaleVerdictTaken with the guard
+\* of VerdictWhileOpen off (ChosenOnOwnBase), VerdictWhileOpen alone (none,
+\* the control of StaleVerdictTaken), RejectedUnchecked (RejectedHasNoMajority),
 \* AppliedIsPointer (the cover NoIdleRead holds).
 ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
@@ -3455,7 +3477,8 @@ ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
                      "ApplyOwnResult", "CountOtherBase", "SelectWithoutMajority",
                      "AcceptWithoutCheck", "ThrowWithoutRerun", "CountProofTwice",
                      "VerdictWithoutRequest", "ListedSkipsCheck", "OwnAcceptUnchecked",
-                     "StaleVerdictTaken", "RejectedUnchecked", "AppliedIsPointer"}
+                     "StaleVerdictTaken", "VerdictWhileOpen", "RejectedUnchecked",
+                     "AppliedIsPointer"}
 \* omni_paxos.rs:106 validate
 ASSUME SingleNode \in BOOLEAN
 ASSUME ~SingleNode => Cardinality(NextConfigNodes) # 1
@@ -3924,19 +3947,29 @@ VerdictCoversRequest ==
     IsVerdict(log[i][k]) /\ log[i][k].type = "Results" =>
       HasRequest(log[i], log[i][k].from, Min(log[i][k].to, k - 1))
 
-\* A void entry has no result that a majority of the runs on its base
-\* agrees with (provisional, for the mutation RejectedUnchecked).
-RejectedWithoutMajority ==
+\* With SpreadAction "throw", a decided rejected(k) has no result that a
+\* majority of the counted runs on its base agree on. The counted runs are
+\* the answers that the entry carries (provisional: a run outside the count,
+\* such as the fresh run of a check, can agree with a counted one).
+RejectedHasNoMajority ==
+  SpreadAction # "throw" \/
   \A i \in Servers :
     LET l == DecidedPrefix(i)
         a == V(l)
-    IN \A k \in a.void :
-         \A c \in runs :
-           c.v = l[k] /\ c.base = ChosenBase(l, a, k) =>
-             Cardinality({n \in Servers :
-                            \E r \in runs : /\ r.node = n /\ r.v = l[k]
-                                           /\ r.base = ChosenBase(l, a, k)
-                                           /\ Agree(r.res, c.res)}) < Majority(i)
+    IN \A m \in 1..Len(l) :
+         IsVerdict(l[m]) /\ l[m].type = "Rejected" /\ l[m].from \in a.void =>
+           \A c \in DOMAIN l[m].list :
+             Cardinality({x \in DOMAIN l[m].list : Agree(l[m].list[x], l[m].list[c])})
+               < Majority(i)
+
+\* A promise carries no entry above the verified_idx of its sender, and the
+\* accept that a leader counts for itself is no promise above it either.
+PromiseIsVerified ==
+  \A i \in Servers :
+    /\ role[i] = "Leader" => leader_state[i].accepted_indexes[i] <= verified_idx[i]
+    /\ cached_promise_message[i] # <<>> /\ phase[i] = "Prepare"
+       /\ cached_promise_message[i][1].n = promise[i] =>
+         cached_promise_message[i][1].accepted_idx <= verified_idx[i]
 
 NoResults == \A i \in Servers : V(DecidedPrefix(i)).chosen = EmptyFn
 NoReject == \A i \in Servers : V(DecidedPrefix(i)).void = {}
@@ -3947,12 +3980,6 @@ NoResultsAfterLeaderChange ==
   \A k \in 1..Len(decided_history) :
     IsVerdict(decided_history[k]) /\ decided_history[k].type = "Results" =>
       decided_ballot[k] = decided_ballot[1]
-\* A decided verdict entry that V does not take.
-NoStaleVerdictEntry ==
-  \A i \in Servers :
-    LET l == DecidedPrefix(i) IN
-    \A m \in 1..Len(l) :
-      IsVerdict(l[m]) => VStep(SubSeq(l, 1, m), m, V(SubSeq(l, 1, m - 1))) # V(SubSeq(l, 1, m - 1))
 \* A node runs one entry on two bases (2.4.3).
 NoRunAgain == \A r1, r2 \in runs : r1.node = r2.node /\ r1.v = r2.v => r1.base = r2.base
 NoTryAgain == \A i \in Servers : counts[i].tried = {}
