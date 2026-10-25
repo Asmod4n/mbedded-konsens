@@ -10,6 +10,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <system_error>
@@ -67,8 +68,12 @@ TEST_CASE("64 requests make one commit of the storage on each node in each pass"
         }
     }
     CHECK(passes > 1);
+    // Execute-Verify: the 64 requests are one append, and each verdict entry
+    // that the leader appends later is an append of its own.
     for (const auto& d : c.disks) {
-        CHECK(d->appended == std::vector<std::size_t>{request_count});
+        REQUIRE_FALSE(d->appended.empty());
+        CHECK(d->appended.front() == request_count);
+        CHECK(std::ranges::all_of(d->appended | std::views::drop(1), [](const std::size_t n) { return n == 1; }));
     }
     const auto replies = c.nodes.at(l).take_client_replies();
     REQUIRE(replies.size() == request_count);

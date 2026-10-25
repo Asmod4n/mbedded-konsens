@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "konsens/storage.hpp"
+#include "konsens/verdict.hpp"
 
 namespace konsens {
 
@@ -214,10 +215,36 @@ struct repair_entries {
     friend bool operator==(const repair_entries&, const repair_entries&) = default;
 };
 
+struct answer {
+    ballot n;
+    std::uint64_t pointer;
+    std::uint64_t from_idx;
+    std::uint32_t base_crc;
+    std::vector<indexed_result> results;
+    std::uint64_t second_run;
+    friend bool operator==(const answer&, const answer&) = default;
+};
+
+struct try_again {
+    ballot n;
+    std::uint64_t index;
+    friend bool operator==(const try_again&, const try_again&) = default;
+};
+
+enum class refusal_reason : std::uint8_t { crc_mismatch = 1, result_differs, wrong_list, rejected_has_a_majority };
+
+struct refused {
+    ballot n;
+    std::uint64_t index;
+    refusal_reason reason;
+    friend bool operator==(const refused&, const refused&) = default;
+};
+
 using paxos_msg =
     std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide, not_accepted,
                  proposal_forward, recovery, recovery_response, get_state, new_state, read_index_request, heartbeat,
-                 heartbeat_ack, read_index_reply, repair_request, repair_response, get_repair_entries, repair_entries>;
+                 heartbeat_ack, read_index_reply, repair_request, repair_response, get_repair_entries, repair_entries,
+                 answer, try_again, refused>;
 
 struct paxos_message {
     node_id from;

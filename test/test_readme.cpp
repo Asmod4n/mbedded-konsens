@@ -89,7 +89,8 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
                          .peers = peers,
                          .leader_priority = 0,
                          .election_tick_timeout = 5,
-                         .resend_message_tick_timeout = 3},
+                         .resend_message_tick_timeout = 3,
+                         .max_in_flight = 16},
                         std::move(storage), std::move(own_storage), std::move(state), counter{}, fresh_nonce())
         .value();
 }

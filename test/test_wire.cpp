@@ -280,6 +280,10 @@ std::vector<message> every_kind()
         paxos(konsens::repair_response{10, 20, 30, {40, 41}}),
         paxos(konsens::get_repair_entries{10, 20}),
         paxos(konsens::repair_entries{10, 20, five_entries(), ballot_from(30), ballot_from(40), 50, 60}),
+        paxos(konsens::answer{ballot_from(10), 20, 21, 22, {{21, payload_of({0xa0}), 23}, {24, {}, 25}}, 0}),
+        paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 21}),
+        paxos(konsens::try_again{ballot_from(10), 20}),
+        paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::result_differs}),
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
@@ -370,8 +374,11 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::repair_response{10, 20, 30, {40}}), 18},
         {paxos(konsens::get_repair_entries{10, 20}), 19},
         {paxos(konsens::repair_entries{10, 20, {}, ballot_from(30), ballot_from(40), 50, 60}), 20},
-        {ble(konsens::heartbeat_request{10}), 21},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 22},
+        {paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 0}), 21},
+        {paxos(konsens::try_again{ballot_from(10), 20}), 22},
+        {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 23},
+        {ble(konsens::heartbeat_request{10}), 24},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 25},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -424,7 +431,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 22;
+    constexpr std::uint64_t heartbeat_reply_kind = 25;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +

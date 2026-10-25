@@ -37,6 +37,7 @@ using konsens::paxos_message;
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 constexpr std::uint64_t request_count = 64;
@@ -163,7 +164,7 @@ inline konsens::node_config config_of(const node_id pid)
             peers.push_back(p);
         }
     }
-    return {config_id, pid, peers, 0, election_ticks, resend_ticks};
+    return {config_id, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 inline entry make_entry(const std::uint8_t v)

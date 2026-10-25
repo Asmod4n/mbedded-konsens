@@ -177,6 +177,22 @@ TEST_CASE("a rejected entry voids its index only when each condition of the rule
     }
 }
 
+// Plan 2.3.1 names rejected(p + 1). A results entry also stands in the
+// log above p, so p + 1 often holds no request entry, and rejected(p + 1)
+// could then void nothing. The rule here (provisional, open for the owner)
+// takes rejected(k) when no request entry stands in p + 1 .. k - 1, as a
+// results entry may start at p + 1 below its first request entry. A
+// request entry between p and k makes the entry stale.
+TEST_CASE("a rejected entry voids the first request entry above the pointer")
+{
+    const auto v = walk({request(1), results(1, 1, {chosen_at(1, 1)}), request(3), rejected(3)});
+    CHECK(v.voids == std::vector<std::uint64_t>{3});
+    CHECK(v.pointer == 3);
+    const auto skipped = walk({request(1), normal(), request(3), rejected(3)});
+    CHECK(skipped.voids.empty());
+    CHECK(skipped.pointer == 0);
+}
+
 // Plan 2.3.1: an index of from .. to that holds no request entry has no
 // result in the list, even when the list names it.
 TEST_CASE("a listed index that holds no request entry has no chosen result")

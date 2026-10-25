@@ -29,7 +29,7 @@ class node;
 
 static_assert(std::is_nothrow_move_constructible_v<paxos_message>);
 
-enum class paxos_errc { hardware_fault = 1, inconsistent_storage, state_differs_from_log };
+enum class paxos_errc { hardware_fault = 1, inconsistent_storage, state_differs_from_log, result_differs };
 
 class paxos_error_category final : public std::error_category {
 public:
@@ -46,6 +46,9 @@ public:
             return "The applied index of the state storage is above the log, or its chain CRC differs from the log; "
                    "the "
                    "node stops voting";
+        case paxos_errc::result_differs:
+            return "A chosen result fails its CRC on this node, or a value that the node wrote reads back different; "
+                   "the node throws";
         }
         return "Unknown paxos error";
     }
@@ -61,6 +64,11 @@ inline std::error_code make_error_code(const paxos_errc code) noexcept
 {
     return {static_cast<int>(code), paxos_category()};
 }
+
+class node_fault : public std::system_error {
+public:
+    using std::system_error::system_error;
+};
 
 struct hardware_fault {
     std::uint64_t index;
@@ -454,7 +462,9 @@ private:
             return handle_repair_request(msg, from);
         } else if constexpr (std::is_same_v<T, get_repair_entries>) {
             return handle_get_repair_entries(msg, from);
-        } else if constexpr (std::is_same_v<T, repair_response> || std::is_same_v<T, repair_entries>) {
+        } else if constexpr (std::is_same_v<T, repair_response> || std::is_same_v<T, repair_entries> ||
+                             std::is_same_v<T, answer> || std::is_same_v<T, try_again> ||
+                             std::is_same_v<T, refused>) {
             return {};
         } else {
             static_assert(std::is_same_v<T, proposal_forward>);

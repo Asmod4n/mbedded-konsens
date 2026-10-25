@@ -61,6 +61,7 @@ constexpr std::size_t mebibyte = std::size_t{1} << 20;
 constexpr std::size_t map_size = 64 * mebibyte;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr int round_limit = 200;
 constexpr int first_entry_count = 3;
 constexpr int second_entry_count = 2;
@@ -77,7 +78,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 std::vector<std::byte> bytes_of(const std::string_view text)

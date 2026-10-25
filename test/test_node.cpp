@@ -30,6 +30,7 @@ using node_t = konsens::node<persistent_storage, echo>;
 
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr int rounds = 40;
 
 konsens::node_config config_of(node_id pid)
@@ -40,7 +41,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 konsens::entry make_entry(std::uint8_t v)

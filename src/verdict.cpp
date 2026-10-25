@@ -110,8 +110,9 @@ verdicts find_the_verdicts(const std::uint64_t pointer, const std::uint64_t firs
                 }
             }
             v.pointer = e.to_idx;
-        } else if (e.kind == entry_kind::rejected && e.from_idx == v.pointer + 1 && e.from_idx < m &&
-                   holds_a_request(first_index, entries, e.from_idx)) {
+        } else if (e.kind == entry_kind::rejected && e.from_idx > v.pointer && e.from_idx < m &&
+                   holds_a_request(first_index, entries, e.from_idx) &&
+                   !holds_a_request_in(first_index, entries, v.pointer + 1, e.from_idx - 1)) {
             v.voids.push_back(e.from_idx);
             v.pointer = e.from_idx;
         }
@@ -135,6 +136,11 @@ std::uint32_t extend_base_crc(const std::uint32_t base_crc, const std::uint64_t 
                                         std::ranges::copy(to_little_endian(base_crc), head.begin()).out)
                           .out);
     return crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(head.data()), head.size());
+}
+
+bool results_agree(const std::span<const std::byte> a, const std::span<const std::byte> b) noexcept
+{
+    return std::ranges::equal(a, b);
 }
 
 }

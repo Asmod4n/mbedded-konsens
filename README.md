@@ -33,7 +33,7 @@ auto own_storage = konsens::node_storage::open("node-1-node", geteuid()).value()
 auto state = konsens::state_storage::open("node-1-state", map_size, geteuid()).value();
 auto node = konsens::node<konsens::persistent_storage, counter>::with(
     {.configuration_id = 1, .pid = 1, .peers = {2, 3}, .leader_priority = 0,
-     .election_tick_timeout = 5, .resend_message_tick_timeout = 3},
+     .election_tick_timeout = 5, .resend_message_tick_timeout = 3, .max_in_flight = 16},
     std::move(storage), std::move(own_storage), std::move(state), counter{}, nonce).value();
 ```
 

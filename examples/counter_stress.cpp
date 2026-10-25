@@ -74,6 +74,7 @@ constexpr std::size_t node_count = 3;
 constexpr std::size_t channel_count = node_count * node_count;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr std::uint64_t permille = 1000;
 constexpr std::size_t largest_batch = 8;
 constexpr std::uint64_t call_timeout_rounds = 10;
@@ -247,7 +248,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 bool is_transient(const std::error_code& code)
@@ -685,7 +686,8 @@ struct stress {
     outcome check_s3()
     {
         for (; proposed_checked < decided_history.size(); ++proposed_checked) {
-            if (!proposed.contains(fields_of(decided_history.at(proposed_checked)))) [[unlikely]] {
+            if (!konsens::entry_is_a_verdict(decided_history.at(proposed_checked)) &&
+                !proposed.contains(fields_of(decided_history.at(proposed_checked)))) [[unlikely]] {
                 return std::unexpected(failure{"S3: a decided entry was not proposed", {}});
             }
         }

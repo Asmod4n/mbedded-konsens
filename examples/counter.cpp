@@ -61,6 +61,7 @@ using node_t = konsens::node<konsens::persistent_storage, counter>;
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr int round_limit = 200;
 constexpr std::uint64_t increment_count = 5;
 constexpr std::size_t map_size = std::size_t{16} << 20;
@@ -83,7 +84,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 struct cluster {

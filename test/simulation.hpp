@@ -59,6 +59,7 @@ using konsens::node_id;
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr int random_steps = 250;
 constexpr int quiet_rounds = 50;
 constexpr int marker_round = 10;
@@ -130,7 +131,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 std::vector<std::byte> bytes_of(std::uint64_t v)
@@ -239,11 +240,12 @@ node_id to_of(const message& m)
 
 std::string name_of(const message& m)
 {
-    static constexpr std::array<const char*, 17> paxos{
-        "prepare_req",       "prepare",         "promise",      "accept_sync",        "accept_decide",
-        "accepted",          "decide",          "not_accepted", "proposal_forward",   "recovery",
-        "recovery_response", "get_state",       "new_state",    "read_index_request", "heartbeat",
-        "heartbeat_ack",     "read_index_reply"};
+    static constexpr std::array<const char*, std::variant_size_v<konsens::paxos_msg>> paxos{
+        "prepare_req",       "prepare",        "promise",      "accept_sync",        "accept_decide",
+        "accepted",          "decide",         "not_accepted", "proposal_forward",   "recovery",
+        "recovery_response", "get_state",      "new_state",    "read_index_request", "heartbeat",
+        "heartbeat_ack",     "read_index_reply", "repair_request", "repair_response", "get_repair_entries",
+        "repair_entries",    "answer",         "try_again",    "refused"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());
@@ -880,8 +882,11 @@ struct world {
         }
         // S2 holds here, so each decided prefix is a prefix of the decided
         // history, and S3 on the new entries of the history covers each node.
+        // The leader appends each verdict entry itself, so the simulation
+        // proposed none of them (plan-execute-verify 4.4).
         for (; proposed_checked < decided_history.size(); ++proposed_checked) {
-            if (!proposed.contains(fields_of(decided_history[proposed_checked]))) {
+            if (!konsens::entry_is_a_verdict(decided_history[proposed_checked]) &&
+                !proposed.contains(fields_of(decided_history[proposed_checked]))) {
                 return "S3: entry " + std::to_string(proposed_checked + 1) + " of the decided history was not proposed";
             }
         }

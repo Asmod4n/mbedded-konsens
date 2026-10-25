@@ -54,6 +54,7 @@ constexpr std::size_t node_count = 3;
 constexpr std::uint32_t configuration_id = 1;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
+constexpr std::uint64_t max_in_flight = 16;
 constexpr std::uint64_t round_limit = 200;
 constexpr std::uint64_t writes_before_read = 1;
 constexpr konsens::node_id leader_pid = 1;
@@ -245,7 +246,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {configuration_id, pid, peers, 0, election_ticks, resend_ticks};
+    return {configuration_id, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
 }
 
 std::vector<konsens::entry> entries_of(const std::size_t count, const std::size_t payload_bytes)

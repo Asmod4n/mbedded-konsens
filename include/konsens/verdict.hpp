@@ -56,4 +56,6 @@ struct verdicts {
 [[nodiscard]] std::uint32_t extend_base_crc(std::uint32_t base_crc, std::uint64_t index,
                                             std::uint32_t result_crc) noexcept;
 
+[[nodiscard]] bool results_agree(std::span<const std::byte> a, std::span<const std::byte> b) noexcept;
+
 }
