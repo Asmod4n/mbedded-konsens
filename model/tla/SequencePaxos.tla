@@ -2613,9 +2613,9 @@ S2 == \A i \in Servers : Votes(i) => IsPrefix(DecidedPrefix(i), decided_history)
 \* result that the decided entry carries. A duplicated forward can put the
 \* same value at a second index (round 12); there the session and the
 \* request number make the second run a no-op (2.6 item 7). A node that
-\* accepted in an older round can hold the value after other entries; its
-\* run counts only in that round, and the sync of the new round cuts it
-\* (round 12, 2.6 item 7). So j is a node that accepted in the round of i.
+\* accepted in an older ballot can hold the value after other entries; its
+\* run counts only in that ballot, and the sync of the new ballot cuts it
+\* (model round 12, plan 2.6 item 7). So j accepted in the ballot of i.
 EntryRunsOnOnePrefix ==
   \A i, j \in Servers :
     Votes(i) /\ Votes(j) /\ n_accepted[j] = n_accepted[i] =>
