@@ -575,13 +575,67 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
     const auto crc = konsens::compute_result_crc(1, bytes);
     const konsens::fault_proof proof{konsens::proof_kind::result_crc, 1, leader_ballot, crc + 1, crc};
     CHECK(lmdb_storage::open_node_storage_in(own_directory).get_repair_record() ==
-          konsens::repair_record{0, std::nullopt, proof});
+          konsens::repair_record{0, std::nullopt, false, proof});
     // Plan 3.3: the next start counts the proof and sets the open mark at
     // its index. The CRC in this log stays wrong, so the start throws
     // again, with a proof that the open mark covers.
     CHECK_THROWS_AS(start(), konsens::node_fault);
     CHECK(lmdb_storage::open_node_storage_in(own_directory).get_repair_record() ==
-          konsens::repair_record{1, 1, proof});
+          konsens::repair_record{1, 1, false, proof});
+}
+
+// Plan 3.3 and model round 3 (mark_covered): an open mark covers a proof
+// once. A fault that stays on the disk throws at each start. The first
+// start counts the one automatic repair, the second is covered, and the
+// third counts again and reaches the wait for the operator. So the node
+// does not restart without end.
+TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
+{
+    const auto directory = lmdb_storage::new_directory();
+    {
+        auto storage = lmdb_storage::open_in(directory);
+        auto w = storage.begin();
+        REQUIRE(w.has_value());
+        const auto bytes = konsens::encode_result({0, {}, {}});
+        const std::vector<konsens::chosen_result> list{
+            {{1, bytes, konsens::compute_result_crc(1, bytes) + 1}, 1, {}}};
+        const std::vector<entry> log{{entry_kind::register_client, {}, 0, 0, client_a, 1},
+                                     {.kind = entry_kind::results,
+                                      .payload = konsens::encode_chosen_results(list),
+                                      .from_idx = 1,
+                                      .to_idx = 1}};
+        REQUIRE(w->set_promise(leader_ballot));
+        REQUIRE(w->set_accepted_round(leader_ballot));
+        REQUIRE(w->append_entries(log));
+        REQUIRE(w->set_decided_index(log.size()));
+        REQUIRE(std::move(*w).commit());
+    }
+    const auto own_directory = lmdb_storage::new_directory();
+    const auto start = [&] {
+        return node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
+                            lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+                            marked{0}, 1);
+    };
+    const auto record = [&] { return lmdb_storage::open_node_storage_in(own_directory).get_repair_record(); };
+    CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
+    CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
+    REQUIRE(record().has_value());
+    CHECK(record()->count == 1);
+    CHECK_FALSE(record()->mark_covered);
+    CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
+    REQUIRE(record().has_value());
+    CHECK(record()->count == 1);
+    CHECK(record()->mark_covered);
+    REQUIRE(record()->proof.has_value());
+    for (int again = 0; again < 2; ++again) {
+        const auto n = start();
+        REQUIRE(n.has_value());
+        CHECK(n->waits_for_the_operator());
+        CHECK_FALSE(n->get_sequence_paxos().votes());
+        REQUIRE(record().has_value());
+        CHECK(record()->count == 1);
+        CHECK(record()->proof.has_value());
+    }
 }
 
 // A max_in_flight of 0 would hold every request for good, so it is a wrong
@@ -834,9 +888,9 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
                            lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
                            marked{'x'}, 2);
     CHECK(state_of(n) == bytes_of('a'));
-    CHECK(n.get_repair_record() == konsens::repair_record{1, 2, std::nullopt});
+    CHECK(n.get_repair_record() == konsens::repair_record{1, 2, false, std::nullopt});
     batches::commit(n, n.tick());
-    CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, std::nullopt});
+    CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, false, std::nullopt});
 }
 
 // Plan 2.8.1 and 2.8.2: a listed node whose second run agrees does not
@@ -850,8 +904,26 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
                                      lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(),
                                      marked{0}, 1);
         CHECK(state_of(n) == bytes_of('a'));
-        CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, std::nullopt});
+        CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
     }
+}
+
+// Plan 2.8.1 and 2.8.2a: a listed node whose second run agrees reports the
+// wrong list as a record to the log sink, with the proof. It sends no
+// message to another node.
+TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
+{
+    auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_in(decided_log_with_a_listed({1})),
+                           lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), marked{0}, 1);
+    const auto request = konsens::encode_result(
+        {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
+    const auto crc = konsens::compute_result_crc(2, request);
+    CHECK(n.take_log_records() ==
+          std::vector<konsens::fault_proof>{{konsens::proof_kind::wrong_list, 2, leader_ballot, crc, crc}});
+    CHECK(n.take_log_records().empty());
+    CHECK_FALSE(std::ranges::any_of(n.take_outgoing_messages(), [](const message& m) {
+        return holds<konsens::refused>(m) || holds<konsens::answer>(m);
+    }));
 }
 
 // Plan 2.7.6: a leader that gets refused from a majority for a verdict

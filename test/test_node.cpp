@@ -545,7 +545,7 @@ TEST_CASE("a restart during a repair does not count again")
     {
         auto own = lmdb_storage::open_node_storage_in(own_directory);
         REQUIRE(own.count_a_repair(0));
-        CHECK(own.get_repair_record() == konsens::repair_record{1, 0, std::nullopt});
+        CHECK(own.get_repair_record() == konsens::repair_record{1, 0, false, std::nullopt});
     }
     const auto log_directory = lmdb_storage::new_directory();
     {
@@ -571,19 +571,20 @@ TEST_CASE("the repair record keeps the proof and the open mark")
     const konsens::fault_proof proof{konsens::proof_kind::listed_result_differs, 7, {1, 2, 0, 3}, 11, 12};
     {
         auto own = lmdb_storage::open_node_storage_in(directory);
-        CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, std::nullopt});
+        CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
         REQUIRE(own.write_the_proof(proof));
     }
     auto own = lmdb_storage::open_node_storage_in(directory);
-    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, proof});
+    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, proof});
     REQUIRE(own.count_a_repair(proof.index));
-    CHECK(own.get_repair_record() == konsens::repair_record{1, 7, std::nullopt});
+    CHECK(own.get_repair_record() == konsens::repair_record{1, 7, false, std::nullopt});
     REQUIRE(own.write_the_proof(proof));
     REQUIRE(own.allow_one_more_repair());
-    CHECK(own.get_repair_record() == konsens::repair_record{0, 7, proof});
-    REQUIRE(own.clear_the_proof());
+    CHECK(own.get_repair_record() == konsens::repair_record{0, 7, false, proof});
+    REQUIRE(own.cover_the_proof());
+    CHECK(own.get_repair_record() == konsens::repair_record{0, 7, true, std::nullopt});
     REQUIRE(own.close_the_repair());
-    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, std::nullopt});
+    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
 }
 
 // Plan execute-verify 3.6: the start reads the whole log, so an entry that

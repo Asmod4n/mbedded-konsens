@@ -345,6 +345,8 @@ public:
 
     std::vector<message> take_outgoing_messages() { return std::exchange(released_messages_, {}); }
 
+    std::vector<fault_proof> take_log_records() { return std::exchange(released_log_records_, {}); }
+
     std::expected<std::vector<entry>, std::error_code> read_decided_suffix(std::uint64_t from_idx) const
     {
         return seq_paxos_.read_decided_suffix(from_idx);
@@ -463,6 +465,8 @@ private:
         released_replies_.insert(released_replies_.end(), std::make_move_iterator(client_replies_.begin()),
                                  std::make_move_iterator(client_replies_.end()));
         client_replies_.clear();
+        released_log_records_.insert(released_log_records_.end(), log_records_.begin(), log_records_.end());
+        log_records_.clear();
         received_batch_.clear();
         message_batch_.clear();
     }
@@ -473,6 +477,7 @@ private:
         static_cast<void>(ble_.take_outgoing_messages());
         execute_verify_outgoing_.clear();
         client_replies_.clear();
+        log_records_.clear();
         received_batch_.clear();
         message_batch_.clear();
     }
@@ -548,9 +553,10 @@ private:
         open_mark_ = record.open_mark;
         const auto e = seq_paxos_.get_error();
         const bool damaged = e && error_is_a_damage(*e);
-        const bool covered = record.proof && record.open_mark && record.proof->index <= *record.open_mark;
+        const bool covered = record.proof && record.open_mark && record.proof->index <= *record.open_mark &&
+                             !record.mark_covered;
         if (covered) {
-            if (auto c = own_storage_.clear_the_proof(); !c) [[unlikely]] {
+            if (auto c = own_storage_.cover_the_proof(); !c) [[unlikely]] {
                 return c;
             }
         } else if (record.proof || (damaged && !record.open_mark)) {
@@ -1017,12 +1023,13 @@ private:
             }
             if (std::ranges::contains(c->second->out, seq_paxos_.get_pid()) && !(open_mark_ && k <= *open_mark_)) {
                 const auto own = encode_result(run_request(e, *w));
+                const fault_proof proof{proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise, chosen.crc,
+                                        compute_result_crc(k, own)};
                 if (!results_agree(own, chosen.result)) [[unlikely]] {
-                    write_the_proof_and_throw({proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise,
-                                               chosen.crc, compute_result_crc(k, own)},
-                                              make_error_code(paxos_errc::result_differs),
+                    write_the_proof_and_throw(proof, make_error_code(paxos_errc::result_differs),
                                               "konsens: the result of this node differs from the chosen result");
                 }
+                log_records_.push_back({proof_kind::wrong_list, proof.index, proof.n, proof.crc, proof.other_crc});
             }
             write_the_result(e, k, *r, *w);
             if (!written_values_read_back(*r, *w)) [[unlikely]] {
@@ -1404,6 +1411,8 @@ private:
     M machine_;
     std::vector<client_reply> client_replies_;
     std::vector<client_reply> released_replies_;
+    std::vector<fault_proof> log_records_;
+    std::vector<fault_proof> released_log_records_;
     std::vector<message> released_messages_;
     std::vector<received> received_batch_;
     std::vector<message> message_batch_;

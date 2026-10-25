@@ -73,14 +73,15 @@ constexpr std::size_t meta_record_size = last_chain_crc_offset + sizeof(meta_rec
 constexpr std::size_t flag_size = sizeof(std::uint8_t);
 constexpr std::size_t open_flag_offset = sizeof(repair_record::count);
 constexpr std::size_t open_mark_offset = open_flag_offset + flag_size;
-constexpr std::size_t proof_flag_offset = open_mark_offset + sizeof(std::uint64_t);
+constexpr std::size_t covered_flag_offset = open_mark_offset + sizeof(std::uint64_t);
+constexpr std::size_t proof_flag_offset = covered_flag_offset + flag_size;
 constexpr std::size_t proof_kind_offset = proof_flag_offset + flag_size;
 constexpr std::size_t proof_index_offset = proof_kind_offset + sizeof(proof_kind);
 constexpr std::size_t proof_ballot_offset = proof_index_offset + sizeof(fault_proof::index);
 constexpr std::size_t proof_crc_offset = proof_ballot_offset + ballot_size;
 constexpr std::size_t proof_other_crc_offset = proof_crc_offset + sizeof(fault_proof::crc);
 constexpr std::size_t repair_record_size = proof_other_crc_offset + sizeof(fault_proof::other_crc);
-constexpr auto last_proof_kind = proof_kind::listed_result_differs;
+constexpr auto last_proof_kind = proof_kind::wrong_list;
 
 class storage_error_category final : public std::error_category {
 public:
@@ -249,6 +250,9 @@ std::array<std::byte, repair_record_size> encode_repair_record(const repair_reco
         out[open_flag_offset] = std::byte{1};
         std::ranges::copy(to_little_endian(*r.open_mark), std::span(out).subspan<open_mark_offset>().begin());
     }
+    if (r.mark_covered) {
+        out[covered_flag_offset] = std::byte{1};
+    }
     if (r.proof) {
         out[proof_flag_offset] = std::byte{1};
         out[proof_kind_offset] = std::byte{std::to_underlying(r.proof->kind)};
@@ -264,15 +268,16 @@ std::expected<repair_record, std::error_code>
 decode_repair_record(const std::span<const std::byte, repair_record_size> bytes) noexcept
 {
     const auto open_flag = std::to_integer<std::uint8_t>(bytes[open_flag_offset]);
+    const auto covered_flag = std::to_integer<std::uint8_t>(bytes[covered_flag_offset]);
     const auto proof_flag = std::to_integer<std::uint8_t>(bytes[proof_flag_offset]);
     const auto kind = std::to_integer<std::uint8_t>(bytes[proof_kind_offset]);
-    if (open_flag > 1 || proof_flag > 1 ||
+    if (open_flag > 1 || covered_flag > 1 || proof_flag > 1 ||
         (proof_flag == 1 && (kind < std::to_underlying(proof_kind::damage) || kind > std::to_underlying(last_proof_kind))))
         [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
     repair_record r{from_little_endian<std::uint64_t>(bytes.first<sizeof(repair_record::count)>()), std::nullopt,
-                    std::nullopt};
+                    covered_flag == 1, std::nullopt};
     if (open_flag == 1) {
         r.open_mark = from_little_endian<std::uint64_t>(bytes.subspan<open_mark_offset, sizeof(std::uint64_t)>());
     }
@@ -1191,7 +1196,7 @@ std::expected<repair_record, std::error_code> node_storage::get_repair_record() 
         return std::unexpected(body.error());
     }
     if (!body->has_value()) {
-        return repair_record{0, std::nullopt, std::nullopt};
+        return repair_record{0, std::nullopt, false, std::nullopt};
     }
     return decode_repair_record(body->value().first<repair_record_size>());
 }
@@ -1215,17 +1220,17 @@ std::expected<void, std::error_code> node_storage::write_the_proof(const fault_p
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({r->count, r->open_mark, proof});
+    return write_repair_record({r->count, r->open_mark, r->mark_covered, proof});
 }
 
-std::expected<void, std::error_code> node_storage::clear_the_proof()
+std::expected<void, std::error_code> node_storage::cover_the_proof()
 {
     throw_if_moved_from();
     const auto r = get_repair_record();
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({r->count, r->open_mark, std::nullopt});
+    return write_repair_record({r->count, r->open_mark, true, std::nullopt});
 }
 
 std::expected<void, std::error_code> node_storage::count_a_repair(const std::uint64_t open_mark)
@@ -1235,7 +1240,7 @@ std::expected<void, std::error_code> node_storage::count_a_repair(const std::uin
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({r->count + 1, open_mark, std::nullopt});
+    return write_repair_record({r->count + 1, open_mark, false, std::nullopt});
 }
 
 std::expected<void, std::error_code> node_storage::close_the_repair()
@@ -1245,7 +1250,7 @@ std::expected<void, std::error_code> node_storage::close_the_repair()
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({r->count, std::nullopt, r->proof});
+    return write_repair_record({r->count, std::nullopt, false, r->proof});
 }
 
 std::expected<void, std::error_code> node_storage::allow_one_more_repair()
@@ -1255,7 +1260,7 @@ std::expected<void, std::error_code> node_storage::allow_one_more_repair()
     if (!r) [[unlikely]] {
         return std::unexpected(r.error());
     }
-    return write_repair_record({0, r->open_mark, r->proof});
+    return write_repair_record({0, r->open_mark, r->mark_covered, r->proof});
 }
 
 namespace {

@@ -202,7 +202,8 @@ enum class proof_kind : std::uint8_t {
     result_crc,
     read_back,
     refused_by_a_majority,
-    listed_result_differs
+    listed_result_differs,
+    wrong_list
 };
 
 struct fault_proof {
@@ -218,6 +219,7 @@ struct fault_proof {
 struct repair_record {
     std::uint64_t count;
     std::optional<std::uint64_t> open_mark;
+    bool mark_covered;
     std::optional<fault_proof> proof;
 
     friend bool operator==(const repair_record&, const repair_record&) = default;
@@ -232,7 +234,7 @@ public:
 
     [[nodiscard]] std::expected<repair_record, std::error_code> get_repair_record() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_proof(const fault_proof& proof);
-    [[nodiscard]] std::expected<void, std::error_code> clear_the_proof();
+    [[nodiscard]] std::expected<void, std::error_code> cover_the_proof();
     [[nodiscard]] std::expected<void, std::error_code> count_a_repair(std::uint64_t open_mark);
     [[nodiscard]] std::expected<void, std::error_code> close_the_repair();
     [[nodiscard]] std::expected<void, std::error_code> allow_one_more_repair();
