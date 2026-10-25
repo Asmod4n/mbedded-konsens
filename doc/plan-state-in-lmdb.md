@@ -138,10 +138,10 @@ concept state_machine = state_view<V> &&
    (`propose_ran(entries)`). A forwarded proposal goes to the buffer in
    the phase accept too, so it runs as well; it is accepted at the same
    commit, so no message leaves earlier.
-4. A follower runs each new entry of kind `client_request` from the
+4. A follower runs each new entry that changes the state from the
    log, in log order, in its open state transaction, before its
    `accepted` leaves. It compares its reply, error and write list with
-   the fields of the entry, byte for byte (question 1). When they
+   the fields of the entry through `results_agree` (question 1). When they
    agree, it writes the write list of the entry, not its own, so the
    state stays equal on every node (owner, 2026-10-17 12:40). When they
    differ, the follower does not send `accepted` for that index or
@@ -212,9 +212,10 @@ concept state_machine = state_view<V> &&
 ## 7. Questions for the owner
 
 1. The compare with a tolerance of 1 ULP for floats (2026-10-17 12:40)
-   needs a compare function of the contract, because the library sees
-   only bytes. Proposal: byte-for-byte now; the state machine gets a
-   member `results_agree(a, b)` with the contracts.
+   needs a compare that reads the bytes. Contracts are a framework of
+   their own, outside this library (owner, 2026-10-25 09:20). Proposal:
+   the `state_machine` concept gets `results_agree(a, b)`, and every
+   state machine, the contract framework among them, gives it.
 2. The leader that differs steps down after three tries (2026-10-17
    05:08). When the leader's machine differs, both followers differ,
    heartbeats keep the leader, and nothing is decided. Proposal: a
