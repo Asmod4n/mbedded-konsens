@@ -2980,10 +2980,9 @@ Counted(i, j, q) ==
                /\ an.map[k].res = SelRes(i, a, k)
 Ans(i, j, q) == counts[i].ans[j].map[q].res
 
-\* A selection for q holds while its base is the base that chosen and the
-\* selections below q define (provisional fix of 2.6.2 and 2.6.5 after
-\* round 2: p can pass an index whose chosen result differs from the own
-\* selection, and the selections above it then stand on another base).
+\* 2.6.3: a selection for q holds while its base is the base that chosen
+\* and the selections below q define. A selection that does not hold is
+\* counted again.
 SelHolds(i, q) ==
   LET a == Chosen(i) IN
   /\ q \in DOMAIN selected[i]
@@ -3123,9 +3122,8 @@ AppendVerdict(i) ==
 \* result of the counted answers and the own one has a majority (2.7.3). A
 \* stale verdict entry changes nothing and passes. On accept, verified_idx
 \* passes the entry and the node sends accepted; else it sends refused.
-\* The node checks only in the Accept phase of its promise, so the entry is
-\* the one the leader of that ballot sent (provisional fix of 2.7.1 and
-\* 2.7.6 after round 2: a refusal names a ballot and an index only).
+\* 2.7.2: the node checks only in the Accept phase of its promise, so the
+\* entry is one that the leader of that ballot sent.
 \* Mutations: AcceptWithoutCheck (2.7 off), ListedSkipsCheck (a listed
 \* node accepts with no compare), RejectedUnchecked (2.7.3 off).
 CheckVerdict(i) ==
