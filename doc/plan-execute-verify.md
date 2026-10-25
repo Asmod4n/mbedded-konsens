@@ -11,156 +11,170 @@ doc/plan-state-in-lmdb.md, in the form that the owner gave on
 - One repair runs automatically. Each further repair waits for the
   operator.
 
-The plan has three parts: the protocol (section 1), the damage of the
-own log as an exception (section 2) and the model (section 3). Nothing
-of it is built before the model runs of section 4 show no violation and
-a review approves this plan.
+The first form of this plan (cd919bb) checked the result before the
+accept, and a review rejected it with five blocking findings (the veto
+in a new ballot, the own count of the leader, the run base, the throw
+without a durable proof). This form checks the result after the
+decide, and leaves Sequence Paxos as it is (provisional, card of
+2026-10-25: "after the decide"). Nothing of it is built before the
+model runs of section 4 show no violation and a second review approves
+this plan.
 
 ## 1. The protocol
 
 ### 1.1 The result of an entry
 
 1. Each entry of kind `register_client`, `client_request` or
-   `expire_session` carries the result of its run on the node that
-   proposed it: the reply and the mutations (plan-state-in-lmdb.md 4.1).
-   The entry CRC and the chain CRC cover the result.
-2. A run of an entry on a node gives a result. The node agrees with the
-   entry when its result equals the result in the entry (floats within
-   1 ULP, every other item byte for byte, owner 2026-10-25 09:22).
+   `expire_session` carries the result of its run on the leader that
+   proposed it: the reply and the mutations. The entry CRC and the chain
+   CRC cover the result. This replaces item 4.1 of plan-state-in-lmdb.md
+   (it has no `error` field: a user error is a reply, section 7.4).
+2. A node agrees with an entry when the result of its own run equals the
+   result in the entry. The compare walks the CBOR items: a float agrees
+   within 1 ULP in any width, NaN agrees with NaN, +0 and -0 agree; every
+   other item, and every key of a mutation, agrees byte for byte (owner,
+   2026-10-25 09:22).
 3. The assumption: the machine of a node that works gives the same
-   result for the same entry on the same state. A node whose machine
-   does not work is broken. Fewer than a majority of the nodes are
-   broken at one time. Under this assumption, two nodes that work agree
-   on each entry, and each majority holds a node that works.
+   result for the same entry on the same state. For each entry, the nodes
+   whose run gives a wrong result are fewer than a majority, over all
+   time. Then each majority holds a node that works, and two nodes that
+   work agree.
 
-### 1.2 The leader
+### 1.2 The run
 
-1. The leader runs each proposal in its open state transaction before it
-   appends it, and writes its result into the entry
-   (plan-state-in-lmdb.md 4.3).
-2. A new leader runs the suffix of its sync after its decided index in
-   the same way. For an entry of the sync, the leader does not write a
-   result: it compares its result with the result in the entry, as a
-   follower does (1.3).
+1. The leader runs each proposal before it appends it, on the state of
+   its log before the proposal, and writes the result into the entry.
+   The run uses the open state transaction of D3.
+2. Every node runs each decided entry, in log order, on the state of the
+   prefix before it. That state is the committed state after the
+   verdicts of the earlier entries (1.3). A node may run ahead in its
+   open transaction on the assumption that every earlier entry is
+   applied; a verdict `rejected` on an earlier entry aborts the open
+   transaction, and the node runs again from the applied index (D3,
+   plan-state-in-lmdb.md 5.2).
+3. Sequence Paxos does not change: an entry is accepted, chosen and
+   decided as bytes, as now. Agreement is a second step after the decide.
 
-### 1.3 The follower
+### 1.3 The verdict
 
-1. A follower runs each new entry in its open state transaction before
-   it appends the entry to its log (AcceptDecide and AcceptSync). It
-   appends the entries up to the first entry that it does not agree
-   with, and none after it, in this ballot. So the log of a follower
-   holds only entries that it agrees with, and `accepted` keeps its
-   meaning: an entry in the log is accepted.
-2. For the first entry that it does not agree with, the follower sends
-   `retry(ballot, index)` (provisional) to the leader. The leader sends
-   the entries from that index again. When the follower still does not
-   agree, it sends `refused(ballot, index, result digest)` (provisional,
-   "you are broken").
-3. A follower that is in the minority sees the entry decided: a Decide
-   or an AcceptDecide whose decided index covers an index that it
-   refused. It knows that its own machine does not work, and it throws
-   (2.1).
+1. A node that ran a decided entry sends `verified(ballot, index,
+   agrees)` (provisional) to the leader of its promise, for each index in
+   order. A node that does not agree with an entry first runs it a second
+   time on the same state ("try again"); when it still does not agree, it
+   sends `agrees = false` ("you are broken"). The leader runs the same
+   step for its own run and counts itself.
+2. The leader counts, for each decided index, the nodes that agree and
+   the nodes that do not. The counts belong to one ballot.
+3. When a majority agrees with the entry at `k`, the leader raises its
+   `verified_idx` (provisional) to `k` and sends it in the next Decide,
+   AcceptDecide or heartbeat. A node applies the decided entries up to
+   `verified_idx`: it writes the mutations of the entry, which are the
+   bytes of the leader (owner, 2026-10-17 12:40).
+4. When a majority does not agree with the entry at `k`, the leader
+   appends the entry `rejected(k)` (provisional) to its log, as a normal
+   proposal. When `rejected(k)` is decided, every node applies nothing for
+   `k`, and the client of `k` gets the error `client_errc::rejected`
+   (provisional). `verified_idx` then passes `k`.
+5. One verdict exists for each index. The reason: an `agrees` majority
+   and a `does not agree` majority share a node, and by 1.1.3 that node
+   and a working node of the other majority give the same result. So the
+   leader never counts both majorities for one index, and a later leader
+   that counts again finds the same verdict.
+6. A node in the minority knows that its own machine does not work: a
+   node that did not agree with `k` and sees `verified_idx >= k` without
+   `rejected(k)`, or a node that agreed with `k` and sees `rejected(k)`
+   decided. It throws (section 2). The leader is such a node when its own
+   run is in the minority.
+7. A new leader collects the verdict state from the promises: each
+   promise carries the applied index of the node and its last `verified`
+   answers above it. The leader counts again from there. Until it has a
+   majority for an index, nothing above that index is applied.
+8. A `verified` message and `verified_idx` are sent again on the resend
+   timeout until the ballot changes, so a lost message does not block the
+   count.
 
-### 1.4 The majority
+### 1.4 What a client sees
 
-1. The leader counts, for each index of its log in its ballot, the
-   nodes that refused the entry. The leader counts itself as refusing
-   an entry of the sync that it does not agree with (1.2.2), and never
-   counts itself for its own proposals.
-2. An entry is chosen when a majority accepted it, as now. A node
-   accepts only what it agrees with (1.3.1).
-3. When a majority refused the entry at index `k` in one ballot and the
-   leader does not agree with it, the entry is not chosen in any ballot.
-   The reason: a chosen entry has a majority that agreed with it; the
-   two majorities share a node; by 1.1.3 that node works in one of the
-   two cases, and the node that works in the other majority gives the
-   same result. The leader then starts a new ballot, and in its sync it
-   puts a no-op entry at index `k` and drops the entries after it
-   (provisional "veto"). The no-op carries the new ballot, so the next
-   sync takes it over the refused entry (the rule of the highest round).
-4. When a majority refused an entry that the leader agrees with, the
-   leader is in the minority. It throws (2.1): "you are broken" from the
-   majority.
-5. When the leader does not agree with an entry of its sync and a
-   majority accepted it, the leader is in the minority, and it throws.
+1. A request gets its reply after the entry is applied, that is after
+   its verdict. This adds one exchange of messages to each write.
+2. A read through the read index waits until `verified_idx` reaches the
+   read index.
 
-### 1.5 The open questions of this part
+## 2. A fault of the own node throws, with a proof that stays
 
-1. The no-op of 1.4.3 is a new kind of entry (provisional `veto`). It
-   applies nothing and answers the client of the refused entry with an
-   error (provisional `client_errc::refused`).
-2. The leader keeps the counts of 1.4.1 in memory only. A leader that
-   crashes loses them; the next leader counts again. This costs
-   progress, not safety: the model checks safety only.
-
-## 2. A damage of the own log throws
-
-1. A damage that a step finds (`error_is_a_damage`) throws
-   `damage_error` (provisional), a type derived from `std::system_error`
-   with the error code. Nothing catches it but `main` and the body of a
-   thread. The proof (`hardware_fault`) goes into the message.
-2. The start runs the scan of plan-repair-from-peer.md 2.3 over the
-   whole log, not only the step check. A damage that the scan finds
-   starts the repair from a peer, as `with` does now, with the count of
-   the node storage: one automatic repair, each further one after
-   `allow_one_more_repair`.
-3. The mark of the open repair stays: a crash during a repair does not
-   count again.
-4. `with` gives no stopped node for a damage any more; it gives a node
+1. A damage that a step finds (`error_is_a_damage`) and a result throw of
+   1.3.6 write a proof into the node storage before the throw: the kind,
+   the index, the CRCs or the digests, and the ballot. A failure of that
+   write throws `sync_error`, as for every commit.
+2. Then the node throws `node_fault` (provisional), a type derived from
+   `std::system_error` with an error code of `paxos_errc`. Nothing
+   catches it but `main` and the body of a thread.
+3. The start reads the proof. A proof counts as a damage of plan
+   2.4 item 8: the node repairs from a peer while its count allows it,
+   and else waits for the operator. The mark of the open repair stays, so
+   a crash during a repair does not count again.
+4. The start also runs the scan of plan-repair-from-peer.md 2.3 over the
+   whole log. A damage that the scan finds counts the same way. The cost
+   of the scan grows with the log length; section 5 of the parent plan
+   measures it.
+5. `with` gives no stopped node for a damage any more; it gives a node
    that repairs, or one that waits for the operator.
-5. In the model this changes nothing: `DamageFound` is already a restart
-   with the durable state of a source that votes (SequencePaxos.tla,
-   `DamageFound`, `Restart`). The scan at the start finds every damage
-   that a step check finds, so `Detected` keeps its meaning.
 
 ## 3. The model
 
 1. A constant `ExecuteVerify` (Boolean). FALSE keeps every present
    configuration as it is.
-2. A constant `MaxBroken` (0 or 1) and a variable `broken`, the set of
-   nodes whose machine does not work. An action `MachineBreaks(i)` adds a
-   node while `Cardinality(broken) < MaxBroken`. A repair does not
-   remove a node from `broken`.
-3. A variable `tainted`, the set of values whose result is wrong. A
-   proposal of a leader in `broken` adds its value. A value is unique
-   (`proposed`), so the result belongs to the value.
-4. `Agrees(i, v) == (i \in broken) = (v \in tainted)`, for a value `v`
-   that carries a result. The no-op and the entries of the sessions
-   carry none in the model; every node agrees with them.
-5. HandleAcceptDecide and HandleAcceptSync append the longest prefix of
-   the entries that the follower agrees with, and send `Refused(n,
-   index)` for the first entry that it does not agree with. The retry of
-   1.3.2 is not in the model: a second run on the same state gives the
-   same result.
-6. `HandleRefused(i, j, m)` adds `j` to `refused_by[i][m.index]` in the
-   ballot `m.n`. With a majority: the cases 1.4.3 to 1.4.5.
-7. The follower in the minority (1.3.3) and the leader in the minority
-   (1.4.4, 1.4.5) take `DamageFound`.
-8. The veto of 1.4.3: the leader takes a higher ballot through
-   `handle_leader`, and HandleMajorityPromises replaces the entry at
-   `k` with `VetoEntry(k)` and drops the entries after it.
-9. New invariants:
-   - `DecidedAgrees`: every decided entry with a result agrees with
-     each node that works (`~(i \in broken)`): no tainted value is
-     decided.
-   - `AppliedAgrees`: the state of a node that works holds no tainted
-     value (`applied`).
-   - `VetoOnlyRefused`: a veto stands only at an index where no value is
-     chosen.
-   - S1 to S4, E1 and StateIsDecided stay.
-10. Mutations: `AcceptWithoutVerify` (a follower appends what it does
-    not agree with) must break `DecidedAgrees`; `VetoWithoutMajority`
-    (the leader vetoes with one refusal) must break S1 or S2.
+2. A constant `MaxWrong` and a ghost `wrong`, a set of pairs (node,
+   value): the runs that give a wrong result. A run of a node adds a pair
+   or not (nondeterministic), so a second run can give the right result,
+   and the retry of 1.3.1 is in the model. The constraint: for each value,
+   fewer than a majority of the nodes are in `wrong`.
+3. Each entry of the log carries the field `res \in {"ok", "bad"}`, set
+   by the leader at the append from its own run. Session entries carry it
+   too; one configuration runs with `ClientSessions`.
+4. Variables: `verified_idx` (per node), `verdicts` (per leader: index to
+   the sets of nodes that agree and that do not), `answered` (per node:
+   the last index it answered).
+5. Actions: `RunDecided(i)` (a node runs the next decided entry and sends
+   `verified`), `HandleVerified`, `LeaderRaisesVerified`,
+   `LeaderRejects` (appends `rejected(k)`), `ApplyVerified(i)` (the
+   state takes the entries up to `verified_idx`, with the rejected ones
+   left out), `ResultThrow(i)` (1.3.6, through `Crash` with a proof, and
+   the start counts the proof as a damage).
+6. A throw of a damage becomes `Crash` with a proof plus the detection
+   at the start, in place of the atomic `DamageFound`. `Detected` and the
+   step check use one shared operator, and the start check uses it over
+   the whole log. The high-water mark is lost at the throw, as at every
+   restart.
+7. New invariants:
+   - `OneVerdict`: no index has both an `agrees` majority and a `does not
+     agree` majority, and no node applies `k` while another applies
+     `rejected(k)`.
+   - `AppliedAgrees`: the state of each node holds only entries with
+     `res = "ok"` for a run of a node that works.
+   - `ThrowOnlyWrong`: only a node with a wrong run of the entry takes a
+     result throw.
+   - `CountsStay`: a result throw of a node counts toward its repairs.
+   - S1 to S5, E1, StateIsDecided and EntryRunsOnOnePrefix stay.
+8. Covers that must be violated, so that each path is reached: `NoReject`,
+   `NoLeaderThrow`, `NoFollowerThrow`, `NoVerify`.
+9. Mutations, each must break an invariant:
+   - `ApplyWithoutVerdict` (a node applies at the decide): `AppliedAgrees`.
+   - `LeaderCountsDisagreed` (the leader counts itself as agreeing):
+     `AppliedAgrees` or `OneVerdict`.
+   - `RejectWithOne` (one `does not agree` rejects): `OneVerdict` with a
+     wrong follower.
+   - `NoProofAtThrow` (the throw writes no proof): `CountsStay`.
 
 ## 4. The runs
 
 Each configuration runs 15 minutes as a simulation first; a BFS runs
-only where it can end (owner, 2026-10-19 05:55). At most 3 TLC runs
-at a time, with JOBS=1 for builds while they run.
+only where it can end (owner, 2026-10-19 05:55). At most 3 TLC runs at a
+time, with JOBS=1 for builds while they run.
 
-1. `MC_ev_leader`: `MaxBroken = 1`, the broken node can lead, one
-   crash, client sessions off.
-2. `MC_ev_follower`: `MaxBroken = 1`, the broken node never leads.
-3. `MC_ev_state`: as 1, with `StateInLmdb`, `MaxInFlight = 2` and the
-   state invariants.
-4. The two mutations of 3.10 must each give a violation.
+1. `MC_ev_three`: 3 nodes, `MaxWrong = 1`, one crash, `StateInLmdb`,
+   `MaxInFlight = 2`, `MaxElection = 3`.
+2. `MC_ev_sessions`: as 1, with `ClientSessions`.
+3. `MC_ev_five`: 5 nodes, `MaxWrong = 2`, simulation only.
+4. The four mutations of 3.9 each give a violation, and the four covers
+   of 3.8 each give a trace.
