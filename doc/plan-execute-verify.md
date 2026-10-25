@@ -110,8 +110,8 @@ violation and a review approves the parts that changed from form 5.
    - `results(from, to, list)` at index `m` with `from = p + 1`, `to <
      m`, and a request entry in `from .. to`: `chosen` takes the list,
      and `p = to`.
-   - `rejected(k)` at index `m` with `k = p + 1`, `k < m`, and a request
-     entry at `k`: `k` is void, and `p = k`.
+   - `rejected(k)` at index `m` with `k` the first request entry above
+     `p`, and `k < m`: `k` is void, and `p = k` (model round 3).
    - Any other `results` or `rejected` entry is stale and changes
      nothing.
    An index of `from .. to` that holds no request entry has no result in
