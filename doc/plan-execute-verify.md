@@ -201,13 +201,15 @@ violation and a review approves the parts that changed from form 5.
    accepted log up to `m - 1`. In one ballot that log equals the log of
    the leader. A node does not wait for a decide to form it, and never
    refuses because its own `p` is lower.
-3. A `rejected(k)` entry is accepted only when the node's own answers for
+3. A `rejected(k)` entry carries the counted answers for `k`. It is
+   accepted only when the node's own answers for
    `k` would not change it (the node has no result for `k` that the
    counted answers and its own make a majority).
 4. In `sequence_paxos`, a node sends `accepted` only up to its
    `verified_idx` (provisional), which the node raises after the check
    (plan-state-in-lmdb.md 4.5, kept for this use). A request entry needs
-   no check, so `verified_idx` passes it at once. The leader counts its
+   no check, so `verified_idx` passes it at once. After a restart,
+   `verified_idx` is the decided index; it is not durable. The leader counts its
    own accept also only up to its own `verified_idx`: it checks its own
    verdict entry after the append, as every node does.
 5. A promise carries the log of the node only up to its `verified_idx`.
@@ -226,8 +228,11 @@ violation and a review approves the parts that changed from form 5.
 ### 2.8 The minority
 
 1. A node listed in a `results` entry as a node that did not agree, at
-   an index whose result is chosen, knows that its own machine is wrong.
-   It throws (section 3).
+   an index whose result is chosen, runs that index again on the check
+   base. It throws (section 3) only when its own result still does not
+   agree with the chosen result. When it agrees, the list is wrong: the
+   node does not throw and reports the leader of that entry with a proof.
+   The list makes a node run again; it does not make a node throw.
 2. A node that was not counted, ran on another base, or is not listed
    does not throw.
 3. A void `k` makes no node throw. The proof goes to the operator.
