@@ -81,7 +81,8 @@ core -----+-- tui   (one terminal, live view)
 The core:
 
 1. Finds a node, in the order of part 1.
-2. Speaks the management protocol to that node (question 6.3).
+2. Speaks the management protocol to that node (question 6.3). Every
+   node answers the management protocol (owner, 2026-10-26 14:41).
 3. Reads the state of the cluster: nodes, leader, ballot, decided_idx,
    accepted_idx, n_accepted, disk use, findings, repairs.
 4. Sends the commands of part 3.
@@ -158,7 +159,8 @@ Each step is its own branch and is green before the next starts.
   b) Each node serves it. This breaks "the node binary has no user
      interface".
 
-6.2 The HTTP server of the web level.
+6.2 The HTTP server of the web level. Answered (owner, 2026-10-26
+  14:40): mruby-webmachine.
   a) mruby-webmachine. Proposal: the tool is an mruby binary, and the
      route handlers are Ruby.
   b) A small C++ HTTP library from a package.
