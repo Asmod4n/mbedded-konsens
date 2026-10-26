@@ -186,7 +186,8 @@ Each step is its own branch and is green before the next starts.
      Proposal for the first tests only.
   b) A shared key from the start (libhydrogen).
 
-6.8 The page on the phone and in the webview.
+6.8 The page on the phone and in the webview. Answered (owner,
+  2026-10-26 14:32): a), and the `rb-*` router goes away.
   The owner asks for htmx 4 (2026-10-26 14:30). htmx 2 sends with XHR,
   and a webview has no server to answer it. So ascaridol has its own
   `rb-*` router.
@@ -207,3 +208,51 @@ Each step is its own branch and is green before the next starts.
      `rb-*` router is not needed. The extension goes into ascaridol.
      Proposal.
   b) The `rb-*` router of ascaridol gets a `fetch` transport.
+
+## 7. The change in ascaridol
+
+Second test, 2026-10-26, WebKitGTK 2.52.6 with GTK 4.14.5 (Ubuntu
+24.04 packages), webview/webview at cbbdee4, under Xvfb. The page is
+set with `set_html`, as `Ascaridol.html=` does, so its location is
+about:blank. Result:
+
+- Without a `<base>` element, the hx-post reached the binding, and the
+  hx-get failed: htmx 4 parses the path of a GET with
+  `new URL(action, document.baseURI)` (dist/htmx.js:519), and
+  about:blank is no base.
+- With `<base href="http://ascaridol.invalid/">`, the hx-post of a form
+  and the hx-get with a query were swapped. The extension took the
+  path and the query from the URL. No network request left the page.
+  `.invalid` is reserved by RFC 6761 6.4 and never resolves.
+
+Not tested: WKWebView (macOS) and WebView2 (Windows). WebView2 is
+Chromium, and headless Chromium passed the first test.
+
+The change, on a branch of its own in ascaridol:
+
+1. Add htmx 4.0.0 to the gem, verbatim, with its licence
+   (BSD-0-Clause). (question 7.1)
+2. Add one helper that returns the `<base>` element, htmx and the
+   extension as one string for `<head>`. Provisional name:
+   `Ascaridol.htmx(bind_name)`. (question 7.2)
+3. The extension calls the bound Ruby block with (method, path,
+   params), as the `rb-*` router does today. The block returns HTML,
+   or [status, html]. Params are the query and the form fields.
+4. Remove `html_router` and `ROUTER_TEMPLATE`.
+5. Rewrite the four examples that use the router (dashboard, forms,
+   notes, tabs_and_modals) to `hx-*`. The swaps they use exist in
+   htmx: afterend, beforeend, delete, outerHTML, and the trigger blur.
+6. Update the README and test/ascaridol.rb.
+7. Run each example under Xvfb with WebKitGTK and compare the result
+   of each interaction with the result before the change.
+
+Questions:
+
+7.1 How htmx comes into the page.
+  a) The gem carries htmx.js and embeds it. The page needs no network.
+     Proposal.
+  b) The application author loads htmx. The gem carries only the
+     extension.
+
+7.2 The name of the helper. No specification gives it. Proposal:
+  `Ascaridol.htmx(bind_name)`, after the library it returns.
