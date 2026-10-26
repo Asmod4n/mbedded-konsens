@@ -1,0 +1,117 @@
+# what: one writer, WAL, commits of N values of 64 B with keys in order; time per commit including its sync and any checkpoint
+# arm full: synchronous=FULL, automatic checkpoint at 1000 frames (default)
+# arm caller: synchronous=NORMAL, wal_autocheckpoint=0, fdatasync of a second descriptor of the WAL after each commit, checkpoint RESTART when the WAL hook reports >= 1000 frames
+# _a and _b: the same source built twice, for the noise floor
+# bench source sha256 337bd58cde3ed877, outside the tree
+# image localhost/cxx-matrix 25e81e6d252a440e0642181483d2b3f757eb97a53043067729aace91902030b0 created 2026-10-20 11:58:39.325201083 +0000 UTC
+# os Ubuntu Stonking Stingray (development branch)
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0, flags -std=c++23 -O2 -DNDEBUG -Wall -Wextra -Werror
+# instruction set -march=x86-64 -mtune=generic 
+# sqlite libsqlite3-0 3.53.4-2; libsqlite3-dev 3.53.4-2; , libc 2.44-1ubuntu2, libstdc++ 16.2.0-3ubuntu1
+# binary full_a sha256 1d1fe56dfa8659b1
+# binary full_b sha256 1d1fe56dfa8659b1
+# binary caller_a sha256 0c1c9a1de8d3d027
+# binary caller_b sha256 0c1c9a1de8d3d027
+# store mount /dev/vda ext4 /dev/vda /store ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# kernel 6.18.44-fc-v153 #1 SMP PREEMPT_DYNAMIC @0
+# hypervisor flag 1, processor Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user bench uid 1001 through setpriv, nice 0, threads 1, not pinned; a TLC run of 1 worker may share the machine
+# loadavg at start 0.90 1.07 1.09 1/157 136
+round=1 binary=full_a values_per_commit=1 commits=2000 loadavg=0.90 median_us=142.3 p99_us=326.5 mean_us=160.4 values_per_s=6235 checkpoints=0
+round=1 binary=caller_a values_per_commit=1 commits=2000 loadavg=0.90 median_us=134.1 p99_us=282.8 mean_us=146.2 values_per_s=6840 checkpoints=2
+round=1 binary=full_b values_per_commit=1 commits=2000 loadavg=0.90 median_us=144.4 p99_us=381.9 mean_us=164.9 values_per_s=6066 checkpoints=0
+round=1 binary=caller_b values_per_commit=1 commits=2000 loadavg=0.90 median_us=140.4 p99_us=335.2 mean_us=161.7 values_per_s=6186 checkpoints=2
+round=1 binary=full_a values_per_commit=16 commits=2000 loadavg=0.90 median_us=149.7 p99_us=414.3 mean_us=169.7 values_per_s=94305 checkpoints=0
+round=1 binary=caller_a values_per_commit=16 commits=2000 loadavg=0.90 median_us=169.8 p99_us=1147.4 mean_us=208.8 values_per_s=76614 checkpoints=7
+round=1 binary=full_b values_per_commit=16 commits=2000 loadavg=0.90 median_us=175.0 p99_us=553.1 mean_us=194.5 values_per_s=82244 checkpoints=0
+round=1 binary=caller_b values_per_commit=16 commits=2000 loadavg=0.91 median_us=178.8 p99_us=638.8 mean_us=203.7 values_per_s=78542 checkpoints=7
+round=1 binary=full_a values_per_commit=1024 commits=300 loadavg=0.91 median_us=838.4 p99_us=9903.3 mean_us=1177.3 values_per_s=869806 checkpoints=0
+round=1 binary=caller_a values_per_commit=1024 commits=300 loadavg=0.91 median_us=864.2 p99_us=8863.3 mean_us=1136.6 values_per_s=900920 checkpoints=8
+round=1 binary=full_b values_per_commit=1024 commits=300 loadavg=0.91 median_us=888.7 p99_us=10057.0 mean_us=1170.7 values_per_s=874684 checkpoints=0
+round=1 binary=caller_b values_per_commit=1024 commits=300 loadavg=0.91 median_us=889.0 p99_us=9806.7 mean_us=1182.5 values_per_s=865988 checkpoints=8
+round=2 binary=caller_b values_per_commit=1 commits=2000 loadavg=0.91 median_us=136.9 p99_us=508.2 mean_us=185.0 values_per_s=5407 checkpoints=2
+round=2 binary=full_b values_per_commit=1 commits=2000 loadavg=0.91 median_us=148.1 p99_us=867.8 mean_us=214.6 values_per_s=4660 checkpoints=0
+round=2 binary=caller_a values_per_commit=1 commits=2000 loadavg=0.91 median_us=160.6 p99_us=406.1 mean_us=183.3 values_per_s=5455 checkpoints=2
+round=2 binary=full_a values_per_commit=1 commits=2000 loadavg=0.91 median_us=139.5 p99_us=400.3 mean_us=178.3 values_per_s=5608 checkpoints=0
+round=2 binary=caller_b values_per_commit=16 commits=2000 loadavg=0.91 median_us=159.9 p99_us=544.0 mean_us=190.6 values_per_s=83961 checkpoints=7
+round=2 binary=full_b values_per_commit=16 commits=2000 loadavg=0.91 median_us=162.6 p99_us=448.2 mean_us=184.3 values_per_s=86817 checkpoints=0
+round=2 binary=caller_a values_per_commit=16 commits=2000 loadavg=0.91 median_us=151.2 p99_us=550.2 mean_us=173.9 values_per_s=91981 checkpoints=7
+round=2 binary=full_a values_per_commit=16 commits=2000 loadavg=0.92 median_us=153.8 p99_us=541.0 mean_us=180.1 values_per_s=88850 checkpoints=0
+round=2 binary=caller_b values_per_commit=1024 commits=300 loadavg=0.92 median_us=1099.8 p99_us=10224.9 mean_us=1345.8 values_per_s=760870 checkpoints=8
+round=2 binary=full_b values_per_commit=1024 commits=300 loadavg=0.92 median_us=857.5 p99_us=9299.3 mean_us=1156.2 values_per_s=885623 checkpoints=0
+round=2 binary=caller_a values_per_commit=1024 commits=300 loadavg=0.92 median_us=864.7 p99_us=10000.3 mean_us=1184.8 values_per_s=864251 checkpoints=8
+round=2 binary=full_a values_per_commit=1024 commits=300 loadavg=0.92 median_us=1008.5 p99_us=10180.6 mean_us=1281.2 values_per_s=799263 checkpoints=0
+round=3 binary=full_a values_per_commit=1 commits=2000 loadavg=0.92 median_us=147.9 p99_us=401.7 mean_us=168.0 values_per_s=5954 checkpoints=0
+round=3 binary=caller_a values_per_commit=1 commits=2000 loadavg=0.92 median_us=152.4 p99_us=409.2 mean_us=187.7 values_per_s=5329 checkpoints=2
+round=3 binary=full_b values_per_commit=1 commits=2000 loadavg=0.92 median_us=143.4 p99_us=396.2 mean_us=172.2 values_per_s=5806 checkpoints=0
+round=3 binary=caller_b values_per_commit=1 commits=2000 loadavg=0.92 median_us=145.9 p99_us=605.4 mean_us=179.2 values_per_s=5582 checkpoints=2
+round=3 binary=full_a values_per_commit=16 commits=2000 loadavg=0.92 median_us=169.7 p99_us=393.4 mean_us=188.8 values_per_s=84726 checkpoints=0
+round=3 binary=caller_a values_per_commit=16 commits=2000 loadavg=0.92 median_us=173.6 p99_us=575.3 mean_us=194.8 values_per_s=82149 checkpoints=7
+round=3 binary=full_b values_per_commit=16 commits=2000 loadavg=0.92 median_us=170.9 p99_us=554.1 mean_us=193.8 values_per_s=82555 checkpoints=0
+round=3 binary=caller_b values_per_commit=16 commits=2000 loadavg=0.92 median_us=163.2 p99_us=592.2 mean_us=188.9 values_per_s=84695 checkpoints=7
+round=3 binary=full_a values_per_commit=1024 commits=300 loadavg=0.92 median_us=897.0 p99_us=9767.7 mean_us=1186.6 values_per_s=862994 checkpoints=0
+round=3 binary=caller_a values_per_commit=1024 commits=300 loadavg=0.92 median_us=1058.7 p99_us=10163.2 mean_us=1271.0 values_per_s=805681 checkpoints=8
+round=3 binary=full_b values_per_commit=1024 commits=300 loadavg=0.92 median_us=990.7 p99_us=10309.8 mean_us=1248.1 values_per_s=820458 checkpoints=0
+round=3 binary=caller_b values_per_commit=1024 commits=300 loadavg=0.92 median_us=874.5 p99_us=10729.0 mean_us=1200.4 values_per_s=853067 checkpoints=8
+round=4 binary=caller_b values_per_commit=1 commits=2000 loadavg=0.92 median_us=138.4 p99_us=320.8 mean_us=161.0 values_per_s=6211 checkpoints=2
+round=4 binary=full_b values_per_commit=1 commits=2000 loadavg=0.92 median_us=147.2 p99_us=576.5 mean_us=183.6 values_per_s=5446 checkpoints=0
+round=4 binary=caller_a values_per_commit=1 commits=2000 loadavg=0.92 median_us=155.8 p99_us=508.8 mean_us=199.3 values_per_s=5016 checkpoints=2
+round=4 binary=full_a values_per_commit=1 commits=2000 loadavg=0.92 median_us=133.7 p99_us=417.7 mean_us=166.8 values_per_s=5996 checkpoints=0
+round=4 binary=caller_b values_per_commit=16 commits=2000 loadavg=0.92 median_us=157.4 p99_us=681.9 mean_us=186.7 values_per_s=85709 checkpoints=7
+round=4 binary=full_b values_per_commit=16 commits=2000 loadavg=0.92 median_us=157.2 p99_us=575.0 mean_us=182.8 values_per_s=87508 checkpoints=0
+round=4 binary=caller_a values_per_commit=16 commits=2000 loadavg=0.92 median_us=162.9 p99_us=732.5 mean_us=193.2 values_per_s=82826 checkpoints=7
+round=4 binary=full_a values_per_commit=16 commits=2000 loadavg=0.93 median_us=148.7 p99_us=414.8 mean_us=169.7 values_per_s=94271 checkpoints=0
+round=4 binary=caller_b values_per_commit=1024 commits=300 loadavg=0.93 median_us=819.0 p99_us=10441.0 mean_us=1094.3 values_per_s=935801 checkpoints=8
+round=4 binary=full_b values_per_commit=1024 commits=300 loadavg=0.93 median_us=958.4 p99_us=10256.9 mean_us=1248.1 values_per_s=820476 checkpoints=0
+round=4 binary=caller_a values_per_commit=1024 commits=300 loadavg=0.93 median_us=889.9 p99_us=9514.7 mean_us=1232.6 values_per_s=830781 checkpoints=8
+round=4 binary=full_a values_per_commit=1024 commits=300 loadavg=0.93 median_us=854.7 p99_us=9576.3 mean_us=1123.1 values_per_s=911784 checkpoints=0
+round=5 binary=full_a values_per_commit=1 commits=2000 loadavg=0.93 median_us=126.2 p99_us=359.5 mean_us=140.5 values_per_s=7118 checkpoints=0
+round=5 binary=caller_a values_per_commit=1 commits=2000 loadavg=0.93 median_us=105.4 p99_us=409.7 mean_us=138.6 values_per_s=7217 checkpoints=2
+round=5 binary=full_b values_per_commit=1 commits=2000 loadavg=0.93 median_us=166.3 p99_us=623.1 mean_us=211.2 values_per_s=4736 checkpoints=0
+round=5 binary=caller_b values_per_commit=1 commits=2000 loadavg=0.93 median_us=150.3 p99_us=509.4 mean_us=193.6 values_per_s=5166 checkpoints=2
+round=5 binary=full_a values_per_commit=16 commits=2000 loadavg=0.93 median_us=169.2 p99_us=540.9 mean_us=189.5 values_per_s=84441 checkpoints=0
+round=5 binary=caller_a values_per_commit=16 commits=2000 loadavg=0.93 median_us=157.8 p99_us=998.9 mean_us=208.3 values_per_s=76820 checkpoints=7
+round=5 binary=full_b values_per_commit=16 commits=2000 loadavg=0.93 median_us=131.7 p99_us=439.4 mean_us=153.8 values_per_s=104044 checkpoints=0
+round=5 binary=caller_b values_per_commit=16 commits=2000 loadavg=0.93 median_us=193.3 p99_us=750.9 mean_us=224.4 values_per_s=71296 checkpoints=7
+round=5 binary=full_a values_per_commit=1024 commits=300 loadavg=0.93 median_us=919.1 p99_us=10734.6 mean_us=1236.6 values_per_s=828096 checkpoints=0
+round=5 binary=caller_a values_per_commit=1024 commits=300 loadavg=0.93 median_us=873.8 p99_us=10360.9 mean_us=1170.3 values_per_s=874961 checkpoints=8
+round=5 binary=full_b values_per_commit=1024 commits=300 loadavg=0.93 median_us=896.6 p99_us=9988.2 mean_us=1198.6 values_per_s=854344 checkpoints=0
+round=5 binary=caller_b values_per_commit=1024 commits=300 loadavg=0.93 median_us=874.5 p99_us=10216.7 mean_us=1192.5 values_per_s=858673 checkpoints=8
+round=6 binary=caller_b values_per_commit=1 commits=2000 loadavg=0.93 median_us=133.5 p99_us=395.5 mean_us=166.6 values_per_s=6003 checkpoints=2
+round=6 binary=full_b values_per_commit=1 commits=2000 loadavg=0.93 median_us=136.4 p99_us=371.4 mean_us=166.4 values_per_s=6010 checkpoints=0
+round=6 binary=caller_a values_per_commit=1 commits=2000 loadavg=0.93 median_us=152.5 p99_us=449.2 mean_us=190.4 values_per_s=5252 checkpoints=2
+round=6 binary=full_a values_per_commit=1 commits=2000 loadavg=0.93 median_us=137.0 p99_us=399.6 mean_us=162.1 values_per_s=6168 checkpoints=0
+round=6 binary=caller_b values_per_commit=16 commits=2000 loadavg=0.93 median_us=168.4 p99_us=531.9 mean_us=201.5 values_per_s=79410 checkpoints=7
+round=6 binary=full_b values_per_commit=16 commits=2000 loadavg=0.93 median_us=167.8 p99_us=604.6 mean_us=202.1 values_per_s=79173 checkpoints=0
+round=6 binary=caller_a values_per_commit=16 commits=2000 loadavg=0.93 median_us=155.9 p99_us=665.7 mean_us=194.8 values_per_s=82148 checkpoints=7
+round=6 binary=full_a values_per_commit=16 commits=2000 loadavg=1.02 median_us=171.0 p99_us=560.9 mean_us=201.4 values_per_s=79462 checkpoints=0
+round=6 binary=caller_b values_per_commit=1024 commits=300 loadavg=1.02 median_us=877.9 p99_us=9874.3 mean_us=1199.9 values_per_s=853371 checkpoints=8
+round=6 binary=full_b values_per_commit=1024 commits=300 loadavg=1.02 median_us=934.5 p99_us=10845.1 mean_us=1266.9 values_per_s=808282 checkpoints=0
+round=6 binary=caller_a values_per_commit=1024 commits=300 loadavg=1.02 median_us=1008.9 p99_us=11355.6 mean_us=1298.2 values_per_s=788765 checkpoints=8
+round=6 binary=full_a values_per_commit=1024 commits=300 loadavg=1.02 median_us=750.5 p99_us=8594.1 mean_us=1014.0 values_per_s=1009869 checkpoints=0
+round=7 binary=full_a values_per_commit=1 commits=2000 loadavg=1.02 median_us=141.8 p99_us=502.7 mean_us=193.6 values_per_s=5166 checkpoints=0
+round=7 binary=caller_a values_per_commit=1 commits=2000 loadavg=1.02 median_us=141.7 p99_us=511.3 mean_us=197.3 values_per_s=5069 checkpoints=2
+round=7 binary=full_b values_per_commit=1 commits=2000 loadavg=1.02 median_us=157.2 p99_us=505.9 mean_us=194.8 values_per_s=5134 checkpoints=0
+round=7 binary=caller_b values_per_commit=1 commits=2000 loadavg=1.02 median_us=151.0 p99_us=507.4 mean_us=190.7 values_per_s=5244 checkpoints=2
+round=7 binary=full_a values_per_commit=16 commits=2000 loadavg=1.02 median_us=160.4 p99_us=781.9 mean_us=207.4 values_per_s=77149 checkpoints=0
+round=7 binary=caller_a values_per_commit=16 commits=2000 loadavg=1.02 median_us=166.3 p99_us=727.1 mean_us=206.8 values_per_s=77359 checkpoints=7
+round=7 binary=full_b values_per_commit=16 commits=2000 loadavg=1.02 median_us=159.2 p99_us=558.0 mean_us=187.2 values_per_s=85471 checkpoints=0
+round=7 binary=caller_b values_per_commit=16 commits=2000 loadavg=1.02 median_us=167.7 p99_us=650.6 mean_us=197.4 values_per_s=81052 checkpoints=7
+round=7 binary=full_a values_per_commit=1024 commits=300 loadavg=1.02 median_us=840.0 p99_us=9889.2 mean_us=1151.4 values_per_s=889325 checkpoints=0
+round=7 binary=caller_a values_per_commit=1024 commits=300 loadavg=1.02 median_us=865.8 p99_us=10195.8 mean_us=1159.8 values_per_s=882880 checkpoints=8
+round=7 binary=full_b values_per_commit=1024 commits=300 loadavg=1.02 median_us=986.5 p99_us=10351.0 mean_us=1378.8 values_per_s=742658 checkpoints=0
+round=7 binary=caller_b values_per_commit=1024 commits=300 loadavg=1.02 median_us=941.2 p99_us=10722.4 mean_us=1286.7 values_per_s=795830 checkpoints=8
+# summary: median over rounds of median_us per commit
+# values_per_commit=1 full_a median_us 139.5 min 126.2 max 147.9
+# values_per_commit=1 full_b median_us 147.2 min 136.4 max 166.3
+# values_per_commit=1 caller_a median_us 152.4 min 105.4 max 160.6
+# values_per_commit=1 caller_b median_us 140.4 min 133.5 max 151.0
+# values_per_commit=16 full_a median_us 160.4 min 148.7 max 171.0
+# values_per_commit=16 full_b median_us 162.6 min 131.7 max 175.0
+# values_per_commit=16 caller_a median_us 162.9 min 151.2 max 173.6
+# values_per_commit=16 caller_b median_us 167.7 min 157.4 max 193.3
+# values_per_commit=1024 full_a median_us 854.7 min 750.5 max 1008.5
+# values_per_commit=1024 full_b median_us 934.5 min 857.5 max 990.7
+# values_per_commit=1024 caller_a median_us 873.8 min 864.2 max 1058.7
+# values_per_commit=1024 caller_b median_us 877.9 min 819.0 max 1099.8

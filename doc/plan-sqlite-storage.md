@@ -232,6 +232,25 @@ copy with `mdb_env_copyfd2`).
    clone gives back each record whose CRC holds.
 4. Tests keep `KONSENS_TEST_TMPDIR`.
 
+## 8.1 Measured: who syncs
+
+bench/results/2026-10-26-174119Z-sqlite-sync.txt (a C++ file outside
+the tree, g++ 16 -O2, SQLite 3.53.4 of the package, ext4 on virtio, 64 B
+values, 7 rounds, arms alternate). Median over the rounds of the median
+time for each commit with its sync and its checkpoints:
+
+| values per commit | full a | full b | caller a | caller b |
+|---|---|---|---|---|
+| 1 | 139.5 us | 147.2 us | 152.4 us | 140.4 us |
+| 16 | 160.4 us | 162.6 us | 162.9 us | 167.7 us |
+| 1024 | 854.7 us | 934.5 us | 873.8 us | 877.9 us |
+
+The two builds of one arm differ by up to 9.3 %. The arms differ by
+less. So in this form, where the caller syncs at once and waits, the
+arm "caller syncs" gains nothing. What it can gain is the overlap of
+the sync with the sends (io_uring, plan-one-environment.md 3.5), which
+this file does not measure.
+
 ## 9. Open points for the owner
 
 - Q1. The hidden identity in a backup. The task leaves it open. This
