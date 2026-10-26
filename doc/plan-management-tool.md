@@ -154,7 +154,8 @@ Each step is its own branch and is green before the next starts.
 
 ## 6. Open questions
 
-6.1 Where the page for the phone comes from.
+6.1 Where the page for the phone comes from. Open until the owner
+  needs the tool on the phone (owner, 2026-10-26 14:42).
   a) The tool runs as a service on the VPS and serves it. Proposal.
   b) Each node serves it. This breaks "the node binary has no user
      interface".
