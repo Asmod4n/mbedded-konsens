@@ -212,7 +212,7 @@ copy with `mdb_env_copyfd2`).
 6. The CRC32C of each record stays, on the disk and on the wire,
    because SQLite has no checksum for each row. The hash in idle time
    stays ours too.
-7. Proposal: a repair after a snapshot takes a changeset of the session
+7. Decided (owner, 2026-10-26 17:35): a repair after a snapshot takes a changeset of the session
    extension in place of single entries. The changeset carries no
    checksum; each record in it keeps its CRC tail, and the receiver
    checks each one.
