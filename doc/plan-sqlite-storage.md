@@ -281,10 +281,10 @@ measurement of blob against columns (section 10).
    A float from SQL follows the rule for floats: the results are
    compared on `float_digits`, then the chosen value is rounded half
    to even on `float_denominator`. `sum(x ORDER BY pk)`
-   (`parse.y:1238`) gives the same order of addition on each node. An
-   authorizer
-   (`sqlite3_set_authorizer`) allows a task only the functions of a
-   list, and no `ATTACH`, `PRAGMA` or `ANALYZE`. Each query of a task
+   (`parse.y:1238`) gives the same order of addition on each node.
+   Only the library writes SQL, so there is no authorizer (owner,
+   18:22); the library builds no `ATTACH`, `PRAGMA` or `ANALYZE` from
+   a query of a client. Each query of a task
    orders its rows totally. A virtual table with a clock, a file
    outside the store or the network as its source is not readable from
    a task; its statements use `SQLITE_PREPARE_NO_VTAB`. Sources of a
@@ -300,7 +300,14 @@ measurement of blob against columns (section 10).
    its first use and keeps it in a cache by form. The cache has one
    named bound. The rule of 17:24 (prepared at open) holds for the
    statements of the library only.
-7. How a task reaches SQL is not in this plan. The `state_machine`
+7. A new schema is not compatible with an older version (owner,
+   2026-10-26 18:57). Proposal of the thread "user logic on virtual
+   tables" (`/mnt/project-files/actor-raft/nutzer-logik/vorbereitung.md`
+   sections 9 to 18), not decided: each node first gets the new binary,
+   which still works in the old schema. Then one entry of the log
+   switches all nodes at the same index. From that index on, an older
+   binary does not vote. This is Jepsen question 4 (mixed versions).
+8. How a task reaches SQL is not in this plan. The `state_machine`
    concept offers `find` of a byte key (`state_machine.hpp:28-31`). A
    plan of its own gives the interface.
 
