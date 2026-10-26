@@ -163,7 +163,8 @@ Each step is its own branch and is green before the next starts.
      route handlers are Ruby.
   b) A small C++ HTTP library from a package.
 
-6.3 The protocol between the tool and a node.
+6.3 The protocol between the tool and a node. Answered (owner,
+  2026-10-26 14:40): a).
   a) The node-to-node wire: a fixed head and packed CBOR. Proposal:
      the node then needs no HTTP.
   b) HTTP on the node.
@@ -172,16 +173,18 @@ Each step is its own branch and is green before the next starts.
   every system. webview/webview comes with it as a submodule of
   ascaridol.
 
-6.5 The TUI library.
+6.5 The TUI library. Answered (owner, 2026-10-26 14:40): FTXUI.
   a) FTXUI. Proposal: C++, a package in Ubuntu and Debian.
   b) notcurses.
   c) ncurses.
 
-6.6 The name of the binary and of the commands. No specification gives
+6.6 The name of the binary and of the commands. Answered (owner,
+  2026-10-26 14:40): `konsensctl`. No specification gives
   them. Proposal: `konsensctl`, after the `ctl` form of `systemctl`,
   and the commands of part 3.
 
-6.7 Who may manage, before TLS exists.
+6.7 Who may manage, before TLS exists. Answered (owner, 2026-10-26
+  14:40): a).
   a) Everyone who reaches the port. The VPN is the only guard.
      Proposal for the first tests only.
   b) A shared key from the start (libhydrogen).
@@ -258,3 +261,40 @@ Questions:
 7.2 The name of the helper. Answered (owner, 2026-10-26 14:38): as
   proposed.
   `Ascaridol.htmx(bind_name)`, after the library it returns.
+
+## 8. Review of part 7 (second agent, 2026-10-26) and changes
+
+The review found 8 faults. Each one is changed as follows.
+
+1. A `<base>` element sends every plain link and form to
+   ascaridol.invalid, and hx-boost compares with `location.origin`
+   (htmx.js:973-981). Change: no `<base>`. In `htmx:config:request`
+   (htmx.js:510, before the parse at :519), the extension makes the
+   action absolute against `http://ascaridol.invalid/`.
+2. Over HTTP the bridge does not exist. Change: the extension reads
+   `window[bind_name]` at each call and does nothing when it is not a
+   function. The phone page loads plain htmx 4 and no extension.
+3. A Ruby error was swapped into the target by the old router; with
+   `ctx.fetch` rejecting, htmx swaps nothing (:609). Change: the
+   extension returns status 500 with the escaped message in
+   `<div class="error">`. htmx 4 swaps 4xx and 5xx (:202).
+4. The block may return a String, [status, html] or nil. Change: all
+   three are read; nil and 204, 205, 304 give a response with no body.
+5. `rb-indicator` gave the class `busy`; htmx gives `htmx-request`
+   (:194). The old router disabled buttons; htmx needs `hx-disable`.
+   Change: the examples take both forms of htmx. `rb-get=""` in
+   tabs_and_modals.rb becomes `hx-on:click="this.remove()"`.
+6. A POST from an input inside a form sends the whole form (:479-481);
+   GET and DELETE send the query (:476). Change: the README says so. A
+   file value is refused with a TypeError.
+7. `hx-push-url` cannot push a URL of another origin on about:blank
+   (:1615-1619). Change: the helper sets `history: false` in the
+   htmx config. The README says push-url works over HTTP only.
+8. The timeout of htmx aborts `req.signal` (:196). Change: the call
+   races the signal and rejects with an AbortError.
+
+Third test, 2026-10-26, WebKitGTK 2.52.6, the changed extension, no
+`<base>`: hx-post of a form, hx-get with a query, a String return, a
+raised error (swapped as escaped text) and a nil return (no swap)
+behave as above, and `<a href="#x">` stays on about:blank#x. The
+abort path is not tested.
