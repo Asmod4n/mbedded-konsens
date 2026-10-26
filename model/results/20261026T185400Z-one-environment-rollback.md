@@ -36,3 +36,16 @@ ballot and the longest log (`RecoveryTakesLog`).
 The violation of run 1 lies at depth 29. These runs end at depth 26,
 so they do not show that the fix holds. Run 3 takes one request
 (`*_r1.cfg`) so that the search can end.
+
+## Run 3: one request
+
+| config | exit | result |
+|---|---|---|
+| MC_oe_rollback_r1 | 124 | limit, depth 28, 29,123,804 distinct states, no violation |
+| MC_oe_rollback_takeslog_r1 | 124 | limit, depth 28, 27,158,327 distinct states, no violation |
+| MC_oe_rollback_takeslog_parallel_r1 | 124 | limit, depth 28, 27,976,384 distinct states, no violation |
+
+One request does not make the search smaller enough: the run without
+the fix does not reach the violation at depth 29 either. Run 4 uses
+the simulation of TLC, with the configuration without the fix as the
+check that the simulation finds the violation.
