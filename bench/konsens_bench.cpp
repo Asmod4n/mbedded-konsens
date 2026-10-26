@@ -86,7 +86,7 @@ constexpr mdb_mode_t lmdb_file_mode = 0600;
 constexpr const char* lmdb_database_name = "log";
 constexpr std::size_t entry_crc_bytes = sizeof(std::uint32_t);
 constexpr std::uint64_t stored_key = 0;
-constexpr std::chrono::seconds reply_timeout{120};
+constexpr std::chrono::seconds reply_timeout{20};
 constexpr std::size_t puts_of_the_loop = 64;
 constexpr std::uint64_t base_rate_per_s = 10000;
 constexpr std::uint64_t double_rate_per_s = 2 * base_rate_per_s;
