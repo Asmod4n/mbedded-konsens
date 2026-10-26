@@ -267,8 +267,11 @@ measurement of blob against columns (section 10).
    engine (`ATTACH`, `PRAGMA`, `load_extension`, `sqlite_dbpage`),
    `random()` and `'now'`. Mathematics, `sin` and `pow` included, runs
    only in SQL statements, never in code outside SQLite (owner,
-   2026-10-26 18:37). The comparison of results on `float_digits`
-   covers a difference of the libm. `sum(x ORDER BY pk)`
+   2026-10-26 18:37). These functions call the libm directly
+   (`func.c:2575-2590`), and no CORE-MATH replaces it (owner, 18:38).
+   A float from SQL follows the rule for floats: the results are
+   compared on `float_digits`, then the chosen value is rounded half
+   to even on `float_denominator`. `sum(x ORDER BY pk)`
    (`parse.y:1238`) gives the same order of addition on each node. An
    authorizer
    (`sqlite3_set_authorizer`) allows a task only the functions of a
