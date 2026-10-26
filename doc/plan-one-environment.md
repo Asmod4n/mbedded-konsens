@@ -145,7 +145,7 @@ The names in quotes are provisional message names.
 4. The leader selects the result that a majority agrees on, by the rules
    of plan-execute-verify.md 2.6 (the base, try again, the list of the
    nodes that do not agree). The owner's text says "the same result as
-   its own"; see question 3.
+   its own"; the owner keeps the majority rule (section 18 item 3).
 5. The leader writes the done record (section 3.3) and syncs. The done
    record is the accept of the leader in Paxos terms. Then it sends
    "done" (ballot, index, the done record, chain CRC) to the nodes.
@@ -168,7 +168,7 @@ count in series on the path of the client.
 
 ### 3.1 Named databases
 
-The owner named two: metadata and data. Proposal (question 1):
+The owner named two: metadata and data (07:16). So there are two:
 
 - `meta`: the meta record (section 3.2), the format version (as now),
   the log of done records (keys: the log index), and the client table
@@ -181,7 +181,8 @@ The owner named two: metadata and data. Proposal (question 1):
 The node storage stays an environment of its own: the repair count, the
 open mark, the proof, the hidden identity and the name of the directory
 of the store. No copy from a peer may bring them
-(plan-lmdb-only-source.md 2.4 item 8). See question 2.
+(plan-lmdb-only-source.md 2.4 item 8). The owner keeps it a second
+environment (card 2026-10-26 10:51).
 
 ### 3.2 The meta record
 
@@ -238,24 +239,23 @@ the whole record.
    - the reply to a client: after the leader counted a majority of
      "synced" acks (no sync of its own, section 2 item 7);
    - "work", "ran", "decide" and the heartbeats: at once;
-   - "done" from the leader: after its own sync (07:16), or at once
-     while its sync runs (Raft dissertation 10.2.1, proposal of the
-     owner, not decided, question 4). The leader counts itself only
-     after its own sync, so safety does not change.
-3. The commit with LMDB (question 6). The step prepares its write
+   - "done" from the leader: at once, while its own sync runs (Raft
+     dissertation 10.2.1; owner card 2026-10-26 11:38). The leader
+     counts itself only after its own sync, so safety does not change.
+3. The commit with LMDB. The step prepares its write
    transaction with `MDB_NOSYNC` (`mdb_txn_prepare`). The group "sync"
    is the `fdatasync` of the data pages. After it, the library commits
    the meta page with no sync. The meta page is durable after the next
    `fdatasync`. Two forms follow:
-   - Q1 (proposal): one `fdatasync` for each step. The messages of a
+   - Q1 (owner card 2026-10-26 10:51): one `fdatasync` for each step. The messages of a
      step wait on the sync of the next step. That sync also makes the
      meta page of the step before durable. Under load the next step
      follows at once. An idle node asks for a bare sync ("sync only",
      3.4 item 2). The bench of 2026-10-24 ran this form
      (bench/results/2026-10-24-145849Z-lmdb-txn-nometasync.txt). It
      measured 13 to 32 % less time for each message.
-   - Q2: two `fdatasync` for each step, data then meta page, linked.
-     The messages wait for the second one.
+   - Q2, not taken: two `fdatasync` for each step, data then meta page,
+     linked. The messages wait for the second one.
    - Not taken: `MDB_NOSYNC` with one sync after the commit. A power loss
      before the end of the sync can leave a meta page whose data pages
      are not on the disk (section 1).
@@ -278,8 +278,8 @@ reply.
 
 | form | idle, each node | loaded, each step and node | in series |
 |---|---|---|---|
-| Q1 | 2 (done) + 1 (apply) | 1 | 4; 2 with question 4 |
-| Q2 | 2 (done) + 1 (apply) | 2 | 4; 2 with question 4 |
+| Q1 | 2 (done) + 1 (apply) | 1 | 2 ("done" in parallel) |
+| Q2, not taken | 2 (done) + 1 (apply) | 2 | 2 |
 | now, fa14f44 | not counted | not counted | not counted |
 
 The meta page of the apply need not be durable: a start applies the
@@ -288,16 +288,19 @@ when it rides on no other commit.
 
 The work record adds, on each node:
 
-| form | idle | loaded |
+| file system | idle | loaded |
 |---|---|---|
-| P1 | 0 | 0 |
-| P0 | 1 | 0, it rides in the commit of the step |
-| P2 | 1 | 1 for each step with work |
+| keeps the order of writes | 0 | 0, it rides in the commit of the step |
+| does not keep it | 1 | 0, it rides in the commit of the step |
 
 The goal of the owner (one sync for each task and node) holds only for
 Q1 under load, where one sync serves each step and a step holds several
 tasks. A normal LMDB commit at fa14f44 makes two flushes (section 1).
 Section 15 measures the counts; none of these numbers is measured.
+Measured once on the session VM (ext4 on virtio, LMDB 1.0.2, 64 B
+values, one thread): a synced commit with 1 put takes 249 us (median),
+with 1024 puts 611 us, 1.7 M puts/s
+(/mnt/project-files/actor-raft/syncbench/2026-10-26T1100Z-lmdb-sync.md).
 
 ## 4. The order of log and state
 
@@ -348,31 +351,33 @@ Section 15 measures the counts; none of these numbers is measured.
 
 ## 5. The work before the done
 
-### 5.1 Where the record of the work stands (question 5)
+### 5.1 The record of the work
 
-The owner's form commits the work with no sync. LMDB documents that
-such a commit can corrupt the database at a system crash on a file
-system that does not keep the order of writes (section 1). A corrupt
-file is a damage, and the repair is a full copy from a peer. So the
-plan takes this form provisionally:
+Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
 
-- P1 (provisional): the work is not committed. The request, the own
-  result and its mutations of each task in work stay in memory until
-  the done record. A crash forgets them, as the owner allows (07:19).
-  P1 conflicts with two owner decisions of 2026-10-24: a value from
-  LMDB is used only inside its transaction and is never copied (19:29);
-  outside a transaction a node knows only its state machine (19:38).
-  The own result is not a value from LMDB, but it is kept across steps.
-  P1 needs the word of the owner (question 5).
-- P0 (the text of the owner): the work is committed with `MDB_NOSYNC`.
-  A start deletes each work record in its first write transaction. The
-  risk of a corrupt file stays: section 3.5 item 3 shows that each
-  commit needs the sync of its data pages before its meta page. A
-  work record that rides in the commit of a step that syncs anyway
-  costs no sync; a step with only work records would need one.
-- P2: the work is committed with `MDB_NOMETASYNC`. LMDB keeps the
-  integrity. Each such commit syncs the data once, so a task costs two
-  syncs on each node.
+1. Each task has one record, keyed by its log index in `meta`. It holds
+   either the tombstone "in progress" or, after the done, the done
+   record. The done record replaces the tombstone in its transaction.
+2. A file system that keeps the order of writes (ZFS; btrfs with the
+   mount option `flushoncommit`) takes the tombstone in a commit with
+   `MDB_NOSYNC`. A power loss can lose the tombstone, but it cannot
+   corrupt the file (lmdb.h:648-661;
+   /mnt/project-files/actor-raft/fs-write-order.md).
+3. Any other file system (ext4 with data=ordered, XFS, btrfs without
+   `flushoncommit`): the tombstone rides in the commit of section 3.5
+   item 3 (prepare, `fdatasync` of the data pages, then the meta page).
+   This is the integrity of `MDB_NOMETASYNC`. A step that writes only
+   tombstones then costs one sync; under load the tombstones ride in the
+   commit of a step that syncs anyway.
+4. The start reads the type of the file system and the mount options of
+   the store (section 9). It warns when the file system does not keep
+   the order of writes, and takes the form of item 3.
+5. A crash can lose a tombstone. A live node elsewhere still knows the
+   task; if all nodes lost it, the client times out and sends it again
+   (owner 2026-10-26 10:54). A retry while the tombstone stands gets
+   "still in progress" (RIFL 4.1; draft-ietf-httpapi-idempotency-key-header-08
+   2.7: 409); /mnt/project-files/actor-raft/exactly-once.md.
+6. The start deletes each tombstone in its first write transaction.
 
 ### 5.2 The base and the run
 
@@ -382,8 +387,8 @@ plan takes this form provisionally:
    2.4.1). The own results are a guess.
 2. In each step, the node opens one child transaction of the step,
    writes the base into it, runs the new tasks in log order, and aborts
-   the child. Under P0 and P2 the own results also go into the work
-   records of the step.
+   the child. The tombstone of each new task goes into the step
+   (section 5.1).
 3. The open state transaction over many steps (plan-state-in-lmdb.md 5,
    `open_`) goes: one environment allows one writer, and a child cannot
    outlive the commit of its parent. Its cost moves to the writes of the
@@ -461,7 +466,7 @@ own.
 ### 8.1 Recovery
 
 1. After each start, a node votes only after f + 1 answers (VR
-   Revisited), as now. The tasks in work are gone (P1) or deleted (P0).
+   Revisited), as now. The start deletes the tombstones (5.1 item 6).
 2. A node whose done record above the decided index was not synced by a
    majority keeps it as an accepted entry of its ballot. The next
    leader keeps it or cuts it by the rule of the highest accepted round
@@ -499,7 +504,10 @@ In one read transaction:
    damage, plan-state-in-lmdb.md 1.4) goes, because one commit cannot
    leave log and state apart.
 4. The step check, the continuity and the scan of the whole log as now.
-5. Under P0, the first write transaction deletes the work records.
+5. The first write transaction deletes the tombstones (5.1 item 6).
+6. The type of the file system and its mount options decide the form
+   of the tombstone (5.1 items 2 to 4). A file system that does not keep
+   the order of writes gives a warning.
 
 ## 10. The CRCs
 
@@ -550,11 +558,12 @@ when a write is durable.
   the last sync is lost (the rule of the owner for this model).
 - "synced", "promise" and "prepare" wait on the sync. "done" waits on
   the sync of the leader; with `DoneBeforeOwnSync` it leaves at once
-  (question 4). "work", "ran", "decide" and "acceptsync" leave at once.
+  (section 18 item 4). "work", "ran", "decide" and "acceptsync" leave at once.
 - The leader counts itself for a decide only from `dur`.
 - The decided index rides in a commit with no sync of its own.
-- `WorkRecords` (P0): the work is a record of a commit with no sync. The
-  start deletes the work records. Without it (P1) the work is in memory.
+- `WorkRecords`: the tombstone is a record of a commit with no sync. The
+  start deletes it. Both forms of 5.1 lose an unsynced tombstone at a
+  crash, so the model checks both with this switch.
 - A result is a function of the entries before it, so the model has no
   result values. The agreement rules are those of `SequencePaxos.tla`.
 - A request can be proposed again (a client retry).
@@ -568,13 +577,13 @@ when a write is durable.
   to its applied index (owner 07:19).
 - `AppliedIsDecided`: applied index at most decided index, and every
   applied entry chosen.
-- `NoOldWorkRecords` (P0): a recovering node holds no work record.
+- `NoOldWorkRecords`: a recovering node holds no work record.
 - Covers, each must be violated: `NoForgottenDone` (a node holds a
   durable done record of another request than the chosen one at that
   index), `NoForgottenDoneAfterCrash` (the same at a node that crashed:
   the case of owner 07:19), `NoRetryChosen` (a retry is chosen at a
   second index), `NoDecidedLost` (a crash lost a decided index that rode
-  on no sync), `NoWorkRecordSurvives` (P0: a work record survived a
+  on no sync), `NoWorkRecordSurvives` ( a work record survived a
   crash).
 - Mutations, each must break its property: `ApplyAtDone` (the done
   commit applies the state): `StateIsFold`; `ReplyAtLeaderSync` (the
@@ -655,14 +664,17 @@ first. The arm before is fa14f44. No number is written before the run.
 6. A hypothesis file outside the tree before the code: the cost of the
    base in a child transaction (section 5.2) against the open
    transaction of fa14f44, for 1, 8 and 64 tasks in work; and the cost of
-   a commit with `MDB_NOSYNC`, with `MDB_NOMETASYNC` and of no commit
-   (P0, P2, P1).
+   a commit with `MDB_NOSYNC` and with `MDB_NOMETASYNC` (section 5.1).
 7. A test file outside the tree: a power cut on the FUSE file system
    error_fs between `mdb_txn_prepare` with `MDB_NOSYNC`, the
    `fdatasync` and `mdb_txn_commit`, at each point, and the open after
    it; the same for `MDB_NOSYNC` with one sync after the commit.
    Not checked: whether error_fs can drop the writes after the last
    sync; if not, it gets that switch first.
+9. On real hardware of the owner (a cluster, owner 2026-10-26 11:15):
+   the power cut of item 7 with a real loss of power, on ZFS, on btrfs
+   with `flushoncommit` and on ext4, and the sync time of each disk. The
+   VM of the session cannot cut its own power.
 8. The forms Q1 and Q2 of section 3.5 against the normal commit:
    `commit_lmdb`, `write_lmdb`, `write_batch_size_lmdb`, with the sync
    through io_uring in the bench.
@@ -696,10 +708,6 @@ first. The arm before is fa14f44. No number is written before the run.
   variables of the verdict entries). 2.5.3 (answers sent again on the
   resend timeout) stays, and "work" is sent again in the same way
   (5.3).
-- State file, decisions of 2026-10-24: "a value from LMDB is used only
-  inside its transaction and is never copied" (19:29) and "outside a
-  transaction a node knows only its state machine" (19:38) conflict with
-  P1 (5.1, question 5).
 - State file, decisions in force: "an entry counts as stored only
   after a synchronous LMDB commit" (now: after the sync of section 3.5);
   "the decide index keeps its own
@@ -716,41 +724,19 @@ first. The arm before is fa14f44. No number is written before the run.
 `NoForgottenDone`, `NoForgottenDoneAfterCrash`, `NoRetryChosen`,
 `NoDecidedLost`, `NoWorkRecordSurvives`, `NoOldWorkRecords`,
 `ApplyAtDone`, `ReplyAtLeaderSync`, `DoneWithoutSync`,
-`LeaderCountsUnsynced`, `NoRecovery`, P0, P1, P2, Q1, Q2. Paxos names the done record
+`LeaderCountsUnsynced`, `NoRecovery`, tombstone, Q1, Q2. Paxos names the done record
 an accept, and the "synced" message an accepted.
 
-## 18. Questions for the owner
+## 18. Decisions of the owner, 2026-10-26
 
-1. The two named databases: proposal `meta` (meta record, log, client
-   table) and `data` (the keys of the machine only). Option: the log and
-   the client table in `data` with a prefix. Option: three or four named
-   databases.
-2. The node storage (repair count, identity, the name of the store
-   directory) stays a second environment, because no copy may bring it.
-   Proposal: keep it. Option: a third named database in the one
-   environment, left out of each copy; `mdb_env_copyfd2` copies the
-   whole environment, so this needs a copy of our own.
-3. The leader writes done when a majority agrees. The text of 07:16
-   says "the same result as its own". Proposal: the majority rule of
-   plan-execute-verify.md 2.6 (the leader is one of many); a leader whose
-   own result differs runs again and throws when it still differs.
-   Option: the text as given; then a leader with a wrong result decides
-   nothing until a leader change.
-4. The leader syncs, then sends "done" (07:16). The owner proposed
-   (07:30) that the leader sends "done" while its sync runs (Raft
-   dissertation 10.2.1); it counts itself only after its sync. Safety
-   does not change, and the client path loses one sync in series.
-   The model checks this form (`DoneBeforeOwnSync`, config
-   `MC_oe_parallel`). Proposal: take it. Option: the order of 07:16.
-5. The work record (section 5.1). Proposal: P1, no commit, the work stays
-   in memory. P1 needs an exception to the decisions of 2026-10-24 19:29
-   and 19:38. Option P0, a commit with `MDB_NOSYNC` that rides in the
-   commit of a step that syncs anyway, and needs a sync of its own in an
-   idle step (3.6). Option P2, `MDB_NOMETASYNC`, one more sync for each
-   step with work.
-6. The commit with LMDB (section 3.5 item 3). LMDB needs the data pages
-   on the disk before the meta page that names them. Proposal Q1: one
-   `fdatasync` for each step, and the messages of a step leave after
-   the sync of the next step. Option Q2: two `fdatasync` for each step,
-   and the messages leave after the second. Both wait for the test of
-   section 15 item 7.
+1. Two named databases, `meta` and `data` (07:16).
+2. The node storage stays a second environment (card 10:51).
+3. The leader writes done when a majority agrees, and a leader whose own
+   result differs runs again and throws when it still differs (majority
+   rule, owner 2026-10-25 10:20).
+4. The leader sends "done" while its own sync runs (card 11:38).
+5. The tombstone "in progress" by file system (card 10:59, section 5.1).
+6. Q1, one `fdatasync` for each step (card 10:51). The test of section 15
+   item 7 runs before the build.
+
+No question is open.
