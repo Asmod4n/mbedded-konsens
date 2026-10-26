@@ -13,20 +13,23 @@ branch `tasks/org-migration` (bc335a1).
    binds values and runs the statements (owner, 17:24). What this
    gains is measured, not estimated.
 
-This file is in two parts. Part A lists what LMDB does for the library
-now and which safety rule each use carries. Part B is the proposed
-form with SQLite. The open points of section 9 go to the owner before
-the model and the code.
+Part A lists what LMDB does for the library now and which rule each
+use carries. Part B is the form with SQLite. Section 9 lists the
+decisions of the owner and the open points. Section 11 lists the
+findings of review 1 and what changed.
 
-Order of the work: this plan, a review by a second agent, the
-decisions of the owner, the model where the order of sync and send
-changes, then the code.
+Order of the work: this plan, review 1 (done), the decisions of the
+owner, the model of section 10.1, then the code.
+
+Marks: "card open" marks a provisional form that waits on a card of
+the owner.
 
 ## 1. Facts checked in this session
 
 The code is at c3645c4 (branch `one-environment`). SQLite is at
 `version-3.53.4` (b09c88c), the version of the package `libsqlite3-dev`
-of Ubuntu devel, read in a checkout outside the tree.
+of Ubuntu devel, read in a checkout outside the tree. "A C file outside
+the tree" means a small test program against the package 3.53.4.
 
 - The package `libsqlite3-dev` 3.53.4 gives `libsqlite3.so` and
   `libsqlite3.a`. Its compile options include `ENABLE_DBPAGE_VTAB`,
@@ -40,42 +43,75 @@ of Ubuntu devel, read in a checkout outside the tree.
 - `synchronous=OFF` sets no sync flag for the commit and none for the
   checkpoint (`pager.c:3662-3693`). `NORMAL` syncs only in a
   checkpoint. `FULL` also syncs the WAL at each commit
-  (`wal.h:25-26`, `wal.c:4195-4215`).
+  (`wal.h:25-26`, `wal.c:4195-4215`). The setting holds for one
+  connection (`pragma.c:1143`, `btree.c:3255`).
 - A checkpoint syncs the WAL before it copies pages into the database
-  file, and syncs the database file after it (`wal.c:2277`,
-  `wal.c:2333`).
+  file (`wal.c:2277`). It syncs the database file only when it reached
+  the end of the WAL (`wal.c:2328-2338`). The WAL restarts only after
+  such a full checkpoint.
+- The default WAL hook calls the checkpoint and returns `SQLITE_OK`
+  whatever its result (`main.c:2484-2496`). After a failed sync of the
+  database file, the next checkpoint copies and syncs again
+  (`wal.c:2333-2338`).
+- A commit with `FULL` syncs the WAL before its frames enter the WAL
+  index and its header (`wal.c:4212`, `wal.c:4238-4259`). A reader sees
+  the commit only after the sync. With `NORMAL` the frames enter the
+  index without a sync.
 - The recovery of a WAL stops at the first frame whose checksum or salt
-  does not match (`wal.c:1510-1511`). A torn tail of the WAL is lost,
-  and the frames before it stay.
-- With `FULL`, the last frame of a commit is repeated up to the next
-  sector boundary when the file system does not give "powersafe
-  overwrite" (`wal.c:4185-4215`). With `NORMAL` there is no such
-  padding.
-- `SQLITE_FCNTL_JOURNAL_POINTER` gives the `sqlite3_file` of the WAL
-  (`sqlite.h.in:928-932`). The descriptor inside it is not a public
-  field.
+  does not match (`wal.c:1510-1511`), wherever it stands. A damaged
+  frame in the middle drops that commit and every later one, and SQLite
+  reports no error.
+- The last frame of a commit is repeated up to the next sector boundary
+  only when the file has no "powersafe overwrite" (`wal.c:1721`,
+  `wal.c:1738-1740`, `wal.c:4185-4215`). The unix VFS sets that flag
+  unless the URI says `psow=0` (`os_unix.c:4367-4370`,
+  `os_unix.c:6104-6107`). So on Linux the default pads nothing, with
+  `FULL` too.
+- The unix VFS maps `ENOSPC` of a write to `SQLITE_FULL`
+  (`os_unix.c:3710-3716`). A failed `fsync` gives `SQLITE_IOERR_FSYNC`
+  for every errno (`os_unix.c:3930-3934`).
+- `SQLITE_FULL` and `SQLITE_IOERR` in a statement roll back the whole
+  transaction, close all savepoints and turn autocommit on
+  (`vdbeaux.c:3355-3386`). A C file outside the tree: insert 1,
+  `SAVEPOINT`, an insert fails with `SQLITE_FULL`, insert 3 then
+  commits alone, `ROLLBACK TO` and `COMMIT` fail. Insert 1 is lost,
+  insert 3 is durable.
+- The pointer of `sqlite3_column_blob` is valid until the next step,
+  reset or finalize of its statement. A C file outside the tree: two
+  calls of one persistent statement gave the same address for two
+  different values.
 - `sqlite3_prepare_v3` takes `SQLITE_PREPARE_PERSISTENT`
-  (`sqlite.h.in:4484`).
+  (`sqlite.h.in:4484`) and `SQLITE_PREPARE_NO_VTAB`
+  (`sqlite.h.in:4486`).
 - `SAVEPOINT` (`parse.y:195`), `VACUUM INTO` (`parse.y:1705`) and the
-  backup interface `sqlite3_backup_init` (`sqlite.h.in:9546`) exist.
-- `ext/misc/cksumvfs.c` writes a checksum of 8 bytes on each page. It is
-  in no package.
-
+  backup interface `sqlite3_backup_init` (`sqlite.h.in:9749`) exist.
+  `VACUUM INTO` refuses to run inside a transaction
+  (`vacuum.c:169-172`). SQLite syncs a directory only for a new journal
+  or WAL (`os_unix.c:6569-6573`, `:6777`).
 - No checksum for each row exists. The WAL carries a checksum of two
-  32-bit sums for each frame; it finds a torn tail at recovery and does
-  not leave the WAL (`wal.c:1510-1511`). `cksumvfs.c` computes the same
-  kind of sum for each page (`cksumvfs.c:299-324`).
+  32-bit sums for each frame. `ext/misc/cksumvfs.c` computes the same
+  kind of sum for each page (`cksumvfs.c:299-324`). It is in no package.
 - `sha3()` is a function of the shell only. The package library
   answers "no such function: sha3" (a C file outside the tree).
 - The session extension is in the package library: with
   `SQLITE_ENABLE_SESSION` and `SQLITE_ENABLE_PREUPDATE_HOOK` defined
   before `sqlite3.h`, `sqlite3session_create`, `_attach` and
-  `_changeset` work (a C file outside the tree, a changeset of 20 bytes
-  for one insert). `sqlite3session_diff` compares a table of two
-  databases (`ext/session/sqlite3session.h:446`).
+  `_changeset` work (a C file outside the tree). `sqlite3session_diff`
+  compares a table of two databases that one connection holds
+  (`ext/session/sqlite3session.h:446`). A session ignores a table
+  without an explicit primary key (`sqlite3session.h:192-200`).
+- Value types, a C file outside the tree, `sqlite3_bind_double` and
+  `sqlite3_column_double`: a `REAL` column gives -0.0 back as +0.0. An
+  `ANY` column keeps the sign. NaN becomes `NULL` in both. A literal
+  above 2^63-1 becomes `REAL` and loses bits; `sqlite3_bind_int64`
+  takes a signed value, so a C++ value above 2^63-1 is negative before
+  SQLite sees it.
 
 Not checked: the behaviour of `.recover` on the damages of
-plan-device-faults.md; the speed of anything in this plan.
+plan-device-faults.md; the compile option `POWERSAFE_OVERWRITE` of the
+package; whether a change inside a savepoint that is rolled back
+appears in a changeset; a writable shared `mmap` of the `-shm` file on
+`error_fs`.
 
 ## Part A: what LMDB does now
 
@@ -86,19 +122,29 @@ plan-device-faults.md; the speed of anything in this plan.
 | one writer, `MDB_NOTLS` reader kept | `src/persistent_storage.cpp` | one write transaction for each step (plan-one-environment.md 3.4) |
 | `mdb_txn_prepare`, `MDB_NOSYNC`, `mdb_env_get_fd` | `persistent_storage.cpp:1236-1256`, `sequence_paxos.hpp:407,996,1949` | the library makes no sync; the caller syncs and then commits (3.5) |
 | child transaction | `begin_nested` | the runs of the work roll back alone (5.2) |
+| `throw_if_nested_is_open` | `persistent_storage.cpp:670-675` | the parent takes no operation while its child is open |
 | `MDB_RESERVE` puts with a CRC tail | `put_checked`, `put_session` | CRC32C for each record (section 10 of that plan) |
+| `MDB_APPEND` | `persistent_storage.cpp:557` | an index below the last one is refused |
+| span into the map from `find` | `find_value`, `persistent_storage.cpp:725-738` | a value is read without a copy |
 | `mdb_env_set_checksum` with a module | `src/lmdb_checksum.cpp`, `tools/lmdb_checksum_module.cpp` | a damaged page is found at read time |
 | `MDB_MAP_FULL` as a value | `to_error_code`, `commit_or_throw` | a full store is an error value, not a crash |
+| `map_size` | `persistent_storage.hpp:156`, `examples/counter.cpp:83`, `examples/three_nodes.cpp:78`, `examples/counter_stress.cpp:104` | the bound of the store |
 | a failed commit throws `sync_error` | `commit_or_throw` | a failed sync ends the process (owner 2026-10-21) |
-| `mdb_env_copyfd2` | `persistent_storage::copy` | a full copy for repair and a new node |
+| `mdb_env_copy2` | `persistent_storage.cpp:1498` | a full copy for repair and a new node |
 | a second environment | `node_storage` | the repair count, the proof, the hidden identity |
+| file mode 0600 | `persistent_storage.cpp:29` | only the user reads the store and the hidden identity |
+| format version, empty-store check | `persistent_storage.cpp:39`, `:694-722` | `storage_errc::unsupported_format` |
+| destructor with an open transaction ends the process | `persistent_storage.cpp:1367-1372` | a wrong use fails loudly |
 | `effective_user_id` check | `open` | no start as root |
-| submodules `deps/lmdb`, `deps/lmdb-0.9` | `CMakeLists.txt:12-33` | `mdb_dump` and `mdb_load` for the upgrade test |
+| `lmdb_category` | `src/lmdb_category.hpp`, `bench/konsens_bench.cpp:41,955` | LMDB codes as `std::error_code` |
+| submodules `deps/lmdb`, `deps/lmdb-0.9`, `mdb_dump`, `mdb_load` | `CMakeLists.txt:12-33`, `test/lsan-mdb_dump-0.9.txt` | the upgrade test |
+| faults for `data.mdb` | `test/fuse/error_fs.cpp:17-28`, `:59` | the fault tests |
 | `KONSENS_TEST_TMPDIR` | `CMakeLists.txt:157` | tests on tmpfs |
 
 The interface does not name LMDB: the concept `storage`
-(`include/konsens/storage.hpp:237-245`) is the boundary. A second
-implementation fits behind it.
+(`include/konsens/storage.hpp:237-245`) is the boundary. The concept
+changes in three places: `find` (section 5.3), the sync (section 6.2),
+and `map_size` (section 6.6).
 
 ## 3. Older plans that this plan replaces
 
@@ -106,129 +152,282 @@ plan-hide-lmdb.md, plan-lmdb-converter.md, plan-lmdb-only-source.md,
 plan-lmdb-submodule.md, plan-simulation-on-lmdb.md and
 plan-state-in-lmdb.md describe the LMDB form. Their rules that do not
 name LMDB stay: the CRCs, the start checks, the repair by entries, the
-proof of a fault and the root check. plan-one-environment.md stays,
-except 3.5 item 3 and 3.6 (the commit with LMDB) and 8.2 item 3 (the
-copy with `mdb_env_copyfd2`).
+proof of a fault and the root check.
+
+plan-one-environment.md stays, except these items. Each is replaced by
+the section named.
+
+| item of plan-one-environment.md | replaced by |
+|---|---|
+| 3.4 item 2, "sync only" | gone: no descriptor; an idle node has nothing to sync |
+| 3.5 items 1, 3, 4 and 6 (io_uring, `mdb_txn_prepare`, the writer lock through the sync, slipstreamIO) | section 6 |
+| 3.5 item 2, "done" while the leader syncs (owner decision 18 item 4) | section 6.3, card open |
+| 3.6, the count of syncs | section 6.4 |
+| 4.3 item 1, the decided index without a sync | each commit syncs (section 6.1) |
+| 5.1 items 2 to 4 and 9 item 6 (the tombstone by file system, `MDB_NOSYNC`) | the tombstone rides in the commit of its step, which syncs |
+| 8.2 item 3, the copy with `mdb_env_copy2` | section 7.3 |
+| 15 items 6 to 8 | section 10 |
+| owner decisions 18 items 5 and 6 | section 6, card open |
 
 ## Part B: the form with SQLite
 
 ## 4. Files and tables
 
-1. One database file for the store, in WAL mode. The tables follow
-   plan-one-environment.md 3.1: `meta` (the meta record, the format
-   version, the done records, the client table, the tombstones) and
-   `data` (the state). `auth` is a table of the same file. The number
-   of files is open (section 9, Q5).
-2. The node storage is a second file (owner card 2026-10-26 10:51, the
-   rule is the same for SQLite).
-3. Each table is `WITHOUT ROWID` with the key of today as its primary
-   key, and stays `STRICT`. Values are `BLOB`. The encoding of a record
-   does not change: CBOR and its CRC tail.
-4. Each statement is prepared at the start with
+1. One database file for the store, in WAL mode (owner card
+   2026-10-26 17:30). The tables follow plan-one-environment.md 3.1:
+   `meta` (the meta record, the format version, the done records, the
+   client table, the tombstones), `data` (the state) and `auth`.
+2. The node storage is a second file (owner card 2026-10-26 10:51).
+3. The library creates each database file with mode 0600 before
+   `sqlite3_open_v2`. The WAL and the `-shm` file take the mode of the
+   database file.
+4. Each table is `STRICT`. The key of the log and of the client table
+   is an `INTEGER` (card open, section 4.2). Whether the log is a
+   `WITHOUT ROWID` table or a rowid table with `INTEGER PRIMARY KEY` is
+   an arm of the measurement (section 10); the log rows are large.
+5. Each statement is prepared at the start with
    `SQLITE_PREPARE_PERSISTENT` and kept. A step binds and runs it, then
    calls `sqlite3_reset`. The statements are a fixed list in one place.
-5. A field whose CBOR value has an exact SQLite form is stored in that
-   form (owner, 17:26): an integer from -2^63 to 2^63-1 as `INTEGER`,
-   a text string as `TEXT`, a byte string as `BLOB`, a float as a
-   float. Each other value stays CBOR with its tag, in a `BLOB`. The
-   type of the column decides how a value is read back, so `true` and
-   `1` stay apart.
-6. Measured with the package 3.53.4 (a small C file outside the tree,
-   `sqlite3_bind_double` and `sqlite3_column_double`): a `REAL` column
-   gives -0.0 back as +0.0. An `ANY` column keeps the sign. NaN becomes
-   `NULL` in both. An integer above 2^63-1 becomes a `REAL` and loses
-   bits. So -0.0 needs a column of type `ANY` or CBOR, and NaN and the
-   large integers need CBOR (floats.md: -0 stays, NaN is f97e00).
-7. The CRC of a record covers its deterministic CBOR encoding (RFC 8949
-   4.2), as now. The library encodes the row to compute it.
+   The store opens with extended result codes
+   (`SQLITE_OPEN_EXRESCODE`).
+6. The format version stays in `meta`. A new store must be empty; a
+   store with another version gives `storage_errc::unsupported_format`.
+   SQLite has a field for this in its header (`PRAGMA user_version`);
+   the record in `meta` keeps its CRC.
 
-### 4.1 Virtual tables, relations and types (owner, 17:29)
+### 4.1 The columns and the CRC (card open)
 
-1. A `STRICT` table and the types of the prepared statements give an
-   error value when a value of a wrong type arrives.
+1. Today a log entry is a kind byte and little-endian fields
+   (`storage.cpp:78-97`), not CBOR. The meta record, the session record
+   and the repair record are fixed little-endian forms with a CRC
+   (`persistent_storage.cpp:235-310`, `:405-418`, `:762-805`). The tail
+   of a log record holds the entry CRC, the chain CRC, the state and
+   the state CRC (`persistent_storage.cpp:47-53`). The entry CRC
+   travels on the wire.
+2. Proposal: each field gets a native column (owner, 17:26). The
+   entry CRC and the chain CRC stay columns and keep covering the
+   current binary form, which the library builds to compute them. The
+   wire does not change, and `format_version` goes to 5 only for the
+   file. The other form, a new deterministic CBOR encoding of an entry,
+   changes every CRC on the wire.
+3. A field of the state whose value has an exact SQLite form takes that
+   form: an integer from -2^63 to 2^63-1 as `INTEGER`, a text string as
+   `TEXT`, a byte string as `BLOB`, a float as `ANY` (it keeps -0.0).
+   NaN and the integers above 2^63-1 stay CBOR with their tag, in a
+   `BLOB` (floats.md: -0 stays, NaN is f97e00).
+4. A `STRICT` column checks the type and converts a value that it can
+   convert without loss (text `'12'` into `INTEGER`). A prepared
+   statement has no parameter types. An `ANY` column checks nothing;
+   there the storage class of the value keeps `true` and `1` apart.
+   So the library binds each parameter with the bind call of its C++
+   type, and a column of a fixed type is `INTEGER`, `TEXT`, `BLOB` or
+   `REAL`, never `ANY`, except for floats.
+
+### 4.2 Integer keys (card open)
+
+The log index, the session id, `client_id` and `pid` are `uint64_t`.
+Proposal: one check for safety, with one named bound (2^63-1), at each
+place where an index or an id enters the library. A value above it is
+an error value. The key column stays `INTEGER`. The other form keeps a
+big-endian `BLOB` key, as now (`persistent_storage.cpp:137-142`).
+The insert of the log checks that the index is the next one, as
+`MDB_APPEND` did.
+
+### 4.3 Virtual tables, relations and types (owner, 17:29)
+
+1. A `STRICT` table gives an error value when a value of a wrong type
+   arrives (section 4.1 item 4).
 2. The state may use relations and joins.
 3. A virtual table may give data of another form (a CSV file, for
    example) and logic to the state. Its code stands in the binary or in
-   the library, never in the log. A virtual table that the state reads
-   gives the same rows on each node for the same state, because
-   Execute-Verify compares the results. A clock, a file outside the
-   store or the network as its source breaks this; such a table is not
-   readable from a task.
+   the library, never in the log.
+4. Execute-Verify compares the results of the nodes. So the same state
+   must give the same result on each node (card open). Proposal: all
+   nodes of one cluster run one SQLite version and one binary version,
+   and the handshake compares them. An authorizer
+   (`sqlite3_set_authorizer`) allows a task only the functions of a
+   list, and no `ATTACH`, `PRAGMA` or `ANALYZE`. Each query of a task
+   orders its rows totally. A virtual table with a clock, a file
+   outside the store or the network as its source is not readable from
+   a task; its statements use `SQLITE_PREPARE_NO_VTAB`. Sources of a
+   difference: row order without `ORDER BY`, `random()`, the date
+   functions with `'now'`, `sum()` and `total()` by version
+   (`func.c:1873-1896`), random rowids at the largest rowid
+   (`vdbe.c:5672-5692`), `VACUUM` that renumbers rowids
+   (`insert.c:3288-3289`).
+5. How a task reaches SQL is not in this plan. The `state_machine`
+   concept offers `find` of a byte key (`state_machine.hpp:28-31`). A
+   plan of its own gives the interface.
 
-## 5. The transaction of a step
+## 5. The transactions
 
-1. A step is `BEGIN IMMEDIATE` ... `COMMIT` on one connection. The
-   runs of the work use `SAVEPOINT` and `ROLLBACK TO` in place of the
-   child transaction.
-2. One connection writes. A second connection reads, as the kept LMDB
-   reader does now. Both open in the same thread of the caller.
+### 5.1 The write transaction of a step
+
+1. A step is `BEGIN IMMEDIATE` ... `COMMIT` on the writer connection.
+2. The child of a run is `SAVEPOINT x`. Its commit is `RELEASE x`. Its
+   abort is `ROLLBACK TO x` and then `RELEASE x`. The guard
+   `throw_if_nested_is_open` stays on each method of the parent.
+3. After each statement that fails, the store reads
+   `sqlite3_get_autocommit`. When it is 1, SQLite has rolled back the
+   whole step. The transaction object then enters a closed state: each
+   later call returns the error without SQL, and `commit` returns it.
+   The child does the same. So no part of a step becomes durable alone.
+4. The destructor of the store with an open transaction ends the
+   process, as now.
+
+### 5.2 The reader
+
+1. A second connection reads, in the same thread of the caller.
+2. `begin_read_only` runs `BEGIN` and one read of the meta record at
+   once, so that the snapshot starts there. The end of the reader runs
+   `COMMIT`. So each `read_only_transaction` sees one state.
+3. A reader that stays open stops the checkpoint at its snapshot. The
+   library holds no reader between steps.
+
+### 5.3 `find` (card open)
+
+The pointer of `sqlite3_column_blob` dies at the next step or reset of
+its statement (section 1). A span from `find` would point to memory
+that is not alive after the next `find`. Proposal: `find` returns a
+`std::vector<std::byte>`, a copy that the caller owns. Its cost goes
+into the measurement. The other form: `find` calls a function with the
+span, and the span does not leave that call.
 
 ## 6. The sync
 
 1. Decided (owner card 2026-10-26 17:54): the first version lets
-   SQLite sync. `journal_mode=WAL`, `synchronous=FULL`, the automatic
-   checkpoint at its default. A commit returns after the sync of the
-   WAL (section 1). The measurement of section 8.1 shows no difference
-   to a sync of the caller that waits.
-2. So the library makes the sync inside `commit`, in the thread of the
-   caller. The groups of plan-one-environment.md 3.5 keep their order:
-   a message that waits on a sync leaves after `commit` returns. The
+   SQLite sync. `journal_mode=WAL`, `synchronous=FULL`. The library
+   sets `synchronous` on each connection that writes, the node storage
+   included, reads it back at open and refuses another value. A commit
+   returns after the sync of the WAL. A reader sees the commit only
+   after the sync (section 1). Section 8.1 shows no difference above
+   the noise floor to a sync of the caller that waits.
+2. The library syncs inside `commit`, in the thread of the caller. A
+   message that waits on a sync leaves after `commit` returns. The
    descriptor, `prepare` and `begin_without_sync` go from the concept
    `storage`. The form "the caller syncs through io_uring" is a later
-   option. It is measured in the binary, with the sends, before it
-   enters.
-3. A checkpoint can run inside a commit and make that commit slower.
-4. A commit is durable when `commit` returns. A reader sees it only
-   after the sync: the WAL is synced before the frames enter the WAL
-   index and its header (`wal.c:4212`, `wal.c:4238-4259`).
-5. A failed sync throws `sync_error`, and nothing repeats it, as now.
-   A failed checkpoint throws `sync_error` too.
-6. `SQLITE_FULL` and `SQLITE_IOERR` with `ENOSPC` are the "full" error
-   value, as `MDB_MAP_FULL` now. The limit X of free space stays a
-   field, off by default.
+   option; it is measured in the binary with the sends before it
+   enters. In that form a reader sees the commit before the sync
+   (section 1).
+3. "done" from the leader (card open). Proposal: the leader sends
+   "done" before its `commit`, so that its own sync runs while the
+   followers write. It counts itself only after its `commit` returns.
+   The model of section 10.1 shows that this keeps safety. The other
+   form sends "done" after the commit, with one sync more in series
+   before the reply.
+4. The count of syncs: one sync of the WAL for each commit. A
+   checkpoint adds one sync of the WAL and, when it reaches the end of
+   the WAL, one sync of the database file.
+5. The checkpoint (card open). Proposal: `PRAGMA
+   wal_autocheckpoint=0`. The library calls
+   `sqlite3_wal_checkpoint_v2` with `SQLITE_CHECKPOINT_PASSIVE` after
+   the commit and after the sends of the step, when the WAL holds 1000
+   frames or more (the WAL hook gives the count). `SQLITE_IOERR_FSYNC`
+   from it throws `sync_error`, and nothing repeats it.
+   `SQLITE_FULL` from it is the "full" value. No C++ exception crosses
+   a callback that SQLite calls. The sync stays the work of SQLite.
+6. The bound of the store: `map_size` goes. `PRAGMA max_page_count`
+   gives the bound in pages; the parameter of `open` gives it in bytes,
+   and the library converts it. Over the bound, SQLite gives
+   `SQLITE_FULL`.
+7. Torn sectors (card open). Proposal: each database file opens with
+   the URI parameter `psow=0`, so that SQLite pads the last frame of a
+   commit to the sector. The cost is measured.
+
+### 6.1 The error codes
+
+The rule "An error goes to whoever can repair it" decides each row.
+
+| SQLite code | konsens |
+|---|---|
+| `SQLITE_FULL` | the "full" value (`std::errc::no_space_on_device`) |
+| `SQLITE_IOERR_FSYNC`, `SQLITE_IOERR_DIR_FSYNC` | `sync_error`, whatever `sqlite3_system_errno` says |
+| other `SQLITE_IOERR_*` on a write | `write_error` |
+| other `SQLITE_IOERR_*` on a read | `read_error` |
+| `SQLITE_CORRUPT*`, `SQLITE_NOTADB` | a damage code that `error_is_a_damage` (`sequence_paxos.hpp:83-88`) lists |
+| `SQLITE_TOOBIG` | the value of section 6.2 |
+| `SQLITE_BUSY`, `SQLITE_MISUSE`, `SQLITE_CONSTRAINT` on a key that the library computed | `std::logic_error` |
+
+The limit X of free space stays a field, off by default.
+
+### 6.2 The size of a value
+
+The package has `MAX_LENGTH=1000000000`. A value or a row above
+`SQLITE_LIMIT_LENGTH` gives `SQLITE_TOOBIG`. The plan names one bound
+for a payload and one for a row, derived from `sqlite3_limit` at open,
+each one named constant. The library checks a payload once where a
+request enters, and gives an error value above the bound.
 
 ## 7. Damage, copy and recovery
 
-1. The CRC of each record stays. It finds a damage in a value. A
-   damage in a page of the B-tree gives `SQLITE_CORRUPT`, which is a
-   damage as `MDB_BAD_CHECKSUM` now.
-2. A checksum on each page needs `cksumvfs.c`, which is in no package
-   (section 9 Q6).
-3. A full copy for repair and for a new node is `VACUUM INTO` a new
-   file, or the backup interface. Both read one snapshot. The receiver
-   checks the copy as now (plan-one-environment.md 8.2 item 3).
-4. A backup and an archive are the same copy. The hidden identity of
+1. The CRC32C of each record stays, on the disk and on the wire,
+   because SQLite has no checksum for each row (section 1). The hash in
+   idle time stays ours too (owner, 17:35).
+2. A damage in a page of the B-tree gives `SQLITE_CORRUPT`, mapped as
+   section 6.1 says.
+3. A damaged frame in the middle of the WAL drops that commit and every
+   later one without an error (section 1). The store then holds an
+   older state that is whole in itself. With LMDB the page checksum
+   gave `MDB_BAD_CHECKSUM`. The rule that keeps Paxos safe here is the
+   vote after f + 1 answers after each start (plan-one-environment.md
+   8.1). Not checked: that it covers a lost promise. The model of
+   section 10.1 includes this fault.
+4. A checksum on each page needs `cksumvfs.c`, which is in no package
+   (section 9).
+5. A full copy for repair and for a new node is `VACUUM INTO` a new
+   file. It runs on a connection with no open transaction, in the
+   thread of the caller. The receiver syncs the file and its directory
+   before the switch in the node storage, and checks the copy as now
+   (plan-one-environment.md 8.2 item 3).
+6. A backup and an archive are the same copy. The hidden identity of
    the node storage is not in it, because the node storage is another
-   file (section 9 Q1).
-5. A damaged store: the operator runs `sqlite3 store .recover` on a
-   clone (owner 2026-10-17 20:53: work only on a clone). The node then
-   takes the repair by entries from its peers. The library does not
-   call `.recover` itself (section 9 Q7).
-
-6. The CRC32C of each record stays, on the disk and on the wire,
-   because SQLite has no checksum for each row. The hash in idle time
-   stays ours too.
-7. Decided (owner, 2026-10-26 17:35): a repair after a snapshot takes a changeset of the session
-   extension in place of single entries. The changeset carries no
-   checksum; each record in it keeps its CRC tail, and the receiver
-   checks each one.
+   file (card open).
+7. A damaged store (owner card 2026-10-26 17:30): the operator copies
+   the database file and its `-wal` file together to a clone, and runs
+   `sqlite3 clone.db .recover | sqlite3 new.db` on the clone. The node
+   then takes the repair by entries from its peers. The library does
+   not call `.recover`.
+8. The repair after a snapshot by a changeset of the session extension
+   (owner, 17:35) has no mechanism yet: `sqlite3session_diff` needs
+   both databases on one connection, and a session runs the preupdate
+   hook on each write. Proposal: the first version repairs by entries
+   and by the full copy; the changeset gets a plan of its own (card
+   open).
 
 ## 8. Build and tests
 
-1. SQLite comes from the package of the distribution (`libsqlite3-dev`).
-   The submodules `deps/lmdb` and `deps/lmdb-0.9`, the checksum module
-   and `test_lmdb_upgrade` go.
-2. The interface tests of the concept `storage` run on the new store
-   unchanged. The tests that name LMDB (`lmdb_cluster.hpp`,
-   `lmdb_damage.hpp`, `lmdb_storage.hpp`) get SQLite forms.
-3. New tests: a power cut between commit and sync loses the commit
-   and keeps the store whole (fuse, as `test/fuse` now); a power cut in
-   a checkpoint; a full disk; a failed `fdatasync` of the WAL; a damaged
-   page gives `SQLITE_CORRUPT` and no crash; `.recover` on a damaged
-   clone gives back each record whose CRC holds.
-4. Tests keep `KONSENS_TEST_TMPDIR`.
+1. SQLite comes from the package of the distribution
+   (`libsqlite3-dev`). The submodules `deps/lmdb` and `deps/lmdb-0.9`,
+   `mdb_dump`, `mdb_load`, the checksum module, `lmdb_category`,
+   `test/lsan-mdb_dump-0.9.txt` and `test_lmdb_upgrade` go. RULES.md
+   names LMDB as an exception to the rule on packages; the owner
+   changes that text.
+2. The interface tests of the concept `storage` change with the
+   concept (sections 5.3 and 6.2). The tests that name LMDB
+   (`lmdb_cluster.hpp`, `lmdb_damage.hpp`, `lmdb_storage.hpp`) get
+   SQLite forms.
+3. `error_fs` gets the SQLite files (store, `-wal`, `-shm`) and a switch
+   that drops every write after the last sync of each file.
+4. New tests:
+   - a power cut during a commit, before its sync returns: the commit
+     is lost and the store is whole;
+   - a power cut during a checkpoint;
+   - `SQLITE_FULL` inside a savepoint: no write of the step is in the
+     file (section 5.1 item 3);
+   - `ENOSPC` from `fdatasync`: `sync_error`, not the "full" value;
+   - a failed sync in a checkpoint: `sync_error`, no second sync;
+   - a reader keeps its snapshot while the writer commits a step;
+   - a byte flipped in an early frame of a WAL with several commits,
+     then a restart (section 7.3);
+   - a damaged page gives `SQLITE_CORRUPT` and no crash;
+   - `.recover` on a damaged clone gives back each record whose CRC
+     holds;
+   - the file mode is 0600 for the store, the WAL and the node storage.
+   The VM of the session cannot cut its power and cannot tear a
+   sector; these tests run through `error_fs`.
+5. Tests keep `KONSENS_TEST_TMPDIR`.
 
-## 8.1 Measured: who syncs
+### 8.1 Measured: who syncs
 
 bench/results/2026-10-26-174119Z-sqlite-sync.txt (a C++ file outside
 the tree, g++ 16 -O2, SQLite 3.53.4 of the package, ext4 on virtio, 64 B
@@ -242,38 +441,87 @@ time for each commit with its sync and its checkpoints:
 | 1024 | 854.7 us | 934.5 us | 873.8 us | 877.9 us |
 
 The two builds of one arm differ by up to 9.3 %. The arms differ by
-less. So in this form, where the caller syncs at once and waits, the
-arm "caller syncs" gains nothing. What it can gain is the overlap of
-the sync with the sends (io_uring, plan-one-environment.md 3.5), which
-this file does not measure.
+less, so there is no difference above the noise floor. The overlap of
+the sync with the sends is not measured. Faults of this run against
+the rules: nice 0 and a TLC run of one worker on the machine; one
+build only; the arm "full" prints `checkpoints=0` because the bench
+does not count the automatic checkpoint; the arm "caller" used
+`RESTART`, the automatic checkpoint is `PASSIVE`; the bench does not
+check the result of `sqlite3_prepare_v3`. The run of section 10
+follows the rules.
 
-## 9. Open points for the owner
+## 9. Decisions of the owner and open points
 
-- Q1. The hidden identity in a backup. The task leaves it open. This
-  plan keeps it out of the backup, because it is in the node storage
-  file. A restored node then has a new identity.
-- Q2. How a restored node and an old node never use one identity.
-- Q3 and Q4. Decided (owner card 2026-10-26 17:31): measure first. Arm
-  "SQLite syncs": `synchronous=FULL` and the automatic checkpoint. Arm
-  "caller syncs": section 6. The simple arm is built first. The form
-  of section 6 stays a proposal until the measurement.
-- Q5. Decided (owner card 2026-10-26 17:30): one file with all tables.
-  The node storage stays a second file.
-- Q6. A checksum on each page: `cksumvfs.c` as a submodule from its
-  origin, or no page checksum (the CRC of each record stays).
-- Q7. Decided (owner card 2026-10-26 17:30): the `.recover` of the
-  package `sqlite3`, on a clone. The binary does not hold
-  `sqlite3_recover`.
-- Q8. The lowest SQLite version is the one that the distribution gives. This is not a question for the owner.
-- Q9. Without the padding of `FULL`, a later write in the same sector
-  can tear a frame that a sync already made durable, where the device
-  has no powersafe overwrite (section 1). Proposal: test it with the
-  power cut of section 8, and decide after.
+Decided, 2026-10-26:
+
+- 17:24: statements prepared once at open.
+- 17:26: native column types, CBOR with tag where none fits.
+- 17:29: virtual tables, relations, strict types.
+- 17:30: one file with all tables; the node storage a second file.
+- 17:30: `.recover` of the package `sqlite3`, on a clone.
+- 17:35: the CRC32C of each record stays; a repair after a snapshot by
+  a changeset.
+- 17:54: the first version lets SQLite sync (`synchronous=FULL`).
+
+Cards open (each with its proposal):
+
+1. `find` returns a copy (5.3).
+2. The checkpoint is called by the library, not automatic (6.5).
+3. `psow=0` (6.7).
+4. The columns keep the current binary form under the CRC (4.1).
+5. "done" before the commit of the leader (6.3).
+6. One SQLite version in the cluster and an authorizer (4.3 item 4).
+7. The bound 2^63-1 on integer keys (4.2).
+8. The changeset repair after the first version (7.8).
+9. The hidden identity stays out of a backup, so a restore has a new
+   identity (7.6).
+
+Open, not yet a card: a checksum on each page (`cksumvfs.c` as a
+submodule, or none).
+
+Not a question for the owner: the lowest SQLite version is the one
+that the distribution gives.
 
 ## 10. What is measured
 
 Both arms as bench/run.sh runs them: the LMDB store at fa14f44 and the
-SQLite store, the same durability (one `fdatasync` of the store for
-each step), stores on ext4. The cases of plan-one-environment.md
-section 15, the batch sizes 1, 16 and 1024, and the cost of one
-checkpoint. No number stands here before the run.
+SQLite store, the same durability (each commit synced), stores on ext4.
+The cases of plan-one-environment.md section 15, the batch sizes 1, 16
+and 1024, the cost of a checkpoint, the copy in `find`, the log as a
+`WITHOUT ROWID` table and as a rowid table, and `psow=0` against the
+default. Each build of the rules, with priority. No number stands here
+before the run.
+
+### 10.1 The model
+
+OneEnvironment.tla gets: the sync inside the commit; "done" sent
+before the commit of the leader, which counts itself after its commit;
+a store that goes back to an older whole state at a start (section
+7.3). The runs come before the code.
+
+## 11. Review 1 and changes
+
+doc/review-plan-sqlite-storage-1.md (second agent, 2026-10-26): 28
+findings, 6 blocking. Verdict: approve after the blocking fixes.
+
+| finding | change |
+|---|---|
+| 1 blocking, `find` span | 5.3, card open |
+| 2 blocking, a full disk in a savepoint | 5.1 item 3, test 8.4 |
+| 3 blocking, the automatic checkpoint drops its error | 6.5, card open |
+| 4 blocking, `ENOSPC` of an `fsync` | 6.1, test 8.4 |
+| 5 blocking, no padding with `FULL` | section 1, 6.7, card open |
+| 6 blocking, the record is not CBOR | 4.1, card open |
+| 7, a damaged frame in the middle of the WAL | section 1, 7.3, 10.1, test 8.4 |
+| 8, error codes | 6.1 |
+| 9, the reader snapshot | 5.2 |
+| 10, `RELEASE` | 5.1 item 2 |
+| 11, the inventory | section 2 |
+| 12, what `FULL` removes | section 3, 6.3, card open |
+| 13, determinism | 4.3 item 4, card open |
+| 14, the tests | 8.3, 8.4 |
+| 15, integer keys | 4.2, card open |
+| 16, the changeset | 7.8, card open |
+| 17, the copy | 7.5 |
+| 18, the size of a value | 6.2 |
+| 19 to 28 | section 1, 4.1, 6.1, 6.2, 7.7, 8.1, 8.2, 9, 10 |
