@@ -227,9 +227,9 @@ copy with `mdb_env_copyfd2`).
 - Q5. One file with all tables (proposal) or one file for each table.
 - Q6. A checksum on each page: `cksumvfs.c` as a submodule from its
   origin, or no page checksum (the CRC of each record stays).
-- Q7. The recovery tool: the `.recover` of the package `sqlite3`
-  (proposal), or the interface `sqlite3_recover` from the source in the
-  binary.
+- Q7. Decided (owner card 2026-10-26 17:30): the `.recover` of the
+  package `sqlite3`, on a clone. The binary does not hold
+  `sqlite3_recover`.
 - Q8. The lowest SQLite version is the one that the distribution gives. This is not a question for the owner.
 - Q9. Without the padding of `FULL`, a later write in the same sector
   can tear a frame that a sync already made durable, where the device
