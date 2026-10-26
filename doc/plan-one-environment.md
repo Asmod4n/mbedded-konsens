@@ -370,6 +370,9 @@ Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
    "still in progress" (RIFL 4.1; draft-ietf-httpapi-idempotency-key-header-08
    2.7: 409); /mnt/project-files/actor-raft/exactly-once.md.
 6. The start deletes each tombstone in its first write transaction.
+7. A node deletes its tombstones when its promise changes, in the step
+   that sees the new promise. The tombstones stand in `meta` only, never
+   in `data` (owner 2026-10-26 15:30).
 
 ### 5.2 The base and the run
 
@@ -730,3 +733,5 @@ an accept, and the "synced" message an accepted.
    item 7 runs before the build.
 7. `verified_idx` stays and bounds the accepted of a node (card 15:26,
    section 7 item 4).
+8. The tombstone stands in `meta` only; a new promise deletes it
+   (15:30, section 5.1 item 7).
