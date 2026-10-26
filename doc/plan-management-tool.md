@@ -110,6 +110,11 @@ The tool runs where the operator is, or on the VPS for the phone. On
 the VPS it runs as a service with the web level on. The phone opens
 the page through the VPN.
 
+The phone constrains nothing in this plan (owner, 2026-10-26 14:43).
+The phone parts - the web level over HTTP, the build for the VPS and
+Web Push - come last. They may turn out to follow from the rest at no
+cost, or to need another form than this plan names.
+
 ## 3. What the first version does
 
 Read only:
