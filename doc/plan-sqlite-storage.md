@@ -265,8 +265,10 @@ measurement of blob against columns (section 10).
    offers, FTS5, R*Tree and the aggregates included. A computation on
    floats runs inside SQLite only. Excluded are the access to the
    engine (`ATTACH`, `PRAGMA`, `load_extension`, `sqlite_dbpage`),
-   `random()` and `'now'`. Whether the libm functions through SQLite
-   (`sin`, `pow`) are allowed is open. `sum(x ORDER BY pk)`
+   `random()` and `'now'`. Mathematics, `sin` and `pow` included, runs
+   only in SQL statements, never in code outside SQLite (owner,
+   2026-10-26 18:37). The comparison of results on `float_digits`
+   covers a difference of the libm. `sum(x ORDER BY pk)`
    (`parse.y:1238`) gives the same order of addition on each node. An
    authorizer
    (`sqlite3_set_authorizer`) allows a task only the functions of a
