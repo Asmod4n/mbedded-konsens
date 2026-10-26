@@ -463,7 +463,9 @@ Decided, 2026-10-26:
   a changeset.
 - 17:54: the first version lets SQLite sync (`synchronous=FULL`).
 
-Cards open (each with its proposal):
+Cards open (each with its proposal). The owner asked at 18:14 for the
+practice of known systems on each; section 9.1 gives it, and the cards
+are asked again:
 
 1. `find` returns a copy (5.3).
 2. The checkpoint is called by the library, not automatic (6.5).
@@ -481,6 +483,61 @@ submodule, or none).
 
 Not a question for the owner: the lowest SQLite version is the one
 that the distribution gives.
+
+### 9.1 What known systems do, for each open card
+
+Checked 2026-10-26 on the web. etcd and MongoDB are not cited (owner).
+
+1. `find`: SQLite says the pointer of `sqlite3_column_blob` lives until
+   the next step, reset or finalize
+   (https://sqlite.org/c3ref/column_blob.html). Go `database/sql`
+   copies into `[]byte` by default and offers `RawBytes` without a copy,
+   valid only until the next row. Practice: a copy by default.
+2. The checkpoint: Litestream recommends `PRAGMA wal_autocheckpoint = 0`
+   and runs the checkpoint itself (https://litestream.io/tips/). The
+   dqlite server runs a checkpoint when the WAL passes a fixed size
+   (https://canonical.com/dqlite/docs/explanation/replication).
+   Practice: the program, not the automatic checkpoint.
+3. `psow`: the unix default is on since 3.7.10. SQLite says to assume
+   that drive firmware is poorly written, and names `psow=0` for a safer
+   database (https://sqlite.org/psow.html). No source found that a
+   replicated SQLite system sets `psow=0`. Practice: the default; the
+   documented safe form: `psow=0`.
+4. The log record: hashicorp raft-boltdb stores an entry as opaque bytes
+   under a big-endian 8-byte key (`util.go`, `uint64ToBytes`). dqlite
+   keeps its Raft log in its own files, not in SQLite tables. Practice:
+   the log entry is an opaque record; its form and its CRC do not
+   change with the store.
+5. "done" before the commit of the leader: the Raft dissertation 10.2.1
+   says the leader may write to its disk in parallel with the
+   replication, and counts itself only after its own sync. hashicorp
+   raft writes first and replicates after; PR 579 adds the parallel form
+   as work in progress (https://github.com/hashicorp/raft/pull/579).
+   Practice in the theory: parallel; in that library: not yet.
+6. Determinism: rqlite replicates statements and rewrites `RANDOM()`,
+   `RANDOMBLOB()` and the time functions with `now` before the log; it
+   does not cover `ORDER BY RANDOM()`, defaults, triggers and views
+   (https://rqlite.io/docs/api/non-deterministic/). dqlite replicates
+   pages, so it needs no determinism. SQLite lists `random()`,
+   `changes()`, `last_insert_rowid()`, `sqlite_version()` and the date
+   functions with `now`, `localtime` or `utc` as not deterministic
+   (https://www.sqlite.org/deterministic.html). No source found for a
+   check of the SQLite version across a cluster. Practice: forbid or
+   rewrite the functions that are not deterministic.
+7. Integer keys: raft-boltdb keeps the full `uint64` range as a
+   big-endian key (item 4). Practice: the full range.
+8. The changeset: SQLite describes sessions for recording changes and
+   merging them between sites (https://sqlite.org/session.html). A
+   session ignores a table without an explicit primary key. Raft systems
+   catch a node up with log entries and a snapshot. Practice: log and
+   snapshot; changesets in multi-site tools such as cr-sqlite.
+9. The identity after a restore: Consul asks for unique node names when
+   a snapshot is restored on new infrastructure
+   (https://developer.hashicorp.com/consul/docs/manage/disaster-recovery/backup-restore).
+   A Vault user restored a production snapshot into a test cluster; the
+   snapshot carried the production members, and production nodes then
+   refused that node id (https://discuss.hashicorp.com/t/restoring-raft-snapshot-on-test-cluster-broke-production-cluster/44473).
+   Practice: a restore does not reuse a live identity.
 
 ## 10. What is measured
 
