@@ -25,3 +25,14 @@ So a node that loses a synced entry and then votes can lose a decided
 entry. The fix in the model: the recovery takes the log, the accepted
 ballot and the decided index of the answer with the highest accepted
 ballot and the longest log (`RecoveryTakesLog`).
+
+## Run 2: the recovery takes the log (model 0c9ca02)
+
+| config | exit | result |
+|---|---|---|
+| MC_oe_rollback_takeslog_l1 | 124 | limit, depth 26, 29,637,292 distinct states, no violation |
+| MC_oe_rollback_takeslog_parallel_l1 | 124 | limit, depth 26, 30,009,168 distinct states, no violation |
+
+The violation of run 1 lies at depth 29. These runs end at depth 26,
+so they do not show that the fix holds. Run 3 takes one request
+(`*_r1.cfg`) so that the search can end.
