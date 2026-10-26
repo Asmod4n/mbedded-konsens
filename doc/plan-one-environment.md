@@ -1,41 +1,31 @@
 # Plan: one environment, one sync for each task and node
 
-Source: the owner, 2026-10-26.
+Source: the owner, 2026-10-26, from 07:14 to 11:38. Section 18 lists
+each decision with its time.
 
-- 07:14 (card "Eine Umgebung"): the log and the state (the state
-  machine and the client table) stand in one LMDB environment with
-  named databases, so that the apply and the verdict share one commit.
-  This replaces the two environments of plan-lmdb-only-source.md 2.6
-  item 1 (owner 2026-10-24 20:47).
-- 07:16: the form of a task, given by the owner. It replaces the open
-  card on `max_in_flight`; that card is withdrawn.
-  1. One environment, two named databases: one for metadata, one for
-     data.
-  2. A request that reaches any node goes to the leader. The node that
-     receives it stores nothing.
-  3. The leader tells the nodes "here is work". Each node records the
-     work as in progress with no sync, runs it, and sends "I am done"
-     with its result to the leader, in log order.
-  4. When a majority has the same result, the leader writes "this work
-     is done" and syncs. It then sends it to all other nodes. Each of
-     them writes it and syncs. The goal: one sync for each task on each
-     node.
-- 07:18: the client gets its reply after a majority reported "synced
-  done" to the leader. That step needs no further sync, only one more
-  round trip.
-- 07:30: the binary syncs through io_uring. It links the `fdatasync`
-  to the send of the messages that wait on it (`IOSQE_IO_LINK`). LMDB
-  commits with no sync of its own. The binary takes the file descriptor
-  (`mdb_env_get_fd`). A "synced" ack leaves only after the sync of its
-  node. The library does no IO. A step tells its caller "sync, then
-  send these messages". The leader may send "done" while its own sync
-  runs (Raft dissertation 10.2.1). This is a proposal of the owner and
-  is not decided.
-- 07:19: a node may forget work. The client keeps its session and
-  request number, waits for its timeout and asks again. The cluster
-  answers "already done" with the stored reply, or runs the work again
-  when the majority forgot it. No node keeps an effect that the
-  majority forgot.
+1. The log and the state (the state machine and the client table)
+   stand in one LMDB environment with two named databases, `meta` and
+   `data`. The node storage stays a second environment.
+2. A request that reaches any node goes to the leader. The node that
+   receives it stores nothing.
+3. The leader sends "work" to the nodes. Each node writes the tombstone
+   "in progress" of the task, runs the task, and sends "ran" with its
+   result to the leader, in log order. The form of the tombstone commit
+   depends on the file system (section 5.1).
+4. When a majority has the same result, the leader writes the done
+   record and sends "done" to all nodes while its own sync runs. Each
+   node writes the done record, syncs, and sends "synced".
+5. The client gets its reply when a majority acked "synced". That step
+   needs no further sync.
+6. One `fdatasync` for each step. The binary links it to the sends that
+   wait on it (io_uring, `IOSQE_IO_LINK`); the library does no IO and
+   gives its caller groups "sync, then send these messages".
+7. A node may forget work. The client keeps its session and request
+   number and asks again after its timeout. The cluster answers with the
+   stored reply, or runs the task again when the majority forgot it. No
+   node keeps an effect that the majority forgot.
+8. The library sets no bound on the tasks in flight (`max_in_flight`
+   goes). A bound comes from the user or from the kernel.
 
 Order of the work: this plan, the model of section 13 and its TLC runs,
 one review by a second agent, the go of the owner, then the code.
@@ -92,9 +82,12 @@ that commit outside the tree.
 - LMDB: `mdb_env_sync` flushes every commit before it (`lmdb.h:872-890`,
   `mdb_env_sync0` `mdb.c:3113`). So one sync makes every earlier
   commit of the environment durable.
-- ext4 with `data=ordered` (the mount of the bench, `/lmdb`) does not
-  keep the order of the writes of one file. Not checked in this
-  session: the text of the kernel documentation.
+- ext4 with `data=ordered` (the mount of the bench, `/lmdb`), XFS and
+  btrfs without `flushoncommit` do not keep the order of overwrites of
+  file data; ZFS and btrfs with `flushoncommit` keep it
+  (/mnt/project-files/actor-raft/fs-write-order.md: kernel
+  documentation of ext4, btrfs mount options, OpenZFS txg.c, Pillai et
+  al. OSDI 2014 and FAST 2017).
 - LMDB: a commit syncs the data pages first and writes the meta page
   after it (`mdb.c:4601-4616`). Without `MDB_NOSYNC` and
   `MDB_NOMETASYNC`, the meta page goes through `me_mfd`, a descriptor
@@ -120,10 +113,8 @@ that commit outside the tree.
   `mdb_find_oldest` is the transaction before the one that writes
   (`mdb.c:2645`), and the free pages of that transaction stay. Read from
   the code; not tested.
-- The coordinator reports that the state file says the engine of
-  slipstreamIO has no operation for a sync yet. A search of
-  /home/claude/Claude-state for "fsync" found no such line. Not checked
-  in slipstreamIO.
+- slipstreamIO has no operation for a sync yet; it needed none so far
+  (owner 2026-10-26 07:34). It gets one for the binary.
 - A prepared transaction keeps the writer lock until its commit:
   `_mdb_txn_commit` returns after the prepare at `mdb.c:4610-4613`, and
   only `mdb_txn_end` at `:4630` releases the lock (`:3762`). So no other
@@ -139,16 +130,17 @@ The names in quotes are provisional message names.
    forwards it to the leader and stores nothing (owner 07:16 item 2).
 2. The leader gives the request the next log index and sends "work"
    (ballot, index, request, entry CRC) to the nodes that promised.
-3. Each node, the leader too, runs the work in log order on its base
-   (section 5), and sends "ran" (ballot, index, base CRC, result, result
+3. Each node, the leader too, writes the tombstone of the task
+   (section 5.1), runs the work in log order on its base (section 5),
+   and sends "ran" (ballot, index, base CRC, result, result
    CRC) to the leader. This is the answer of plan-execute-verify.md 2.5.
 4. The leader selects the result that a majority agrees on, by the rules
    of plan-execute-verify.md 2.6 (the base, try again, the list of the
-   nodes that do not agree). The owner's text says "the same result as
-   its own"; the owner keeps the majority rule (section 18 item 3).
-5. The leader writes the done record (section 3.3) and syncs. The done
-   record is the accept of the leader in Paxos terms. Then it sends
-   "done" (ballot, index, the done record, chain CRC) to the nodes.
+   nodes that do not agree).
+5. The leader writes the done record (section 3.3) and sends "done"
+   (ballot, index, the done record, chain CRC) to the nodes while its
+   own sync runs. The done record is the accept of the leader in Paxos
+   terms. The leader counts itself only after its own sync.
 6. A node checks the done record (plan-execute-verify.md 2.7, "accept
    means verify"), writes it and syncs, and sends "synced" (ballot,
    index, chain CRC). A node that refuses sends "refused", as 2.7.6.
@@ -557,8 +549,8 @@ when a write is durable.
 - A crash puts `cur` back to `dur` and empties `queue`: everything after
   the last sync is lost (the rule of the owner for this model).
 - "synced", "promise" and "prepare" wait on the sync. "done" waits on
-  the sync of the leader; with `DoneBeforeOwnSync` it leaves at once
-  (section 18 item 4). "work", "ran", "decide" and "acceptsync" leave at once.
+  the sync of the leader in the base form. With `DoneBeforeOwnSync`, the
+  form of section 18 item 4, it leaves at once. "work", "ran", "decide" and "acceptsync" leave at once.
 - The leader counts itself for a decide only from `dur`.
 - The decided index rides in a commit with no sync of its own.
 - `WorkRecords`: the tombstone is a record of a commit with no sync. The
@@ -671,13 +663,13 @@ first. The arm before is fa14f44. No number is written before the run.
    it; the same for `MDB_NOSYNC` with one sync after the commit.
    Not checked: whether error_fs can drop the writes after the last
    sync; if not, it gets that switch first.
+8. The form Q1 of section 3.5 against the normal commit:
+   `commit_lmdb`, `write_lmdb`, `write_batch_size_lmdb`, with the sync
+   through io_uring in the bench.
 9. On real hardware of the owner (a cluster, owner 2026-10-26 11:15):
    the power cut of item 7 with a real loss of power, on ZFS, on btrfs
    with `flushoncommit` and on ext4, and the sync time of each disk. The
    VM of the session cannot cut its own power.
-8. The forms Q1 and Q2 of section 3.5 against the normal commit:
-   `commit_lmdb`, `write_lmdb`, `write_batch_size_lmdb`, with the sync
-   through io_uring in the bench.
 
 ## 16. Rules of older plans that change
 
@@ -689,7 +681,7 @@ first. The arm before is fa14f44. No number is written before the run.
   3, 4, 5, 7 and 8 (own environment, commit after the decide, run before
   the decide in an open transaction, the pipeline with `max_in_flight`,
   the abort on a cut, two environments without `MDB_WRITEMAP`: now one);
-  question 11 and 12.
+  questions 11 and 12 of that plan.
 - plan-lmdb-only-source.md 2.1 item 2 (the messages of a step leave
   only after its commit): "work", "ran", "decide" and the heartbeats
   leave at once (3.5 item 2); the rest waits on the sync, not on the
