@@ -89,6 +89,10 @@ The core:
 4. Sends the commands of part 3.
 5. Writes the configs of a new cluster.
 
+The route handlers keep no state between requests. Each request reads
+what it shows from a node (owner, 2026-10-26 15:42: with no state in
+the server or the client, any server of a pool can answer).
+
 So the tool is an mruby binary. The core is C++ and has an mruby
 binding. The front ends are Ruby.
 
