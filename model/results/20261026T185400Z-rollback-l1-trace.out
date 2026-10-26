@@ -1,0 +1,3349 @@
+Picked up JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts -Djavax.net.ssl.trustStoreType=JKS -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=41135 -Dhttp.nonProxyHosts=localhost|127.0.0.1|::1|127.*|0.*|::|169.254.*|api.anthropic.com|api-staging.anthropic.com|api-pr-preview.anthropic.com|mcp-proxy.anthropic.com|mcp-proxy-staging.anthropic.com|registry.npmjs.org|jsr.io|npm.jsr.io|pypi.org|files.pythonhosted.org|index.crates.io|proxy.golang.org|host.docker.internal|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*|192.168.*|100.64.0.0/10|*.svc.cluster.local|*.svc.cluster.local -Djdk.http.auth.tunneling.disabledSchemes= -Djdk.http.auth.proxying.disabledSchemes=
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 110 and seed 4011548571394862183 with 1 worker on 4 cores with 1820MB heap and 64MB offheap memory [pid: 2434] (Linux 6.18.44-fc-v153 amd64, Ubuntu 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/claude/mk-sqlite/model/tla/OneEnvironment.tla
+Parsing file /tmp/claude-0/-home-claude/64e53525-a4cd-52b2-b5cd-548b48dafcc6/scratchpad/z/sq1/tmp-MC_oe_rollback_l1/Naturals.tla
+Parsing file /tmp/claude-0/-home-claude/64e53525-a4cd-52b2-b5cd-548b48dafcc6/scratchpad/z/sq1/tmp-MC_oe_rollback_l1/Sequences.tla
+Parsing file /tmp/claude-0/-home-claude/64e53525-a4cd-52b2-b5cd-548b48dafcc6/scratchpad/z/sq1/tmp-MC_oe_rollback_l1/FiniteSets.tla
+Parsing file /tmp/claude-0/-home-claude/64e53525-a4cd-52b2-b5cd-548b48dafcc6/scratchpad/z/sq1/tmp-MC_oe_rollback_l1/TLC.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module OneEnvironment
+Starting... (2026-10-26 18:25:32)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-10-26 18:25:33.
+Progress(12) at 2026-10-26 18:25:36: 40,763 states generated (40,763 s/min), 14,742 distinct states found (14,742 ds/min), 7,340 states left on queue.
+Progress(20) at 2026-10-26 18:26:36: 3,319,401 states generated (3,278,638 s/min), 945,139 distinct states found (930,397 ds/min), 332,903 states left on queue.
+Progress(22) at 2026-10-26 18:27:36: 7,184,425 states generated (3,865,024 s/min), 1,977,512 distinct states found (1,032,373 ds/min), 643,736 states left on queue.
+Progress(23) at 2026-10-26 18:28:36: 11,059,333 states generated (3,874,908 s/min), 2,980,346 distinct states found (1,002,834 ds/min), 915,340 states left on queue.
+Progress(23) at 2026-10-26 18:29:36: 14,855,591 states generated (3,796,258 s/min), 3,955,775 distinct states found (975,429 ds/min), 1,183,661 states left on queue.
+Progress(24) at 2026-10-26 18:30:36: 18,390,881 states generated (3,535,290 s/min), 4,880,673 distinct states found (924,898 ds/min), 1,446,356 states left on queue.
+Progress(25) at 2026-10-26 18:31:36: 21,994,303 states generated (3,603,422 s/min), 5,807,665 distinct states found (926,992 ds/min), 1,680,063 states left on queue.
+Progress(25) at 2026-10-26 18:32:36: 25,648,146 states generated (3,653,843 s/min), 6,750,475 distinct states found (942,810 ds/min), 1,949,572 states left on queue.
+Progress(25) at 2026-10-26 18:33:36: 29,227,790 states generated (3,579,644 s/min), 7,657,194 distinct states found (906,719 ds/min), 2,177,670 states left on queue.
+Progress(26) at 2026-10-26 18:34:36: 32,770,489 states generated (3,542,699 s/min), 8,559,672 distinct states found (902,478 ds/min), 2,390,820 states left on queue.
+Progress(26) at 2026-10-26 18:35:36: 36,391,362 states generated (3,620,873 s/min), 9,512,320 distinct states found (952,648 ds/min), 2,690,519 states left on queue.
+Progress(26) at 2026-10-26 18:36:36: 39,940,538 states generated (3,549,176 s/min), 10,405,357 distinct states found (893,037 ds/min), 2,911,021 states left on queue.
+Progress(27) at 2026-10-26 18:37:36: 43,285,247 states generated (3,344,709 s/min), 11,279,883 distinct states found (874,526 ds/min), 3,118,586 states left on queue.
+Progress(27) at 2026-10-26 18:38:36: 46,846,364 states generated (3,561,117 s/min), 12,143,417 distinct states found (863,534 ds/min), 3,317,751 states left on queue.
+Progress(27) at 2026-10-26 18:39:36: 50,318,462 states generated (3,472,098 s/min), 13,095,577 distinct states found (952,160 ds/min), 3,649,117 states left on queue.
+Progress(27) at 2026-10-26 18:40:36: 53,785,730 states generated (3,467,268 s/min), 13,948,092 distinct states found (852,515 ds/min), 3,846,894 states left on queue.
+Progress(27) at 2026-10-26 18:41:36: 57,073,238 states generated (3,287,508 s/min), 14,827,326 distinct states found (879,234 ds/min), 4,095,910 states left on queue.
+Progress(28) at 2026-10-26 18:42:36: 60,325,023 states generated (3,251,785 s/min), 15,657,953 distinct states found (830,627 ds/min), 4,261,775 states left on queue.
+Progress(28) at 2026-10-26 18:43:36: 63,741,964 states generated (3,416,941 s/min), 16,474,283 distinct states found (816,330 ds/min), 4,437,783 states left on queue.
+Progress(28) at 2026-10-26 18:44:36: 67,071,612 states generated (3,329,648 s/min), 17,340,138 distinct states found (865,855 ds/min), 4,704,573 states left on queue.
+Progress(28) at 2026-10-26 18:45:36: 70,334,958 states generated (3,263,346 s/min), 18,213,686 distinct states found (873,548 ds/min), 4,993,048 states left on queue.
+Progress(28) at 2026-10-26 18:46:36: 73,761,492 states generated (3,426,534 s/min), 19,058,694 distinct states found (845,008 ds/min), 5,189,444 states left on queue.
+Progress(28) at 2026-10-26 18:47:36: 77,021,819 states generated (3,260,327 s/min), 19,938,822 distinct states found (880,128 ds/min), 5,448,901 states left on queue.
+Progress(28) at 2026-10-26 18:48:36: 80,320,808 states generated (3,298,989 s/min), 20,767,729 distinct states found (828,907 ds/min), 5,614,978 states left on queue.
+Progress(29) at 2026-10-26 18:49:36: 83,476,549 states generated (3,155,741 s/min), 21,598,859 distinct states found (831,130 ds/min), 5,796,220 states left on queue.
+Progress(29) at 2026-10-26 18:50:36: 86,106,950 states generated (2,630,401 s/min), 22,205,177 distinct states found (606,318 ds/min), 5,902,857 states left on queue.
+Progress(29) at 2026-10-26 18:51:36: 89,535,235 states generated (3,428,285 s/min), 23,020,592 distinct states found (815,415 ds/min), 6,098,232 states left on queue.
+Progress(29) at 2026-10-26 18:52:36: 92,828,903 states generated (3,293,668 s/min), 23,897,148 distinct states found (876,556 ds/min), 6,383,449 states left on queue.
+Progress(29) at 2026-10-26 18:53:36: 96,073,583 states generated (3,244,680 s/min), 24,773,026 distinct states found (875,878 ds/min), 6,687,541 states left on queue.
+Error: Invariant AppliedIsDecided is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = {}
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 2: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1]} ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = {}
+/\ replied = {}
+/\ queue = (n1 :> {[b |-> 1, from |-> n1, type |-> "prepare"]} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 3: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1]} ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = {[b |-> 1, from |-> n1, type |-> "prepare"]}
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 4: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1]} ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = {[b |-> 1, from |-> n1, type |-> "prepare"]}
+/\ replied = {}
+/\ queue = ( n1 :> {} @@
+  n2 :>
+      { [ b |-> 1,
+          acc |-> 0,
+          log |-> <<>>,
+          dec |-> 0,
+          from |-> n2,
+          type |-> "promise",
+          to |-> n1 ] } @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 5: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1]} ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 6: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 7: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<r1>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 8: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<r1>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = ( n1 :> {} @@
+  n2 :> {[b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"]} @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 9: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<r1>> @@ n2 :> <<r1>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = ( n1 :> {} @@
+  n2 :> {[b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"]} @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 10: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<r1>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = ( n1 :> {[b |-> 1, req |-> r1, idx |-> 1, type |-> "done"]} @@
+  n2 :> {[b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"]} @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 11: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<r1>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = ( n1 :> {} @@
+  n2 :> {[b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"]} @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 12: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = ( n1 :> {} @@
+  n2 :>
+      { [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+        [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"] } @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 13: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> FALSE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 0
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 14: <RollbackCrash line 331, col 5 to line 345, col 66 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "down" @@ n3 :> "running")
+
+State 15: <Restart line 350, col 5 to line 354, col 119 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "recovering" @@ n3 :> "running")
+
+State 16: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "recovering" @@ n3 :> "running")
+
+State 17: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "recovering" @@ n3 :> "running")
+
+State 18: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {<<n1, 1>>} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "recovering" @@ n3 :> "running")
+
+State 19: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {<<n1, 1>>, <<n3, 0>>} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "recovering" @@ n3 :> "running")
+
+State 20: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 21: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2]} ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {[b |-> 2, from |-> n2, type |-> "prepare"]} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 22: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :>
+      [ b |-> 1,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n1],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2] } ] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2]} ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 23: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2]} ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = ( n1 :>
+      { [ b |-> 2,
+          acc |-> 1,
+          log |-> <<[bal |-> 1, req |-> r1]>>,
+          dec |-> 1,
+          from |-> n1,
+          type |-> "promise",
+          to |-> n2 ] } @@
+  n2 :> {} @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 24: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2]} ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ],
+  [ b |-> 2,
+    acc |-> 1,
+    log |-> <<[bal |-> 1, req |-> r1]>>,
+    dec |-> 1,
+    from |-> n1,
+    type |-> "promise",
+    to |-> n2 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 25: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2]} ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ],
+  [ b |-> 2,
+    acc |-> 1,
+    log |-> <<[bal |-> 1, req |-> r1]>>,
+    dec |-> 1,
+    from |-> n1,
+    type |-> "promise",
+    to |-> n2 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = ( n1 :> {} @@
+  n2 :> {} @@
+  n3 :>
+      { [ b |-> 2,
+          acc |-> 0,
+          log |-> <<>>,
+          dec |-> 0,
+          from |-> n3,
+          type |-> "promise",
+          to |-> n2 ] } )
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 26: <SyncDone line 117, col 5 to line 124, col 64 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "prepare",
+        promises |-> {[acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2]} ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ],
+  [ b |-> 2,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n3,
+    type |-> "promise",
+    to |-> n2 ],
+  [ b |-> 2,
+    acc |-> 1,
+    log |-> <<[bal |-> 1, req |-> r1]>>,
+    dec |-> 1,
+    from |-> n1,
+    type |-> "promise",
+    to |-> n2 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 27: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n3] } ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 2,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 2,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "acceptsync",
+    to |-> n3 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ],
+  [ b |-> 2,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n3,
+    type |-> "promise",
+    to |-> n2 ],
+  [ b |-> 2,
+    acc |-> 1,
+    log |-> <<[bal |-> 1, req |-> r1]>>,
+    dec |-> 1,
+    from |-> n1,
+    type |-> "promise",
+    to |-> n2 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 28: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n3],
+              [ acc |-> 1,
+                log |-> <<[bal |-> 1, req |-> r1]>>,
+                dec |-> 1,
+                from |-> n1 ] } ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 2,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 2,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "acceptsync",
+    to |-> n1 ],
+  [ b |-> 2,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "acceptsync",
+    to |-> n3 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ],
+  [ b |-> 2,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n3,
+    type |-> "promise",
+    to |-> n2 ],
+  [ b |-> 2,
+    acc |-> 1,
+    log |-> <<[bal |-> 1, req |-> r1]>>,
+    dec |-> 1,
+    from |-> n1,
+    type |-> "promise",
+    to |-> n2 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+State 29: <Next line 393, col 8 to line 403, col 93 of module OneEnvironment>
+/\ decAtCrash = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ lead = ( n1 :> [b |-> 0, phase |-> "none", promises |-> {}] @@
+  n2 :>
+      [ b |-> 2,
+        phase |-> "accept",
+        promises |->
+            { [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n2],
+              [acc |-> 0, log |-> <<>>, dec |-> 0, from |-> n3],
+              [ acc |-> 1,
+                log |-> <<[bal |-> 1, req |-> r1]>>,
+                dec |-> 1,
+                from |-> n1 ] } ] @@
+  n3 :> [b |-> 0, phase |-> "none", promises |-> {}] )
+/\ cur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 2,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 2,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ work = (n1 :> <<>> @@ n2 :> <<>> @@ n3 :> <<>>)
+/\ ticks = (n1 :> 0 @@ n2 :> 0 @@ n3 :> 0)
+/\ prevDur = ( n1 :>
+      [ promise |-> 1,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 1,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 0,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ answers = (n1 :> {} @@ n2 :> {} @@ n3 :> {})
+/\ msgs = { [b |-> 1, idx |-> 1, type |-> "decide"],
+  [b |-> 1, from |-> n1, type |-> "prepare"],
+  [b |-> 2, from |-> n2, type |-> "prepare"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "work"],
+  [b |-> 1, req |-> r1, idx |-> 1, type |-> "done"],
+  [b |-> 1, idx |-> 0, from |-> n2, type |-> "synced"],
+  [b |-> 1, idx |-> 1, from |-> n2, type |-> "synced"],
+  [b |-> 1, req |-> r1, idx |-> 1, from |-> n2, type |-> "ran"],
+  [ b |-> 1,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n1,
+    type |-> "acceptsync",
+    to |-> n2 ],
+  [ b |-> 2,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "acceptsync",
+    to |-> n1 ],
+  [ b |-> 2,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "acceptsync",
+    to |-> n3 ],
+  [ b |-> 1,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n2,
+    type |-> "promise",
+    to |-> n1 ],
+  [ b |-> 2,
+    acc |-> 0,
+    log |-> <<>>,
+    dec |-> 0,
+    from |-> n3,
+    type |-> "promise",
+    to |-> n2 ],
+  [ b |-> 2,
+    acc |-> 1,
+    log |-> <<[bal |-> 1, req |-> r1]>>,
+    dec |-> 1,
+    from |-> n1,
+    type |-> "promise",
+    to |-> n2 ] }
+/\ replied = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ queue = ( n1 :> {[b |-> 2, idx |-> 0, from |-> n1, type |-> "synced"]} @@
+  n2 :> {} @@
+  n3 :> {} )
+/\ crashed = (n1 :> FALSE @@ n2 :> TRUE @@ n3 :> FALSE)
+/\ dur = ( n1 :>
+      [ promise |-> 2,
+        acc |-> 1,
+        log |-> <<[bal |-> 1, req |-> r1]>>,
+        dec |-> 1,
+        state |-> <<r1>>,
+        applied |-> 1,
+        wrec |-> {} ] @@
+  n2 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] @@
+  n3 :>
+      [ promise |-> 2,
+        acc |-> 0,
+        log |-> <<>>,
+        dec |-> 0,
+        state |-> <<>>,
+        applied |-> 0,
+        wrec |-> {} ] )
+/\ crashes = 1
+/\ chosen = {<<1, [bal |-> 1, req |-> r1]>>}
+/\ starts = (n1 :> 0 @@ n2 :> 1 @@ n3 :> 0)
+/\ status = (n1 :> "running" @@ n2 :> "running" @@ n3 :> "running")
+
+98754382 states generated, 25445888 distinct states found, 6845420 states left on queue.
+The depth of the complete state graph search is 29.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 8 and the 95th percentile is 3).
+Finished in 28min 55s at (2026-10-26 18:54:26)

@@ -26,7 +26,8 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           DoneWithoutSync,    \* mutation: a follower sends "synced" before its sync
           LeaderCountsUnsynced, \* mutation: the leader counts its own done before its sync
           NoRecovery,         \* a restarted node votes at once
-          StoreRollback       \* fault: a start finds the store at the sync before its last one
+          StoreRollback,      \* fault: a start finds the store at the sync before its last one
+          RecoveryTakesLog    \* the recovery takes the log of the answer with the highest acc
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec, state, applied,
@@ -373,13 +374,22 @@ RecoveryAnswer(i, j) ==
     /\ status[i] = "recovering"
     /\ status[j] = "running"
     /\ j # i
-    /\ answers' = [answers EXCEPT ![i] = @ \cup {<<j, cur[j].promise>>}]
+    /\ answers' = [answers EXCEPT ![i] = @ \cup {<<j, cur[j].promise, cur[j].acc, cur[j].log, cur[j].dec>>}]
     /\ UNCHANGED <<cur, dur, queue, work, status, lead, msgs, chosen, replied, Ghosts>>
 
 RecoveryComplete(i) ==
     /\ status[i] = "recovering"
     /\ Cardinality({a[1] : a \in answers[i]}) >= F + 1
-    /\ Commit(i, [cur[i] EXCEPT !.promise = SetMax({a[2] : a \in answers[i]} \cup {@})])
+    /\ LET p    == SetMax({a[2] : a \in answers[i]} \cup {cur[i].promise})
+           own  == <<i, cur[i].promise, cur[i].acc, cur[i].log, cur[i].dec>>
+           best == CHOOSE a \in answers[i] \cup {own} :
+                     \A o \in answers[i] \cup {own} :
+                        \/ a[3] > o[3]
+                        \/ a[3] = o[3] /\ Len(a[4]) >= Len(o[4])
+       IN IF RecoveryTakesLog /\ best # own
+          THEN Commit(i, [cur[i] EXCEPT !.promise = p, !.acc = best[3], !.log = best[4],
+                                        !.dec = Max(@, best[5])])
+          ELSE Commit(i, [cur[i] EXCEPT !.promise = p])
     /\ status' = [status EXCEPT ![i] = "running"]
     /\ answers' = [answers EXCEPT ![i] = {}]
     /\ UNCHANGED <<dur, queue, work, lead, msgs, chosen, replied, Ghosts>>
