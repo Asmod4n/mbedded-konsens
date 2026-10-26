@@ -260,11 +260,13 @@ measurement of blob against columns (section 10).
 4. Execute-Verify compares the results of the nodes. So the same state
    must give the same result on each node. The owner decided on
    2026-10-26 18:22 and 18:34 that the cluster does not check the
-   SQLite version (thread "SQLite functions for clients"). So no
-   function whose result depends on the SQLite version is offered:
-   no FTS5, no R*Tree, no float to text, no `sum` or `avg` over floats.
-   A sum of floats uses `decimal_sum` of the decimal extension (section
-   8 item 1), whose version stands in the tree. `sum(x ORDER BY pk)`
+   SQLite version (thread "SQLite functions for clients"). The owner
+   decided on 2026-10-26 18:36 that a task may use all that SQLite
+   offers, FTS5, R*Tree and the aggregates included. A computation on
+   floats runs inside SQLite only. Excluded are the access to the
+   engine (`ATTACH`, `PRAGMA`, `load_extension`, `sqlite_dbpage`),
+   `random()` and `'now'`. Whether the libm functions through SQLite
+   (`sin`, `pow`) are allowed is open. `sum(x ORDER BY pk)`
    (`parse.y:1238`) gives the same order of addition on each node. An
    authorizer
    (`sqlite3_set_authorizer`) allows a task only the functions of a
@@ -277,8 +279,8 @@ measurement of blob against columns (section 10).
    (`func.c:1873-1896`), random rowids at the largest rowid
    (`vdbe.c:5672-5692`), `VACUUM` that renumbers rowids
    (`insert.c:3288-3289`).
-5. Reads and writes use one list of SQLite functions. A read gets no
-   function that a write does not get (owner, 2026-10-26 18:34).
+5. Reads and writes allow the same functions (owner, 2026-10-26 18:34
+   and 18:36).
 6. A client sends a query as a CBOR structure, never as SQL (owner,
    2026-10-26 18:35). The library prepares the statement of a form at
    its first use and keeps it in a cache by form. The cache has one
