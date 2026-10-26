@@ -61,6 +61,19 @@ of Ubuntu devel, read in a checkout outside the tree.
 - `ext/misc/cksumvfs.c` writes a checksum of 8 bytes on each page. It is
   in no package.
 
+- No checksum for each row exists. The WAL carries a checksum of two
+  32-bit sums for each frame; it finds a torn tail at recovery and does
+  not leave the WAL (`wal.c:1510-1511`). `cksumvfs.c` computes the same
+  kind of sum for each page (`cksumvfs.c:299-324`).
+- `sha3()` is a function of the shell only. The package library
+  answers "no such function: sha3" (a C file outside the tree).
+- The session extension is in the package library: with
+  `SQLITE_ENABLE_SESSION` and `SQLITE_ENABLE_PREUPDATE_HOOK` defined
+  before `sqlite3.h`, `sqlite3session_create`, `_attach` and
+  `_changeset` work (a C file outside the tree, a changeset of 20 bytes
+  for one insert). `sqlite3session_diff` compares a table of two
+  databases (`ext/session/sqlite3session.h:446`).
+
 Not checked: the behaviour of `.recover` on the damages of
 plan-device-faults.md; the speed of anything in this plan.
 
@@ -195,6 +208,14 @@ copy with `mdb_env_copyfd2`).
    clone (owner 2026-10-17 20:53: work only on a clone). The node then
    takes the repair by entries from its peers. The library does not
    call `.recover` itself (section 9 Q7).
+
+6. The CRC32C of each record stays, on the disk and on the wire,
+   because SQLite has no checksum for each row. The hash in idle time
+   stays ours too.
+7. Proposal: a repair after a snapshot takes a changeset of the session
+   extension in place of single entries. The changeset carries no
+   checksum; each record in it keeps its CRC tail, and the receiver
+   checks each one.
 
 ## 8. Build and tests
 
