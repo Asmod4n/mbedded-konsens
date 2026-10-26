@@ -345,9 +345,12 @@ public:
                           kept.msg);
     }
 
-    [[nodiscard]] result commit()
+    [[nodiscard]] result end_step()
     {
         throw_if_a_write_did_not_finish();
+        if (step_ended_) {
+            return {};
+        }
         if (error_) [[unlikely]] {
             txn_.reset();
             drop_incoming_and_outgoing();
@@ -361,12 +364,31 @@ public:
             drop_incoming_and_outgoing();
             return r;
         }
-        const bool accepts = state_ == std::pair{role::leader, phase::accept};
-        if (accepts) {
+        if (state_ == std::pair{role::leader, phase::accept}) {
             if (auto r = accept_entries_leader(buffered_proposals_); !r) [[unlikely]] {
                 drop_incoming_and_outgoing();
                 return r;
             }
+            buffered_proposals_.clear();
+        }
+        step_ended_ = true;
+        return {};
+    }
+
+    [[nodiscard]] result commit()
+    {
+        const auto ended = end_step();
+        step_ended_ = false;
+        if (!ended) [[unlikely]] {
+            return ended;
+        }
+        if (error_) [[unlikely]] {
+            txn_.reset();
+            drop_incoming_and_outgoing();
+            return std::unexpected(*error_);
+        }
+        if (repair_ || !txn_) {
+            return {};
         }
         const auto m = read_checked_meta(*txn_);
         if (!m) [[unlikely]] {
@@ -382,9 +404,6 @@ public:
         }
         write_unfinished_ = false;
         mark_ = raise_mark(mark_, mark_of(*m));
-        if (accepts) {
-            buffered_proposals_.clear();
-        }
         incoming_.clear();
         return {};
     }
@@ -2052,6 +2071,7 @@ private:
     std::optional<std::error_code> error_;
     bool write_unfinished_{};
     bool recovering_{};
+    bool step_ended_{};
     std::uint64_t nonce_{};
     std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
     std::optional<std::pair<node_id, konsens::get_state>> state_request_;

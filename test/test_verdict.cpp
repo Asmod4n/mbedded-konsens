@@ -25,7 +25,7 @@
 // members; encode_result, decode_result, compute_result_crc,
 // encode_chosen_results, decode_chosen_results; verdicts with pointer,
 // chosen, voids and applied_idx; find_the_verdicts; extend_base_crc; the
-// member pointer of applied_record; src/verdict.cpp.
+// member pointer of meta_record; src/verdict.cpp.
 
 namespace {
 

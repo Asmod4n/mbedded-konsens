@@ -74,7 +74,6 @@ constexpr std::size_t node_count = 3;
 constexpr std::size_t channel_count = node_count * node_count;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
-constexpr std::uint64_t max_in_flight = 16;
 constexpr std::uint64_t permille = 1000;
 constexpr std::size_t largest_batch = 8;
 constexpr std::uint64_t call_timeout_rounds = 10;
@@ -228,16 +227,6 @@ struct lmdb_cluster {
         return konsens::node_storage::open(directory, effective_user_id);
     }
 
-    std::expected<konsens::state_storage, std::error_code> start_state_storage(const std::size_t i) const
-    {
-        const std::filesystem::path directory{directories.at(i).string() + "-state"};
-        std::error_code created;
-        std::filesystem::create_directories(directory, created);
-        if (created) [[unlikely]] {
-            return std::unexpected(created);
-        }
-        return konsens::state_storage::open(directory, map_size, effective_user_id);
-    }
 };
 
 konsens::node_config config_of(const konsens::node_id pid)
@@ -248,7 +237,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 bool is_transient(const std::error_code& code)
@@ -430,13 +419,9 @@ struct cluster {
         if (!own) [[unlikely]] {
             return std::unexpected(own.error());
         }
-        auto state = storage.start_state_storage(i);
-        if (!state) [[unlikely]] {
-            return std::unexpected(state.error());
-        }
         nonce += 1;
         auto n =
-            node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), std::move(*state), counter{}, nonce);
+            node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }

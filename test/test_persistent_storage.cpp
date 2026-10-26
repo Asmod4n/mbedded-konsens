@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -61,13 +62,6 @@ konsens::entry normal_entry(const std::string_view text)
 konsens::persistent_storage open_storage(const std::filesystem::path& directory)
 {
     auto opened = konsens::persistent_storage::open(directory, map_size, non_root_user_id);
-    REQUIRE(opened.has_value());
-    return std::move(*opened);
-}
-
-konsens::state_storage open_state_storage(const std::filesystem::path& directory)
-{
-    auto opened = konsens::state_storage::open(directory, map_size, non_root_user_id);
     REQUIRE(opened.has_value());
     return std::move(*opened);
 }
@@ -312,7 +306,8 @@ TEST_CASE("a kept read-only transaction reads the state of the last commit at ea
 // this session showed that the first read of a new transaction can give
 // MDB_BAD_TXN and not MDB_BAD_CHECKSUM: mdb_cursor_open meets the bad page,
 // marks the transaction as failed and returns success. So both codes are a
-// failed read here.
+// failed read here. The meta record and the few entries of this test lie on
+// one page, so the open reads the changed page first and fails.
 TEST_CASE("a flipped byte in a stored page fails the page checksum")
 {
     const temporary_directory dir;
@@ -339,11 +334,10 @@ TEST_CASE("a flipped byte in a stored page fails the page checksum")
         std::ofstream out{data_file, std::ios::binary | std::ios::trunc};
         out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     }
-    const auto storage = open_storage(dir.path());
-    const auto got = entries_of(storage, 0, 3);
-    REQUIRE_FALSE(got.has_value());
-    CHECK(got.error().category() == konsens::lmdb_category());
-    CHECK((got.error().value() == MDB_BAD_CHECKSUM || got.error().value() == MDB_BAD_TXN));
+    const auto opened = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error().category() == konsens::lmdb_category());
+    CHECK((opened.error().value() == MDB_BAD_CHECKSUM || opened.error().value() == MDB_BAD_TXN));
 }
 
 // A value whose page checksum is valid but whose bytes do not agree with the
@@ -382,6 +376,9 @@ TEST_CASE("a changed value with a valid page checksum is a CRC mismatch at its i
 
 // The start-checks plan, item 2.2: a key that is missing in the middle of a
 // range is not a shorter log. The read names the missing index as an error.
+// The log shares its database with the meta record and the client table, so
+// the count of keys does not give the length of the log, and the read of the
+// last entry does not see the hole. The start scan finds it.
 TEST_CASE("a missing key in the middle of a range is missing_entry")
 {
     const temporary_directory dir;
@@ -401,7 +398,10 @@ TEST_CASE("a missing key in the middle of a range is missing_entry")
     CHECK(across.error().index == 1u);
     CHECK(t->get_entries(1, 2) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
     CHECK(t->get_entries(0, 2) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
-    CHECK(t->get_last_entry() == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
+    const auto last = t->get_last_entry();
+    REQUIRE(last.has_value());
+    REQUIRE(last->has_value());
+    CHECK((*last)->index == 3u);
 }
 
 // Plan lmdb-only-source 2.3 item 2: the meta record exists from the open on.
@@ -415,8 +415,7 @@ TEST_CASE("a storage that lost its meta record gives missing_meta_record")
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
     change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        constexpr std::string_view name = "meta";
-        delete_key(txn, meta, std::as_bytes(std::span(name)));
+        delete_key(txn, meta, std::as_bytes(std::span(lmdb_damage::meta_key)));
     });
     auto storage = open_storage(dir.path());
     {
@@ -441,10 +440,10 @@ TEST_CASE("open refuses another format and a store with data and no format")
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
     change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        constexpr std::string_view name = "format";
-        const std::array<unsigned char, 8> version_3{3, 0, 0, 0, 0, 0, 0, 0};
-        const auto crc = crc32c::Crc32c(version_3.data(), 4);
-        std::array<unsigned char, 8> value = version_3;
+        constexpr std::string_view name{"\0format", 7};
+        const std::array<unsigned char, 8> version_4{4, 0, 0, 0, 0, 0, 0, 0};
+        const auto crc = crc32c::Crc32c(version_4.data(), 4);
+        std::array<unsigned char, 8> value = version_4;
         for (std::size_t i = 0; i < 4; ++i) {
             value.at(4 + i) = static_cast<unsigned char>(crc >> (8 * i));
         }
@@ -456,7 +455,7 @@ TEST_CASE("open refuses another format and a store with data and no format")
     REQUIRE_FALSE(other.has_value());
     CHECK(other.error() == konsens::storage_errc::unsupported_format);
     change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        constexpr std::string_view name = "format";
+        constexpr std::string_view name{"\0format", 7};
         delete_key(txn, meta, std::as_bytes(std::span(name)));
     });
     const auto none = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
@@ -890,41 +889,48 @@ TEST_CASE("the writes of one step in one transaction leave the store as one tran
           std::vector{normal_entry("a"), normal_entry("b"), normal_entry("x"), normal_entry("y"), normal_entry("z")});
 }
 
-// Plan state-in-lmdb 1.1 and 1.2: the state storage keeps the keys of
-// the machine, the client table and the applied record. A write becomes
+// Plan one-environment 3: the storage keeps the keys of the machine, the
+// client table and the applied point beside the log. A write becomes
 // visible to a read only after its commit, and an empty storage has the
-// applied record of an empty log.
-TEST_CASE("the state storage gives back what a committed write wrote")
+// applied point of an empty log.
+TEST_CASE("the storage gives back the state that a committed write wrote")
 {
     const temporary_directory dir;
-    auto state = open_state_storage(dir.path());
+    auto storage = open_storage(dir.path());
     const std::array key{std::byte{1}, std::byte{2}};
     const std::array value{std::byte{3}};
     const konsens::session_record session{4, {std::byte{5}, std::byte{6}}};
+    const auto applied_of = [](const konsens::meta_record& m) {
+        return std::tuple{m.applied_idx, m.applied_chain_crc, m.pointer};
+    };
     {
-        const auto r = state.begin_read_only();
+        const auto r = storage.begin_read_only();
         REQUIRE(r.has_value());
-        CHECK(r->get_applied() == konsens::applied_record{0, 0, 0});
+        const auto m = r->get_meta();
+        REQUIRE(m.has_value());
+        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}, std::uint64_t{0}});
         CHECK(finds_no_value(r->find(key)));
         CHECK(r->find_session(7).value() == std::nullopt);
     }
-    auto w = state.begin();
+    auto w = storage.begin();
     REQUIRE(w.has_value());
     REQUIRE(w->insert_or_assign(key, value));
     REQUIRE(w->insert_or_assign_session(7, session));
-    REQUIRE(w->set_applied({9, 10, 8}));
-    const auto before = [&state] {
-        const auto r = state.begin_read_only();
+    REQUIRE(w->set_applied(9, 10, 8));
+    {
+        const auto r = storage.begin_read_only();
         REQUIRE(r.has_value());
-        const auto a = r->get_applied();
-        REQUIRE(a.has_value());
-        return *a;
-    }();
-    CHECK(before == konsens::applied_record{0, 0, 0});
+        const auto m = r->get_meta();
+        REQUIRE(m.has_value());
+        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}, std::uint64_t{0}});
+        CHECK(finds_no_value(r->find(key)));
+    }
     REQUIRE(std::move(*w).commit());
-    const auto r = state.begin_read_only();
+    const auto r = storage.begin_read_only();
     REQUIRE(r.has_value());
-    CHECK(r->get_applied() == konsens::applied_record{9, 10, 8});
+    const auto m = r->get_meta();
+    REQUIRE(m.has_value());
+    CHECK(applied_of(*m) == std::tuple{std::uint64_t{9}, std::uint32_t{10}, std::uint64_t{8}});
     const auto found = r->find(key);
     REQUIRE(found.has_value());
     REQUIRE(found->has_value());
@@ -934,27 +940,141 @@ TEST_CASE("the state storage gives back what a committed write wrote")
 
 // Plan state-in-lmdb 1.2: an erase removes a key and a session, and an
 // erase of an absent key is no error, as for std::map.
-TEST_CASE("the state storage erases a key and a session")
+TEST_CASE("the storage erases a key and a session")
 {
     const temporary_directory dir;
-    auto state = open_state_storage(dir.path());
+    auto storage = open_storage(dir.path());
     const std::array key{std::byte{1}};
     {
-        auto w = state.begin();
+        auto w = storage.begin();
         REQUIRE(w.has_value());
         REQUIRE(w->insert_or_assign(key, key));
         REQUIRE(w->insert_or_assign_session(2, {1, {}}));
         REQUIRE(std::move(*w).commit());
     }
-    auto w = state.begin();
+    auto w = storage.begin();
     REQUIRE(w.has_value());
     REQUIRE(w->erase(key));
     REQUIRE(w->erase(key));
     REQUIRE(w->erase_session(2));
     REQUIRE(w->erase_session(2));
     REQUIRE(std::move(*w).commit());
-    const auto r = state.begin_read_only();
+    const auto r = storage.begin_read_only();
     REQUIRE(r.has_value());
     CHECK(finds_no_value(r->find(key)));
     CHECK(r->find_session(2).value() == std::nullopt);
+}
+
+// The applied point stands in the meta record. A repair that finds no meta
+// record does not know which entries the state holds, so it deletes the
+// state and the client table and sets the applied point to the start. The
+// next start applies the decided entries again.
+TEST_CASE("a repair without a meta record deletes the state and the client table")
+{
+    const temporary_directory dir;
+    const std::array key{std::byte{1}};
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("a"), normal_entry("b")};
+        write(storage, [&](auto& t) {
+            REQUIRE(t.append_entries(written));
+            REQUIRE(t.insert_or_assign(key, key));
+            REQUIRE(t.insert_or_assign_session(2, {1, {}}));
+            REQUIRE(t.set_decided_index(2));
+            REQUIRE(t.set_applied(2, 9, 1));
+        });
+    }
+    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
+        lmdb_damage::delete_meta_record(txn, meta);
+    });
+    auto storage = open_storage(dir.path());
+    const std::vector repaired{normal_entry("a"), normal_entry("b")};
+    write(storage, [&](auto& t) { REQUIRE(t.write_repaired_log(0, repaired, {1, 1, 0, 1}, {1, 1, 0, 1}, 2)); });
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    const auto m = r->get_meta();
+    REQUIRE(m.has_value());
+    CHECK(m->log_len == 2u);
+    CHECK(m->applied_idx == 0u);
+    CHECK(m->pointer == 0u);
+    CHECK(finds_no_value(r->find(key)));
+    CHECK(r->find_session(2).value() == std::nullopt);
+}
+
+// A repair with a meta record keeps the applied point and the state.
+TEST_CASE("a repair with a meta record keeps the state")
+{
+    const temporary_directory dir;
+    const std::array key{std::byte{1}};
+    auto storage = open_storage(dir.path());
+    const std::vector written{normal_entry("a"), normal_entry("b")};
+    write(storage, [&](auto& t) {
+        REQUIRE(t.append_entries(written));
+        REQUIRE(t.insert_or_assign(key, key));
+        REQUIRE(t.set_decided_index(2));
+        REQUIRE(t.set_applied(2, 9, 1));
+    });
+    write(storage, [&](auto& t) { REQUIRE(t.write_repaired_log(1, std::span(written).subspan(1), {1, 1, 0, 1}, {1, 1, 0, 1}, 2)); });
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    const auto m = r->get_meta();
+    REQUIRE(m.has_value());
+    CHECK(m->applied_idx == 2u);
+    CHECK(m->applied_chain_crc == 9u);
+    CHECK(m->pointer == 1u);
+    const auto found = r->find(key);
+    REQUIRE(found.has_value());
+    CHECK(found->has_value());
+}
+
+// Plan one-environment 4: the runs of the requests write into a nested
+// transaction. It sees the writes of its parent, and its end drops its own
+// writes, so the step commits only what the parent wrote.
+TEST_CASE("a nested transaction sees its parent and its writes end with it")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array parent_key{std::byte{1}};
+    const std::array nested_key{std::byte{2}};
+    auto w = storage.begin();
+    REQUIRE(w.has_value());
+    REQUIRE(w->insert_or_assign(parent_key, parent_key));
+    {
+        auto n = w->begin_nested();
+        REQUIRE(n.has_value());
+        const auto seen = n->find(parent_key);
+        REQUIRE(seen.has_value());
+        REQUIRE(seen->has_value());
+        CHECK(std::ranges::equal(**seen, parent_key));
+        REQUIRE(n->insert_or_assign(nested_key, nested_key));
+        REQUIRE(n->insert_or_assign_session(3, {1, {}}));
+        REQUIRE(n->erase(parent_key));
+        CHECK(finds_no_value(n->find(parent_key)));
+    }
+    const auto kept = w->find(parent_key);
+    REQUIRE(kept.has_value());
+    CHECK(kept->has_value());
+    CHECK(finds_no_value(w->find(nested_key)));
+    CHECK(w->find_session(3).value() == std::nullopt);
+    REQUIRE(std::move(*w).commit());
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(finds_no_value(r->find(nested_key)));
+}
+
+// LMDB forbids a use of a parent transaction while its child is open
+// (lmdb.h, mdb_txn_begin). Such a use is a wrong use of the library.
+TEST_CASE("a use of the parent while a nested transaction is open is a wrong use")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array key{std::byte{1}};
+    auto w = storage.begin();
+    REQUIRE(w.has_value());
+    auto n = w->begin_nested();
+    REQUIRE(n.has_value());
+    CHECK_THROWS_AS(static_cast<void>(w->find(key)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(w->insert_or_assign(key, key)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(w->get_meta()), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(w->begin_nested()), std::logic_error);
 }

@@ -42,6 +42,10 @@ public:
         get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
         get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+        find(std::span<const std::byte> key) const;
+        [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
+        find_session(std::uint64_t session) const;
 
         read_only_transaction(read_only_transaction&& other) noexcept;
         read_only_transaction& operator=(read_only_transaction&& other) noexcept;
@@ -55,8 +59,34 @@ public:
         environment* env_;
     };
 
+    class nested_transaction {
+    public:
+        [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+        find(std::span<const std::byte> key) const;
+        [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
+        find_session(std::uint64_t session) const;
+        [[nodiscard]] std::expected<void, std::error_code> insert_or_assign(std::span<const std::byte> key,
+                                                                            std::span<const std::byte> value);
+        [[nodiscard]] std::expected<void, std::error_code> erase(std::span<const std::byte> key);
+        [[nodiscard]] std::expected<void, std::error_code> insert_or_assign_session(std::uint64_t session,
+                                                                                    const session_record& record);
+        [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
+
+        nested_transaction(nested_transaction&& other) noexcept;
+        nested_transaction& operator=(nested_transaction&& other) noexcept;
+        ~nested_transaction();
+
+    private:
+        friend class persistent_storage;
+
+        explicit nested_transaction(environment* env) noexcept;
+
+        environment* env_;
+    };
+
     class transaction {
     public:
+
         [[nodiscard]] std::expected<meta_record, std::error_code> get_meta() const;
         [[nodiscard]] std::expected<std::vector<entry>, read_failure> read_entries(std::uint64_t from,
                                                                                    std::uint64_t to) const;
@@ -78,6 +108,19 @@ public:
                                                                               std::span<const entry> entries,
                                                                               ballot promise, ballot accepted_round,
                                                                               std::uint64_t decided_idx);
+        [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+        find(std::span<const std::byte> key) const;
+        [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
+        find_session(std::uint64_t session) const;
+        [[nodiscard]] std::expected<void, std::error_code> insert_or_assign(std::span<const std::byte> key,
+                                                                            std::span<const std::byte> value);
+        [[nodiscard]] std::expected<void, std::error_code> erase(std::span<const std::byte> key);
+        [[nodiscard]] std::expected<void, std::error_code> insert_or_assign_session(std::uint64_t session,
+                                                                                    const session_record& record);
+        [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
+        [[nodiscard]] std::expected<void, std::error_code>
+        set_applied(std::uint64_t applied_idx, std::uint32_t applied_chain_crc, std::uint64_t pointer);
+        [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
 
         transaction(transaction&& other) noexcept;
@@ -105,92 +148,6 @@ public:
 
 private:
     explicit persistent_storage(std::unique_ptr<environment> env) noexcept;
-
-    void throw_if_moved_from() const;
-
-    std::unique_ptr<environment> env_;
-};
-
-struct session_record {
-    std::uint64_t request_number;
-    std::vector<std::byte> reply;
-
-    friend bool operator==(const session_record&, const session_record&) = default;
-};
-
-struct applied_record {
-    std::uint64_t index;
-    std::uint32_t chain_crc;
-    std::uint64_t pointer;
-
-    friend bool operator==(const applied_record&, const applied_record&) = default;
-};
-
-class state_storage {
-    struct environment;
-
-public:
-    class read_only_transaction {
-    public:
-        [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-        find(std::span<const std::byte> key) const;
-        [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
-        find_session(std::uint64_t session) const;
-        [[nodiscard]] std::expected<applied_record, std::error_code> get_applied() const;
-
-        read_only_transaction(read_only_transaction&& other) noexcept;
-        read_only_transaction& operator=(read_only_transaction&& other) noexcept;
-        ~read_only_transaction();
-
-    private:
-        friend class state_storage;
-
-        explicit read_only_transaction(environment* env) noexcept;
-
-        environment* env_;
-    };
-
-    class transaction {
-    public:
-        [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-        find(std::span<const std::byte> key) const;
-        [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
-        find_session(std::uint64_t session) const;
-        [[nodiscard]] std::expected<applied_record, std::error_code> get_applied() const;
-
-        [[nodiscard]] std::expected<void, std::error_code> insert_or_assign(std::span<const std::byte> key,
-                                                                            std::span<const std::byte> value);
-        [[nodiscard]] std::expected<void, std::error_code> erase(std::span<const std::byte> key);
-        [[nodiscard]] std::expected<void, std::error_code> insert_or_assign_session(std::uint64_t session,
-                                                                                    const session_record& record);
-        [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
-        [[nodiscard]] std::expected<void, std::error_code> set_applied(const applied_record& applied);
-        [[nodiscard]] std::expected<void, std::error_code> commit() &&;
-
-        transaction(transaction&& other) noexcept;
-        transaction& operator=(transaction&& other) noexcept;
-        ~transaction();
-
-    private:
-        friend class state_storage;
-
-        explicit transaction(environment* env) noexcept;
-
-        environment* env_;
-    };
-
-    [[nodiscard]] static std::expected<state_storage, std::error_code>
-    open(const std::filesystem::path& directory, std::size_t map_size, uid_t effective_user_id);
-
-    [[nodiscard]] std::expected<transaction, std::error_code> begin();
-    [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
-
-    state_storage(state_storage&&) noexcept;
-    state_storage& operator=(state_storage&&) noexcept;
-    ~state_storage();
-
-private:
-    explicit state_storage(std::unique_ptr<environment> env) noexcept;
 
     void throw_if_moved_from() const;
 

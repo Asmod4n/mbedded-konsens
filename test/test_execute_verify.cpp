@@ -30,7 +30,7 @@
 // of the chosen results. Provisional names made in this tree, for the owner
 // to decide: answer, try_again, refused, refusal_reason and their members;
 // selection, counted_answer, selected_result, leader_log, try_again_target
-// and their members; results_agree; max_in_flight of node_config;
+// and their members; results_agree;
 // client_errc::rejected; paxos_errc::result_differs; node_fault;
 // get_selection and get_own_result_indexes of node.
 
@@ -302,7 +302,7 @@ constexpr std::uint64_t resend_ticks = 2;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 
-konsens::node_config config_of(const node_id pid, const std::uint64_t max_in_flight)
+konsens::node_config config_of(const node_id pid)
 {
     std::vector<node_id> peers;
     for (const auto p : three_nodes) {
@@ -310,7 +310,7 @@ konsens::node_config config_of(const node_id pid, const std::uint64_t max_in_fli
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 std::vector<std::byte> bytes_of(const char c)
@@ -361,12 +361,12 @@ struct cluster {
     std::vector<entry> decided_log(const node_id p) { return *at(p).read_decided_suffix(0); }
 };
 
-cluster elected(const std::array<std::uint8_t, 3> marks, const std::uint64_t max_in_flight = 16)
+cluster elected(const std::array<std::uint8_t, 3> marks)
 {
     cluster c;
     for (const auto p : three_nodes) {
-        c.nodes.push_back(*node_t::with(config_of(p, max_in_flight), lmdb_storage::open_new(),
-                                        lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(),
+        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(),
+                                        lmdb_storage::open_new_node_storage(),
                                         marked{marks.at(p - 1)}, p));
     }
     c.run(rounds, once);
@@ -386,7 +386,7 @@ std::uint64_t registered(cluster& c, const node_id at)
 
 std::vector<std::byte> state_of(const node_t& n)
 {
-    const auto t = n.get_state_storage().begin_read_only();
+    const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
     REQUIRE(t.has_value());
     return marked::value_in(konsens::read_view{*t});
 }
@@ -487,29 +487,6 @@ TEST_CASE("a request whose results all differ is void and its client gets reject
     }
 }
 
-// Plan 2.4.4: the leader proposes no more request entries while its own
-// results above its applied index reach max_in_flight. The request waits in
-// the node and goes into the log after the verdict.
-TEST_CASE("the leader holds a request while max_in_flight results wait for their verdict")
-{
-    auto c = elected({0, 0, 0}, 1);
-    const auto l = c.leader();
-    const auto s = registered(c, l);
-    const auto no_answer = [](const message& m) -> std::size_t { return holds<answer>(m) ? 0 : 1; };
-    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-    batches::deliver(c.nodes, no_answer);
-    CHECK(c.at(l).get_own_result_indexes() == std::vector<std::uint64_t>{3});
-    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 2, bytes_of('b')));
-    batches::deliver(c.nodes, no_answer);
-    CHECK(count_of(*c.at(l).read_decided_suffix(0), entry_kind::client_request) == 1);
-    const auto accepted = c.at(l).get_sequence_paxos().get_accepted_idx();
-    REQUIRE(accepted.has_value());
-    CHECK(*accepted == 3);
-    c.run(rounds, once);
-    CHECK(count_of(c.decided_log(l), entry_kind::client_request) == 2);
-    CHECK(state_of(c.at(l)) == std::vector<std::byte>{std::byte{'a'}, std::byte{'b'}});
-}
-
 // Plan 2.3.6: a leader proposes a StopSign only when p covers every request
 // entry of its log. Before, the call gives retry.
 TEST_CASE("a stop sign waits while a request entry has no verdict")
@@ -566,9 +543,8 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
     }
     const auto own_directory = lmdb_storage::new_directory();
     const auto start = [&] {
-        static_cast<void>(node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
-                                       lmdb_storage::open_node_storage_in(own_directory),
-                                       lmdb_storage::open_new_state_storage(), marked{0}, 1));
+        static_cast<void>(node_t::with(config_of(1), lmdb_storage::open_in(directory),
+                                       lmdb_storage::open_node_storage_in(own_directory), marked{0}, 1));
     };
     CHECK_THROWS_AS(start(), konsens::node_fault);
     // Plan 3.1: the proof is durable before the throw.
@@ -613,8 +589,8 @@ TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
     }
     const auto own_directory = lmdb_storage::new_directory();
     const auto start = [&] {
-        return node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
-                            lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+        return node_t::with(config_of(1), lmdb_storage::open_in(directory),
+                            lmdb_storage::open_node_storage_in(own_directory),
                             marked{0}, 1);
     };
     const auto record = [&] { return lmdb_storage::open_node_storage_in(own_directory).get_repair_record(); };
@@ -637,15 +613,6 @@ TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
         CHECK(record()->count == 1);
         CHECK(record()->proof.has_value());
     }
-}
-
-// A max_in_flight of 0 would hold every request for good, so it is a wrong
-// use.
-TEST_CASE("a max_in_flight of 0 is a wrong use")
-{
-    CHECK_THROWS_AS((void)node_t::with(config_of(1, 0), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                       lmdb_storage::open_new_state_storage(), marked{0}, 1),
-                    std::logic_error);
 }
 
 namespace {
@@ -821,8 +788,8 @@ TEST_CASE("after a start the verified index is the decided index and the entries
     c.run(rounds, once);
     const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
     REQUIRE(log_len.has_value());
-    auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
-                           lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), marked{0}, 9);
+    auto n = *node_t::with(config_of(1), lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
+                           lmdb_storage::open_new_node_storage(), marked{0}, 9);
     CHECK(n.get_sequence_paxos().get_verified_idx() == *log_len);
 }
 
@@ -870,9 +837,8 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
 {
     const auto directory = decided_log_with_a_listed({1});
     const auto own_directory = lmdb_storage::new_directory();
-    CHECK_THROWS_AS(static_cast<void>(node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
-                                                   lmdb_storage::open_node_storage_in(own_directory),
-                                                   lmdb_storage::open_new_state_storage(), marked{'x'}, 1)),
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(config_of(1), lmdb_storage::open_in(directory),
+                                                   lmdb_storage::open_node_storage_in(own_directory), marked{'x'}, 1)),
                     konsens::node_fault);
     const auto record = lmdb_storage::open_node_storage_in(own_directory).get_repair_record();
     REQUIRE(record.has_value());
@@ -885,8 +851,8 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
     // mark at its index. The mark covers the index, so the node writes the
     // chosen bytes and does not run it again. The mark closes when the
     // applied index passes it.
-    auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_in(directory),
-                           lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+    auto n = *node_t::with(config_of(1), lmdb_storage::open_in(directory),
+                           lmdb_storage::open_node_storage_in(own_directory),
                            marked{'x'}, 2);
     CHECK(state_of(n) == bytes_of('a'));
     CHECK(n.get_repair_record() == konsens::repair_record{1, 2, false, std::nullopt});
@@ -901,8 +867,8 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 {
     for (const auto& out : {std::vector<node_id>{1}, std::vector<node_id>{2}}) {
         CAPTURE(out.front());
-        const auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_in(decided_log_with_a_listed(out)),
-                                     lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(),
+        const auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed(out)),
+                                     lmdb_storage::open_new_node_storage(),
                                      marked{0}, 1);
         CHECK(state_of(n) == bytes_of('a'));
         CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
@@ -914,8 +880,8 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 // message to another node.
 TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
 {
-    auto n = *node_t::with(config_of(1, 16), lmdb_storage::open_in(decided_log_with_a_listed({1})),
-                           lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), marked{0}, 1);
+    auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed({1})),
+                           lmdb_storage::open_new_node_storage(), marked{0}, 1);
     const auto request = konsens::encode_result(
         {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     const auto crc = konsens::compute_result_crc(2, request);
@@ -1027,9 +993,8 @@ std::vector<floating_node> floating_cluster(const std::array<floating, 3>& machi
 {
     std::vector<floating_node> nodes;
     for (const auto p : three_nodes) {
-        nodes.push_back(*floating_node::with(config_of(p, 16), lmdb_storage::open_new(),
-                                             lmdb_storage::open_new_node_storage(),
-                                             lmdb_storage::open_new_state_storage(), machines.at(p - 1), p));
+        nodes.push_back(*floating_node::with(config_of(p), lmdb_storage::open_new(),
+                                             lmdb_storage::open_new_node_storage(), machines.at(p - 1), p));
     }
     return nodes;
 }
@@ -1058,7 +1023,7 @@ floating_node& leader_of(std::vector<floating_node>& nodes)
 
 std::vector<std::byte> stored_value(const floating_node& n)
 {
-    const auto t = n.get_state_storage().begin_read_only();
+    const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
     REQUIRE(t.has_value());
     const auto found = konsens::read_view{*t}.find(floating::key);
     REQUIRE(found.has_value());

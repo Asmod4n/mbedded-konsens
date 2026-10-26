@@ -59,7 +59,6 @@ using konsens::node_id;
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
-constexpr std::uint64_t max_in_flight = 16;
 constexpr int random_steps = 250;
 constexpr int quiet_rounds = 50;
 constexpr int marker_round = 10;
@@ -113,7 +112,7 @@ struct concatenation {
 template <typename N>
 std::vector<std::byte> concatenation_of(const N& n)
 {
-    const auto t = n.get_state_storage().begin_read_only();
+    const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
     REQUIRE(t.has_value());
     return concatenation::value_in(konsens::read_view{*t});
 }
@@ -131,7 +130,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 std::vector<std::byte> bytes_of(std::uint64_t v)
@@ -546,8 +545,7 @@ struct world {
         }();
         nonce += 1;
         nodes[i] =
-            *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), lmdb_storage::open_new_node_storage(),
-                          lmdb_storage::open_new_state_storage(), concatenation{}, nonce);
+            *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
     }
@@ -570,8 +568,7 @@ struct world {
         const auto len_before = read_value(nodes[i].get_sequence_paxos().get_accepted_idx());
         nonce += 1;
         nodes[i] =
-            *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), lmdb_storage::open_new_node_storage(),
-                          lmdb_storage::open_new_state_storage(), concatenation{}, nonce);
+            *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
         if (read_value(nodes[i].get_sequence_paxos().get_accepted_idx()) < len_before) {
             counts.rollbacks += 1;
         }
@@ -924,8 +921,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
         w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}),
-                                                  lmdb_storage::open_new_node_storage(),
-                                                  lmdb_storage::open_new_state_storage(), concatenation{}, w.nonce));
+                                                  lmdb_storage::open_new_node_storage(), concatenation{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);

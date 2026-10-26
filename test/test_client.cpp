@@ -65,7 +65,7 @@ using node_t = konsens::node<persistent_storage, concatenation>;
 
 std::vector<std::byte> concatenation_of(const node_t& n)
 {
-    const auto t = n.get_state_storage().begin_read_only();
+    const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
     REQUIRE(t.has_value());
     return concatenation::value_in(konsens::read_view{*t});
 }
@@ -73,7 +73,6 @@ std::vector<std::byte> concatenation_of(const node_t& n)
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
-constexpr std::uint64_t max_in_flight = 16;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 constexpr std::uint64_t client_b = 20;
@@ -91,7 +90,7 @@ konsens::node_config config_of(const node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 std::vector<std::byte> bytes_of(const std::string_view s)
@@ -163,8 +162,7 @@ cluster elected()
 {
     cluster c;
     for (node_id p = 1; p <= node_count; ++p) {
-        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                        lmdb_storage::open_new_state_storage(), concatenation{}, 0));
+        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), concatenation{}, 0));
     }
     c.run(rounds, once);
     REQUIRE(c.at(3).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
@@ -195,8 +193,7 @@ TEST_CASE("a start applies the decided log from index 0")
     c.deliver(once);
     auto kept = lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
     REQUIRE(c.at(1).get_applied_idx() == request_with_its_verdict);
-    auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(),
-                           lmdb_storage::open_new_state_storage(), concatenation{}, 0);
+    auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(), concatenation{}, 0);
     CHECK(n.get_applied_idx() == request_with_its_verdict);
     CHECK(concatenation_of(n) == bytes_of("a"));
     CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of("a")});
@@ -490,25 +487,23 @@ std::filesystem::path decided_log_of_two_entries(cluster& c)
 
 }
 
-// Plan state-in-lmdb 1.3: the state storage keeps the applied index over
+// Plan state-in-lmdb 1.3: the storage keeps the applied index over
 // a restart. A start runs only the entries after it, so the second start
 // does not execute the request a second time.
 TEST_CASE("a start runs only the entries after the applied index of the state storage")
 {
     auto c = elected();
     const auto log_directory = decided_log_of_two_entries(c);
-    const auto state_directory = lmdb_storage::new_directory();
     for (std::uint64_t nonce = 1; nonce <= 2; ++nonce) {
         const auto n =
-            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(),
-                          lmdb_storage::open_state_storage_in(state_directory), concatenation{}, nonce);
+            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
         CHECK(n.get_sequence_paxos().votes());
         CHECK(n.get_applied_idx() == request_with_its_verdict);
         CHECK(concatenation_of(n) == bytes_of("a"));
     }
 }
 
-// Plan state-in-lmdb 1.4: the state storage keeps the chain CRC of the
+// Plan state-in-lmdb 1.4: the storage keeps the chain CRC of the
 // log at its applied index. A start whose state belongs to another log,
 // or to a longer log, stops the vote and keeps both CRCs as the proof.
 // The node does not repair its log for it, because the log is not the
@@ -516,24 +511,31 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
 TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
 {
     auto c = elected();
-    const auto log_directory = decided_log_of_two_entries(c);
+    const auto decided = decided_log_of_two_entries(c);
     const auto own = c.at(1).get_sequence_paxos().get_prefix_chain_crc(2);
     REQUIRE(own.has_value());
     const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
     REQUIRE(log_len.has_value());
     const auto differs = make_error_code(konsens::paxos_errc::state_differs_from_log);
-    for (const auto applied : {konsens::applied_record{2, *own + 1, 0}, konsens::applied_record{*log_len + 1, *own, 0}}) {
-        const auto state_directory = lmdb_storage::new_directory();
+    struct applied_point {
+        std::uint64_t index;
+        std::uint32_t crc;
+    };
+    for (const auto applied : {applied_point{2, *own + 1}, applied_point{*log_len + 1, *own}}) {
+        const auto log_directory = lmdb_storage::new_directory();
         {
-            auto state = lmdb_storage::open_state_storage_in(state_directory);
-            auto w = state.begin();
+            auto storage = lmdb_storage::open_in(decided);
+            REQUIRE(storage.copy(log_directory));
+        }
+        {
+            auto storage = lmdb_storage::open_in(log_directory);
+            auto w = storage.begin();
             REQUIRE(w.has_value());
-            REQUIRE(w->set_applied(applied));
+            REQUIRE(w->set_applied(applied.index, applied.crc, 0));
             REQUIRE(std::move(*w).commit());
         }
         const auto n =
-            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(),
-                          lmdb_storage::open_state_storage_in(state_directory), concatenation{}, 1);
+            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(), concatenation{}, 1);
         CHECK(n.get_sequence_paxos().get_error() == differs);
         CHECK_FALSE(n.get_sequence_paxos().repairing());
         CHECK_FALSE(n.waits_for_the_operator());

@@ -40,10 +40,6 @@ constexpr std::uint64_t resend_ticks = 2;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 constexpr std::uint64_t request_count = 64;
-// The leader takes at most max_in_flight requests into its log above its
-// applied index (plan-execute-verify.md 2.4.4). The test of group commit
-// sends request_count requests in one batch and counts one append for them.
-constexpr std::uint64_t max_in_flight = request_count;
 constexpr std::uint32_t config_id = 1;
 
 // The disk of a node outlives the node, so a test can end a node between a
@@ -68,6 +64,23 @@ struct disk_storage {
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
+        auto find(const std::span<const std::byte> key) const { return t_.find(key); }
+        auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
+        auto insert_or_assign(const std::span<const std::byte> key, const std::span<const std::byte> value)
+        {
+            return t_.insert_or_assign(key, value);
+        }
+        auto erase(const std::span<const std::byte> key) { return t_.erase(key); }
+        auto insert_or_assign_session(const std::uint64_t session, const konsens::session_record& record)
+        {
+            return t_.insert_or_assign_session(session, record);
+        }
+        auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
+        auto set_applied(const std::uint64_t index, const std::uint32_t crc, const std::uint64_t pointer)
+        {
+            return t_.set_applied(index, crc, pointer);
+        }
+        auto begin_nested() { return t_.begin_nested(); }
 
         auto append_entries(const std::span<const entry> entries)
         {
@@ -154,7 +167,7 @@ using node_t = konsens::node<disk_storage, counter>;
 
 inline std::uint64_t counter_of(const node_t& n)
 {
-    const auto t = n.get_state_storage().begin_read_only();
+    const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
     REQUIRE(t.has_value());
     return counter::value_in(konsens::read_view{*t});
 }
@@ -167,7 +180,7 @@ inline konsens::node_config config_of(const node_id pid)
             peers.push_back(p);
         }
     }
-    return {config_id, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {config_id, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 inline entry make_entry(const std::uint8_t v)
@@ -197,8 +210,7 @@ struct cluster {
     node_t start(const std::size_t i)
     {
         next_nonce += 1;
-        return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, lmdb_storage::open_new_node_storage(),
-                             lmdb_storage::open_state_storage_in(states.at(i)), counter{}, next_nonce);
+        return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, lmdb_storage::open_new_node_storage(), counter{}, next_nonce);
     }
 
     void restart(const std::size_t i)

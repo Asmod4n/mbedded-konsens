@@ -28,15 +28,14 @@ struct counter {
     }
 };
 
-for (const auto* d : {"node-1", "node-1-node", "node-1-state"})
+for (const auto* d : {"node-1", "node-1-node"})
     std::filesystem::create_directories(d);
 auto storage = konsens::persistent_storage::open("node-1", map_size, geteuid()).value();
 auto own_storage = konsens::node_storage::open("node-1-node", geteuid()).value();
-auto state = konsens::state_storage::open("node-1-state", map_size, geteuid()).value();
 auto node = konsens::node<konsens::persistent_storage, counter>::with(
     {.configuration_id = 1, .pid = 1, .peers = {2, 3}, .leader_priority = 0,
-     .election_tick_timeout = 5, .resend_message_tick_timeout = 3, .max_in_flight = 16},
-    std::move(storage), std::move(own_storage), std::move(state), counter{}, nonce).value();
+     .election_tick_timeout = 5, .resend_message_tick_timeout = 3},
+    std::move(storage), std::move(own_storage), counter{}, nonce).value();
 ```
 
 It follows Omni-Paxos (Sequence Paxos and Ballot Leader Election), the
@@ -242,10 +241,6 @@ Each `open` takes a directory that exists. Each storage takes a
 directory of its own.
 
 The nonce is a new random number for each start of the process.
-
-`max_in_flight` is the number of decided requests that wait for their
-`results` entry on the leader. The leader holds a new request while
-that many wait. It must not be 0.
 
 At start, the program calls `konsens::can_use_crc32c_instruction()`.
 When it gives false, the CPU has no CRC32C instruction, each CRC32C

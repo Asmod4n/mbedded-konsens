@@ -122,8 +122,18 @@ struct meta_record {
     std::uint64_t decided_idx;
     std::uint64_t log_len;
     std::uint32_t last_chain_crc;
+    std::uint64_t applied_idx{};
+    std::uint32_t applied_chain_crc{};
+    std::uint64_t pointer{};
 
     friend bool operator==(const meta_record&, const meta_record&) = default;
+};
+
+struct session_record {
+    std::uint64_t request_number;
+    std::vector<std::byte> reply;
+
+    friend bool operator==(const session_record&, const session_record&) = default;
 };
 
 enum class entry_state : std::uint8_t { in_work, committed };
@@ -163,7 +173,22 @@ public:
 };
 
 template <typename T>
-concept storage_read = requires(const T& t, std::uint64_t from, std::uint64_t to, std::uint64_t index) {
+concept state_read = requires(const T& t, std::span<const std::byte> key, std::uint64_t session) {
+    { t.find(key) } -> std::same_as<std::expected<std::optional<std::span<const std::byte>>, std::error_code>>;
+    { t.find_session(session) } -> std::same_as<std::expected<std::optional<session_record>, std::error_code>>;
+};
+
+template <typename T>
+concept state_write = state_read<T> && requires(T& t, std::span<const std::byte> key, std::uint64_t session,
+                                                const session_record& record) {
+    { t.insert_or_assign(key, key) } -> std::same_as<std::expected<void, std::error_code>>;
+    { t.erase(key) } -> std::same_as<std::expected<void, std::error_code>>;
+    { t.insert_or_assign_session(session, record) } -> std::same_as<std::expected<void, std::error_code>>;
+    { t.erase_session(session) } -> std::same_as<std::expected<void, std::error_code>>;
+};
+
+template <typename T>
+concept storage_read = state_read<T> && requires(const T& t, std::uint64_t from, std::uint64_t to, std::uint64_t index) {
     { t.get_meta() } -> std::same_as<std::expected<meta_record, std::error_code>>;
     { t.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
     { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
@@ -172,8 +197,17 @@ concept storage_read = requires(const T& t, std::uint64_t from, std::uint64_t to
 };
 
 template <typename T>
-concept storage_write = storage_read<T> && std::movable<T> &&
-                        requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b) {
+using nested_transaction_of = typename decltype(std::declval<T&>().begin_nested())::value_type;
+
+template <typename T>
+concept storage_write = storage_read<T> && state_write<T> && state_write<nested_transaction_of<T>> &&
+                        std::movable<T> &&
+                        requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b,
+                                 std::uint32_t crc) {
+                            {
+                                t.begin_nested()
+                            } -> std::same_as<std::expected<nested_transaction_of<T>, std::error_code>>;
+                            { t.set_applied(index, crc, index) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.append_entries(entries) } -> std::same_as<std::expected<void, std::error_code>>;
                             {
                                 t.append_on_prefix(index, entries)

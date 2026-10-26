@@ -61,7 +61,6 @@ using node_t = konsens::node<konsens::persistent_storage, counter>;
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
-constexpr std::uint64_t max_in_flight = 16;
 constexpr int round_limit = 200;
 constexpr std::uint64_t increment_count = 5;
 constexpr std::size_t map_size = std::size_t{16} << 20;
@@ -84,7 +83,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 struct cluster {
@@ -230,12 +229,8 @@ int run(const std::span<const std::string_view> args)
         if (!own) [[unlikely]] {
             return fail("open the storages", own.error());
         }
-        auto state = konsens::state_storage::open(temporary.create(), map_size, *user_id);
-        if (!state) [[unlikely]] {
-            return fail("open the storages", state.error());
-        }
         auto n = node_t::with(config_of(static_cast<konsens::node_id>(i + 1)), std::move(*storage), std::move(*own),
-                              std::move(*state), counter{}, i + 1);
+                              counter{}, i + 1);
         if (!n) [[unlikely]] {
             return fail("start the nodes", n.error());
         }

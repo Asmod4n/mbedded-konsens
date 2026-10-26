@@ -30,7 +30,6 @@ using node_t = konsens::node<persistent_storage, echo>;
 
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
-constexpr std::uint64_t max_in_flight = 16;
 constexpr int rounds = 40;
 
 konsens::node_config config_of(node_id pid)
@@ -41,7 +40,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {1, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 konsens::entry make_entry(std::uint8_t v)
@@ -73,8 +72,7 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -108,8 +106,7 @@ TEST_CASE("a tick timeout of 0 is a wrong use")
 {
     auto c = config_of(1);
     c.election_tick_timeout = 0;
-    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                                   lmdb_storage::open_new_state_storage(), echo{}, 0)),
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0)),
                     std::logic_error);
 }
 
@@ -142,8 +139,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -155,8 +151,7 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
     }
     REQUIRE(nodes[2].get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept});
     auto kept = lmdb_storage::open_copy_of(nodes[2].get_sequence_paxos().get_internal_storage());
-    nodes[2] = *node_t::with(config_of(3), std::move(kept), lmdb_storage::open_new_node_storage(),
-                             lmdb_storage::open_new_state_storage(), echo{}, 1);
+    nodes[2] = *node_t::with(config_of(3), std::move(kept), lmdb_storage::open_new_node_storage(), echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
     static_cast<void>(nodes[2].take_outgoing_messages());
     std::vector<konsens::message> heartbeat;
@@ -233,8 +228,7 @@ std::vector<node_t> elect_three()
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -357,6 +351,23 @@ struct recording_storage {
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
+        auto find(const std::span<const std::byte> key) const { return t_.find(key); }
+        auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
+        auto insert_or_assign(const std::span<const std::byte> key, const std::span<const std::byte> value)
+        {
+            return t_.insert_or_assign(key, value);
+        }
+        auto erase(const std::span<const std::byte> key) { return t_.erase(key); }
+        auto insert_or_assign_session(const std::uint64_t session, const konsens::session_record& record)
+        {
+            return t_.insert_or_assign_session(session, record);
+        }
+        auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
+        auto set_applied(const std::uint64_t index, const std::uint32_t crc, const std::uint64_t pointer)
+        {
+            return t_.set_applied(index, crc, pointer);
+        }
+        auto begin_nested() { return t_.begin_nested(); }
 
         auto append_entries(const std::span<const konsens::entry> entries)
         {
@@ -410,7 +421,7 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
     for (node_id p = 1; p <= 3; ++p) {
         nodes.push_back(*recording_node::with(
             config_of(p), recording_storage{lmdb_storage::open_new(), &appended.at(p - 1)},
-            lmdb_storage::open_new_node_storage(), lmdb_storage::open_new_state_storage(), echo{}, 0));
+            lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     const auto deliver = [&nodes] {
         batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; });
@@ -480,12 +491,10 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
     const auto own_directory = lmdb_storage::new_directory();
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 2; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                  lmdb_storage::open_node_storage_in(own_directory),
-                                  lmdb_storage::open_new_state_storage(), echo{}, 0));
+                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, 0));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -500,8 +509,7 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
             lose_the_meta_record_in(log_directory);
         }
         nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                 lmdb_storage::open_node_storage_in(own_directory),
-                                 lmdb_storage::open_new_state_storage(), echo{}, nonce);
+                                 lmdb_storage::open_node_storage_in(own_directory), echo{}, nonce);
     };
 
     restart(10, true);
@@ -554,7 +562,7 @@ TEST_CASE("a restart during a repair does not count again")
     }
     lose_the_meta_record_in(log_directory);
     auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                           lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+                           lmdb_storage::open_node_storage_in(own_directory),
                            echo{}, 5);
     CHECK(n.get_sequence_paxos().repairing());
     CHECK(n.get_repair_count() == 1);
@@ -597,12 +605,10 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
     const auto own_directory = lmdb_storage::new_directory();
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 2; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(),
-                                      lmdb_storage::open_new_state_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
     }
     nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                  lmdb_storage::open_node_storage_in(own_directory),
-                                  lmdb_storage::open_new_state_storage(), echo{}, 0));
+                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, 0));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -620,7 +626,7 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
         lmdb_damage::delete_key(txn, log, lmdb_damage::key_of(1));
     });
     nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                             lmdb_storage::open_node_storage_in(own_directory), lmdb_storage::open_new_state_storage(),
+                             lmdb_storage::open_node_storage_in(own_directory),
                              echo{}, 10);
     CHECK(nodes[2].get_sequence_paxos().repairing());
     CHECK(nodes[2].get_repair_count() == 1);

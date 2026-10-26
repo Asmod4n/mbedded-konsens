@@ -39,7 +39,7 @@ public:
     {
         auto found = txn_->find(key);
         if (!found) [[unlikely]] {
-            throw read_error(found.error(), "konsens: the state storage failed to read");
+            throw read_error(found.error(), "konsens: the storage failed to read the state");
         }
         return *found;
     }
@@ -48,8 +48,8 @@ private:
     const T* txn_;
 };
 
-using write_view = transaction_view<state_storage::transaction>;
-using read_view = transaction_view<state_storage::read_only_transaction>;
+using write_view = transaction_view<persistent_storage::nested_transaction>;
+using read_view = transaction_view<persistent_storage::read_only_transaction>;
 
 static_assert(state_view<write_view> && state_view<read_view>);
 

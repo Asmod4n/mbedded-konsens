@@ -355,6 +355,23 @@ struct counted_storage {
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
+        auto find(const std::span<const std::byte> key) const { return t_.find(key); }
+        auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
+        auto insert_or_assign(const std::span<const std::byte> key, const std::span<const std::byte> value)
+        {
+            return t_.insert_or_assign(key, value);
+        }
+        auto erase(const std::span<const std::byte> key) { return t_.erase(key); }
+        auto insert_or_assign_session(const std::uint64_t session, const konsens::session_record& record)
+        {
+            return t_.insert_or_assign_session(session, record);
+        }
+        auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
+        auto set_applied(const std::uint64_t index, const std::uint32_t crc, const std::uint64_t pointer)
+        {
+            return t_.set_applied(index, crc, pointer);
+        }
+        auto begin_nested() { return t_.begin_nested(); }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
@@ -1141,7 +1158,8 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op, const
                 const auto& machine_of)
 {
     const auto map_bytes =
-        map_bytes_for((warm_up_samples + s.samples) * s.ops * entries_per_op + setup_entries, s.payload_bytes);
+        map_bytes_for((warm_up_samples + s.samples) * s.ops * entries_per_op + setup_entries, s.payload_bytes) +
+        state_map_bytes;
     return [map_bytes, &s, in_flight, &machine_of](const konsens::node_id pid) -> std::expected<bench_node<M>, failure> {
         const auto directory = s.directory / std::format("node-{}", pid);
         auto log = open_log(directory / "log", map_bytes, s.user_id);
@@ -1153,13 +1171,8 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op, const
         if (!own) [[unlikely]] {
             return std::unexpected(failure{"open the node storage", own.error()});
         }
-        std::filesystem::create_directories(directory / "state");
-        auto state = konsens::state_storage::open(directory / "state", state_map_bytes, s.user_id);
-        if (!state) [[unlikely]] {
-            return std::unexpected(failure{"open the state storage", state.error()});
-        }
         auto n = bench_node<M>::with(config_of(pid, in_flight), counted_storage{std::move(*log)}, std::move(*own),
-                                     std::move(*state), machine_of(pid), pid);
+                                     machine_of(pid), pid);
         if (!n) [[unlikely]] {
             return std::unexpected(failure{"start a node", n.error()});
         }
@@ -2114,7 +2127,7 @@ std::expected<void, failure> check_the_copy_after_a_step(const run_settings& s)
     other.front() = ~other.front();
     const std::vector<konsens::mutation> changed{{{key_value_machine::key.begin(), key_value_machine::key.end()}, other}};
     for (const auto& n : p->c.nodes) {
-        const auto t = n.get_state_storage().begin_read_only();
+        const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
         if (!t) [[unlikely]] {
             return std::unexpected(failure{"begin a read of the state", t.error()});
         }
@@ -2131,10 +2144,9 @@ case_outcome measure_read_back(const run_settings& s)
     if (auto checked = check_the_copy_after_a_step(s); !checked) [[unlikely]] {
         return std::unexpected(checked.error());
     }
-    std::filesystem::create_directories(s.directory / "state-alone");
-    auto state = konsens::state_storage::open(s.directory / "state-alone", state_map_bytes, s.user_id);
+    auto state = open_log(s.directory / "state-alone", state_map_bytes, s.user_id);
     if (!state) [[unlikely]] {
-        return std::unexpected(failure{"open the state storage", state.error()});
+        return std::unexpected(state.error());
     }
     auto w = state->begin();
     if (!w) [[unlikely]] {

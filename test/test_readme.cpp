@@ -81,17 +81,13 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
     const std::filesystem::path node_dir{dir.string() + "-node"};
     std::filesystem::create_directories(node_dir);
     auto own_storage = konsens::node_storage::open(node_dir, non_root_user_id).value();
-    const std::filesystem::path state_dir{dir.string() + "-state"};
-    std::filesystem::create_directories(state_dir);
-    auto state = konsens::state_storage::open(state_dir, map_size, non_root_user_id).value();
     return node_t::with({.configuration_id = 1,
                          .pid = pid,
                          .peers = peers,
                          .leader_priority = 0,
                          .election_tick_timeout = 5,
-                         .resend_message_tick_timeout = 3,
-                         .max_in_flight = 16},
-                        std::move(storage), std::move(own_storage), std::move(state), counter{}, fresh_nonce())
+                         .resend_message_tick_timeout = 3},
+                        std::move(storage), std::move(own_storage), counter{}, fresh_nonce())
         .value();
 }
 

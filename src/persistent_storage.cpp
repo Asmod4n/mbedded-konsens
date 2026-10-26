@@ -28,20 +28,15 @@ constexpr unsigned int named_database_count = 2;
 constexpr mdb_mode_t file_mode = 0600;
 constexpr uid_t root_user_id = 0;
 constexpr unsigned int environment_flags = MDB_NOTLS | MDB_REMAP_CHUNKS;
-constexpr const char* log_database_name = "log";
 constexpr const char* meta_database_name = "meta";
-constexpr std::string_view meta_key = "meta";
-constexpr std::string_view format_key = "format";
-constexpr std::uint32_t format_version = 2;
+constexpr const char* data_database_name = "data";
+constexpr std::byte record_prefix{0};
+constexpr std::byte session_prefix{1};
+constexpr std::byte log_prefix{2};
+constexpr std::string_view meta_key{"\0meta", 5};
+constexpr std::string_view format_key{"\0format", 7};
+constexpr std::uint32_t format_version = 3;
 constexpr std::size_t node_storage_map_size = std::size_t{1} << 20;
-constexpr unsigned int state_database_count = 3;
-constexpr const char* state_database_name = "state";
-constexpr const char* sessions_database_name = "sessions";
-constexpr const char* applied_database_name = "applied";
-constexpr std::string_view applied_key = "applied";
-constexpr std::size_t applied_chain_crc_offset = sizeof(applied_record::index);
-constexpr std::size_t applied_pointer_offset = applied_chain_crc_offset + sizeof(applied_record::chain_crc);
-constexpr std::size_t applied_record_size = applied_pointer_offset + sizeof(applied_record::pointer);
 constexpr std::size_t session_head_size = sizeof(session_record::request_number);
 constexpr unsigned int node_database_count = 1;
 constexpr const char* node_database_name = "node";
@@ -68,7 +63,11 @@ constexpr std::size_t accepted_round_offset = promise_offset + ballot_size;
 constexpr std::size_t decided_idx_offset = accepted_round_offset + ballot_size;
 constexpr std::size_t log_len_offset = decided_idx_offset + sizeof(meta_record::decided_idx);
 constexpr std::size_t last_chain_crc_offset = log_len_offset + sizeof(meta_record::log_len);
-constexpr std::size_t meta_record_size = last_chain_crc_offset + sizeof(meta_record::last_chain_crc);
+constexpr std::size_t applied_idx_offset = last_chain_crc_offset + sizeof(meta_record::last_chain_crc);
+constexpr std::size_t applied_chain_crc_offset = applied_idx_offset + sizeof(meta_record::applied_idx);
+constexpr std::size_t pointer_offset = applied_chain_crc_offset + sizeof(meta_record::applied_chain_crc);
+constexpr std::size_t meta_record_size = pointer_offset + sizeof(meta_record::pointer);
+constexpr std::size_t prefixed_key_size = sizeof(std::byte) + sizeof(std::uint64_t);
 
 constexpr std::size_t flag_size = sizeof(std::uint8_t);
 constexpr std::size_t open_flag_offset = sizeof(repair_record::count);
@@ -130,9 +129,23 @@ using cursor = std::unique_ptr<MDB_cursor, cursor_close>;
 
 struct databases {
     MDB_txn* txn;
-    MDB_dbi log_dbi;
     MDB_dbi meta_dbi;
+    MDB_dbi data_dbi;
 };
+
+using prefixed_key = std::array<std::byte, prefixed_key_size>;
+
+prefixed_key key_of(const std::byte prefix, const std::uint64_t number) noexcept
+{
+    prefixed_key key{prefix};
+    std::ranges::copy(to_big_endian(number), std::next(key.begin()));
+    return key;
+}
+
+bool is_log_key(const MDB_val& key) noexcept
+{
+    return key.mv_size == prefixed_key_size && *static_cast<const std::byte*>(key.mv_data) == log_prefix;
+}
 
 std::error_code to_error_code(const int lmdb_status) noexcept
 {
@@ -227,7 +240,10 @@ std::array<std::byte, meta_record_size> encode_meta(const meta_record& m) noexce
     next = std::ranges::copy(encode_ballot(m.accepted_round), next).out;
     next = std::ranges::copy(to_little_endian(m.decided_idx), next).out;
     next = std::ranges::copy(to_little_endian(m.log_len), next).out;
-    std::ranges::copy(to_little_endian(m.last_chain_crc), next);
+    next = std::ranges::copy(to_little_endian(m.last_chain_crc), next).out;
+    next = std::ranges::copy(to_little_endian(m.applied_idx), next).out;
+    next = std::ranges::copy(to_little_endian(m.applied_chain_crc), next).out;
+    std::ranges::copy(to_little_endian(m.pointer), next);
     return out;
 }
 
@@ -239,6 +255,10 @@ meta_record decode_meta(const std::span<const std::byte, meta_record_size> bytes
         from_little_endian<std::uint64_t>(bytes.subspan<decided_idx_offset, sizeof(meta_record::decided_idx)>()),
         from_little_endian<std::uint64_t>(bytes.subspan<log_len_offset, sizeof(meta_record::log_len)>()),
         from_little_endian<std::uint32_t>(bytes.subspan<last_chain_crc_offset, sizeof(meta_record::last_chain_crc)>()),
+        from_little_endian<std::uint64_t>(bytes.subspan<applied_idx_offset, sizeof(meta_record::applied_idx)>()),
+        from_little_endian<std::uint32_t>(
+            bytes.subspan<applied_chain_crc_offset, sizeof(meta_record::applied_chain_crc)>()),
+        from_little_endian<std::uint64_t>(bytes.subspan<pointer_offset, sizeof(meta_record::pointer)>()),
     };
 }
 
@@ -349,7 +369,7 @@ std::uint32_t encode_record(const std::uint64_t index, const entry& e, const std
 
 std::uint64_t index_of(const MDB_val& key) noexcept
 {
-    return from_big_endian<std::uint64_t>(as_bytes(key).first<index_size>());
+    return from_big_endian<std::uint64_t>(as_bytes(key).subspan<sizeof(std::byte), index_size>());
 }
 
 std::expected<std::uint64_t, std::error_code> read_entry_count(MDB_txn* txn, const MDB_dbi dbi)
@@ -431,12 +451,12 @@ std::expected<std::vector<entry>, read_failure> read_entries_in(const databases&
                                                                 const std::uint64_t to)
 {
     throw_if_from_after_to(from, to);
-    const auto c = open_cursor(d.txn, d.log_dbi);
+    const auto c = open_cursor(d.txn, d.meta_dbi);
     if (!c) [[unlikely]] {
         return std::unexpected(read_failure{c.error(), from, 0, 0});
     }
     std::vector<entry> entries;
-    const auto from_key = to_big_endian(from);
+    const auto from_key = key_of(log_prefix, from);
     MDB_val key = value_of(from_key);
     MDB_val data{};
     for (int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE); status != MDB_NOTFOUND;
@@ -445,7 +465,7 @@ std::expected<std::vector<entry>, read_failure> read_entries_in(const databases&
         if (status != MDB_SUCCESS) [[unlikely]] {
             return std::unexpected(read_failure{to_error_code(status), expected_index, 0, 0});
         }
-        if (key.mv_size != index_size) [[unlikely]] {
+        if (!is_log_key(key)) [[unlikely]] {
             return std::unexpected(read_failure{storage_errc::malformed_record, expected_index, 0, 0});
         }
         const auto index = index_of(key);
@@ -473,30 +493,20 @@ std::expected<std::vector<entry>, read_failure> read_entries_in(const databases&
 
 std::expected<std::optional<last_entry>, std::error_code> read_last_entry(const databases& d)
 {
-    const auto c = open_cursor(d.txn, d.log_dbi);
+    const auto c = open_cursor(d.txn, d.meta_dbi);
     if (!c) [[unlikely]] {
         return std::unexpected(c.error());
     }
     MDB_val key{};
     MDB_val data{};
     const int status = mdb_cursor_get(c->get(), &key, &data, MDB_LAST);
-    if (status == MDB_NOTFOUND) {
+    if (status == MDB_NOTFOUND || (status == MDB_SUCCESS && !is_log_key(key))) {
         return std::nullopt;
     }
     if (status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    if (key.mv_size != index_size) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::malformed_record));
-    }
     const auto index = index_of(key);
-    const auto count = read_entry_count(d.txn, d.log_dbi);
-    if (!count) [[unlikely]] {
-        return std::unexpected(count.error());
-    }
-    if (*count != index + 1) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::missing_entry));
-    }
     const auto record = check_record(index, as_bytes(data));
     if (!record) [[unlikely]] {
         return std::unexpected(record.error().code);
@@ -506,10 +516,10 @@ std::expected<std::optional<last_entry>, std::error_code> read_last_entry(const 
 
 std::expected<std::optional<stored_record>, std::error_code> read_record(const databases& d, const std::uint64_t index)
 {
-    const auto key_bytes = to_big_endian(index);
+    const auto key_bytes = key_of(log_prefix, index);
     MDB_val key = value_of(key_bytes);
     MDB_val data{};
-    const int status = mdb_get(d.txn, d.log_dbi, &key, &data);
+    const int status = mdb_get(d.txn, d.meta_dbi, &key, &data);
     if (status == MDB_NOTFOUND) {
         return std::nullopt;
     }
@@ -544,10 +554,10 @@ std::expected<void, std::error_code> put_entries(const databases& d, meta_record
 {
     for (const auto& e : entries) {
         const auto index = m.log_len;
-        const auto key_bytes = to_big_endian(index);
+        const auto key_bytes = key_of(log_prefix, index);
         MDB_val key = value_of(key_bytes);
         MDB_val data{encoded_size_of(e) + record_tail_size, nullptr};
-        const int status = mdb_put(d.txn, d.log_dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
+        const int status = mdb_put(d.txn, d.meta_dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
         if (status != MDB_SUCCESS) [[unlikely]] {
             return std::unexpected(to_error_code(status));
         }
@@ -560,15 +570,15 @@ std::expected<void, std::error_code> put_entries(const databases& d, meta_record
 
 std::expected<void, std::error_code> delete_entries_from(const databases& d, const std::uint64_t from)
 {
-    const auto c = open_cursor(d.txn, d.log_dbi);
+    const auto c = open_cursor(d.txn, d.meta_dbi);
     if (!c) [[unlikely]] {
         return std::unexpected(c.error());
     }
-    const auto key_bytes = to_big_endian(from);
+    const auto key_bytes = key_of(log_prefix, from);
     MDB_val key = value_of(key_bytes);
     MDB_val data{};
     int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
-    while (status == MDB_SUCCESS) {
+    while (status == MDB_SUCCESS && is_log_key(key)) {
         const int deleted = mdb_cursor_del(c->get(), 0);
         if (deleted != MDB_SUCCESS) [[unlikely]] {
             return std::unexpected(to_error_code(deleted));
@@ -576,7 +586,34 @@ std::expected<void, std::error_code> delete_entries_from(const databases& d, con
         key = value_of(key_bytes);
         status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
     }
-    if (status != MDB_NOTFOUND) [[unlikely]] {
+    if (status != MDB_NOTFOUND && status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    return {};
+}
+
+std::expected<void, std::error_code> delete_the_state(const databases& d)
+{
+    if (const int dropped = mdb_drop(d.txn, d.data_dbi, 0); dropped != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(dropped));
+    }
+    const auto c = open_cursor(d.txn, d.meta_dbi);
+    if (!c) [[unlikely]] {
+        return std::unexpected(c.error());
+    }
+    const std::array first{session_prefix};
+    MDB_val key = value_of(first);
+    MDB_val data{};
+    int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
+    while (status == MDB_SUCCESS && key.mv_size == prefixed_key_size &&
+           *static_cast<const std::byte*>(key.mv_data) == session_prefix) {
+        if (const int deleted = mdb_cursor_del(c->get(), 0); deleted != MDB_SUCCESS) [[unlikely]] {
+            return std::unexpected(to_error_code(deleted));
+        }
+        key = value_of(first);
+        status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
+    }
+    if (status != MDB_NOTFOUND && status != MDB_SUCCESS) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
     return {};
@@ -586,9 +623,9 @@ std::expected<void, std::error_code> delete_entries(const databases& d, const st
                                                     const std::uint64_t to)
 {
     for (const auto index : std::views::iota(from, to)) {
-        const auto key_bytes = to_big_endian(index);
+        const auto key_bytes = key_of(log_prefix, index);
         MDB_val key = value_of(key_bytes);
-        const int status = mdb_del(d.txn, d.log_dbi, &key, nullptr);
+        const int status = mdb_del(d.txn, d.meta_dbi, &key, nullptr);
         if (status == MDB_NOTFOUND) [[unlikely]] {
             return std::unexpected(make_error_code(storage_errc::missing_entry));
         }
@@ -618,12 +655,12 @@ std::expected<void, std::error_code> set_entry_states(const databases& d, std::v
                                                       const std::uint64_t from, const std::uint64_t to,
                                                       const std::uint64_t decided_idx)
 {
-    const auto c = open_cursor(d.txn, d.log_dbi);
+    const auto c = open_cursor(d.txn, d.meta_dbi);
     if (!c) [[unlikely]] {
         return std::unexpected(c.error());
     }
     for (const auto index : std::views::iota(from, to)) {
-        const auto key_bytes = to_big_endian(index);
+        const auto key_bytes = key_of(log_prefix, index);
         MDB_val key = value_of(key_bytes);
         MDB_val data{};
         const int found = mdb_cursor_get(c->get(), &key, &data, MDB_SET);
@@ -660,6 +697,13 @@ void throw_if_no_environment(const void* const env)
     }
 }
 
+void throw_if_nested_is_open(const mdb_txn& nested)
+{
+    if (nested) [[unlikely]] {
+        throw std::logic_error("konsens: a nested transaction is open, and its parent takes no operation");
+    }
+}
+
 void throw_if_an_entry_has_a_field_of_another_kind(const std::span<const entry> entries)
 {
     for (const auto& e : entries) {
@@ -690,15 +734,15 @@ std::expected<void, std::error_code> check_or_write_format(const databases& d)
         }
         return {};
     }
-    const auto log_count = read_entry_count(d.txn, d.log_dbi);
-    if (!log_count) [[unlikely]] {
-        return std::unexpected(log_count.error());
-    }
     const auto meta_count = read_entry_count(d.txn, d.meta_dbi);
     if (!meta_count) [[unlikely]] {
         return std::unexpected(meta_count.error());
     }
-    if (*log_count != 0 || *meta_count != 0) [[unlikely]] {
+    const auto data_count = read_entry_count(d.txn, d.data_dbi);
+    if (!data_count) [[unlikely]] {
+        return std::unexpected(data_count.error());
+    }
+    if (*meta_count != 0 || *data_count != 0) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
     if (auto put = put_checked(d.txn, d.meta_dbi, format_key, to_little_endian(format_version)); !put) [[unlikely]] {
@@ -707,19 +751,105 @@ std::expected<void, std::error_code> check_or_write_format(const databases& d)
     return write_meta(d, meta_record{});
 }
 
+
+std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+find_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key_bytes)
+{
+    MDB_val key = value_of(key_bytes);
+    MDB_val data{};
+    const int status = mdb_get(txn, dbi, &key, &data);
+    if (status == MDB_NOTFOUND) {
+        return std::nullopt;
+    }
+    if (status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    return as_bytes(data);
+}
+
+std::expected<void, std::error_code> put_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key,
+                                               const std::span<const std::byte> value)
+{
+    MDB_val k = value_of(key);
+    MDB_val v = value_of(value);
+    const int status = mdb_put(txn, dbi, &k, &v, 0);
+    if (status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    return {};
+}
+
+std::expected<void, std::error_code> erase_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key)
+{
+    MDB_val k = value_of(key);
+    const int status = mdb_del(txn, dbi, &k, nullptr);
+    if (status != MDB_SUCCESS && status != MDB_NOTFOUND) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    return {};
+}
+
+std::expected<std::optional<session_record>, std::error_code> find_session_in(MDB_txn* txn, const MDB_dbi meta_dbi,
+                                                                              const std::uint64_t session)
+{
+    const auto key = key_of(session_prefix, session);
+    const auto value = find_value(txn, meta_dbi, key);
+    if (!value) [[unlikely]] {
+        return std::unexpected(value.error());
+    }
+    if (!value->has_value()) {
+        return std::nullopt;
+    }
+    const auto bytes = value->value();
+    if (bytes.size() < session_head_size + crc_size) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto body = bytes.first(bytes.size() - crc_size);
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    const auto reply = body.subspan(session_head_size);
+    return session_record{from_little_endian<std::uint64_t>(body.first<session_head_size>()),
+                          {reply.begin(), reply.end()}};
+}
+
+std::expected<void, std::error_code> put_session(MDB_txn* txn, const MDB_dbi meta_dbi, const std::uint64_t session,
+                                                 const session_record& record)
+{
+    const auto key = key_of(session_prefix, session);
+    MDB_val k = value_of(key);
+    MDB_val v{session_head_size + record.reply.size() + crc_size, nullptr};
+    const int status = mdb_put(txn, meta_dbi, &k, &v, MDB_RESERVE);
+    if (status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    const auto out = as_writable_bytes(v);
+    std::ranges::copy(record.reply,
+                      std::ranges::copy(to_little_endian(record.request_number), out.begin()).out);
+    const auto body = out.first(out.size() - crc_size);
+    std::ranges::copy(to_little_endian(crc_of(body)), out.last(crc_size).begin());
+    return {};
+}
+
+std::expected<void, std::error_code> erase_session_in(MDB_txn* txn, const MDB_dbi meta_dbi, const std::uint64_t session)
+{
+    return erase_value(txn, meta_dbi, key_of(session_prefix, session));
+}
+
 }
 
 struct persistent_storage::environment {
     std::unique_ptr<MDB_env, env_close> handle;
-    MDB_dbi log_dbi;
     MDB_dbi meta_dbi;
+    MDB_dbi data_dbi;
     mdb_txn writer{};
+    mdb_txn nested{};
     mdb_txn reader{};
     bool reader_in_use{};
     std::vector<std::byte> rewritten{};
 
-    databases of_writer() const noexcept { return {writer.get(), log_dbi, meta_dbi}; }
-    databases of_reader() const noexcept { return {reader.get(), log_dbi, meta_dbi}; }
+    databases of_writer() const noexcept { return {writer.get(), meta_dbi, data_dbi}; }
+    databases of_reader() const noexcept { return {reader.get(), meta_dbi, data_dbi}; }
 };
 
 const std::error_category& storage_category() noexcept
@@ -818,6 +948,20 @@ persistent_storage::read_only_transaction::get_chain_crc(const std::uint64_t ind
     return read_chain_crc(env_->of_reader(), index);
 }
 
+std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+persistent_storage::read_only_transaction::find(const std::span<const std::byte> key) const
+{
+    throw_if_no_environment(env_);
+    return find_value(env_->reader.get(), env_->data_dbi, key);
+}
+
+std::expected<std::optional<session_record>, std::error_code>
+persistent_storage::read_only_transaction::find_session(const std::uint64_t session) const
+{
+    throw_if_no_environment(env_);
+    return find_session_in(env_->reader.get(), env_->meta_dbi, session);
+}
+
 persistent_storage::transaction::transaction(environment* const env) noexcept : env_{env}
 {
 }
@@ -830,6 +974,7 @@ persistent_storage::transaction& persistent_storage::transaction::operator=(tran
 {
     if (this != &other) {
         if (env_ != nullptr) {
+            env_->nested.reset();
             env_->writer.reset();
         }
         env_ = std::exchange(other.env_, nullptr);
@@ -840,6 +985,7 @@ persistent_storage::transaction& persistent_storage::transaction::operator=(tran
 persistent_storage::transaction::~transaction()
 {
     if (env_ != nullptr) {
+        env_->nested.reset();
         env_->writer.reset();
     }
 }
@@ -847,6 +993,7 @@ persistent_storage::transaction::~transaction()
 std::expected<meta_record, std::error_code> persistent_storage::transaction::get_meta() const
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     return read_meta(env_->of_writer());
 }
 
@@ -854,6 +1001,7 @@ std::expected<std::vector<entry>, read_failure>
 persistent_storage::transaction::read_entries(const std::uint64_t from, const std::uint64_t to) const
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     return read_entries_in(env_->of_writer(), from, to);
 }
 
@@ -866,6 +1014,7 @@ persistent_storage::transaction::get_entries(const std::uint64_t from, const std
 std::expected<std::optional<last_entry>, std::error_code> persistent_storage::transaction::get_last_entry() const
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     return read_last_entry(env_->of_writer());
 }
 
@@ -873,6 +1022,7 @@ std::expected<std::optional<entry_state>, std::error_code>
 persistent_storage::transaction::get_entry_state(const std::uint64_t index) const
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     return read_entry_state(env_->of_writer(), index);
 }
 
@@ -880,6 +1030,7 @@ std::expected<std::optional<std::uint32_t>, std::error_code>
 persistent_storage::transaction::get_chain_crc(const std::uint64_t index) const
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     return read_chain_crc(env_->of_writer(), index);
 }
 
@@ -887,6 +1038,7 @@ std::expected<void, std::error_code>
 persistent_storage::transaction::append_entries(const std::span<const entry> entries)
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
@@ -903,6 +1055,7 @@ std::expected<void, std::error_code>
 persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, const std::span<const entry> entries)
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
@@ -930,6 +1083,7 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
 std::expected<void, std::error_code> persistent_storage::transaction::set_promise(const ballot promise)
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -942,6 +1096,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_promis
 std::expected<void, std::error_code> persistent_storage::transaction::set_accepted_round(const ballot accepted_round)
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -954,6 +1109,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_accept
 std::expected<void, std::error_code> persistent_storage::transaction::set_decided_index(const std::uint64_t decided_idx)
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -977,6 +1133,7 @@ persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx
                                                     const std::uint64_t decided_idx)
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
     if (auto deleted = delete_entries_from(d, from_idx); !deleted) [[unlikely]] {
@@ -989,18 +1146,177 @@ persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx
     if (!chain) [[unlikely]] {
         return std::unexpected(chain.error());
     }
-    meta_record m{promise, accepted_round, decided_idx, from_idx, *chain};
+    const auto old = read_meta(d);
+    if (!old && old.error() != storage_errc::missing_meta_record) [[unlikely]] {
+        return std::unexpected(old.error());
+    }
+    if (!old) [[unlikely]] {
+        if (auto deleted = delete_the_state(d); !deleted) [[unlikely]] {
+            return deleted;
+        }
+    }
+    const auto applied = old.value_or(meta_record{});
+    meta_record m{promise, accepted_round, decided_idx, from_idx, *chain, applied.applied_idx,
+                  applied.applied_chain_crc, applied.pointer};
     if (auto put = put_entries(d, m, entries); !put) [[unlikely]] {
         return put;
     }
     return write_meta(d, m);
 }
 
+std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+persistent_storage::transaction::find(const std::span<const std::byte> key) const
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    return find_value(env_->writer.get(), env_->data_dbi, key);
+}
+
+std::expected<std::optional<session_record>, std::error_code>
+persistent_storage::transaction::find_session(const std::uint64_t session) const
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    return find_session_in(env_->writer.get(), env_->meta_dbi, session);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::transaction::insert_or_assign(const std::span<const std::byte> key,
+                                                  const std::span<const std::byte> value)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    return put_value(env_->writer.get(), env_->data_dbi, key, value);
+}
+
+std::expected<void, std::error_code> persistent_storage::transaction::erase(const std::span<const std::byte> key)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    return erase_value(env_->writer.get(), env_->data_dbi, key);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::transaction::insert_or_assign_session(const std::uint64_t session, const session_record& record)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    return put_session(env_->writer.get(), env_->meta_dbi, session, record);
+}
+
+std::expected<void, std::error_code> persistent_storage::transaction::erase_session(const std::uint64_t session)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    return erase_session_in(env_->writer.get(), env_->meta_dbi, session);
+}
+
+std::expected<void, std::error_code> persistent_storage::transaction::set_applied(const std::uint64_t applied_idx,
+                                                                                  const std::uint32_t applied_chain_crc,
+                                                                                  const std::uint64_t pointer)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    const auto d = env_->of_writer();
+    auto m = read_meta(d);
+    if (!m) [[unlikely]] {
+        return std::unexpected(m.error());
+    }
+    m->applied_idx = applied_idx;
+    m->applied_chain_crc = applied_chain_crc;
+    m->pointer = pointer;
+    return write_meta(d, *m);
+}
+
+std::expected<persistent_storage::nested_transaction, std::error_code> persistent_storage::transaction::begin_nested()
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    MDB_txn* txn = nullptr;
+    const int status = mdb_txn_begin(env_->handle.get(), env_->writer.get(), 0, &txn);
+    if (status != MDB_SUCCESS) [[unlikely]] {
+        return std::unexpected(to_error_code(status));
+    }
+    env_->nested.reset(txn);
+    return nested_transaction{env_};
+}
+
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&
 {
     throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
     auto txn = std::move(std::exchange(env_, nullptr)->writer);
     return commit_or_throw(std::move(txn));
+}
+
+persistent_storage::nested_transaction::nested_transaction(environment* const env) noexcept : env_{env}
+{
+}
+
+persistent_storage::nested_transaction::nested_transaction(nested_transaction&& other) noexcept
+    : env_{std::exchange(other.env_, nullptr)}
+{
+}
+
+persistent_storage::nested_transaction&
+persistent_storage::nested_transaction::operator=(nested_transaction&& other) noexcept
+{
+    if (this != &other) {
+        if (env_ != nullptr) {
+            env_->nested.reset();
+        }
+        env_ = std::exchange(other.env_, nullptr);
+    }
+    return *this;
+}
+
+persistent_storage::nested_transaction::~nested_transaction()
+{
+    if (env_ != nullptr) {
+        env_->nested.reset();
+    }
+}
+
+std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+persistent_storage::nested_transaction::find(const std::span<const std::byte> key) const
+{
+    throw_if_no_environment(env_);
+    return find_value(env_->nested.get(), env_->data_dbi, key);
+}
+
+std::expected<std::optional<session_record>, std::error_code>
+persistent_storage::nested_transaction::find_session(const std::uint64_t session) const
+{
+    throw_if_no_environment(env_);
+    return find_session_in(env_->nested.get(), env_->meta_dbi, session);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::nested_transaction::insert_or_assign(const std::span<const std::byte> key,
+                                                         const std::span<const std::byte> value)
+{
+    throw_if_no_environment(env_);
+    return put_value(env_->nested.get(), env_->data_dbi, key, value);
+}
+
+std::expected<void, std::error_code> persistent_storage::nested_transaction::erase(const std::span<const std::byte> key)
+{
+    throw_if_no_environment(env_);
+    return erase_value(env_->nested.get(), env_->data_dbi, key);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::nested_transaction::insert_or_assign_session(const std::uint64_t session,
+                                                                 const session_record& record)
+{
+    throw_if_no_environment(env_);
+    return put_session(env_->nested.get(), env_->meta_dbi, session, record);
+}
+
+std::expected<void, std::error_code> persistent_storage::nested_transaction::erase_session(const std::uint64_t session)
+{
+    throw_if_no_environment(env_);
+    return erase_session_in(env_->nested.get(), env_->meta_dbi, session);
 }
 
 persistent_storage::persistent_storage(persistent_storage&&) noexcept = default;
@@ -1008,7 +1324,7 @@ persistent_storage& persistent_storage::operator=(persistent_storage&&) noexcept
 
 persistent_storage::~persistent_storage()
 {
-    if (env_ && (env_->writer || env_->reader_in_use)) [[unlikely]] {
+    if (env_ && (env_->writer || env_->nested || env_->reader_in_use)) [[unlikely]] {
         std::terminate();
     }
 }
@@ -1057,22 +1373,22 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
-    const auto log_dbi = open_database(txn->get(), log_database_name);
-    if (!log_dbi) [[unlikely]] {
-        return std::unexpected(log_dbi.error());
-    }
     const auto meta_dbi = open_database(txn->get(), meta_database_name);
     if (!meta_dbi) [[unlikely]] {
         return std::unexpected(meta_dbi.error());
     }
-    if (auto format = check_or_write_format({txn->get(), *log_dbi, *meta_dbi}); !format) [[unlikely]] {
+    const auto data_dbi = open_database(txn->get(), data_database_name);
+    if (!data_dbi) [[unlikely]] {
+        return std::unexpected(data_dbi.error());
+    }
+    if (auto format = check_or_write_format({txn->get(), *meta_dbi, *data_dbi}); !format) [[unlikely]] {
         return std::unexpected(format.error());
     }
     const auto committed = commit_or_throw(std::move(*txn));
     if (!committed) [[unlikely]] {
         return std::unexpected(committed.error());
     }
-    return persistent_storage{std::make_unique<environment>(std::move(env), *log_dbi, *meta_dbi)};
+    return persistent_storage{std::make_unique<environment>(std::move(env), *meta_dbi, *data_dbi)};
 }
 
 std::expected<persistent_storage::transaction, std::error_code> persistent_storage::begin()
@@ -1261,366 +1577,6 @@ std::expected<void, std::error_code> node_storage::allow_one_more_repair()
         return std::unexpected(r.error());
     }
     return write_repair_record({0, r->open_mark, r->mark_covered, r->proof});
-}
-
-namespace {
-
-struct state_databases {
-    MDB_txn* txn;
-    MDB_dbi state_dbi;
-    MDB_dbi sessions_dbi;
-    MDB_dbi applied_dbi;
-};
-
-std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-find_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key_bytes)
-{
-    MDB_val key = value_of(key_bytes);
-    MDB_val data{};
-    const int status = mdb_get(txn, dbi, &key, &data);
-    if (status == MDB_NOTFOUND) {
-        return std::nullopt;
-    }
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return as_bytes(data);
-}
-
-std::expected<std::optional<session_record>, std::error_code> find_session_in(const state_databases& d,
-                                                                              const std::uint64_t session)
-{
-    const auto key = to_big_endian(session);
-    const auto value = find_value(d.txn, d.sessions_dbi, key);
-    if (!value) [[unlikely]] {
-        return std::unexpected(value.error());
-    }
-    if (!value->has_value()) {
-        return std::nullopt;
-    }
-    const auto bytes = value->value();
-    if (bytes.size() < session_head_size + crc_size) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::malformed_record));
-    }
-    const auto body = bytes.first(bytes.size() - crc_size);
-    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
-    }
-    const auto reply = body.subspan(session_head_size);
-    return session_record{from_little_endian<std::uint64_t>(body.first<session_head_size>()),
-                          {reply.begin(), reply.end()}};
-}
-
-std::expected<applied_record, std::error_code> get_applied_in(const state_databases& d)
-{
-    const auto body = get_checked(d.txn, d.applied_dbi, applied_key, applied_record_size);
-    if (!body) [[unlikely]] {
-        return std::unexpected(body.error());
-    }
-    if (!body->has_value()) {
-        return applied_record{0, 0, 0};
-    }
-    const auto bytes = body->value();
-    return applied_record{
-        from_little_endian<std::uint64_t>(bytes.first<sizeof(applied_record::index)>()),
-        from_little_endian<std::uint32_t>(bytes.subspan<applied_chain_crc_offset, sizeof(applied_record::chain_crc)>()),
-        from_little_endian<std::uint64_t>(bytes.subspan<applied_pointer_offset, sizeof(applied_record::pointer)>())};
-}
-
-}
-
-struct state_storage::environment {
-    std::unique_ptr<MDB_env, env_close> handle;
-    MDB_dbi state_dbi;
-    MDB_dbi sessions_dbi;
-    MDB_dbi applied_dbi;
-    mdb_txn writer{};
-    mdb_txn reader{};
-    bool reader_in_use{};
-    std::vector<std::byte> session_bytes{};
-
-    state_databases of_writer() const noexcept { return {writer.get(), state_dbi, sessions_dbi, applied_dbi}; }
-    state_databases of_reader() const noexcept { return {reader.get(), state_dbi, sessions_dbi, applied_dbi}; }
-};
-
-state_storage::read_only_transaction::read_only_transaction(environment* const env) noexcept : env_{env}
-{
-}
-
-state_storage::read_only_transaction::read_only_transaction(read_only_transaction&& other) noexcept
-    : env_{std::exchange(other.env_, nullptr)}
-{
-}
-
-state_storage::read_only_transaction&
-state_storage::read_only_transaction::operator=(read_only_transaction&& other) noexcept
-{
-    if (this != &other) {
-        if (env_ != nullptr) {
-            mdb_txn_reset(env_->reader.get());
-            env_->reader_in_use = false;
-        }
-        env_ = std::exchange(other.env_, nullptr);
-    }
-    return *this;
-}
-
-state_storage::read_only_transaction::~read_only_transaction()
-{
-    if (env_ != nullptr) {
-        mdb_txn_reset(env_->reader.get());
-        env_->reader_in_use = false;
-    }
-}
-
-std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-state_storage::read_only_transaction::find(const std::span<const std::byte> key) const
-{
-    throw_if_no_environment(env_);
-    return find_value(env_->reader.get(), env_->state_dbi, key);
-}
-
-std::expected<std::optional<session_record>, std::error_code>
-state_storage::read_only_transaction::find_session(const std::uint64_t session) const
-{
-    throw_if_no_environment(env_);
-    return find_session_in(env_->of_reader(), session);
-}
-
-std::expected<applied_record, std::error_code> state_storage::read_only_transaction::get_applied() const
-{
-    throw_if_no_environment(env_);
-    return get_applied_in(env_->of_reader());
-}
-
-state_storage::transaction::transaction(environment* const env) noexcept : env_{env}
-{
-}
-
-state_storage::transaction::transaction(transaction&& other) noexcept : env_{std::exchange(other.env_, nullptr)}
-{
-}
-
-state_storage::transaction& state_storage::transaction::operator=(transaction&& other) noexcept
-{
-    if (this != &other) {
-        if (env_ != nullptr) {
-            env_->writer.reset();
-        }
-        env_ = std::exchange(other.env_, nullptr);
-    }
-    return *this;
-}
-
-state_storage::transaction::~transaction()
-{
-    if (env_ != nullptr) {
-        env_->writer.reset();
-    }
-}
-
-std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-state_storage::transaction::find(const std::span<const std::byte> key) const
-{
-    throw_if_no_environment(env_);
-    return find_value(env_->writer.get(), env_->state_dbi, key);
-}
-
-std::expected<std::optional<session_record>, std::error_code>
-state_storage::transaction::find_session(const std::uint64_t session) const
-{
-    throw_if_no_environment(env_);
-    return find_session_in(env_->of_writer(), session);
-}
-
-std::expected<applied_record, std::error_code> state_storage::transaction::get_applied() const
-{
-    throw_if_no_environment(env_);
-    return get_applied_in(env_->of_writer());
-}
-
-std::expected<void, std::error_code>
-state_storage::transaction::insert_or_assign(const std::span<const std::byte> key,
-                                             const std::span<const std::byte> value)
-{
-    throw_if_no_environment(env_);
-    MDB_val k = value_of(key);
-    MDB_val v = value_of(value);
-    const int status = mdb_put(env_->writer.get(), env_->state_dbi, &k, &v, 0);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return {};
-}
-
-std::expected<void, std::error_code> state_storage::transaction::erase(const std::span<const std::byte> key)
-{
-    throw_if_no_environment(env_);
-    MDB_val k = value_of(key);
-    const int status = mdb_del(env_->writer.get(), env_->state_dbi, &k, nullptr);
-    if (status != MDB_SUCCESS && status != MDB_NOTFOUND) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return {};
-}
-
-std::expected<void, std::error_code> state_storage::transaction::insert_or_assign_session(const std::uint64_t session,
-                                                                                          const session_record& record)
-{
-    throw_if_no_environment(env_);
-    auto& bytes = env_->session_bytes;
-    bytes.resize(session_head_size + record.reply.size());
-    std::ranges::copy(to_little_endian(record.request_number), bytes.begin());
-    std::ranges::copy(record.reply, std::next(bytes.begin(), session_head_size));
-    const auto crc = to_little_endian(crc_of(bytes));
-    bytes.insert(bytes.end(), crc.begin(), crc.end());
-    const auto key_bytes = to_big_endian(session);
-    MDB_val k = value_of(key_bytes);
-    MDB_val v = value_of(std::span<const std::byte>(bytes));
-    const int status = mdb_put(env_->writer.get(), env_->sessions_dbi, &k, &v, 0);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return {};
-}
-
-std::expected<void, std::error_code> state_storage::transaction::erase_session(const std::uint64_t session)
-{
-    throw_if_no_environment(env_);
-    const auto key_bytes = to_big_endian(session);
-    MDB_val k = value_of(key_bytes);
-    const int status = mdb_del(env_->writer.get(), env_->sessions_dbi, &k, nullptr);
-    if (status != MDB_SUCCESS && status != MDB_NOTFOUND) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return {};
-}
-
-std::expected<void, std::error_code> state_storage::transaction::set_applied(const applied_record& applied)
-{
-    throw_if_no_environment(env_);
-    std::array<std::byte, applied_record_size> body{};
-    std::ranges::copy(
-        to_little_endian(applied.pointer),
-        std::ranges::copy(to_little_endian(applied.chain_crc),
-                          std::ranges::copy(to_little_endian(applied.index), body.begin()).out)
-            .out);
-    return put_checked(env_->writer.get(), env_->applied_dbi, applied_key, body);
-}
-
-std::expected<void, std::error_code> state_storage::transaction::commit() &&
-{
-    throw_if_no_environment(env_);
-    auto txn = std::move(std::exchange(env_, nullptr)->writer);
-    return commit_or_throw(std::move(txn));
-}
-
-state_storage::state_storage(std::unique_ptr<environment> env) noexcept : env_{std::move(env)}
-{
-}
-
-state_storage::state_storage(state_storage&&) noexcept = default;
-state_storage& state_storage::operator=(state_storage&&) noexcept = default;
-
-state_storage::~state_storage()
-{
-    if (env_ && (env_->writer || env_->reader_in_use)) [[unlikely]] {
-        std::terminate();
-    }
-}
-
-void state_storage::throw_if_moved_from() const
-{
-    if (!env_) [[unlikely]] {
-        throw std::logic_error("The state_storage was moved from and has no LMDB environment");
-    }
-}
-
-std::expected<state_storage, std::error_code>
-state_storage::open(const std::filesystem::path& directory, const std::size_t map_size, const uid_t effective_user_id)
-{
-    if (effective_user_id == root_user_id) [[unlikely]] {
-        return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
-    }
-    MDB_env* raw_env = nullptr;
-    const int created = mdb_env_create(&raw_env);
-    if (created != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(created));
-    }
-    std::unique_ptr<MDB_env, env_close> env{raw_env};
-    const int maxdbs_set = mdb_env_set_maxdbs(env.get(), state_database_count);
-    if (maxdbs_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(maxdbs_set));
-    }
-    const int mapsize_set = mdb_env_set_mapsize(env.get(), map_size);
-    if (mapsize_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(mapsize_set));
-    }
-    const int checksum_set = mdb_env_set_checksum(env.get(), compute_page_checksum, page_checksum_size);
-    if (checksum_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(checksum_set));
-    }
-    const int opened = mdb_env_open(env.get(), directory.c_str(), environment_flags, file_mode);
-    if (opened != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(opened));
-    }
-    auto txn = begin_transaction(env.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    const auto state_dbi = open_database(txn->get(), state_database_name);
-    if (!state_dbi) [[unlikely]] {
-        return std::unexpected(state_dbi.error());
-    }
-    const auto sessions_dbi = open_database(txn->get(), sessions_database_name);
-    if (!sessions_dbi) [[unlikely]] {
-        return std::unexpected(sessions_dbi.error());
-    }
-    const auto applied_dbi = open_database(txn->get(), applied_database_name);
-    if (!applied_dbi) [[unlikely]] {
-        return std::unexpected(applied_dbi.error());
-    }
-    const auto committed = commit_or_throw(std::move(*txn));
-    if (!committed) [[unlikely]] {
-        return std::unexpected(committed.error());
-    }
-    return state_storage{std::make_unique<environment>(std::move(env), *state_dbi, *sessions_dbi, *applied_dbi)};
-}
-
-std::expected<state_storage::transaction, std::error_code> state_storage::begin()
-{
-    throw_if_moved_from();
-    if (env_->writer) [[unlikely]] {
-        throw std::logic_error("konsens: a write transaction of this state storage is open");
-    }
-    auto txn = begin_transaction(env_->handle.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    env_->writer = std::move(*txn);
-    return transaction{env_.get()};
-}
-
-std::expected<state_storage::read_only_transaction, std::error_code> state_storage::begin_read_only() const
-{
-    throw_if_moved_from();
-    if (env_->reader_in_use) [[unlikely]] {
-        throw std::logic_error("konsens: a read-only transaction of this state storage is open");
-    }
-    if (env_->reader) {
-        const int renewed = mdb_txn_renew(env_->reader.get());
-        if (renewed != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(renewed));
-        }
-    } else {
-        auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
-        if (!txn) [[unlikely]] {
-            return std::unexpected(txn.error());
-        }
-        env_->reader = std::move(*txn);
-    }
-    env_->reader_in_use = true;
-    return read_only_transaction{env_.get()};
 }
 
 }

@@ -23,7 +23,8 @@
 namespace lmdb_damage {
 
 constexpr std::size_t map_size = std::size_t{16} << 20;
-constexpr std::string_view meta_key = "meta";
+constexpr std::string_view meta_key{"\0meta", 5};
+constexpr std::byte log_prefix{2};
 
 inline void change_with_lmdb(const std::filesystem::path& directory,
                              const std::function<void(MDB_txn*, MDB_dbi, MDB_dbi)>& f)
@@ -36,11 +37,9 @@ inline void change_with_lmdb(const std::filesystem::path& directory,
     REQUIRE(mdb_env_open(env, directory.c_str(), MDB_NOTLS | MDB_REMAP_CHUNKS, 0600) == MDB_SUCCESS);
     MDB_txn* txn = nullptr;
     REQUIRE(mdb_txn_begin(env, nullptr, 0, &txn) == MDB_SUCCESS);
-    MDB_dbi log = 0;
     MDB_dbi meta = 0;
-    REQUIRE(mdb_dbi_open(txn, "log", 0, &log) == MDB_SUCCESS);
     REQUIRE(mdb_dbi_open(txn, "meta", 0, &meta) == MDB_SUCCESS);
-    f(txn, log, meta);
+    f(txn, meta, meta);
     REQUIRE(mdb_txn_commit(txn) == MDB_SUCCESS);
     mdb_env_close(env);
 }
@@ -68,10 +67,10 @@ inline void change_in_another_process(const std::filesystem::path& directory,
     REQUIRE(WEXITSTATUS(status) == 0);
 }
 
-inline std::array<std::byte, sizeof(std::uint64_t)> key_of(const std::uint64_t index)
+inline std::array<std::byte, 1 + sizeof(std::uint64_t)> key_of(const std::uint64_t index)
 {
-    std::array<std::byte, sizeof index> key{};
-    for (std::size_t i = 0; i < key.size(); ++i) {
+    std::array<std::byte, 1 + sizeof index> key{log_prefix};
+    for (std::size_t i = 1; i < key.size(); ++i) {
         key.at(i) = static_cast<std::byte>(index >> (8 * (key.size() - 1 - i)));
     }
     return key;

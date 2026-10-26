@@ -99,7 +99,7 @@ struct later {
     }
 };
 
-konsens::node_config config_of(const node_id pid, const std::uint64_t max_in_flight)
+konsens::node_config config_of(const node_id pid)
 {
     std::vector<node_id> peers;
     for (node_id p = 1; p <= node_count; ++p) {
@@ -107,7 +107,7 @@ konsens::node_config config_of(const node_id pid, const std::uint64_t max_in_fli
             peers.push_back(p);
         }
     }
-    return {config_id, pid, peers, 0, election_ticks, resend_ticks, max_in_flight};
+    return {config_id, pid, peers, 0, election_ticks, resend_ticks};
 }
 
 std::optional<std::size_t> leader_of(const std::vector<node_t>& nodes)
@@ -118,18 +118,6 @@ std::optional<std::size_t> leader_of(const std::vector<node_t>& nodes)
         }
     }
     return std::nullopt;
-}
-
-std::uint64_t requests_above_the_applied_index(const node_t& n)
-{
-    const auto applied = n.get_applied_idx();
-    const auto log_len = n.get_sequence_paxos().get_accepted_idx();
-    REQUIRE(log_len);
-    const auto t = n.get_sequence_paxos().get_internal_storage().begin_read_only();
-    REQUIRE(t);
-    const auto log = t->get_entries(std::min(applied, *log_len), *log_len);
-    REQUIRE(log);
-    return static_cast<std::uint64_t>(std::ranges::count_if(*log, konsens::entry_is_a_request));
 }
 
 std::uint64_t value_of(const std::vector<std::byte>& reply)
@@ -151,7 +139,6 @@ struct world {
     microseconds next_tick{};
     std::uint64_t session{};
     std::vector<konsens::client_reply> replies;
-    std::uint64_t most_held_by_the_leader{};
 
     void put(const microseconds due, const std::size_t to, element e) { queue.push({due, order++, to, std::move(e)}); }
 
@@ -210,9 +197,6 @@ struct world {
                 replies.push_back(std::move(r));
             }
         }
-        if (n.get_sequence_paxos().get_state().first == konsens::role::leader) {
-            most_held_by_the_leader = std::max(most_held_by_the_leader, requests_above_the_applied_index(n));
-        }
     }
 
     void run_until(const microseconds end)
@@ -234,18 +218,15 @@ struct world {
 
 }
 
-// The leader keeps at most max_in_flight request entries above its applied
-// index, so a step reads a bounded part of the log. Every request still gets
-// its reply, each reply holds its own request number, and the leader stays.
-TEST_CASE("under an open loop the leader holds at most max_in_flight requests above its applied index")
+// Under an open loop every request still gets its reply, each reply holds
+// its own request number, and the leader stays.
+TEST_CASE("under an open loop every request gets its reply and the leader stays")
 {
-    for (const std::uint64_t max_in_flight : {std::uint64_t{1}, std::uint64_t{4}, std::uint64_t{16}}) {
-        CAPTURE(max_in_flight);
+    {
         world w{};
         for (node_id p = 1; p <= node_count; ++p) {
-            w.nodes.push_back(*node_t::with(config_of(p, max_in_flight), lmdb_storage::open_new(),
-                                            lmdb_storage::open_new_node_storage(),
-                                            lmdb_storage::open_new_state_storage(), counter{}, p));
+            w.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(),
+                                            lmdb_storage::open_new_node_storage(), counter{}, p));
         }
         w.run_until(election_time);
         const auto l = leader_of(w.nodes);
@@ -257,9 +238,7 @@ TEST_CASE("under an open loop the leader holds at most max_in_flight requests ab
         for (std::uint64_t k = 0; k < request_count; ++k) {
             w.put(start + k * request_interval, *l, request_call{first_request_call + k, k + 1});
         }
-        w.most_held_by_the_leader = 0;
         w.run_until(start + run_time);
-        CHECK(w.most_held_by_the_leader <= max_in_flight);
         CHECK(leader_of(w.nodes) == l);
         REQUIRE(w.replies.size() == request_count);
         for (const auto& r : w.replies) {
