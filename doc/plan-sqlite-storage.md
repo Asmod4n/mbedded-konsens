@@ -217,13 +217,10 @@ copy with `mdb_env_copyfd2`).
   plan keeps it out of the backup, because it is in the node storage
   file. A restored node then has a new identity.
 - Q2. How a restored node and an old node never use one identity.
-- Q3. The descriptor of the WAL: a second descriptor of the WAL file
-  (proposal), or a small VFS of our own that records the descriptor at
-  open. The VFS is more code, the second descriptor depends on the WAL
-  file staying the same file.
-- Q4. The checkpoint: when it runs and in which mode (`PASSIVE`,
-  `RESTART`, `TRUNCATE`). It costs two syncs. Proposal: `RESTART` when
-  the WAL passes a size that the config sets, measured first.
+- Q3 and Q4. Decided (owner card 2026-10-26 17:31): measure first. Arm
+  "SQLite syncs": `synchronous=FULL` and the automatic checkpoint. Arm
+  "caller syncs": section 6. The simple arm is built first. The form
+  of section 6 stays a proposal until the measurement.
 - Q5. Decided (owner card 2026-10-26 17:30): one file with all tables.
   The node storage stays a second file.
 - Q6. A checksum on each page: `cksumvfs.c` as a submodule from its
