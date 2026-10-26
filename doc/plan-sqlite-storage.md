@@ -163,31 +163,27 @@ copy with `mdb_env_copyfd2`).
 2. One connection writes. A second connection reads, as the kept LMDB
    reader does now. Both open in the same thread of the caller.
 
-## 6. The sync, outside the library
+## 6. The sync
 
-1. Proposal: `journal_mode=WAL`, `synchronous=NORMAL`,
-   `wal_autocheckpoint=0`. A commit writes its frames to the WAL and
-   makes no sync (section 1).
-2. The group "sync" of plan-one-environment.md 3.5 is one
-   `fdatasync` of the WAL. The caller makes it, as now with io_uring.
-   The WAL replaces the data file of LMDB there. The two forms Q1 and
-   Q2 fall away: a commit of SQLite has no separate meta page, so one
-   sync covers the whole commit.
-3. The descriptor: the library opens the WAL file a second time,
-   read-only, and gives this descriptor out. A sync through it flushes
-   the same file. Section 9 Q3 asks about this.
-4. A difference to LMDB: a commit is visible to the reader at once,
-   before the sync. LMDB kept it invisible until the commit after the
-   sync. The library sends nothing that depends on a commit before the
-   caller reports the sync, as now. A read of the state reads only
-   decided entries, which a majority holds. The model checks this.
-5. The checkpoint is a step of its own: `PRAGMA wal_checkpoint` in the
-   form that section 9 Q4 decides. It syncs the WAL and the database
-   file by itself (section 1). The library starts it; the binary may
-   run it in idle time.
-6. A failed sync throws `sync_error`, and nothing repeats it, as now.
+1. Decided (owner card 2026-10-26 17:54): the first version lets
+   SQLite sync. `journal_mode=WAL`, `synchronous=FULL`, the automatic
+   checkpoint at its default. A commit returns after the sync of the
+   WAL (section 1). The measurement of section 8.1 shows no difference
+   to a sync of the caller that waits.
+2. So the library makes the sync inside `commit`, in the thread of the
+   caller. The groups of plan-one-environment.md 3.5 keep their order:
+   a message that waits on a sync leaves after `commit` returns. The
+   descriptor, `prepare` and `begin_without_sync` go from the concept
+   `storage`. The form "the caller syncs through io_uring" is a later
+   option. It is measured in the binary, with the sends, before it
+   enters.
+3. A checkpoint can run inside a commit and make that commit slower.
+4. A commit is durable when `commit` returns. A reader sees it only
+   after the sync: the WAL is synced before the frames enter the WAL
+   index and its header (`wal.c:4212`, `wal.c:4238-4259`).
+5. A failed sync throws `sync_error`, and nothing repeats it, as now.
    A failed checkpoint throws `sync_error` too.
-7. `SQLITE_FULL` and `SQLITE_IOERR` with `ENOSPC` are the "full" error
+6. `SQLITE_FULL` and `SQLITE_IOERR` with `ENOSPC` are the "full" error
    value, as `MDB_MAP_FULL` now. The limit X of free space stays a
    field, off by default.
 
