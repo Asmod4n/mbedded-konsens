@@ -224,7 +224,8 @@ copy with `mdb_env_copyfd2`).
 - Q4. The checkpoint: when it runs and in which mode (`PASSIVE`,
   `RESTART`, `TRUNCATE`). It costs two syncs. Proposal: `RESTART` when
   the WAL passes a size that the config sets, measured first.
-- Q5. One file with all tables (proposal) or one file for each table.
+- Q5. Decided (owner card 2026-10-26 17:30): one file with all tables.
+  The node storage stays a second file.
 - Q6. A checksum on each page: `cksumvfs.c` as a submodule from its
   origin, or no page checksum (the CRC of each record stays).
 - Q7. Decided (owner card 2026-10-26 17:30): the `.recover` of the
