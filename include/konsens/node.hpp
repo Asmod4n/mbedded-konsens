@@ -699,6 +699,31 @@ private:
         return std::ranges::any_of(*log, entry_is_a_request);
     }
 
+    std::expected<std::uint64_t, std::error_code> count_the_requests_above_the_applied_index()
+    {
+        if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
+            return std::unexpected(r.error());
+        }
+        const auto m = seq_paxos_.read_meta();
+        if (!m) [[unlikely]] {
+            return seq_paxos_.stop_voting(m.error());
+        }
+        const auto a = read_or_throw(read_or_throw(state_.begin_read_only()).get_applied());
+        const auto first = std::min(a.pointer, m->log_len);
+        const auto log = sequence_paxos<S>::read_range(*seq_paxos_.txn_, first, m->log_len);
+        if (!log) [[unlikely]] {
+            return seq_paxos_.stop_voting(log.error());
+        }
+        auto applied_idx = std::min(a.index, m->log_len);
+        if (a.index <= m->decided_idx) {
+            applied_idx = find_the_verdicts(a.pointer, a.index + 1,
+                                            std::span<const entry>(*log).subspan(a.index - first, m->decided_idx - a.index))
+                              .applied_idx;
+        }
+        return static_cast<std::uint64_t>(
+            std::ranges::count_if(std::span<const entry>(*log).subspan(applied_idx - first), entry_is_a_request));
+    }
+
     result check_the_verdict_entries()
     {
         if (!seq_paxos_.votes() || seq_paxos_.recovering() || seq_paxos_.get_state().second != phase::accept) {
@@ -895,8 +920,19 @@ private:
             return {};
         }
         const bool leads = seq_paxos_.get_state() == std::pair{role::leader, phase::accept};
-        if (!waiting_.empty() && (!leads || own_.size() < max_in_flight_)) {
-            for (auto& e : std::exchange(waiting_, {})) {
+        if (!waiting_.empty()) {
+            std::uint64_t room = waiting_.size();
+            if (leads) {
+                const auto held = count_the_requests_above_the_applied_index();
+                if (!held) [[unlikely]] {
+                    return std::unexpected(held.error());
+                }
+                room = *held < max_in_flight_ ? std::min(room, max_in_flight_ - *held) : 0;
+            }
+            const auto end = std::next(waiting_.begin(), static_cast<std::ptrdiff_t>(room));
+            std::vector<entry> taken(std::make_move_iterator(waiting_.begin()), std::make_move_iterator(end));
+            waiting_.erase(waiting_.begin(), end);
+            for (auto& e : taken) {
                 if (auto r = seq_paxos_.append(std::move(e)); !r) [[unlikely]] {
                     return r;
                 }

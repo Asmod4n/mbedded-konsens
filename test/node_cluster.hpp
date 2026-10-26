@@ -37,10 +37,13 @@ using konsens::paxos_message;
 constexpr std::size_t node_count = 3;
 constexpr std::uint64_t election_ticks = 3;
 constexpr std::uint64_t resend_ticks = 2;
-constexpr std::uint64_t max_in_flight = 16;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 constexpr std::uint64_t request_count = 64;
+// The leader takes at most max_in_flight requests into its log above its
+// applied index (plan-execute-verify.md 2.4.4). The test of group commit
+// sends request_count requests in one batch and counts one append for them.
+constexpr std::uint64_t max_in_flight = request_count;
 constexpr std::uint32_t config_id = 1;
 
 // The disk of a node outlives the node, so a test can end a node between a
