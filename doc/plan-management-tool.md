@@ -324,3 +324,28 @@ Third test, 2026-10-26, WebKitGTK 2.52.6, the changed extension, no
 raised error (swapped as escaped text) and a nil return (no swap)
 behave as above, and `<a href="#x">` stays on about:blank#x. The
 abort path is not tested.
+
+## 9. Result of the change in ascaridol (branch htmx-4)
+
+Commits on htmx-4, based on 8dd27ee:
+
+- 185faad: the tool includes mruby/internal.h. Without it, main did
+  not build against mruby HEAD (`mrb_decode_insn` not declared).
+- f70d987: symbol keys for `Mustache::Template#render`. mruby-mustache
+  HEAD looks up keys and partials as symbols, so on main the router
+  script read `window.;` and the partials of notes and tabs_and_modals
+  were not found.
+- e9b56ab: htmx 4 and the extension replace the `rb-*` router.
+- 0d93074: tabs_and_modals renders its integer id as text, which
+  mruby-mustache HEAD requires.
+
+Test, 2026-10-26: mruby HEAD, gcc 13.3, no `enable_debug`, WebKitGTK
+2.52.6 under Xvfb. Each of the four examples was built twice: the old
+arm at f70d987 plus the id fix, the new arm at htmx-4. A driver clicked
+and typed the same steps in both and compared the text of the page
+after each step, with digits masked.
+
+- forms, dashboard, notes: the same text after every step.
+- tabs_and_modals: the same text, except one step. A click on the
+  dark area around the delete dialog closes the dialog in the new arm.
+  In the old arm the dialog stayed open. The markup asks for the close.
