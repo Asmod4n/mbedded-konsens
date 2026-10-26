@@ -68,8 +68,8 @@ TEST_CASE("64 requests make one commit of the storage on each node in each pass"
         }
     }
     CHECK(passes > 1);
-    // Execute-Verify: the 64 requests are one append, and each verdict entry
-    // that the leader appends later is an append of its own.
+    // Execute-Verify: the done records of the 64 requests are one append,
+    // and each later append holds one entry.
     for (const auto& d : c.disks) {
         REQUIRE_FALSE(d->appended.empty());
         CHECK(d->appended.front() == request_count);
@@ -83,8 +83,9 @@ TEST_CASE("64 requests make one commit of the storage on each node in each pass"
 }
 
 // Section 2 of the plan: a crash before the commit is a crash before the
-// messages of the batch arrived. The leader handles the Accepted messages
-// that decide a request, and it ends before its commit. Neither the Decide
+// messages of the batch arrived. The work and its answers pass, the leader
+// writes the done record, and it handles the Accepted messages that decide
+// the request. It ends before its commit. Neither the Decide
 // nor the reply left the node, and the disk holds no new decided index.
 // After the restart the client sends the request again with the same
 // request number. The session executes it once and gives one reply to the
@@ -97,11 +98,17 @@ TEST_CASE("a crash between the batch and the commit sends nothing, and the retry
     constexpr std::uint64_t lost_call = client_a + 1;
     constexpr std::uint64_t retry_call = client_a + 2;
     batches::commit(c.nodes.at(l), c.nodes.at(l).client_request(lost_call, s, 1, {}));
-    auto out = c.nodes.at(l).take_outgoing_messages();
     std::vector<message> accepted;
-    for (const auto f : {first_follower(l), second_follower(l)}) {
-        batches::commit(c.nodes.at(f), c.nodes.at(f).handle_incoming(messages_to(out, pid_of(f))));
-        std::ranges::move(c.nodes.at(f).take_outgoing_messages(), std::back_inserter(accepted));
+    for (int pass = 0; pass < rounds && !std::ranges::any_of(accepted, holds<konsens::accepted>); ++pass) {
+        auto out = c.nodes.at(l).take_outgoing_messages();
+        accepted.clear();
+        for (const auto f : {first_follower(l), second_follower(l)}) {
+            batches::commit(c.nodes.at(f), c.nodes.at(f).handle_incoming(messages_to(out, pid_of(f))));
+            std::ranges::move(c.nodes.at(f).take_outgoing_messages(), std::back_inserter(accepted));
+        }
+        if (!std::ranges::any_of(accepted, holds<konsens::accepted>)) {
+            batches::commit(c.nodes.at(l), c.nodes.at(l).handle_incoming(messages_to(accepted, pid_of(l))));
+        }
     }
     REQUIRE(std::ranges::any_of(accepted, holds<konsens::accepted>));
     const auto decided_on_disk = lmdb_storage::meta_of(c.disks.at(l)->store).decided_idx;

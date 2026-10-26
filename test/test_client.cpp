@@ -76,11 +76,10 @@ constexpr std::uint64_t resend_ticks = 2;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 constexpr std::uint64_t client_b = 20;
-// Each request entry gets a verdict entry after it: a registration at
-// index 1 has its verdict at index 2, the next request is at index 3 and
-// its verdict at index 4.
-constexpr std::uint64_t registration_with_its_verdict = 2;
-constexpr std::uint64_t request_with_its_verdict = 4;
+// Each request is one done record in the log (plan-one-environment 3.3): a
+// registration at index 1 and the next request at index 2.
+constexpr std::uint64_t registration_done = 1;
+constexpr std::uint64_t request_done = 2;
 
 konsens::node_config config_of(const node_id pid)
 {
@@ -192,9 +191,9 @@ TEST_CASE("a start applies the decided log from index 0")
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
     auto kept = lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
-    REQUIRE(c.at(1).get_applied_idx() == request_with_its_verdict);
+    REQUIRE(c.at(1).get_applied_idx() == request_done);
     auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(), concatenation{}, 0);
-    CHECK(n.get_applied_idx() == request_with_its_verdict);
+    CHECK(n.get_applied_idx() == request_done);
     CHECK(concatenation_of(n) == bytes_of("a"));
     CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of("a")});
     CHECK(n.take_client_replies().empty());
@@ -210,9 +209,9 @@ TEST_CASE("only the payload of a client request reaches the state machine")
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
-    constexpr std::uint64_t normal_and_two_requests_with_their_verdicts = 5;
+    constexpr std::uint64_t normal_and_two_requests = 3;
     for (const auto& n : c.nodes) {
-        CHECK(n.get_applied_idx() == normal_and_two_requests_with_their_verdicts);
+        CHECK(n.get_applied_idx() == normal_and_two_requests);
         CHECK(concatenation_of(n) == bytes_of("a"));
     }
 }
@@ -306,7 +305,7 @@ TEST_CASE("expire_session closes a session at the leader once")
     const auto s = registered(c, 2, client_b);
     CHECK(failed_with(c.at(1).expire_session(client_b, s), client_errc::retry));
     c.deliver(once);
-    CHECK(c.at(3).get_sequence_paxos().get_accepted_idx() == registration_with_its_verdict);
+    CHECK(c.at(3).get_sequence_paxos().get_accepted_idx() == registration_done);
 
     batches::commit(c.at(3), c.at(3).expire_session(client_b, s));
     batches::commit(c.at(3), c.at(3).expire_session(client_b, s));
@@ -331,10 +330,10 @@ TEST_CASE("expire_session closes a session at the leader once")
 }
 
 // R1 across a change of leader (finding 1 of the review of plan v0.1).
-// Leader 3 decides and answers request "a", and its Decide of the verdict
-// entry to the others is lost. Node 2 becomes leader with the verdict
+// Leader 3 decides and answers request "a", and its Decide of the done
+// record to the others is lost. Node 2 becomes leader with the done record
 // accepted but not decided. Node 1 misses the first AcceptSync of node 2,
-// so node 2 cannot decide the verdict yet. A read at node 1 must still see
+// so node 2 cannot decide the done record yet. A read at node 1 must still see
 // "a": the read index is the accepted_idx of node 2, and node 1 answers
 // only when it has applied up to that index.
 TEST_CASE("a read after a change of leader sees a request that the old leader decided")
@@ -344,15 +343,15 @@ TEST_CASE("a read after a change of leader sees a request that the old leader de
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver([](const message& m) -> std::size_t {
         return holds<konsens::decide>(m) &&
-                       std::get<konsens::decide>(std::get<paxos_message>(m).msg).decided_idx >= request_with_its_verdict
+                       std::get<konsens::decide>(std::get<paxos_message>(m).msg).decided_idx >= request_done
                    ? 0
                    : 1;
     });
     const auto answered = c.at(3).take_client_replies();
     REQUIRE(answered.size() == 1);
     REQUIRE(answered[0].response == bytes_of("a"));
-    REQUIRE(c.at(1).get_applied_idx() == registration_with_its_verdict);
-    REQUIRE(c.at(2).get_sequence_paxos().get_accepted_idx() == request_with_its_verdict);
+    REQUIRE(c.at(1).get_applied_idx() == registration_done);
+    REQUIRE(c.at(2).get_sequence_paxos().get_accepted_idx() == request_done);
 
     c.alive[2] = false;
     const auto no_accept_sync = [](const message& m) -> std::size_t {
@@ -364,11 +363,11 @@ TEST_CASE("a read after a change of leader sees a request that the old leader de
     c.deliver(no_accept_sync);
     REQUIRE(c.at(2).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
     REQUIRE(c.at(1).get_sequence_paxos().get_promise() == c.at(2).get_sequence_paxos().get_promise());
-    REQUIRE(c.at(1).get_applied_idx() == registration_with_its_verdict);
+    REQUIRE(c.at(1).get_applied_idx() == registration_done);
 
     batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
     c.deliver(no_accept_sync);
-    CHECK(c.at(1).get_applied_idx() == registration_with_its_verdict);
+    CHECK(c.at(1).get_applied_idx() == registration_done);
     CHECK(c.at(1).take_client_replies().empty());
 
     c.run(rounds, once);
@@ -391,7 +390,7 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
     };
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(lost_to_1);
-    REQUIRE(c.at(1).get_applied_idx() == registration_with_its_verdict);
+    REQUIRE(c.at(1).get_applied_idx() == registration_done);
 
     batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
     c.deliver(lost_to_1);
@@ -400,7 +399,7 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
     c.alive[2] = false;
     c.run(rounds, once);
     REQUIRE(c.at(1).get_sequence_paxos().get_promise()->pid == 2);
-    REQUIRE(c.at(1).get_applied_idx() == request_with_its_verdict);
+    REQUIRE(c.at(1).get_applied_idx() == request_done);
     const auto replies = c.at(1).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].client_id == client_b);
@@ -466,10 +465,10 @@ TEST_CASE("a state change commits only after the decide")
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     CHECK(concatenation_of(c.at(3)).empty());
-    CHECK(c.at(3).get_applied_idx() == registration_with_its_verdict);
+    CHECK(c.at(3).get_applied_idx() == registration_done);
     c.deliver(once);
     CHECK(concatenation_of(c.at(3)) == bytes_of("a"));
-    CHECK(c.at(3).get_applied_idx() == request_with_its_verdict);
+    CHECK(c.at(3).get_applied_idx() == request_done);
 }
 
 namespace {
@@ -479,7 +478,7 @@ std::filesystem::path decided_log_of_two_entries(cluster& c)
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
-    REQUIRE(c.at(1).get_applied_idx() == request_with_its_verdict);
+    REQUIRE(c.at(1).get_applied_idx() == request_done);
     const auto directory = lmdb_storage::new_directory();
     REQUIRE(c.at(1).get_sequence_paxos().get_internal_storage().copy(directory));
     return directory;
@@ -498,7 +497,7 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
         const auto n =
             *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
         CHECK(n.get_sequence_paxos().votes());
-        CHECK(n.get_applied_idx() == request_with_its_verdict);
+        CHECK(n.get_applied_idx() == request_done);
         CHECK(concatenation_of(n) == bytes_of("a"));
     }
 }
@@ -531,7 +530,7 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
             auto storage = lmdb_storage::open_in(log_directory);
             auto w = storage.begin();
             REQUIRE(w.has_value());
-            REQUIRE(w->set_applied(applied.index, applied.crc, 0));
+            REQUIRE(w->set_applied(applied.index, applied.crc));
             REQUIRE(std::move(*w).commit());
         }
         const auto n =

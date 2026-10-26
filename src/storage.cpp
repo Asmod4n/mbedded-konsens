@@ -19,6 +19,9 @@ namespace {
 constexpr std::size_t kind_size = sizeof(entry_kind);
 constexpr std::size_t field_size = sizeof(std::uint64_t);
 constexpr std::size_t max_field_count = 2;
+constexpr std::size_t flag_size = sizeof(std::uint8_t);
+constexpr std::size_t crc_size = sizeof(std::uint32_t);
+constexpr std::size_t result_head_size = flag_size + crc_size + field_size + field_size;
 
 using entry_fields = std::array<std::uint64_t, max_field_count>;
 
@@ -31,10 +34,6 @@ entry_fields fields_of(const entry& e) noexcept
         return {e.session, e.request_number};
     case entry_kind::expire_session:
         return {e.session, 0};
-    case entry_kind::results:
-        return {e.from_idx, e.to_idx};
-    case entry_kind::rejected:
-        return {e.from_idx, 0};
     case entry_kind::normal:
     case entry_kind::stop_sign:
         break;
@@ -42,9 +41,9 @@ entry_fields fields_of(const entry& e) noexcept
     return {};
 }
 
-entry entry_of(const entry_kind kind, const entry_fields& fields, const std::span<const std::byte> payload)
+entry entry_of(const entry_kind kind, const entry_fields& fields)
 {
-    entry e{kind, std::vector<std::byte>(payload.begin(), payload.end())};
+    entry e{kind};
     switch (kind) {
     case entry_kind::register_client:
         e.client_id = fields[0];
@@ -56,13 +55,6 @@ entry entry_of(const entry_kind kind, const entry_fields& fields, const std::spa
         break;
     case entry_kind::expire_session:
         e.session = fields[0];
-        break;
-    case entry_kind::results:
-        e.from_idx = fields[0];
-        e.to_idx = fields[1];
-        break;
-    case entry_kind::rejected:
-        e.from_idx = fields[0];
         break;
     case entry_kind::normal:
     case entry_kind::stop_sign:
@@ -76,7 +68,11 @@ entry entry_of(const entry_kind kind, const entry_fields& fields, const std::spa
 std::size_t encoded_size_of(const entry& e)
 {
     throw_if_entry_has_a_field_of_another_kind(e);
-    return kind_size + field_size * field_count_of(e.kind).value() + e.payload.size();
+    const auto size = kind_size + field_size * field_count_of(e.kind).value() + e.payload.size();
+    if (!entry_is_a_request(e)) {
+        return size;
+    }
+    return size + result_head_size + field_size * e.out.size() + e.result.size();
 }
 
 void encode_entry(const entry& e, const std::span<std::byte> out) noexcept
@@ -86,6 +82,16 @@ void encode_entry(const entry& e, const std::span<std::byte> out) noexcept
     const auto fields = fields_of(e);
     for (const auto field : std::span(fields).first(field_count_of(e.kind).value_or(0))) {
         next = std::ranges::copy(to_little_endian(field), next).out;
+    }
+    if (entry_is_a_request(e)) {
+        *next++ = static_cast<std::byte>(e.rejected);
+        next = std::ranges::copy(to_little_endian(e.result_crc), next).out;
+        next = std::ranges::copy(to_little_endian(std::uint64_t{e.out.size()}), next).out;
+        for (const auto id : e.out) {
+            next = std::ranges::copy(to_little_endian(id), next).out;
+        }
+        next = std::ranges::copy(to_little_endian(std::uint64_t{e.result.size()}), next).out;
+        next = std::ranges::copy(e.result, next).out;
     }
     std::ranges::copy(e.payload, next);
 }
@@ -106,7 +112,41 @@ std::optional<entry> decode_entry(const std::span<const std::byte> encoded_entry
         field = from_little_endian<std::uint64_t>(rest.first<field_size>());
         rest = rest.subspan(field_size);
     }
-    return entry_of(kind, fields, rest);
+    auto e = entry_of(kind, fields);
+    if (entry_is_a_request(e)) {
+        if (rest.size() < result_head_size) [[unlikely]] {
+            return std::nullopt;
+        }
+        const auto rejected = std::to_integer<std::uint8_t>(rest.front());
+        if (rejected > 1) [[unlikely]] {
+            return std::nullopt;
+        }
+        e.rejected = rejected == 1;
+        rest = rest.subspan(flag_size);
+        e.result_crc = from_little_endian<std::uint32_t>(rest.first<crc_size>());
+        rest = rest.subspan(crc_size);
+        auto out_count = from_little_endian<std::uint64_t>(rest.first<field_size>());
+        rest = rest.subspan(field_size);
+        for (; out_count > 0; --out_count) {
+            if (rest.size() < field_size + field_size) [[unlikely]] {
+                return std::nullopt;
+            }
+            e.out.push_back(from_little_endian<std::uint64_t>(rest.first<field_size>()));
+            rest = rest.subspan(field_size);
+        }
+        if (rest.size() < field_size) [[unlikely]] {
+            return std::nullopt;
+        }
+        const auto result_size = from_little_endian<std::uint64_t>(rest.first<field_size>());
+        rest = rest.subspan(field_size);
+        if (result_size > rest.size()) [[unlikely]] {
+            return std::nullopt;
+        }
+        e.result.assign(rest.begin(), std::next(rest.begin(), static_cast<std::ptrdiff_t>(result_size)));
+        rest = rest.subspan(result_size);
+    }
+    e.payload.assign(rest.begin(), rest.end());
+    return e;
 }
 
 std::uint32_t compute_entry_crc(const std::uint64_t index, const std::span<const std::byte> encoded_entry) noexcept

@@ -695,8 +695,7 @@ struct stress {
     outcome check_s3()
     {
         for (; proposed_checked < decided_history.size(); ++proposed_checked) {
-            if (!konsens::entry_is_a_verdict(decided_history.at(proposed_checked)) &&
-                !proposed.contains(fields_of(decided_history.at(proposed_checked)))) [[unlikely]] {
+            if (!proposed.contains(fields_of(decided_history.at(proposed_checked)))) [[unlikely]] {
                 return std::unexpected(failure{"S3: a decided entry was not proposed", {}});
             }
         }

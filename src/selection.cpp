@@ -57,14 +57,14 @@ void selection::count_answer(const node_id from, const answer& a)
     answers_.insert_or_assign(from, std::move(c));
 }
 
-void selection::move_pointer(const std::uint64_t pointer, const std::span<const chosen_result> chosen)
+void selection::move_pointer(const std::uint64_t pointer, const std::span<const indexed_result> chosen)
 {
     if (pointer <= pointer_) {
         return;
     }
     std::map<std::uint64_t, std::uint32_t> crcs;
     for (const auto& c : chosen) {
-        crcs.emplace(c.chosen.index, compute_result_crc(c.chosen.index, c.chosen.result));
+        crcs.emplace(c.index, compute_result_crc(c.index, c.result));
     }
     std::erase_if(selected_, [pointer, &crcs](auto& s) {
         if (s.first <= pointer) {
@@ -103,7 +103,7 @@ bool selection::counts(const leader_log& log, const node_id node, const std::uin
         return false;
     }
     const auto& a = it->second;
-    if (a.pointer != pointer_ || log.pointer != pointer_ || index > log.decided_idx || !a.results.contains(index)) {
+    if (a.pointer != pointer_ || log.pointer != pointer_ || !a.results.contains(index)) {
         return false;
     }
     std::uint32_t crc = 0;
@@ -173,7 +173,7 @@ std::vector<try_again_target> selection::select_results(const leader_log& log)
     if (log.pointer != pointer_) {
         return targets;
     }
-    for (auto q = pointer_ + 1; q <= std::min(log.decided_idx, pointer_ + log.entries.size()); ++q) {
+    for (auto q = pointer_ + 1; q <= pointer_ + log.entries.size(); ++q) {
         if (!holds_a_request(log, q) || holds(log, q)) {
             continue;
         }
@@ -223,41 +223,11 @@ std::vector<node_id> selection::find_the_nodes_out(const leader_log& log, const 
     return out;
 }
 
-std::optional<entry> selection::find_the_verdict_entry(const leader_log& log) const
+std::optional<entry> selection::find_the_rejected_record(const leader_log& log, const std::uint64_t index) const
 {
-    if (log.pointer != pointer_) {
-        return std::nullopt;
-    }
-    const auto end = pointer_ + log.entries.size();
-    std::vector<std::uint64_t> requests;
-    for (auto k = pointer_ + 1; k <= end; ++k) {
-        if (k > log.decided_idx && entry_is_a_verdict(log.entries[k - pointer_ - 1])) {
-            return std::nullopt;
-        }
-        if (holds_a_request(log, k)) {
-            requests.push_back(k);
-        }
-    }
-    if (requests.empty()) {
-        return std::nullopt;
-    }
-    std::vector<chosen_result> list;
-    for (const auto q : requests) {
-        if (!holds(log, q)) {
-            break;
-        }
-        list.push_back({selected_.at(q).chosen, selected_.at(q).node, find_the_nodes_out(log, q)});
-    }
-    if (!list.empty()) {
-        return entry{.kind = entry_kind::results,
-                     .payload = encode_chosen_results(list),
-                     .from_idx = pointer_ + 1,
-                     .to_idx = list.back().chosen.index};
-    }
-    const auto q0 = requests.front();
     std::vector<node_id> counted;
-    for (const auto j : find_the_counted_nodes(log, q0)) {
-        if (!tried_.contains({j, q0}) || again_.contains({j, q0})) {
+    for (const auto j : find_the_counted_nodes(log, index)) {
+        if (!tried_.contains({j, index}) || again_.contains({j, index})) {
             counted.push_back(j);
         }
     }
@@ -266,15 +236,49 @@ std::optional<entry> selection::find_the_verdict_entry(const leader_log& log) co
         return std::nullopt;
     }
     for (const auto c : counted) {
-        if (count_the_agreeing(counted, q0, result_of(c, q0)) + uncounted >= majority()) {
+        if (count_the_agreeing(counted, index, result_of(c, index)) + uncounted >= majority()) {
             return std::nullopt;
         }
     }
     std::vector<chosen_result> answers;
     for (const auto j : counted) {
-        answers.push_back({answers_.at(j).results.at(q0), j, {}});
+        answers.push_back({answers_.at(j).results.at(index), j, {}});
     }
-    return entry{.kind = entry_kind::rejected, .payload = encode_chosen_results(answers), .from_idx = q0};
+    auto e = log.entries[index - pointer_ - 1];
+    e.rejected = true;
+    e.result = encode_chosen_results(answers);
+    e.result_crc = compute_result_crc(index, e.result);
+    return e;
+}
+
+std::vector<entry> selection::find_the_done_records(const leader_log& log) const
+{
+    std::vector<entry> done;
+    if (log.pointer != pointer_) {
+        return done;
+    }
+    for (auto k = pointer_ + 1; k <= pointer_ + log.entries.size(); ++k) {
+        const auto& task = log.entries[k - pointer_ - 1];
+        if (!entry_is_a_request(task)) {
+            done.push_back(task);
+            continue;
+        }
+        if (!holds(log, k)) {
+            if (done.empty() || std::ranges::none_of(done, entry_is_a_request)) {
+                if (auto rejected = find_the_rejected_record(log, k)) {
+                    done.push_back(std::move(*rejected));
+                }
+            }
+            break;
+        }
+        const auto& s = selected_.at(k);
+        auto e = task;
+        e.result = s.chosen.result;
+        e.result_crc = s.chosen.crc;
+        e.out = find_the_nodes_out(log, k);
+        done.push_back(std::move(e));
+    }
+    return done;
 }
 
 bool selection::asked_to_run_again(const node_id node, const std::uint64_t index) const
@@ -294,7 +298,7 @@ void selection::count_a_refusal(const node_id node, const std::uint64_t index)
     }
 }
 
-void selection::count_an_appended_verdict_entry(const std::uint64_t index)
+void selection::count_an_appended_done_record(const std::uint64_t index)
 {
     appended_.insert(index);
 }

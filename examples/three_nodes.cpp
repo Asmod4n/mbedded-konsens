@@ -129,10 +129,6 @@ std::string text_of(const konsens::entry& e)
         return std::format("request {} of session {}: {}", e.request_number, e.session, text_of(e.payload));
     case konsens::entry_kind::expire_session:
         return std::format("ExpireSession of session {}", e.session);
-    case konsens::entry_kind::results:
-        return std::format("results of {} to {}", e.from_idx, e.to_idx);
-    case konsens::entry_kind::rejected:
-        return std::format("rejected {}", e.from_idx);
     case konsens::entry_kind::normal:
     case konsens::entry_kind::stop_sign:
         break;

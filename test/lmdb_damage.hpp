@@ -82,6 +82,22 @@ inline void delete_key(MDB_txn* txn, const MDB_dbi dbi, const std::span<const st
     REQUIRE(mdb_del(txn, dbi, &key, nullptr) == MDB_SUCCESS);
 }
 
+inline void delete_the_last_entry(MDB_txn* txn, const MDB_dbi dbi)
+{
+    MDB_cursor* c = nullptr;
+    REQUIRE(mdb_cursor_open(txn, dbi, &c) == MDB_SUCCESS);
+    const std::array after_the_log{static_cast<std::byte>(std::to_integer<std::uint8_t>(log_prefix) + 1u)};
+    MDB_val key{after_the_log.size(), const_cast<std::byte*>(after_the_log.data())};
+    MDB_val value{};
+    const int found = mdb_cursor_get(c, &key, &value, MDB_SET_RANGE);
+    REQUIRE((found == MDB_SUCCESS ? mdb_cursor_get(c, &key, &value, MDB_PREV)
+                                  : mdb_cursor_get(c, &key, &value, MDB_LAST)) == MDB_SUCCESS);
+    REQUIRE(key.mv_size == key_of(0).size());
+    REQUIRE(*static_cast<const std::byte*>(key.mv_data) == log_prefix);
+    REQUIRE(mdb_cursor_del(c, 0) == MDB_SUCCESS);
+    mdb_cursor_close(c);
+}
+
 inline void delete_meta_record(MDB_txn* txn, const MDB_dbi meta)
 {
     delete_key(txn, meta, std::as_bytes(std::span(meta_key)));

@@ -34,7 +34,6 @@ struct selected_result {
 
 struct leader_log {
     std::uint64_t pointer;
-    std::uint64_t decided_idx;
     std::span<const entry> entries;
 };
 
@@ -56,13 +55,13 @@ public:
     const std::map<node_id, counted_answer>& get_answers() const { return answers_; }
 
     void count_answer(node_id from, const answer& a);
-    void move_pointer(std::uint64_t pointer, std::span<const chosen_result> chosen);
+    void move_pointer(std::uint64_t pointer, std::span<const indexed_result> chosen);
     [[nodiscard]] std::vector<try_again_target> select_results(const leader_log& log);
-    [[nodiscard]] std::optional<entry> find_the_verdict_entry(const leader_log& log) const;
+    [[nodiscard]] std::vector<entry> find_the_done_records(const leader_log& log) const;
     [[nodiscard]] bool asked_to_run_again(node_id node, std::uint64_t index) const;
     [[nodiscard]] bool ran_again(node_id node, std::uint64_t index) const;
     void count_a_refusal(node_id node, std::uint64_t index);
-    void count_an_appended_verdict_entry(std::uint64_t index);
+    void count_an_appended_done_record(std::uint64_t index);
     [[nodiscard]] std::vector<std::uint64_t> find_the_entries_that_a_majority_refused() const;
 
 private:
@@ -73,6 +72,7 @@ private:
     [[nodiscard]] std::size_t count_the_agreeing(std::span<const node_id> counted, std::uint64_t index,
                                                  std::span<const std::byte> result) const;
     [[nodiscard]] std::vector<node_id> find_the_nodes_out(const leader_log& log, std::uint64_t index) const;
+    [[nodiscard]] std::optional<entry> find_the_rejected_record(const leader_log& log, std::uint64_t index) const;
     [[nodiscard]] std::span<const std::byte> result_of(node_id node, std::uint64_t index) const;
     [[nodiscard]] std::size_t majority() const { return nodes_.size() / 2 + 1; }
 

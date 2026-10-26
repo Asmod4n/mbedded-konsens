@@ -442,9 +442,9 @@ TEST_CASE("open refuses another format and a store with data and no format")
     }
     change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
         constexpr std::string_view name{"\0format", 7};
-        const std::array<unsigned char, 8> version_4{4, 0, 0, 0, 0, 0, 0, 0};
-        const auto crc = crc32c::Crc32c(version_4.data(), 4);
-        std::array<unsigned char, 8> value = version_4;
+        const std::array<unsigned char, 8> version_5{5, 0, 0, 0, 0, 0, 0, 0};
+        const auto crc = crc32c::Crc32c(version_5.data(), 4);
+        std::array<unsigned char, 8> value = version_5;
         for (std::size_t i = 0; i < 4; ++i) {
             value.at(4 + i) = static_cast<unsigned char>(crc >> (8 * i));
         }
@@ -467,7 +467,11 @@ TEST_CASE("open refuses another format and a store with data and no format")
 // Recovery after a power loss compares the CRC32C of the last entry of two
 // nodes, so the value must follow the record format and nothing else: the
 // index in 8 bytes little endian, the kind in one byte, the fields of the
-// kind in 8 bytes little endian each, then the payload. The chain CRC of an
+// kind in 8 bytes little endian each, then the payload. A request kind
+// carries its result between its fields and its payload: one byte that is 1
+// for a rejected task, the result CRC in 4 bytes, the count of the nodes out
+// and each of their ids in 8 bytes, the size of the result in 8 bytes and the
+// result. A request in work has an empty result. The chain CRC of an
 // entry is the CRC32C over the chain CRC of the entry before it in 4 bytes
 // little endian (0 for the first entry), the index in 8 bytes little
 // endian, and the same encoded entry. Each kind is tried, and the expected
@@ -485,14 +489,21 @@ TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format
         {normal_entry("first"), {0, 'f', 'i', 'r', 's', 't'}},
         {{konsens::entry_kind::stop_sign, {}}, {1}},
         {{.kind = konsens::entry_kind::register_client, .client_id = 7, .pid = 3},
-         {2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0}},
-        {{.kind = konsens::entry_kind::expire_session, .session = 1}, {4, 1, 0, 0, 0, 0, 0, 0, 0}},
+         {2, 7, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {{.kind = konsens::entry_kind::expire_session, .session = 1},
+         {4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
         {{konsens::entry_kind::client_request, bytes_of("x"), 1, 2},
-         {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 'x'}},
-        {{.kind = konsens::entry_kind::results, .payload = bytes_of("y"), .from_idx = 4, .to_idx = 5},
-         {5, 4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 'y'}},
-        {{.kind = konsens::entry_kind::rejected, .payload = bytes_of("z"), .from_idx = 6},
-         {6, 6, 0, 0, 0, 0, 0, 0, 0, 'z'}}};
+         {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'x'}},
+        {{.kind = konsens::entry_kind::client_request,
+          .payload = bytes_of("x"),
+          .session = 1,
+          .request_number = 2,
+          .result = bytes_of("r"),
+          .result_crc = 0x01020304,
+          .out = {5}},
+         {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 4, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 'r', 'x'}},
+        {{.kind = konsens::entry_kind::expire_session, .session = 1, .result = bytes_of("a"), .rejected = true},
+         {4, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 'a'}}};
     std::uint32_t chain = 0;
     for (std::uint64_t index = 0; const auto& [e, encoded] : each_kind) {
         const std::vector<konsens::entry> one{e};
@@ -771,11 +782,19 @@ std::vector<konsens::entry> entries_of_each_kind()
             {konsens::entry_kind::client_request, bytes_of("request"), 1, 0x1112131415161718},
             {konsens::entry_kind::client_request, {}, 2, 1},
             {.kind = konsens::entry_kind::expire_session, .session = 0x2122232425262728},
-            {.kind = konsens::entry_kind::results,
-             .payload = bytes_of("results"),
-             .from_idx = 0x3132333435363738,
-             .to_idx = 0x4142434445464748},
-            {.kind = konsens::entry_kind::rejected, .payload = bytes_of("rejected"), .from_idx = 0x5152535455565758}};
+            {.kind = konsens::entry_kind::client_request,
+             .payload = bytes_of("done"),
+             .session = 3,
+             .request_number = 0x3132333435363738,
+             .result = bytes_of("result"),
+             .result_crc = 0x41424344,
+             .out = {1, 0x5152535455565758}},
+            {.kind = konsens::entry_kind::register_client,
+             .client_id = 4,
+             .pid = 5,
+             .result = bytes_of("answers"),
+             .result_crc = 6,
+             .rejected = true}};
 }
 
 }
@@ -810,10 +829,10 @@ TEST_CASE("an entry with a field of another kind is a wrong use")
         {.kind = konsens::entry_kind::register_client, .session = 1, .client_id = 1, .pid = 1},
         {.kind = konsens::entry_kind::client_request, .session = 1, .request_number = 1, .pid = 1},
         {.kind = konsens::entry_kind::expire_session, .session = 1, .request_number = 1},
-        {.kind = konsens::entry_kind::normal, .from_idx = 1},
-        {.kind = konsens::entry_kind::client_request, .session = 1, .request_number = 1, .to_idx = 1},
-        {.kind = konsens::entry_kind::results, .session = 1, .from_idx = 1, .to_idx = 1},
-        {.kind = konsens::entry_kind::rejected, .from_idx = 1, .to_idx = 1},
+        {.kind = konsens::entry_kind::normal, .result = bytes_of("r")},
+        {.kind = konsens::entry_kind::normal, .result_crc = 1},
+        {.kind = konsens::entry_kind::stop_sign, .out = {1}},
+        {.kind = konsens::entry_kind::stop_sign, .rejected = true},
         {static_cast<konsens::entry_kind>(0xff), {}},
     };
     for (const auto& e : wrong) {
@@ -902,14 +921,14 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     const std::array value{std::byte{3}};
     const konsens::session_record session{4, {std::byte{5}, std::byte{6}}};
     const auto applied_of = [](const konsens::meta_record& m) {
-        return std::tuple{m.applied_idx, m.applied_chain_crc, m.pointer};
+        return std::tuple{m.applied_idx, m.applied_chain_crc};
     };
     {
         const auto r = storage.begin_read_only();
         REQUIRE(r.has_value());
         const auto m = r->get_meta();
         REQUIRE(m.has_value());
-        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}, std::uint64_t{0}});
+        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}});
         CHECK(finds_no_value(r->find(key)));
         CHECK(r->find_session(7).value() == std::nullopt);
     }
@@ -917,13 +936,13 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     REQUIRE(w.has_value());
     REQUIRE(w->insert_or_assign(key, value));
     REQUIRE(w->insert_or_assign_session(7, session));
-    REQUIRE(w->set_applied(9, 10, 8));
+    REQUIRE(w->set_applied(9, 10));
     {
         const auto r = storage.begin_read_only();
         REQUIRE(r.has_value());
         const auto m = r->get_meta();
         REQUIRE(m.has_value());
-        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}, std::uint64_t{0}});
+        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}});
         CHECK(finds_no_value(r->find(key)));
     }
     REQUIRE(std::move(*w).commit());
@@ -931,7 +950,7 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     REQUIRE(r.has_value());
     const auto m = r->get_meta();
     REQUIRE(m.has_value());
-    CHECK(applied_of(*m) == std::tuple{std::uint64_t{9}, std::uint32_t{10}, std::uint64_t{8}});
+    CHECK(applied_of(*m) == std::tuple{std::uint64_t{9}, std::uint32_t{10}});
     const auto found = r->find(key);
     REQUIRE(found.has_value());
     REQUIRE(found->has_value());
@@ -966,40 +985,42 @@ TEST_CASE("the storage erases a key and a session")
     CHECK(r->find_session(2).value() == std::nullopt);
 }
 
-// The applied point stands in the meta record. A repair that finds no meta
-// record does not know which entries the state holds, so it deletes the
-// state and the client table and sets the applied point to the start. The
-// next start applies the decided entries again.
-TEST_CASE("a repair without a meta record deletes the state and the client table")
+// Owner, 2026-10-26: a store without a meta record was changed from
+// outside the library. A repair does not guess the applied point: it
+// refuses with missing_meta_record, and the log, the state and the client
+// table stay as they are.
+TEST_CASE("a repair without a meta record is refused and changes nothing")
 {
     const temporary_directory dir;
     const std::array key{std::byte{1}};
+    const std::vector written{normal_entry("a"), normal_entry("b")};
     {
         auto storage = open_storage(dir.path());
-        const std::vector written{normal_entry("a"), normal_entry("b")};
         write(storage, [&](auto& t) {
             REQUIRE(t.append_entries(written));
             REQUIRE(t.insert_or_assign(key, key));
             REQUIRE(t.insert_or_assign_session(2, {1, {}}));
             REQUIRE(t.set_decided_index(2));
-            REQUIRE(t.set_applied(2, 9, 1));
+            REQUIRE(t.set_applied(2, 9));
         });
     }
     change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
         lmdb_damage::delete_meta_record(txn, meta);
     });
     auto storage = open_storage(dir.path());
-    const std::vector repaired{normal_entry("a"), normal_entry("b")};
-    write(storage, [&](auto& t) { REQUIRE(t.write_repaired_log(0, repaired, {1, 1, 0, 1}, {1, 1, 0, 1}, 2)); });
+    {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        const std::vector repaired{normal_entry("c")};
+        CHECK(t->write_repaired_log(0, repaired, {1, 1, 0, 1}, {1, 1, 0, 1}, 1) ==
+              std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    }
     const auto r = storage.begin_read_only();
     REQUIRE(r.has_value());
-    const auto m = r->get_meta();
-    REQUIRE(m.has_value());
-    CHECK(m->log_len == 2u);
-    CHECK(m->applied_idx == 0u);
-    CHECK(m->pointer == 0u);
-    CHECK(finds_no_value(r->find(key)));
-    CHECK(r->find_session(2).value() == std::nullopt);
+    CHECK(r->get_meta() == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    CHECK(r->get_entries(0, 2) == written);
+    CHECK_FALSE(finds_no_value(r->find(key)));
+    CHECK(r->find_session(2).value() == konsens::session_record{1, {}});
 }
 
 // A repair with a meta record keeps the applied point and the state.
@@ -1013,7 +1034,7 @@ TEST_CASE("a repair with a meta record keeps the state")
         REQUIRE(t.append_entries(written));
         REQUIRE(t.insert_or_assign(key, key));
         REQUIRE(t.set_decided_index(2));
-        REQUIRE(t.set_applied(2, 9, 1));
+        REQUIRE(t.set_applied(2, 9));
     });
     write(storage, [&](auto& t) { REQUIRE(t.write_repaired_log(1, std::span(written).subspan(1), {1, 1, 0, 1}, {1, 1, 0, 1}, 2)); });
     const auto r = storage.begin_read_only();
@@ -1022,7 +1043,6 @@ TEST_CASE("a repair with a meta record keeps the state")
     REQUIRE(m.has_value());
     CHECK(m->applied_idx == 2u);
     CHECK(m->applied_chain_crc == 9u);
-    CHECK(m->pointer == 1u);
     const auto found = r->find(key);
     REQUIRE(found.has_value());
     CHECK(found->has_value());

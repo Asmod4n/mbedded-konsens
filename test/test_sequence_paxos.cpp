@@ -371,8 +371,10 @@ TEST_CASE("a message of a lower ballot gets not_accepted")
 }
 
 // leader.rs:257-285 handle_majority_promises: with a majority of promises
-// the leader takes phase Accept, appends its buffered proposals and sends
-// AcceptSync to each promised follower.
+// the leader takes phase Accept and sends AcceptSync to each promised
+// follower. The buffered proposals wait for the end of the step, so that
+// the node can make each request a task first (plan-one-environment 2 item
+// 2); sequence_paxos alone appends them then and sends them in AcceptDecide.
 TEST_CASE("a majority of promises moves the leader to accept")
 {
     auto sp = make(3);
@@ -381,12 +383,16 @@ TEST_CASE("a majority of promises moves the leader to accept")
     committed_messages_of(sp);
     REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, 0, 0}}));
     CHECK(sp.get_state() == std::pair{role::leader, phase::accept});
+    const auto out = committed_messages_of(sp);
     CHECK(sp.get_accepted_idx() == 1);
     CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).accepted_round == ballot_of(1, 3));
-    const auto syncs = messages_of<konsens::accept_sync>(committed_messages_of(sp));
+    const auto syncs = messages_of<konsens::accept_sync>(out);
     REQUIRE(syncs.size() == 1);
-    CHECK(syncs[0].log_sync.suffix == std::vector{make_entry(7)});
+    CHECK(syncs[0].log_sync.suffix.empty());
     CHECK(syncs[0].seq_num == konsens::sequence_number{1, 1});
+    const auto decides = messages_of<konsens::accept_decide>(out);
+    REQUIRE(decides.size() == 1);
+    CHECK(decides[0].entries == std::vector{make_entry(7)});
 }
 
 // The fix for S7 (DecidedIdxMonotone TRUE in the model): a late AcceptSync
@@ -1750,24 +1756,47 @@ std::vector<entry> numbered_log(const std::size_t length, const std::uint8_t fir
     return log;
 }
 
-// A node whose meta record is lost before its start: `with` gives a node
-// that stopped voting with the damage.
+// Writes `log` with an accepted round and a decided index into `directory`.
+// With `promise`, the promise is the accepted round; without, the promise
+// is lost.
+void write_log_in(const std::filesystem::path& directory, const std::vector<entry>& log,
+                  const std::uint64_t decided_idx, const bool promise)
+{
+    auto s = lmdb_storage::open_in(directory);
+    lmdb_storage::write(s, [&](auto& t) {
+        REQUIRE(t.append_entries(log));
+        if (promise) {
+            REQUIRE(t.set_promise(ballot_of(1, 3)));
+        }
+        REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
+        REQUIRE(t.set_decided_index(decided_idx));
+    });
+}
+
+// A storage whose promise is lost: its meta record comes from a storage
+// with the same log and no promise, so its CRC and its chain CRC are valid
+// and only the start check finds the damage. A missing meta record is no
+// such damage: the node waits for the operator (owner, 2026-10-26).
+void lose_the_promise_in(const std::filesystem::path& directory, const std::vector<entry>& log,
+                         const std::uint64_t decided_idx)
+{
+    const auto twin = lmdb_storage::new_directory();
+    write_log_in(twin, log, decided_idx, false);
+    const auto value = meta_value_in(twin);
+    lmdb_damage::change_with_lmdb(directory, [&value](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
+        lmdb_damage::put_meta_value(txn, meta, value);
+    });
+}
+
+// A node whose promise is lost before its start: `with` gives a node that
+// stopped voting with the damage.
 sp_t damaged_node_with(const std::vector<entry>& log, const std::uint64_t decided_idx)
 {
     const auto directory = lmdb_storage::new_directory();
-    {
-        auto s = lmdb_storage::open_in(directory);
-        lmdb_storage::write(s, [&](auto& t) {
-            REQUIRE(t.append_entries(log));
-            REQUIRE(t.set_promise(ballot_of(1, 3)));
-            REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
-            REQUIRE(t.set_decided_index(decided_idx));
-        });
-    }
-    lmdb_damage::change_with_lmdb(
-        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+    write_log_in(directory, log, decided_idx, true);
+    lose_the_promise_in(directory, log, decided_idx);
     auto sp = make(1, lmdb_storage::open_in(directory), 7);
-    REQUIRE(sp.get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
+    REQUIRE(sp.get_error() == make_error_code(konsens::paxos_errc::inconsistent_storage));
     REQUIRE_FALSE(sp.votes());
     return sp;
 }
@@ -1841,7 +1870,7 @@ TEST_CASE("the repair search finds the first index that differs")
     CHECK(search_against(shorter, source) == 50);
 }
 
-// Plan repair-from-peer 2.3: the start check finds the lost meta record.
+// Plan repair-from-peer 2.3: the start check finds the lost promise.
 // The chain CRC at index 12 lies below the last entry, so only the scan
 // finds it: the scan ends at the first entry whose chain does not follow. The search starts below it, and the repair
 // takes only the entries from the first index that differs. The new meta record holds the values of the source, and the
@@ -1850,21 +1879,12 @@ TEST_CASE("a repair takes only the entries that differ, and sets the mark")
 {
     const auto source = numbered_log(20, 0);
     const auto directory = lmdb_storage::new_directory();
-    {
-        auto s = lmdb_storage::open_in(directory);
-        lmdb_storage::write(s, [&](auto& t) {
-            REQUIRE(t.append_entries(source));
-            REQUIRE(t.set_promise(ballot_of(1, 3)));
-            REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
-            REQUIRE(t.set_decided_index(18));
-        });
-    }
-    lmdb_damage::change_with_lmdb(directory, [](MDB_txn* txn, const MDB_dbi log, const MDB_dbi meta) {
-        flip_chain_crc(txn, log, 12);
-        lmdb_damage::delete_meta_record(txn, meta);
-    });
+    write_log_in(directory, source, 18, true);
+    lose_the_promise_in(directory, source, 18);
+    lmdb_damage::change_with_lmdb(directory,
+                                  [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) { flip_chain_crc(txn, log, 12); });
     auto sp = make(1, lmdb_storage::open_in(directory), 7);
-    REQUIRE(sp.get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
+    REQUIRE(sp.get_error() == make_error_code(konsens::paxos_errc::inconsistent_storage));
     REQUIRE(sp.start_repair(9));
     CHECK(search_against(sp, source) == 12);
     REQUIRE(sp.handle({2, 1, entries_answer_of({9, 12}, source, 15)}));
@@ -1895,7 +1915,7 @@ TEST_CASE("a repair refuses an entry whose chain CRC does not follow")
     REQUIRE(sp.handle({2, 1, wrong}));
     CHECK(sp.repairing());
     CHECK(committed_messages_of(sp).empty());
-    CHECK(sp.get_promise() == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+    CHECK(sp.get_promise() == std::unexpected(make_error_code(konsens::paxos_errc::inconsistent_storage)));
     auto wrong_start = entries_answer_of({9, 2}, source, 2);
     wrong_start.from_idx = 1;
     REQUIRE(sp.handle({2, 1, wrong_start}));
@@ -1938,7 +1958,7 @@ TEST_CASE("only a peer that votes answers a probe")
     CHECK(repairing.append(make_entry(5)) == std::unexpected(make_error_code(konsens::client_errc::recovering)));
 }
 
-// Plan repair-from-peer 2.5 and 2.9: a node whose disk lost its meta record
+// Plan repair-from-peer 2.5 and 2.9: a node whose disk lost its last entry
 // while it ran repairs from the cluster, recovers, and votes again with the
 // log of the cluster.
 TEST_CASE("a follower that found a damage repairs from the cluster and votes again")
@@ -1955,9 +1975,9 @@ TEST_CASE("a follower that found a damage repairs from the cluster and votes aga
     }
     deliver_all(nodes);
     lmdb_damage::change_in_another_process(
-        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_the_last_entry(txn, meta); });
     CHECK(a.handle({3, 1, konsens::recovery{5}}) ==
-          std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
+          std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
     REQUIRE(a.start_repair(11));
     deliver_all(nodes);
     CHECK(a.votes());

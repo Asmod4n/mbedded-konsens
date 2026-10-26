@@ -134,7 +134,7 @@ public:
                                                                                     const session_record& record);
         [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
         [[nodiscard]] std::expected<void, std::error_code>
-        set_applied(std::uint64_t applied_idx, std::uint32_t applied_chain_crc, std::uint64_t pointer);
+        set_applied(std::uint64_t applied_idx, std::uint32_t applied_chain_crc);
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] bool has_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;

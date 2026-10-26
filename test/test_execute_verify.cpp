@@ -25,14 +25,15 @@
 #include "konsens/verdict.hpp"
 #include "lmdb_storage.hpp"
 
-// Tests of Execute-Verify (doc/plan-execute-verify.md), step 2: the
-// answers, the selection of the leader, the verdict entries and the apply
-// of the chosen results. Provisional names made in this tree, for the owner
-// to decide: answer, try_again, refused, refusal_reason and their members;
-// selection, counted_answer, selected_result, leader_log, try_again_target
-// and their members; results_agree;
-// client_errc::rejected; paxos_errc::result_differs; node_fault;
-// get_selection and get_own_result_indexes of node.
+// Tests of Execute-Verify (doc/plan-execute-verify.md, with the changes of
+// doc/plan-one-environment.md 7): the work, the answers, the selection of
+// the leader, the done records and the apply of the chosen results.
+// Provisional names made in this tree, for the owner to decide: work,
+// answer, try_again, refused, refusal_reason and their members; selection,
+// counted_answer, selected_result, leader_log, try_again_target and their
+// members; results_agree; done record; client_errc::rejected;
+// paxos_errc::result_differs; node_fault; get_selection and
+// get_own_result_indexes of node.
 
 namespace {
 
@@ -87,7 +88,7 @@ konsens::selection new_selection()
 
 std::vector<konsens::chosen_result> list_of(const entry& e)
 {
-    const auto list = konsens::decode_chosen_results(e.payload);
+    const auto list = konsens::decode_chosen_results(e.result);
     REQUIRE(list.has_value());
     return *list;
 }
@@ -105,12 +106,12 @@ TEST_CASE("the leader selects the result of a majority and asks each other node 
     s.count_answer(3, first_answer({at(1, 7)}));
     s.count_answer(1, first_answer({at(1, 8)}));
     s.count_answer(2, first_answer({at(1, 7)}));
-    const auto targets = s.select_results({0, 1, log});
+    const auto targets = s.select_results({0, log});
     CHECK(targets == std::vector<konsens::try_again_target>{{1, 1}});
     REQUIRE(s.get_selected().contains(1));
     CHECK(s.get_selected().at(1).node == 2);
     CHECK(s.get_selected().at(1).chosen == at(1, 7));
-    CHECK(s.select_results({0, 1, log}).empty());
+    CHECK(s.select_results({0, log}).empty());
 }
 
 // Plan 2.6.3: without a majority that agrees, nothing is selected, and the
@@ -121,17 +122,17 @@ TEST_CASE("a result without a majority is not selected")
     auto s = new_selection();
     s.count_answer(1, first_answer({at(1, 7)}));
     s.count_answer(2, first_answer({at(1, 8)}));
-    CHECK(s.select_results({0, 1, log}).empty());
+    CHECK(s.select_results({0, log}).empty());
     CHECK(s.get_selected().empty());
     s.count_answer(3, first_answer({at(1, 8)}));
-    CHECK(s.select_results({0, 1, log}) == std::vector<konsens::try_again_target>{{1, 1}});
+    CHECK(s.select_results({0, log}) == std::vector<konsens::try_again_target>{{1, 1}});
     CHECK(s.get_selected().at(1).node == 2);
 }
 
 // Plan 2.6.2: an answer counts for an index only when it ran on the
 // selected base. Node 3 answers for index 2 on a base in which index 1 had
 // another result, so its answer does not count until it answers on the
-// selected base. A selection is made only of decided indexes.
+// selected base.
 TEST_CASE("an answer on another base is not counted")
 {
     const std::vector<entry> log{request(1), request(2)};
@@ -139,13 +140,11 @@ TEST_CASE("an answer on another base is not counted")
     s.count_answer(1, first_answer({at(1, 7), at(2, 5)}));
     s.count_answer(2, first_answer({at(1, 7)}));
     s.count_answer(3, {leader_ballot, 0, 2, base_of({{1, 9}}), {at(2, 5)}, 0});
-    CHECK(s.select_results({0, 1, log}).empty());
-    CHECK_FALSE(s.get_selected().contains(2));
-    CHECK(s.select_results({0, 2, log}).empty());
+    CHECK(s.select_results({0, log}).empty());
     CHECK(s.get_selected().contains(1));
     CHECK_FALSE(s.get_selected().contains(2));
     s.count_answer(3, {leader_ballot, 0, 2, base_of({{1, 7}}), {at(2, 5)}, 0});
-    CHECK(s.select_results({0, 2, log}).empty());
+    CHECK(s.select_results({0, log}).empty());
     REQUIRE(s.get_selected().contains(2));
     CHECK(s.get_selected().at(2).node == 1);
 }
@@ -180,9 +179,9 @@ TEST_CASE("a selection above an index whose chosen result differs is dropped")
         for (const node_id j : three_nodes) {
             s.count_answer(j, first_answer({at(1, 7), at(2, 5)}));
         }
-        CHECK(s.select_results({0, 2, log}).empty());
+        CHECK(s.select_results({0, log}).empty());
         REQUIRE(s.get_selected().size() == 2);
-        s.move_pointer(1, std::vector<konsens::chosen_result>{{at(1, chosen), 1, {}}});
+        s.move_pointer(1, std::vector<konsens::indexed_result>{at(1, chosen)});
         CHECK(s.get_pointer() == 1);
         CHECK(s.get_selected().contains(2) == (chosen == 7));
         CHECK_FALSE(s.get_selected().contains(1));
@@ -191,11 +190,12 @@ TEST_CASE("a selection above an index whose chosen result differs is dropped")
 
 // Plan 2.6.4 and 2.6.5: a node goes into the list only when its second
 // answer also does not agree. A node with no second answer at the append is
-// not listed. A node whose second answer agrees is not listed.
-TEST_CASE("the results entry lists a node only when its second run also does not agree")
+// not listed. A node whose second answer agrees is not listed. The done
+// record is the request with the chosen result (plan-one-environment 3.3).
+TEST_CASE("the done record lists a node only when its second run also does not agree")
 {
     const std::vector<entry> log{request(1)};
-    const konsens::leader_log l{0, 1, log};
+    const konsens::leader_log l{0, log};
     for (const std::uint8_t second : {std::uint8_t{0}, std::uint8_t{8}, std::uint8_t{7}}) {
         CAPTURE(int{second});
         auto s = new_selection();
@@ -206,58 +206,57 @@ TEST_CASE("the results entry lists a node only when its second run also does not
         if (second != 0) {
             s.count_answer(3, {leader_ballot, 0, 1, 0, {at(1, second)}, 1});
         }
-        const auto verdict = s.find_the_verdict_entry(l);
-        REQUIRE(verdict.has_value());
-        CHECK(verdict->kind == entry_kind::results);
-        CHECK(verdict->from_idx == 1);
-        CHECK(verdict->to_idx == 1);
-        const auto list = list_of(*verdict);
-        REQUIRE(list.size() == 1);
-        CHECK(list[0].chosen == at(1, 7));
-        CHECK(list[0].node == 1);
-        CHECK(list[0].out == (second == 8 ? std::vector<node_id>{3} : std::vector<node_id>{}));
+        const auto done = s.find_the_done_records(l);
+        REQUIRE(done.size() == 1);
+        CHECK(konsens::request_of(done[0]) == request(1));
+        CHECK(done[0].result == at(1, 7).result);
+        CHECK(done[0].result_crc == at(1, 7).crc);
+        CHECK_FALSE(done[0].rejected);
+        CHECK(done[0].out == (second == 8 ? std::vector<node_id>{3} : std::vector<node_id>{}));
     }
 }
 
-// Plan 2.6.5: rejected(p + 1) only when the counted answers leave no result
-// that a majority could still reach. With one node not counted, its answer
-// could still make a majority, so the leader waits.
-TEST_CASE("rejected comes only when no result can reach a majority")
+// Plan 2.6.5: a task is rejected only when the counted answers leave no
+// result that a majority could still reach. With one node not counted, its
+// answer could still make a majority, so the leader waits. The done record
+// of a rejected task holds the counted answers.
+TEST_CASE("a rejected done record comes only when no result can reach a majority")
 {
     const std::vector<entry> log{request(1)};
-    const konsens::leader_log l{0, 1, log};
+    const konsens::leader_log l{0, log};
     auto s = new_selection();
     s.count_answer(1, first_answer({at(1, 7)}));
     s.count_answer(2, first_answer({at(1, 8)}));
-    CHECK_FALSE(s.find_the_verdict_entry(l).has_value());
+    CHECK(s.find_the_done_records(l).empty());
     s.count_answer(3, first_answer({at(1, 9)}));
     CHECK(s.select_results(l).empty());
-    const auto verdict = s.find_the_verdict_entry(l);
-    REQUIRE(verdict.has_value());
-    CHECK(verdict->kind == entry_kind::rejected);
-    CHECK(verdict->from_idx == 1);
-    const auto list = list_of(*verdict);
+    const auto done = s.find_the_done_records(l);
+    REQUIRE(done.size() == 1);
+    CHECK(done[0].rejected);
+    CHECK(konsens::request_of(done[0]) == request(1));
+    CHECK(done[0].result_crc == konsens::compute_result_crc(1, done[0].result));
+    const auto list = list_of(done[0]);
     REQUIRE(list.size() == 3);
     CHECK(list[0].node == 1);
     CHECK(list[1].chosen == at(1, 8));
 }
 
-// Plan 2.6.5: the leader appends no verdict entry while a verdict entry of
-// its log above p is not decided, so two verdicts for one range do not
-// race.
-TEST_CASE("no verdict entry while a verdict entry above the pointer is not decided")
+// Plan-one-environment 6.2 and 7.6: a step writes the done record of each
+// task in log order up to the first request without a selection. A task
+// that is no request needs no run, so it follows the task before it.
+TEST_CASE("the done records of a step stop at the first request without a selection")
 {
     auto s = new_selection();
     for (const node_id j : three_nodes) {
         s.count_answer(j, first_answer({at(1, 7)}));
     }
-    std::vector<entry> log{request(1)};
-    CHECK(s.select_results({0, 1, log}).empty());
-    const auto verdict = s.find_the_verdict_entry({0, 1, log});
-    REQUIRE(verdict.has_value());
-    log.push_back(*verdict);
-    CHECK_FALSE(s.find_the_verdict_entry({0, 1, log}).has_value());
-    CHECK(s.find_the_verdict_entry({0, 2, log}).has_value());
+    const entry normal{entry_kind::normal, {std::byte{4}}};
+    const std::vector<entry> log{request(1), normal, request(3), normal};
+    CHECK(s.select_results({0, log}).empty());
+    const auto done = s.find_the_done_records({0, log});
+    REQUIRE(done.size() == 2);
+    CHECK(done[0].result == at(1, 7).result);
+    CHECK(done[1] == normal);
 }
 
 namespace {
@@ -391,37 +390,42 @@ std::vector<std::byte> state_of(const node_t& n)
     return marked::value_in(konsens::read_view{*t});
 }
 
-std::size_t count_of(const std::vector<entry>& log, const entry_kind kind)
-{
-    return static_cast<std::size_t>(std::ranges::count(log, kind, &entry::kind));
 }
 
-}
-
-// Plan 2.9.1: a request gets its reply when its entry is applied, and that
-// is the decide of its results entry, a second round after the decide of
-// the request. While no answer reaches the leader, the request is decided
-// and has no reply.
-TEST_CASE("a request gets its reply only after the decide of its results entry")
+// Plan-one-environment 2 items 5 to 7 and 4.2: a request gets its reply
+// when a majority synced its done record and the done record is applied.
+// While no accepted reaches the leader, the done record stands in the log
+// of each node, it is not decided, and the state does not hold it.
+TEST_CASE("a request gets its reply only after a majority synced its done record")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
     const auto s = registered(c, l);
     batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-    batches::deliver(c.nodes, [](const message& m) -> std::size_t { return holds<answer>(m) ? 0 : 1; });
-    CHECK(count_of(c.decided_log(l), entry_kind::client_request) == 1);
-    CHECK(count_of(c.decided_log(l), entry_kind::results) == 1);
+    batches::deliver(c.nodes, [](const message& m) -> std::size_t { return holds<konsens::accepted>(m) ? 0 : 1; });
+    CHECK(c.decided_log(l).size() == 1);
+    CHECK(c.at(l).get_sequence_paxos().get_accepted_idx() == 2u);
     CHECK(c.at(l).take_client_replies().empty());
-    CHECK(state_of(c.at(l)).empty());
+    for (const auto& n : c.nodes) {
+        CHECK(state_of(n).empty());
+    }
+    // A connection keeps the order of its messages, so a lost accepted
+    // means that the connection was lost. Both ends see the new connection.
+    for (const auto f : three_nodes) {
+        if (f != l) {
+            batches::commit(c.at(l), c.at(l).reconnected(f));
+            batches::commit(c.at(f), c.at(f).reconnected(l));
+        }
+    }
     c.run(rounds, once);
     const auto replies = c.at(l).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].response == bytes_of('a'));
     const auto log = c.decided_log(l);
-    REQUIRE(log.size() == 4);
-    CHECK(log[3].kind == entry_kind::results);
-    CHECK(log[3].from_idx == 2);
-    CHECK(log[3].to_idx == 3);
+    REQUIRE(log.size() == 2);
+    CHECK(konsens::request_of(log[1]) == entry{entry_kind::client_request, bytes_of('a'), s, 1});
+    CHECK(log[1].result ==
+          konsens::encode_result({0, bytes_of('a'), {{{marked::key.begin(), marked::key.end()}, bytes_of('a')}}}));
     for (const auto& n : c.nodes) {
         CHECK(n.get_applied_idx() == log.size());
         CHECK(state_of(n) == bytes_of('a'));
@@ -447,16 +451,11 @@ TEST_CASE("a node whose result differs applies the chosen result")
         REQUIRE(replies.size() == 1);
         CHECK(replies[0].response == bytes_of('a'));
         const auto log = c.decided_log(l);
-        const auto verdict = std::ranges::find_if(
-            log, [](const entry& e) { return e.kind == entry_kind::results && e.to_idx == 3; });
-        REQUIRE(verdict != log.end());
-        const auto list = list_of(*verdict);
-        REQUIRE(list.size() == 1);
+        REQUIRE(log.size() == 2);
         // The selection does not wait for the second answer (2.6.4), and here
         // the leader appends in the step of the selection, so the list holds
         // the node only when its second answer came first.
-        CHECK((list[0].out.empty() || list[0].out == std::vector<node_id>{wrong}));
-        CHECK(list[0].node != wrong);
+        CHECK((log[1].out.empty() || log[1].out == std::vector<node_id>{wrong}));
         for (const auto& n : c.nodes) {
             CHECK(state_of(n) == bytes_of('a'));
             CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of('a')});
@@ -465,8 +464,8 @@ TEST_CASE("a node whose result differs applies the chosen result")
 }
 
 // Plan 2.3.4 and 2.6.5: when every node gives another result, no result has
-// a majority. The leader appends rejected(k), the entry keeps its index and
-// changes no state and no session, and its client gets rejected.
+// a majority. The leader appends a rejected done record, which keeps the
+// index, changes no state and no session, and its client gets rejected.
 TEST_CASE("a request whose results all differ is void and its client gets rejected")
 {
     auto c = elected({'x', 'y', 'z'});
@@ -479,7 +478,7 @@ TEST_CASE("a request whose results all differ is void and its client gets reject
     REQUIRE_FALSE(replies[0].response.has_value());
     CHECK(replies[0].response.error() == client_errc::rejected);
     const auto log = c.decided_log(l);
-    CHECK(count_of(log, entry_kind::rejected) == 1);
+    CHECK(std::ranges::count(log, true, &entry::rejected) == 1);
     for (const auto& n : c.nodes) {
         CHECK(state_of(n).empty());
         CHECK(n.find_client_session(s) == konsens::session_record{0, {}});
@@ -487,9 +486,9 @@ TEST_CASE("a request whose results all differ is void and its client gets reject
     }
 }
 
-// Plan 2.3.6: a leader proposes a StopSign only when p covers every request
-// entry of its log. Before, the call gives retry.
-TEST_CASE("a stop sign waits while a request entry has no verdict")
+// Plan-one-environment 7.7: a leader proposes a StopSign only when no
+// request is in work. Before, the call gives retry.
+TEST_CASE("a stop sign waits while a request is in work")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
@@ -503,23 +502,26 @@ TEST_CASE("a stop sign waits while a request entry has no verdict")
     batches::commit(c.at(l), c.at(l).append({entry_kind::stop_sign, {}}));
 }
 
-// Plan 2.1.2: only the leader appends a verdict entry. A verdict entry
-// from the user is a wrong use.
-TEST_CASE("a verdict entry from the user is a wrong use")
+// Plan-one-environment 3.3: only the leader writes a done record. A done
+// record from the user is a wrong use.
+TEST_CASE("a done record from the user is a wrong use")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
-    CHECK_THROWS_AS((void)c.at(l).append({.kind = entry_kind::results, .payload = {}, .from_idx = 1, .to_idx = 1}),
+    CHECK_THROWS_AS((void)c.at(l).append({.kind = entry_kind::client_request,
+                                          .session = 1,
+                                          .request_number = 1,
+                                          .result = result_of(1)}),
                     std::logic_error);
-    CHECK_THROWS_AS((void)c.at(l).append({.kind = entry_kind::rejected, .payload = {}, .from_idx = 1}),
+    CHECK_THROWS_AS((void)c.at(l).append({.kind = entry_kind::expire_session, .session = 1, .rejected = true}),
                     std::logic_error);
 }
 
 // Plan 2.3.5: before a node writes a chosen result, it checks the CRC that
 // the node that ran it computed. A difference is a fault of the own node,
-// and the node throws node_fault. The log here holds a results entry whose
-// listed CRC does not belong to its bytes, as a bit flip in the memory of
-// this node would give.
+// and the node throws node_fault. The log here holds a done record whose
+// CRC does not belong to its result, as a bit flip in the memory of this
+// node would give.
 TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
 {
     const auto directory = lmdb_storage::new_directory();
@@ -528,13 +530,11 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
         auto w = storage.begin();
         REQUIRE(w.has_value());
         const auto bytes = konsens::encode_result({0, {}, {}});
-        const std::vector<konsens::chosen_result> list{
-            {{1, bytes, konsens::compute_result_crc(1, bytes) + 1}, 1, {}}};
-        const std::vector<entry> log{{entry_kind::register_client, {}, 0, 0, client_a, 1},
-                                     {.kind = entry_kind::results,
-                                      .payload = konsens::encode_chosen_results(list),
-                                      .from_idx = 1,
-                                      .to_idx = 1}};
+        const std::vector<entry> log{{.kind = entry_kind::register_client,
+                                      .client_id = client_a,
+                                      .pid = 1,
+                                      .result = bytes,
+                                      .result_crc = konsens::compute_result_crc(1, bytes) + 1}};
         REQUIRE(w->set_promise(leader_ballot));
         REQUIRE(w->set_accepted_round(leader_ballot));
         REQUIRE(w->append_entries(log));
@@ -574,13 +574,11 @@ TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
         auto w = storage.begin();
         REQUIRE(w.has_value());
         const auto bytes = konsens::encode_result({0, {}, {}});
-        const std::vector<konsens::chosen_result> list{
-            {{1, bytes, konsens::compute_result_crc(1, bytes) + 1}, 1, {}}};
-        const std::vector<entry> log{{entry_kind::register_client, {}, 0, 0, client_a, 1},
-                                     {.kind = entry_kind::results,
-                                      .payload = konsens::encode_chosen_results(list),
-                                      .from_idx = 1,
-                                      .to_idx = 1}};
+        const std::vector<entry> log{{.kind = entry_kind::register_client,
+                                      .client_id = client_a,
+                                      .pid = 1,
+                                      .result = bytes,
+                                      .result_crc = konsens::compute_result_crc(1, bytes) + 1}};
         REQUIRE(w->set_promise(leader_ballot));
         REQUIRE(w->set_accepted_round(leader_ballot));
         REQUIRE(w->append_entries(log));
@@ -656,11 +654,14 @@ std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change chang
     return faulted;
 }
 
-// Changes the results entry in each accept_decide to node `to`.
-template <typename ChangeList>
-auto change_the_results_entry_to(const node_id to, const ChangeList change_list)
+// The index of the done record of the request after the registration.
+constexpr std::uint64_t request_index = 2;
+
+// Changes the done record of the request in each accept_decide to node `to`.
+template <typename ChangeRecord>
+auto change_the_done_record_to(const node_id to, const ChangeRecord change_record)
 {
-    return [to, change_list](message& m) {
+    return [to, change_record](message& m) {
         auto* p = std::get_if<paxos_message>(&m);
         if (p == nullptr || p->to != to) {
             return;
@@ -670,13 +671,17 @@ auto change_the_results_entry_to(const node_id to, const ChangeList change_list)
             return;
         }
         for (auto& e : a->entries) {
-            if (e.kind == entry_kind::results) {
-                auto list = list_of(e);
-                change_list(list);
-                e.payload = konsens::encode_chosen_results(list);
+            if (e.kind == entry_kind::client_request) {
+                change_record(e);
             }
         }
     };
+}
+
+void give_another_result(entry& e)
+{
+    e.result = konsens::encode_result({0, bytes_of('z'), {}});
+    e.result_crc = konsens::compute_result_crc(request_index, e.result);
 }
 
 node_id first_follower_of(const node_id leader)
@@ -686,14 +691,14 @@ node_id first_follower_of(const node_id leader)
 
 }
 
-// Plan 2.7.1, 2.7.4 and 2.7.6: a node accepts a results entry only after
-// it checked it. Here the entry that reaches one follower lists another
-// result, with a CRC that fits it, as a bit flip in the leader would give.
-// The follower runs again, its result still differs, it is not listed, so
-// it refuses with the reason, and its verified_idx stays below the entry:
-// each accepted that it sends stays below it. The leader decides with the
-// other follower.
-TEST_CASE("a follower refuses a results entry whose result differs from its own")
+// Plan 2.7.1, 2.7.6 and plan-one-environment 7.4: a node accepts a done
+// record only after it checked it. Here the record that reaches one
+// follower holds another result, with a CRC that fits it, as a bit flip in
+// the leader would give. The follower runs again, its result still differs,
+// it is not listed, so it refuses with the reason, and each accepted that
+// it sends stays below the record. The leader decides with the other
+// follower.
+TEST_CASE("a follower refuses a done record whose result differs from its own")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
@@ -701,11 +706,7 @@ TEST_CASE("a follower refuses a results entry whose result differs from its own"
     const auto s = registered(c, l);
     batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
     std::uint64_t highest_accepted = 0;
-    const auto flip = change_the_results_entry_to(f, [](std::vector<konsens::chosen_result>& list) {
-        const auto bytes = konsens::encode_result({0, bytes_of('z'), {}});
-        list.at(0).chosen.result = bytes;
-        list.at(0).chosen.crc = konsens::compute_result_crc(list.at(0).chosen.index, bytes);
-    });
+    const auto flip = change_the_done_record_to(f, give_another_result);
     deliver_changed(c.nodes, [&](message& m) {
         flip(m);
         if (const auto* p = std::get_if<paxos_message>(&m); p != nullptr && p->from == f) {
@@ -714,12 +715,11 @@ TEST_CASE("a follower refuses a results entry whose result differs from its own"
             }
         }
     });
-    constexpr std::uint64_t verdict_index = 4;
     const auto& refusal = c.at(f).get_refusal();
     REQUIRE(refusal.has_value());
-    CHECK(refusal->index == verdict_index);
+    CHECK(refusal->index == request_index);
     CHECK(refusal->reason == konsens::refusal_reason::result_differs);
-    CHECK(highest_accepted < verdict_index);
+    CHECK(highest_accepted < request_index);
     const auto replies = c.at(l).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].response == bytes_of('a'));
@@ -729,7 +729,7 @@ TEST_CASE("a follower refuses a results entry whose result differs from its own"
 // agree after the second run; when it agrees, the list is wrong and the
 // node refuses. A CRC that does not fit its result is refused before any
 // run.
-TEST_CASE("a follower refuses a results entry with a wrong list or a wrong CRC")
+TEST_CASE("a follower refuses a done record with a wrong list or a wrong CRC")
 {
     for (const auto reason : {konsens::refusal_reason::wrong_list, konsens::refusal_reason::crc_mismatch}) {
         CAPTURE(int{std::to_underlying(reason)});
@@ -738,11 +738,11 @@ TEST_CASE("a follower refuses a results entry with a wrong list or a wrong CRC")
         const auto f = first_follower_of(l);
         const auto s = registered(c, l);
         batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-        deliver_changed(c.nodes, change_the_results_entry_to(f, [f, reason](std::vector<konsens::chosen_result>& list) {
+        deliver_changed(c.nodes, change_the_done_record_to(f, [f, reason](entry& e) {
             if (reason == konsens::refusal_reason::wrong_list) {
-                list.at(0).out.push_back(f);
+                e.out.push_back(f);
             } else {
-                list.at(0).chosen.crc += 1;
+                e.result_crc += 1;
             }
         }));
         const auto& refusal = c.at(f).get_refusal();
@@ -751,10 +751,11 @@ TEST_CASE("a follower refuses a results entry with a wrong list or a wrong CRC")
     }
 }
 
-// Plan 2.7.4: the leader counts its own accept of a verdict entry only up
-// to its own verified_idx, so it checks its own entry after the append, as
-// every node does (mutation OwnAcceptUnchecked of the model).
-TEST_CASE("the leader passes its own verdict entry only after its check")
+// Plan-one-environment 7.4: the leader checks its own done record in the
+// step that appends it, as every node does, before it counts its own
+// accept. Here no done record reaches a follower, so the record is not
+// decided, and the leader passed it.
+TEST_CASE("the leader checks its own done record in the step that appends it")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
@@ -762,24 +763,18 @@ TEST_CASE("the leader passes its own verdict entry only after its check")
     batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
     const auto& sp = c.at(l).get_sequence_paxos();
     batches::deliver(c.nodes, [](const message& m) -> std::size_t {
-        return holds<konsens::accept_decide>(m) && !std::get<konsens::accept_decide>(std::get<paxos_message>(m).msg)
-                                                         .entries.empty() &&
-                       std::get<konsens::accept_decide>(std::get<paxos_message>(m).msg).entries[0].kind ==
-                           entry_kind::results
-                   ? 0
-                   : 1;
+        const auto* p = std::get_if<paxos_message>(&m);
+        const auto* a = p == nullptr ? nullptr : std::get_if<konsens::accept_decide>(&p->msg);
+        return a != nullptr && std::ranges::any_of(a->entries, konsens::entry_is_a_request) ? 0 : 1;
     });
-    const auto accepted = sp.get_accepted_idx();
-    REQUIRE(accepted.has_value());
-    CHECK(*accepted == 4);
-    CHECK(sp.get_verified_idx() == 3);
-    batches::commit(c.at(l), c.at(l).tick());
-    CHECK(sp.get_verified_idx() == 4);
+    CHECK(sp.get_accepted_idx() == request_index);
+    CHECK(sp.get_verified_idx() == request_index);
+    CHECK(sp.get_decided_idx() == request_index - 1);
 }
 
 // Plan 2.7.4: verified_idx is not durable. After a start it is the decided
-// index, raised over each entry after it that is not a verdict entry.
-TEST_CASE("after a start the verified index is the decided index and the entries after it that are no verdict")
+// index, raised over each entry after it that is no request.
+TEST_CASE("after a start the verified index is the decided index and the entries after it that are no request")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
@@ -797,9 +792,9 @@ namespace {
 
 const std::array<std::byte, 1> value_key{std::byte{'v'}};
 
-// A decided log of a registration at index 1, a request with the payload
-// 'a' at index 2, and a results entry at index 3 that lists `out` as the
-// nodes that did not agree with the chosen result of index 2.
+// A decided log of the done record of a registration at index 1 and the
+// done record of a request with the payload 'a' at index 2 that lists `out`
+// as the nodes that did not agree with its chosen result.
 std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
 {
     const auto directory = lmdb_storage::new_directory();
@@ -809,16 +804,19 @@ std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
     const auto registration = konsens::encode_result({0, {}, {}});
     const auto request = konsens::encode_result(
         {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
-    const std::vector<konsens::chosen_result> list{
-        {{1, registration, konsens::compute_result_crc(1, registration)}, 2, {}},
-        {{2, request, konsens::compute_result_crc(2, request)}, 2, out}};
     constexpr std::uint64_t session = 1;
-    const std::vector<entry> log{{entry_kind::register_client, {}, 0, 0, client_a, 1},
-                                 {entry_kind::client_request, bytes_of('a'), session, 1},
-                                 {.kind = entry_kind::results,
-                                  .payload = konsens::encode_chosen_results(list),
-                                  .from_idx = 1,
-                                  .to_idx = 2}};
+    const std::vector<entry> log{{.kind = entry_kind::register_client,
+                                  .client_id = client_a,
+                                  .pid = 1,
+                                  .result = registration,
+                                  .result_crc = konsens::compute_result_crc(1, registration)},
+                                 {.kind = entry_kind::client_request,
+                                  .payload = bytes_of('a'),
+                                  .session = session,
+                                  .request_number = 1,
+                                  .result = request,
+                                  .result_crc = konsens::compute_result_crc(2, request),
+                                  .out = out}};
     REQUIRE(w->set_promise(leader_ballot));
     REQUIRE(w->set_accepted_round(leader_ballot));
     REQUIRE(w->append_entries(log));
@@ -830,7 +828,7 @@ std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
 }
 
 // Plan 2.8.1 and 3.1: a listed node runs the index again on the check base
-// when it applies the results entry. Its result still differs, so it
+// when it applies the done record. Its result still differs, so it
 // throws after its proof is durable. The list makes it run again; the
 // second run makes it throw.
 TEST_CASE("a listed node whose result still differs throws at the apply")
@@ -894,25 +892,20 @@ TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
     }));
 }
 
-// Plan 2.7.6: a leader that gets refused from a majority for a verdict
-// entry that its own ballot appended knows that its own selection or copy
-// is wrong. Here both followers get another result in the entry, so both
+// Plan 2.7.6: a leader that gets refused from a majority for a done record
+// that its own ballot appended knows that its own selection or copy is
+// wrong. Here both followers get another result in the record, so both
 // refuse it. The leader throws after its proof is durable.
-TEST_CASE("a leader whose verdict entry a majority refused throws")
+TEST_CASE("a leader whose done record a majority refused throws")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
     const auto s = registered(c, l);
     batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-    const auto flip = [](std::vector<konsens::chosen_result>& list) {
-        const auto bytes = konsens::encode_result({0, bytes_of('z'), {}});
-        list.at(0).chosen.result = bytes;
-        list.at(0).chosen.crc = konsens::compute_result_crc(list.at(0).chosen.index, bytes);
-    };
     std::vector<std::function<void(message&)>> changes;
     for (const auto p : three_nodes) {
         if (p != l) {
-            changes.emplace_back(change_the_results_entry_to(p, flip));
+            changes.emplace_back(change_the_done_record_to(p, give_another_result));
         }
     }
     const auto faulted = deliver_changed(c.nodes, [&changes](message& m) {
@@ -925,7 +918,7 @@ TEST_CASE("a leader whose verdict entry a majority refused throws")
     REQUIRE(record.has_value());
     REQUIRE(record->proof.has_value());
     CHECK(record->proof->kind == konsens::proof_kind::refused_by_a_majority);
-    CHECK(record->proof->index == 4);
+    CHECK(record->proof->index == request_index);
 }
 
 // Plan 3.1 and 3.2: a damage that a step finds is no returned value any
@@ -938,11 +931,7 @@ TEST_CASE("a damage that a step finds throws after its proof is durable")
     const auto f = first_follower_of(l);
     const auto s = registered(c, l);
     batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-    const auto faulted = deliver_changed(c.nodes, change_the_results_entry_to(f, [](auto& list) {
-        const auto bytes = konsens::encode_result({0, bytes_of('z'), {}});
-        list.at(0).chosen.result = bytes;
-        list.at(0).chosen.crc = konsens::compute_result_crc(list.at(0).chosen.index, bytes);
-    }));
+    const auto faulted = deliver_changed(c.nodes, change_the_done_record_to(f, give_another_result));
     REQUIRE(faulted.contains(f));
     CHECK_FALSE(faulted.contains(l));
     const auto record = c.at(f).get_repair_record();
@@ -1089,25 +1078,7 @@ TEST_CASE("a reply that is no CBOR data item under the float rule is a wrong use
     run_floating(nodes, rounds);
     const auto registration = l.take_client_replies();
     REQUIRE(registration.size() == 1);
-    batches::commit(l, l.client_request(client_a, registration[0].session, 1, bytes_of('a')));
-    // The run of the request happens in a commit after the decide.
-    const auto run_without_checks = [&nodes] {
-        for (int i = 0; i < rounds; ++i) {
-            std::vector<std::vector<message>> inbox(nodes.size());
-            for (auto& n : nodes) {
-                for (auto& m : n.take_outgoing_messages()) {
-                    inbox.at(batches::to_of(m) - 1).push_back(std::move(m));
-                }
-            }
-            for (std::size_t k = 0; k < nodes.size(); ++k) {
-                if (const auto t = nodes[k].handle_incoming(std::move(inbox[k]))) {
-                    static_cast<void>(batches::commit_and_sync(nodes[k], *t));
-                }
-                if (const auto t = nodes[k].tick()) {
-                    static_cast<void>(batches::commit_and_sync(nodes[k], *t));
-                }
-            }
-        }
-    };
-    CHECK_THROWS_AS(run_without_checks(), std::logic_error);
+    // The leader runs the request in the step that makes it a task.
+    CHECK_THROWS_AS(batches::commit(l, l.client_request(client_a, registration[0].session, 1, bytes_of('a'))),
+                    std::logic_error);
 }

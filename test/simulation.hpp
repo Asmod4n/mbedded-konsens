@@ -262,10 +262,6 @@ std::string text_of(const entry& e)
         return "request(" + std::to_string(e.session) + "." + std::to_string(e.request_number) + ")";
     case konsens::entry_kind::expire_session:
         return "expire(" + std::to_string(e.session) + ")";
-    case konsens::entry_kind::results:
-        return "results(" + std::to_string(e.from_idx) + ".." + std::to_string(e.to_idx) + ")";
-    case konsens::entry_kind::rejected:
-        return "rejected(" + std::to_string(e.from_idx) + ")";
     case konsens::entry_kind::normal:
     case konsens::entry_kind::stop_sign:
         break;
@@ -880,11 +876,10 @@ struct world {
         }
         // S2 holds here, so each decided prefix is a prefix of the decided
         // history, and S3 on the new entries of the history covers each node.
-        // The leader appends each verdict entry itself, so the simulation
-        // proposed none of them (plan-execute-verify 4.4).
+        // The done record of a request carries the request, so each entry of
+        // the decided history was proposed (plan-one-environment 3.3).
         for (; proposed_checked < decided_history.size(); ++proposed_checked) {
-            if (!konsens::entry_is_a_verdict(decided_history[proposed_checked]) &&
-                !proposed.contains(fields_of(decided_history[proposed_checked]))) {
+            if (!proposed.contains(fields_of(decided_history[proposed_checked]))) {
                 return "S3: entry " + std::to_string(proposed_checked + 1) + " of the decided history was not proposed";
             }
         }

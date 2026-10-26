@@ -76,9 +76,9 @@ struct disk_storage {
             return t_.insert_or_assign_session(session, record);
         }
         auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
-        auto set_applied(const std::uint64_t index, const std::uint32_t crc, const std::uint64_t pointer)
+        auto set_applied(const std::uint64_t index, const std::uint32_t crc)
         {
-            return t_.set_applied(index, crc, pointer);
+            return t_.set_applied(index, crc);
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }

@@ -122,7 +122,7 @@ constexpr konsens::node_id paxos_to = 102;
 constexpr konsens::node_id ble_from = 103;
 constexpr konsens::node_id ble_to = 104;
 constexpr std::size_t uint8_values = std::size_t{std::numeric_limits<std::uint8_t>::max()} + 1;
-constexpr std::size_t entry_kind_count = 7;
+constexpr std::size_t entry_kind_count = 5;
 
 std::string head(const std::uint8_t major, const std::uint64_t argument)
 {
@@ -202,14 +202,22 @@ std::string ballot_bytes(const ballot& b)
            integer(b.priority) + text("config_id") + integer(b.config_id);
 }
 
+struct result_fields {
+    std::string_view result;
+    std::uint64_t result_crc;
+    std::string out;
+    bool rejected;
+};
+
 std::string entry_bytes(const std::uint64_t kind, const std::string_view payload, const std::uint64_t session,
                         const std::uint64_t request_number, const std::uint64_t client_id, const std::uint64_t pid,
-                        const std::uint64_t from_idx = 0, const std::uint64_t to_idx = 0)
+                        const result_fields& r = {})
 {
-    return head(map, 8) + text("pid") + integer(pid) + text("kind") + integer(kind) + text("to_idx") +
-           integer(to_idx) + text("payload") + bytes_tagged(typed_array_uint8, payload) + text("session") +
-           integer(session) + text("from_idx") + integer(from_idx) + text("client_id") + integer(client_id) +
-           text("request_number") + integer(request_number);
+    return head(map, 10) + text("out") + bytes_tagged(typed_array_uint64_little_endian, r.out) + text("pid") +
+           integer(pid) + text("kind") + integer(kind) + text("result") + bytes_tagged(typed_array_uint8, r.result) +
+           text("payload") + bytes_tagged(typed_array_uint8, payload) + text("session") + integer(session) +
+           text("rejected") + boolean(r.rejected) + text("client_id") + integer(client_id) + text("result_crc") +
+           integer(r.result_crc) + text("request_number") + integer(request_number);
 }
 
 std::string proposal_forward_bytes(const std::string& one_entry)
@@ -284,6 +292,19 @@ std::vector<message> every_kind()
         paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 21}),
         paxos(konsens::try_again{ballot_from(10), 20}),
         paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::result_differs}),
+        paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::client_request, payload_of({4}), 53, 54}, 21}),
+        paxos(konsens::accept_decide{ballot_from(10),
+                                     {20, 21},
+                                     22,
+                                     {{.kind = entry_kind::client_request,
+                                       .payload = payload_of({4}),
+                                       .session = 53,
+                                       .request_number = 54,
+                                       .result = payload_of({0xa0}),
+                                       .result_crc = 55,
+                                       .out = {56, 57},
+                                       .rejected = true}},
+                                     0}),
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
@@ -377,8 +398,9 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 0}), 21},
         {paxos(konsens::try_again{ballot_from(10), 20}), 22},
         {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 23},
-        {ble(konsens::heartbeat_request{10}), 24},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 25},
+        {paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::normal}, 21}), 24},
+        {ble(konsens::heartbeat_request{10}), 25},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 26},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -431,7 +453,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 25;
+    constexpr std::uint64_t heartbeat_reply_kind = 26;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
@@ -572,34 +594,43 @@ TEST_CASE("an entry kind that is not a value of entry_kind gives unknown_entry_k
 // another node, so decode refuses it before it reaches storage. The fields of
 // each kind come from the definition of entry: normal and stop_sign carry
 // none, register_client carries client_id and pid, client_request carries
-// session and request_number, expire_session carries session, results
-// carries from_idx and to_idx, and rejected carries from_idx (plan
-// execute-verify 2.1.2: results(from, to, list) and rejected(k)).
+// session and request_number, expire_session carries session, and each
+// request kind carries the result fields of its done record
+// (plan-one-environment 3.3).
 TEST_CASE("an entry with a field that its kind does not carry gives entry_field_of_another_kind")
 {
     constexpr std::uint64_t proposal_forward_kind = 8;
-    enum field : std::uint8_t { session, request_number, client_id, pid, from_idx, to_idx, field_count };
+    enum field : std::uint8_t {
+        session,
+        request_number,
+        client_id,
+        pid,
+        result,
+        result_crc,
+        out,
+        rejected,
+        field_count
+    };
     struct carried {
         entry_kind kind;
         std::array<bool, field_count> fields;
     };
     const std::array<carried, entry_kind_count> table{{
-        {entry_kind::normal, {false, false, false, false, false, false}},
-        {entry_kind::stop_sign, {false, false, false, false, false, false}},
-        {entry_kind::register_client, {false, false, true, true, false, false}},
-        {entry_kind::client_request, {true, true, false, false, false, false}},
-        {entry_kind::expire_session, {true, false, false, false, false, false}},
-        {entry_kind::results, {false, false, false, false, true, true}},
-        {entry_kind::rejected, {false, false, false, false, true, false}},
+        {entry_kind::normal, {false, false, false, false, false, false, false, false}},
+        {entry_kind::stop_sign, {false, false, false, false, false, false, false, false}},
+        {entry_kind::register_client, {false, false, true, true, true, true, true, true}},
+        {entry_kind::client_request, {true, true, false, false, true, true, true, true}},
+        {entry_kind::expire_session, {true, false, false, false, true, true, true, true}},
     }};
     for (const auto& [kind, fields] : table) {
         for (std::uint8_t f = 0; f < field_count; ++f) {
             INFO("entry kind ", int{std::to_underlying(kind)}, ", field ", int{f});
             const auto one = [f](const field which) { return f == which ? std::uint64_t{1} : std::uint64_t{0}; };
+            const result_fields r{f == result ? "\x01" : "", one(result_crc), f == out ? little_endian(1) : "",
+                                  f == rejected};
             const auto bytes = header_bytes(proposal_forward_kind, paxos_from, paxos_to) +
                                proposal_forward_bytes(entry_bytes(std::to_underlying(kind), "", one(session),
-                                                                  one(request_number), one(client_id), one(pid),
-                                                                  one(from_idx), one(to_idx)));
+                                                                  one(request_number), one(client_id), one(pid), r));
             if (fields.at(f)) {
                 CHECK(konsens::decode(bytes).has_value());
             } else {
@@ -607,4 +638,22 @@ TEST_CASE("an entry with a field that its kind does not carry gives entry_field_
             }
         }
     }
+}
+
+// Plan-one-environment 2 item 2: work carries a request without its result.
+// A request in work that holds a result or is rejected is a done record, and
+// decode refuses it with entry_field_of_another_kind.
+TEST_CASE("work with a done record gives entry_field_of_another_kind")
+{
+    constexpr std::uint64_t work_kind = 24;
+    const auto work_bytes = [](const result_fields& r) {
+        return header_bytes(work_kind, paxos_from, paxos_to) + head(map, 4) + text("n") +
+               ballot_bytes(ballot_from(10)) + text("index") + integer(20) + text("request") +
+               entry_bytes(std::to_underlying(entry_kind::client_request), "", 1, 2, 0, 0, r) + text("entry_crc") +
+               integer(21);
+    };
+    CHECK(decoded_message(work_bytes({})) ==
+          paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::client_request, {}, 1, 2}, 21}));
+    CHECK(error_of(work_bytes({"\x01", 0, "", false})) == wire_errc::entry_field_of_another_kind);
+    CHECK(error_of(work_bytes({"", 0, "", true})) == wire_errc::entry_field_of_another_kind);
 }

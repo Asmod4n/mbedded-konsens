@@ -511,7 +511,7 @@ private:
             return handle_get_repair_entries(msg, from);
         } else if constexpr (std::is_same_v<T, repair_response> || std::is_same_v<T, repair_entries> ||
                              std::is_same_v<T, answer> || std::is_same_v<T, try_again> ||
-                             std::is_same_v<T, refused>) {
+                             std::is_same_v<T, refused> || std::is_same_v<T, work>) {
             return {};
         } else {
             static_assert(std::is_same_v<T, proposal_forward>);
@@ -877,8 +877,8 @@ private:
         if (!entries) [[unlikely]] {
             return std::unexpected(entries.error());
         }
-        const auto verdict = std::ranges::find_if(*entries, entry_is_a_verdict);
-        return first + static_cast<std::uint64_t>(std::distance(entries->begin(), verdict));
+        const auto done = std::ranges::find_if(*entries, entry_is_a_request);
+        return first + static_cast<std::uint64_t>(std::distance(entries->begin(), done));
     }
 
     result extend_the_verified_idx(const std::uint64_t from)
@@ -1351,13 +1351,11 @@ private:
         auto sync = leader_state_.take_max_promise_sync();
         const auto sync_idx = sync ? sync->sync_idx : bound_by_the_verified_idx(m->log_len);
         const auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
-        const auto proposals = std::exchange(buffered_proposals_, {});
         write_or_throw(txn_->append_on_prefix(sync_idx, suffix));
         const auto decided_idx = read_highest_verified_decided_idx(m->decided_idx);
         if (!decided_idx) [[unlikely]] {
             return stop_voting(decided_idx.error());
         }
-        write_or_throw(txn_->append_entries(proposals));
         write_or_throw(txn_->set_accepted_round(leader_state_.n_leader));
         write_or_throw(txn_->set_decided_index(*decided_idx));
         if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
@@ -1541,7 +1539,7 @@ private:
         return {};
     }
 
-    result pass_the_checked_verdict_entry(const std::uint64_t index)
+    result pass_the_checked_done_record(const std::uint64_t index)
     {
         if (auto r = extend_the_verified_idx(index); !r) [[unlikely]] {
             return r;
@@ -1978,12 +1976,9 @@ private:
 
     result handle_forwarded_proposal(const std::span<const entry> entries)
     {
-        if (state_ == std::pair{role::leader, phase::prepare}) {
+        if (state_.first == role::leader) {
             buffered_proposals_.insert(buffered_proposals_.end(), entries.begin(), entries.end());
             return {};
-        }
-        if (state_ == std::pair{role::leader, phase::accept}) {
-            return accept_entries_leader(entries);
         }
         const auto m = read_meta();
         if (!m) [[unlikely]] {

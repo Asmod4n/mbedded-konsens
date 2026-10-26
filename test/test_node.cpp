@@ -363,9 +363,9 @@ struct recording_storage {
             return t_.insert_or_assign_session(session, record);
         }
         auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
-        auto set_applied(const std::uint64_t index, const std::uint32_t crc, const std::uint64_t pointer)
+        auto set_applied(const std::uint64_t index, const std::uint32_t crc)
         {
-            return t_.set_applied(index, crc, pointer);
+            return t_.set_applied(index, crc);
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
@@ -474,10 +474,10 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
 
 namespace {
 
-void lose_the_meta_record_in(const std::filesystem::path& directory)
+void lose_the_last_entry_in(const std::filesystem::path& directory)
 {
     lmdb_damage::change_with_lmdb(
-        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_the_last_entry(txn, meta); });
 }
 
 void stop(node_t& n)
@@ -514,7 +514,7 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
     const auto restart = [&](const std::uint64_t nonce, const bool damaged) {
         stop(nodes[2]);
         if (damaged) {
-            lose_the_meta_record_in(log_directory);
+            lose_the_last_entry_in(log_directory);
         }
         nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, nonce);
@@ -538,11 +538,11 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
     CHECK(nodes[2].waits_for_the_operator());
     CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
     CHECK_FALSE(nodes[2].get_sequence_paxos().repairing());
-    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
+    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
     REQUIRE(nodes[2].allow_one_more_repair());
     CHECK(nodes[2].get_repair_count() == 0);
 
-    // The waiting node did not repair, so its log still has no meta record.
+    // The waiting node did not repair, so its log still lacks its last entry.
     restart(30, false);
     CHECK(nodes[2].get_repair_count() == 1);
     for (int i = 0; i < rounds; ++i) {
@@ -566,15 +566,42 @@ TEST_CASE("a restart during a repair does not count again")
     const auto log_directory = lmdb_storage::new_directory();
     {
         auto s = lmdb_storage::open_in(log_directory);
-        lmdb_storage::write(s, [](auto& t) { REQUIRE(t.set_promise({1, 1, 0, 2})); });
+        lmdb_storage::write(s, [](auto& t) {
+            REQUIRE(t.set_promise({1, 1, 0, 2}));
+            REQUIRE(t.set_accepted_round({1, 1, 0, 2}));
+            REQUIRE(t.append_entries(std::vector{make_entry(1)}));
+        });
     }
-    lose_the_meta_record_in(log_directory);
+    lose_the_last_entry_in(log_directory);
     auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
                            lmdb_storage::open_node_storage_in(own_directory),
                            echo{}, 5);
     CHECK(n.get_sequence_paxos().repairing());
     CHECK(n.get_repair_count() == 1);
     CHECK_FALSE(n.waits_for_the_operator());
+}
+
+// Owner, 2026-10-26: the meta record and the log stand in one environment,
+// and each commit writes both. A store with no meta record was changed from
+// outside the library. The node does not repair it: it waits for the
+// operator, counts no repair and does not vote.
+TEST_CASE("a start without a meta record waits for the operator")
+{
+    const auto log_directory = lmdb_storage::new_directory();
+    const auto own_directory = lmdb_storage::new_directory();
+    {
+        auto s = lmdb_storage::open_in(log_directory);
+        lmdb_storage::write(s, [](auto& t) { REQUIRE(t.set_promise({1, 1, 0, 2})); });
+    }
+    lmdb_damage::change_with_lmdb(
+        log_directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+    auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
+                           lmdb_storage::open_node_storage_in(own_directory), echo{}, 5);
+    CHECK(n.waits_for_the_operator());
+    CHECK_FALSE(n.get_sequence_paxos().votes());
+    CHECK_FALSE(n.get_sequence_paxos().repairing());
+    CHECK(n.get_repair_count() == 0);
+    CHECK(n.get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
 }
 
 // Plan execute-verify 3.1 and 3.3: the proof is one field of the repair

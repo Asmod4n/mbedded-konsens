@@ -35,7 +35,7 @@ constexpr std::byte session_prefix{1};
 constexpr std::byte log_prefix{2};
 constexpr std::string_view meta_key{"\0meta", 5};
 constexpr std::string_view format_key{"\0format", 7};
-constexpr std::uint32_t format_version = 3;
+constexpr std::uint32_t format_version = 4;
 constexpr std::size_t node_storage_map_size = std::size_t{1} << 20;
 constexpr std::size_t session_head_size = sizeof(session_record::request_number);
 constexpr unsigned int node_database_count = 1;
@@ -65,8 +65,7 @@ constexpr std::size_t log_len_offset = decided_idx_offset + sizeof(meta_record::
 constexpr std::size_t last_chain_crc_offset = log_len_offset + sizeof(meta_record::log_len);
 constexpr std::size_t applied_idx_offset = last_chain_crc_offset + sizeof(meta_record::last_chain_crc);
 constexpr std::size_t applied_chain_crc_offset = applied_idx_offset + sizeof(meta_record::applied_idx);
-constexpr std::size_t pointer_offset = applied_chain_crc_offset + sizeof(meta_record::applied_chain_crc);
-constexpr std::size_t meta_record_size = pointer_offset + sizeof(meta_record::pointer);
+constexpr std::size_t meta_record_size = applied_chain_crc_offset + sizeof(meta_record::applied_chain_crc);
 constexpr std::size_t prefixed_key_size = sizeof(std::byte) + sizeof(std::uint64_t);
 
 constexpr std::size_t flag_size = sizeof(std::uint8_t);
@@ -242,8 +241,7 @@ std::array<std::byte, meta_record_size> encode_meta(const meta_record& m) noexce
     next = std::ranges::copy(to_little_endian(m.log_len), next).out;
     next = std::ranges::copy(to_little_endian(m.last_chain_crc), next).out;
     next = std::ranges::copy(to_little_endian(m.applied_idx), next).out;
-    next = std::ranges::copy(to_little_endian(m.applied_chain_crc), next).out;
-    std::ranges::copy(to_little_endian(m.pointer), next);
+    std::ranges::copy(to_little_endian(m.applied_chain_crc), next);
     return out;
 }
 
@@ -258,7 +256,6 @@ meta_record decode_meta(const std::span<const std::byte, meta_record_size> bytes
         from_little_endian<std::uint64_t>(bytes.subspan<applied_idx_offset, sizeof(meta_record::applied_idx)>()),
         from_little_endian<std::uint32_t>(
             bytes.subspan<applied_chain_crc_offset, sizeof(meta_record::applied_chain_crc)>()),
-        from_little_endian<std::uint64_t>(bytes.subspan<pointer_offset, sizeof(meta_record::pointer)>()),
     };
 }
 
@@ -584,33 +581,6 @@ std::expected<void, std::error_code> delete_entries_from(const databases& d, con
             return std::unexpected(to_error_code(deleted));
         }
         key = value_of(key_bytes);
-        status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
-    }
-    if (status != MDB_NOTFOUND && status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return {};
-}
-
-std::expected<void, std::error_code> delete_the_state(const databases& d)
-{
-    if (const int dropped = mdb_drop(d.txn, d.data_dbi, 0); dropped != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(dropped));
-    }
-    const auto c = open_cursor(d.txn, d.meta_dbi);
-    if (!c) [[unlikely]] {
-        return std::unexpected(c.error());
-    }
-    const std::array first{session_prefix};
-    MDB_val key = value_of(first);
-    MDB_val data{};
-    int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
-    while (status == MDB_SUCCESS && key.mv_size == prefixed_key_size &&
-           *static_cast<const std::byte*>(key.mv_data) == session_prefix) {
-        if (const int deleted = mdb_cursor_del(c->get(), 0); deleted != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(deleted));
-        }
-        key = value_of(first);
         status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
     }
     if (status != MDB_NOTFOUND && status != MDB_SUCCESS) [[unlikely]] {
@@ -1144,6 +1114,10 @@ persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx
     env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
+    const auto old = read_meta(d);
+    if (!old) [[unlikely]] {
+        return std::unexpected(old.error());
+    }
     if (auto deleted = delete_entries_from(d, from_idx); !deleted) [[unlikely]] {
         return deleted;
     }
@@ -1154,18 +1128,7 @@ persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx
     if (!chain) [[unlikely]] {
         return std::unexpected(chain.error());
     }
-    const auto old = read_meta(d);
-    if (!old && old.error() != storage_errc::missing_meta_record) [[unlikely]] {
-        return std::unexpected(old.error());
-    }
-    if (!old) [[unlikely]] {
-        if (auto deleted = delete_the_state(d); !deleted) [[unlikely]] {
-            return deleted;
-        }
-    }
-    const auto applied = old.value_or(meta_record{});
-    meta_record m{promise, accepted_round, decided_idx, from_idx, *chain, applied.applied_idx,
-                  applied.applied_chain_crc, applied.pointer};
+    meta_record m{promise, accepted_round, decided_idx, from_idx, *chain, old->applied_idx, old->applied_chain_crc};
     if (auto put = put_entries(d, m, entries); !put) [[unlikely]] {
         return put;
     }
@@ -1226,8 +1189,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::erase_sess
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_applied(const std::uint64_t applied_idx,
-                                                                                  const std::uint32_t applied_chain_crc,
-                                                                                  const std::uint64_t pointer)
+                                                                                  const std::uint32_t applied_chain_crc)
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
@@ -1239,7 +1201,6 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_applie
     }
     m->applied_idx = applied_idx;
     m->applied_chain_crc = applied_chain_crc;
-    m->pointer = pointer;
     return write_meta(d, *m);
 }
 

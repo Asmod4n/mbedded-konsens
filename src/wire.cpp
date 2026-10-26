@@ -103,6 +103,14 @@ std::error_code check_entries_of(const repair_entries& r) noexcept
     return check_entries(r.entries);
 }
 
+std::error_code check_entries_of(const work& w) noexcept
+{
+    if (entry_is_done(w.request)) [[unlikely]] {
+        return wire_errc::entry_field_of_another_kind;
+    }
+    return check_entries(std::span(&w.request, 1));
+}
+
 template <std::size_t I>
 std::expected<received, std::error_code> decode_body(const std::shared_ptr<const std::string>& owner,
                                                      const std::string_view body, const header& h)

@@ -240,11 +240,19 @@ struct refused {
     friend bool operator==(const refused&, const refused&) = default;
 };
 
+struct work {
+    ballot n;
+    std::uint64_t index;
+    entry request;
+    std::uint32_t entry_crc;
+    friend bool operator==(const work&, const work&) = default;
+};
+
 using paxos_msg =
     std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide, not_accepted,
                  proposal_forward, recovery, recovery_response, get_state, new_state, read_index_request, heartbeat,
                  heartbeat_ack, read_index_reply, repair_request, repair_response, get_repair_entries, repair_entries,
-                 answer, try_again, refused>;
+                 answer, try_again, refused, work>;
 
 struct paxos_message {
     node_id from;
