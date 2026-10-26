@@ -489,7 +489,7 @@ Answers of the owner, 2026-10-26 18:22, to the cards of section 9.1:
 1. `find` gives a pointer, no copy. The view lives until the next call
    of its statement, as `RawBytes` in Go. A debug build checks that a
    view is not read after that call (a generation count).
-2. The checkpoint: card open, explained again.
+2. The checkpoint: the program calls it (owner card 18:23), section 6.5.
 3. `psow=0` (owner card 18:23). Its cost is measured.
 4. The log record as a blob or in columns: both are arms of the
    measurement of section 10; the numbers decide.
