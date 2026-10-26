@@ -161,7 +161,7 @@ HandlePromise(i, m) ==
             IN IF IsMajority({q.from : q \in P})
                THEN LET L == Best(P).log
                         d == Min(Len(L), SetMax({q.dec : q \in P} \cup {cur[i].dec}))
-                    IN /\ Commit(i, [cur[i] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
+                    IN /\ Commit(i, [cur[i] EXCEPT !.log = L, !.acc = m.b, !.dec = d, !.wrec = Above(@, Len(L))])
                        /\ lead' = [lead EXCEPT ![i] = [b |-> m.b, phase |-> "accept", promises |-> P]]
                        /\ SendAll({[type |-> "acceptsync", b |-> m.b, from |-> i, to |-> q.from,
                                     log |-> L, dec |-> d] : q \in {x \in P : x.from # i}})
