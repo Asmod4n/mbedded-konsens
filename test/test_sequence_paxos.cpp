@@ -20,8 +20,7 @@
 #include <vector>
 
 #include <sys/resource.h>
-#include <unistd.h>
-
+#include "batches.hpp"
 #include "konsens/sequence_paxos.hpp"
 #include "lmdb_damage.hpp"
 #include "lmdb_storage.hpp"
@@ -46,14 +45,14 @@ constexpr std::uint32_t config_id = 1;
 template <typename S>
 std::vector<paxos_message> committed_messages_of(konsens::sequence_paxos<S>& sp)
 {
-    static_cast<void>(sp.commit());
+    static_cast<void>(batches::commit_and_sync(sp));
     return sp.take_outgoing_messages();
 }
 
 template <typename S>
 const S& committed_storage_of(konsens::sequence_paxos<S>& sp)
 {
-    static_cast<void>(sp.commit());
+    static_cast<void>(batches::commit_and_sync(sp));
     return sp.get_internal_storage();
 }
 
@@ -61,7 +60,7 @@ template <typename S>
 std::expected<std::vector<entry>, std::error_code> committed_decided_suffix_of(konsens::sequence_paxos<S>& sp,
                                                                                const std::uint64_t from_idx)
 {
-    static_cast<void>(sp.commit());
+    static_cast<void>(batches::commit_and_sync(sp));
     return sp.read_decided_suffix(from_idx);
 }
 
@@ -487,7 +486,7 @@ TEST_CASE("a failed write inside a step throws write_error, and a later commit i
     } catch (const konsens::write_error& e) {
         CHECK(e.code() == std::make_error_code(std::errc::no_space_on_device));
     }
-    CHECK_THROWS_AS(static_cast<void>(sp.commit()), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(batches::commit_and_sync(sp)), std::logic_error);
     CHECK_THROWS_AS(static_cast<void>(sp.take_outgoing_messages()), std::logic_error);
 }
 
@@ -505,14 +504,14 @@ TEST_CASE("a failed commit throws write_error and sends nothing")
     {
         const file_size_limit limit{file_size};
         try {
-            static_cast<void>(sp.commit());
+            static_cast<void>(batches::commit_and_sync(sp));
             FAIL("the commit did not throw");
         } catch (const konsens::sync_error& e) {
             CHECK(e.code() == std::make_error_code(std::errc::file_too_large));
         }
     }
     CHECK_THROWS_AS(static_cast<void>(sp.take_outgoing_messages()), std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp.commit()), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(batches::commit_and_sync(sp)), std::logic_error);
 }
 
 // A pid of 0 means "no leader" in mod.rs:371-384, so a node with pid 0 is
@@ -1359,7 +1358,7 @@ sp_t running_node_in(const std::filesystem::path& directory)
     auto sp = make(1, lmdb_storage::open_in(directory), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1, konsens::recovery{4}}));
-    REQUIRE(sp.commit());
+    REQUIRE(batches::commit_and_sync(sp));
     REQUIRE(sp.take_outgoing_messages().size() == 1);
     return sp;
 }
@@ -1443,7 +1442,7 @@ TEST_CASE("a value below the mark stops the vote, and a getter between two steps
     REQUIRE(committed_storage_of(sp).copy(older));
     auto value = meta_value_in(older);
     REQUIRE(sp.handle({2, 1, konsens::prepare{ballot_of(2, 2), 0, ballot{}, 0}}));
-    REQUIRE(sp.commit());
+    REQUIRE(batches::commit_and_sync(sp));
     static_cast<void>(sp.take_outgoing_messages());
     REQUIRE(sp.get_promise() == ballot_of(2, 2));
     lmdb_damage::change_in_another_process(directory, [&value](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
@@ -1478,7 +1477,7 @@ TEST_CASE("no message leaves before the commit of its step")
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     CHECK_THROWS_AS(static_cast<void>(sp.take_outgoing_messages()), std::logic_error);
-    REQUIRE(sp.commit());
+    REQUIRE(batches::commit_and_sync(sp));
     CHECK(messages_of<konsens::promise>(sp.take_outgoing_messages()).size() == 1);
 }
 
@@ -1538,7 +1537,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         auto sp = make(1);
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
-        REQUIRE(sp.commit());
+        REQUIRE(batches::commit_and_sync(sp));
         CHECK(states_of(committed_storage_of(sp)) == committed_below(0, 2));
         REQUIRE(sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, chain_of(one_two, 2)}}));
         CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
@@ -1625,7 +1624,7 @@ TEST_CASE("a decide with another chain CRC stops the vote")
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
-    REQUIRE(sp.commit());
+    REQUIRE(batches::commit_and_sync(sp));
     static_cast<void>(sp.take_outgoing_messages());
     const auto other = chain_of({make_entry(9), make_entry(2)}, 2);
     const auto r = sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, other}});

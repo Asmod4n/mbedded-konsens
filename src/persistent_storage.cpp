@@ -779,14 +779,14 @@ std::expected<void, std::error_code> put_value(MDB_txn* txn, const MDB_dbi dbi, 
     return {};
 }
 
-std::expected<void, std::error_code> erase_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key)
+std::expected<bool, std::error_code> erase_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key)
 {
     MDB_val k = value_of(key);
     const int status = mdb_del(txn, dbi, &k, nullptr);
     if (status != MDB_SUCCESS && status != MDB_NOTFOUND) [[unlikely]] {
         return std::unexpected(to_error_code(status));
     }
-    return {};
+    return status == MDB_SUCCESS;
 }
 
 std::expected<std::optional<session_record>, std::error_code> find_session_in(MDB_txn* txn, const MDB_dbi meta_dbi,
@@ -831,7 +831,7 @@ std::expected<void, std::error_code> put_session(MDB_txn* txn, const MDB_dbi met
     return {};
 }
 
-std::expected<void, std::error_code> erase_session_in(MDB_txn* txn, const MDB_dbi meta_dbi, const std::uint64_t session)
+std::expected<bool, std::error_code> erase_session_in(MDB_txn* txn, const MDB_dbi meta_dbi, const std::uint64_t session)
 {
     return erase_value(txn, meta_dbi, key_of(session_prefix, session));
 }
@@ -846,6 +846,8 @@ struct persistent_storage::environment {
     mdb_txn nested{};
     mdb_txn reader{};
     bool reader_in_use{};
+    bool written{};
+    bool sync_outside{};
     std::vector<std::byte> rewritten{};
 
     databases of_writer() const noexcept { return {writer.get(), meta_dbi, data_dbi}; }
@@ -1039,6 +1041,7 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
@@ -1056,6 +1059,7 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
     auto m = read_meta(d);
@@ -1084,6 +1088,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_promis
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -1097,6 +1102,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_accept
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -1110,6 +1116,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -1134,6 +1141,7 @@ persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto d = env_->of_writer();
     if (auto deleted = delete_entries_from(d, from_idx); !deleted) [[unlikely]] {
@@ -1186,6 +1194,7 @@ persistent_storage::transaction::insert_or_assign(const std::span<const std::byt
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     return put_value(env_->writer.get(), env_->data_dbi, key, value);
 }
 
@@ -1193,7 +1202,9 @@ std::expected<void, std::error_code> persistent_storage::transaction::erase(cons
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
-    return erase_value(env_->writer.get(), env_->data_dbi, key);
+    return erase_value(env_->writer.get(), env_->data_dbi, key).transform([this](const bool erased) {
+        env_->written = env_->written || erased;
+    });
 }
 
 std::expected<void, std::error_code>
@@ -1201,6 +1212,7 @@ persistent_storage::transaction::insert_or_assign_session(const std::uint64_t se
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     return put_session(env_->writer.get(), env_->meta_dbi, session, record);
 }
 
@@ -1208,7 +1220,9 @@ std::expected<void, std::error_code> persistent_storage::transaction::erase_sess
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
-    return erase_session_in(env_->writer.get(), env_->meta_dbi, session);
+    return erase_session_in(env_->writer.get(), env_->meta_dbi, session).transform([this](const bool erased) {
+        env_->written = env_->written || erased;
+    });
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_applied(const std::uint64_t applied_idx,
@@ -1217,6 +1231,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_applie
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    env_->written = true;
     const auto d = env_->of_writer();
     auto m = read_meta(d);
     if (!m) [[unlikely]] {
@@ -1241,10 +1256,76 @@ std::expected<persistent_storage::nested_transaction, std::error_code> persisten
     return nested_transaction{env_};
 }
 
+bool persistent_storage::transaction::has_writes() const
+{
+    throw_if_no_environment(env_);
+    return env_->written;
+}
+
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested);
+    if (env_->sync_outside) [[unlikely]] {
+        throw std::logic_error("konsens: a transaction without sync ends with prepare");
+    }
+    auto txn = std::move(std::exchange(env_, nullptr)->writer);
+    return commit_or_throw(std::move(txn));
+}
+
+std::expected<persistent_storage::prepared_transaction, std::error_code> persistent_storage::transaction::prepare() &&
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested);
+    if (!env_->sync_outside) [[unlikely]] {
+        throw std::logic_error("konsens: only a transaction without sync ends with prepare");
+    }
+    if (!env_->written) [[unlikely]] {
+        throw std::logic_error("konsens: a transaction without writes has nothing to prepare");
+    }
+    auto* const env = std::exchange(env_, nullptr);
+    const int status = mdb_txn_prepare(env->writer.get());
+    if (status != MDB_SUCCESS) [[unlikely]] {
+        static_cast<void>(env->writer.release());
+        if (status == MDB_MAP_FULL) {
+            return std::unexpected(to_error_code(status));
+        }
+        throw sync_error(to_error_code(status), "konsens: mdb_txn_prepare failed");
+    }
+    return prepared_transaction{env};
+}
+
+persistent_storage::prepared_transaction::prepared_transaction(environment* const env) noexcept : env_{env}
+{
+}
+
+persistent_storage::prepared_transaction::prepared_transaction(prepared_transaction&& other) noexcept
+    : env_{std::exchange(other.env_, nullptr)}
+{
+}
+
+persistent_storage::prepared_transaction&
+persistent_storage::prepared_transaction::operator=(prepared_transaction&& other) noexcept
+{
+    if (this != &other) {
+        if (env_ != nullptr) {
+            env_->writer.reset();
+        }
+        env_ = std::exchange(other.env_, nullptr);
+    }
+    return *this;
+}
+
+persistent_storage::prepared_transaction::~prepared_transaction()
+{
+    if (env_ != nullptr) {
+        env_->writer.reset();
+    }
+}
+
+std::expected<void, std::error_code> persistent_storage::prepared_transaction::commit() &&
+{
+    throw_if_no_environment(env_);
     auto txn = std::move(std::exchange(env_, nullptr)->writer);
     return commit_or_throw(std::move(txn));
 }
@@ -1302,7 +1383,7 @@ persistent_storage::nested_transaction::insert_or_assign(const std::span<const s
 std::expected<void, std::error_code> persistent_storage::nested_transaction::erase(const std::span<const std::byte> key)
 {
     throw_if_no_environment(env_);
-    return erase_value(env_->nested.get(), env_->data_dbi, key);
+    return erase_value(env_->nested.get(), env_->data_dbi, key).transform([](bool) {});
 }
 
 std::expected<void, std::error_code>
@@ -1316,7 +1397,7 @@ persistent_storage::nested_transaction::insert_or_assign_session(const std::uint
 std::expected<void, std::error_code> persistent_storage::nested_transaction::erase_session(const std::uint64_t session)
 {
     throw_if_no_environment(env_);
-    return erase_session_in(env_->nested.get(), env_->meta_dbi, session);
+    return erase_session_in(env_->nested.get(), env_->meta_dbi, session).transform([](bool) {});
 }
 
 persistent_storage::persistent_storage(persistent_storage&&) noexcept = default;
@@ -1393,16 +1474,39 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
 
 std::expected<persistent_storage::transaction, std::error_code> persistent_storage::begin()
 {
+    return begin_writer(false);
+}
+
+std::expected<persistent_storage::transaction, std::error_code> persistent_storage::begin_without_sync()
+{
+    return begin_writer(true);
+}
+
+std::expected<persistent_storage::transaction, std::error_code>
+persistent_storage::begin_writer(const bool sync_outside)
+{
     throw_if_moved_from();
     if (env_->writer) [[unlikely]] {
         throw std::logic_error("konsens: a write transaction of this storage is open");
     }
-    auto txn = begin_transaction(env_->handle.get(), 0);
+    auto txn = begin_transaction(env_->handle.get(), sync_outside ? MDB_NOSYNC : 0);
     if (!txn) [[unlikely]] {
         return std::unexpected(txn.error());
     }
     env_->writer = std::move(*txn);
+    env_->written = false;
+    env_->sync_outside = sync_outside;
     return transaction{env_.get()};
+}
+
+int persistent_storage::file_descriptor() const
+{
+    throw_if_moved_from();
+    int fd = -1;
+    if (const int status = mdb_env_get_fd(env_->handle.get(), &fd); status != MDB_SUCCESS) [[unlikely]] {
+        throw std::logic_error("konsens: the storage has no file descriptor");
+    }
+    return fd;
 }
 
 std::expected<persistent_storage::read_only_transaction, std::error_code> persistent_storage::begin_read_only() const

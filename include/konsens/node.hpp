@@ -67,6 +67,8 @@ struct client_read {
     std::optional<std::uint64_t> read_index;
 };
 
+enum class step_end { nothing, commit, sync_only };
+
 class [[nodiscard]] transaction {
 public:
     transaction& operator+=(const transaction& other)
@@ -145,7 +147,7 @@ public:
                 return std::unexpected(r.error());
             }
         }
-        n.release_messages_and_replies();
+        n.hold_until_durable();
         return n;
     }
 
@@ -185,7 +187,38 @@ public:
         return keep_and_handle(std::move(batch));
     }
 
-    [[nodiscard]] result commit(const transaction t)
+    [[nodiscard]] std::expected<step_end, std::error_code> commit(const transaction t)
+    {
+        return end_the_step(t).transform([this] { return get_step_end(); });
+    }
+
+    [[nodiscard]] std::expected<step_end, std::error_code> synced()
+    {
+        release(std::exchange(waits_for_one_sync_, {}));
+        meta_committed_unsynced_ = seq_paxos_.is_prepared();
+        if (seq_paxos_.is_prepared()) {
+            seq_paxos_.synced();
+            waits_for_one_sync_ = std::exchange(waits_for_two_syncs_, {});
+            if (auto r = finish_the_step(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+        }
+        return get_step_end();
+    }
+
+    step_end get_step_end() const
+    {
+        if (seq_paxos_.is_prepared()) {
+            return step_end::commit;
+        }
+        if (!waits_for_one_sync_.empty()) {
+            return step_end::sync_only;
+        }
+        return step_end::nothing;
+    }
+
+private:
+    result end_the_step(const transaction t)
     {
         return throw_on_a_damage([&]() -> result {
             current_transaction().throw_if_another_commit(t);
@@ -212,6 +245,17 @@ public:
                 drop_held_messages_and_replies();
                 return w;
             }
+            if (seq_paxos_.is_prepared()) {
+                hold_until_durable();
+                return {};
+            }
+            return finish_the_step();
+        });
+    }
+
+    result finish_the_step()
+    {
+        return throw_on_a_damage([&]() -> result {
             if (repair_started_ && !seq_paxos_.repairing() && seq_paxos_.votes()) {
                 if (auto r = close_the_repair(); !r) [[unlikely]] {
                     drop_held_messages_and_replies();
@@ -220,7 +264,7 @@ public:
                 static_cast<void>(check_the_applied_state());
             }
             if (!seq_paxos_.votes()) {
-                release_messages_and_replies();
+                hold_until_durable();
                 return {};
             }
             if (auto r = serve_reads(); !r) [[unlikely]] {
@@ -233,10 +277,12 @@ public:
                     return r;
                 }
             }
-            release_messages_and_replies();
+            hold_until_durable();
             return {};
         });
     }
+
+public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> append(entry e)
     {
@@ -456,25 +502,63 @@ private:
             m);
     }
 
-    void release_messages_and_replies()
+    struct held_output {
+        std::vector<message> messages;
+        std::vector<client_reply> replies;
+        std::vector<fault_proof> log_records;
+        std::vector<received> received_batch;
+        std::vector<message> message_batch;
+
+        bool empty() const { return messages.empty() && replies.empty() && log_records.empty(); }
+
+        void append(held_output&& other)
+        {
+            std::ranges::move(other.messages, std::back_inserter(messages));
+            std::ranges::move(other.replies, std::back_inserter(replies));
+            std::ranges::move(other.log_records, std::back_inserter(log_records));
+            std::ranges::move(other.received_batch, std::back_inserter(received_batch));
+            std::ranges::move(other.message_batch, std::back_inserter(message_batch));
+        }
+    };
+
+    held_output take_held_output()
     {
+        held_output out;
         for (auto& m : seq_paxos_.take_outgoing_messages()) {
-            released_messages_.emplace_back(std::move(m));
+            out.messages.emplace_back(std::move(m));
         }
         for (auto& m : ble_.take_outgoing_messages()) {
-            released_messages_.emplace_back(std::move(m));
+            out.messages.emplace_back(std::move(m));
         }
-        for (auto& m : execute_verify_outgoing_) {
-            released_messages_.emplace_back(std::move(m));
-        }
+        std::ranges::move(execute_verify_outgoing_, std::back_inserter(out.messages));
         execute_verify_outgoing_.clear();
-        released_replies_.insert(released_replies_.end(), std::make_move_iterator(client_replies_.begin()),
-                                 std::make_move_iterator(client_replies_.end()));
-        client_replies_.clear();
-        released_log_records_.insert(released_log_records_.end(), log_records_.begin(), log_records_.end());
-        log_records_.clear();
-        received_batch_.clear();
-        message_batch_.clear();
+        out.replies = std::exchange(client_replies_, {});
+        out.log_records = std::exchange(log_records_, {});
+        out.received_batch = std::exchange(received_batch_, {});
+        out.message_batch = std::exchange(message_batch_, {});
+        return out;
+    }
+
+    void hold_until_durable()
+    {
+        auto out = take_held_output();
+        if (out.empty()) {
+            return;
+        }
+        if (seq_paxos_.is_prepared()) {
+            waits_for_two_syncs_.append(std::move(out));
+        } else if (meta_committed_unsynced_) {
+            waits_for_one_sync_.append(std::move(out));
+        } else {
+            release(std::move(out));
+        }
+    }
+
+    void release(held_output&& out)
+    {
+        std::ranges::move(out.messages, std::back_inserter(released_messages_));
+        std::ranges::move(out.replies, std::back_inserter(released_replies_));
+        std::ranges::move(out.log_records, std::back_inserter(released_log_records_));
     }
 
     void drop_held_messages_and_replies()
@@ -1497,6 +1581,9 @@ private:
     std::vector<message> execute_verify_outgoing_;
     std::vector<entry> waiting_;
     bool resend_answer_{};
+    held_output waits_for_two_syncs_;
+    held_output waits_for_one_sync_;
+    bool meta_committed_unsynced_{};
 };
 
 }

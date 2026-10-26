@@ -22,6 +22,7 @@
 #include <variant>
 #include <vector>
 
+#include "batches.hpp"
 #include "konsens/node.hpp"
 #include "lmdb_storage.hpp"
 
@@ -460,7 +461,7 @@ struct world {
     void commit(std::size_t i, const std::expected<konsens::transaction, std::error_code>& t)
     {
         REQUIRE(t);
-        REQUIRE(nodes[i].commit(*t));
+        REQUIRE(::batches::commit_and_sync(nodes[i], *t));
         collect(i);
     }
 
@@ -530,7 +531,7 @@ struct world {
         REQUIRE((r || r.error() == konsens::client_errc::recovering));
         if (r) {
             proposed.insert(fields_of(e));
-            REQUIRE(nodes[i].commit(*r));
+            REQUIRE(::batches::commit_and_sync(nodes[i], *r));
         }
         collect(i);
     }
@@ -695,7 +696,7 @@ struct world {
         const auto r = send();
         if (r) {
             calls.emplace(id, std::move(k));
-            REQUIRE(nodes[i].commit(*r));
+            REQUIRE(::batches::commit_and_sync(nodes[i], *r));
         } else {
             const auto e = r.error();
             if (e != konsens::client_errc::recovering && e != konsens::client_errc::retry &&

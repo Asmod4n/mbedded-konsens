@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -340,6 +341,22 @@ std::optional<std::uint64_t> reply_count_of(const floating&, const konsens::clie
     return float_count_of(reply);
 }
 
+template <typename Node>
+std::expected<void, std::error_code> sync_the_store(Node& n, konsens::step_end end)
+{
+    while (end != konsens::step_end::nothing) {
+        if (fdatasync(n.get_sequence_paxos().get_internal_storage().file_descriptor()) != 0) [[unlikely]] {
+            throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync of the store failed");
+        }
+        const auto next = n.synced();
+        if (!next) [[unlikely]] {
+            return std::unexpected(next.error());
+        }
+        end = *next;
+    }
+    return {};
+}
+
 struct counted_storage {
     using read_only_transaction = konsens::persistent_storage::read_only_transaction;
 
@@ -372,6 +389,12 @@ struct counted_storage {
             return t_.set_applied(index, crc, pointer);
         }
         auto begin_nested() { return t_.begin_nested(); }
+        bool has_writes() const { return t_.has_writes(); }
+        auto prepare() &&
+        {
+            *commits_ += 1;
+            return std::move(t_).prepare();
+        }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
@@ -405,6 +428,12 @@ struct counted_storage {
         return store.begin().transform(
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), commits.get()}; });
     }
+    std::expected<transaction, std::error_code> begin_without_sync()
+    {
+        return store.begin_without_sync().transform(
+            [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), commits.get()}; });
+    }
+    int file_descriptor() const { return store.file_descriptor(); }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return store.begin_read_only(); }
 };
 
@@ -518,10 +547,14 @@ struct cluster {
             auto& n = nodes.at(i);
             if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
                 const auto start = std::chrono::steady_clock::now();
-                auto r = n.commit(*t);
+                const auto r = n.commit(*t);
+                const auto synced = r ? sync_the_store(n, *r) : std::expected<void, std::error_code>{};
                 commit_time.at(i) += std::chrono::steady_clock::now() - start;
                 if (!r) [[unlikely]] {
-                    return r;
+                    return std::unexpected(r.error());
+                }
+                if (!synced) [[unlikely]] {
+                    return synced;
                 }
             }
             for (const auto& m : n.take_outgoing_messages()) {
@@ -1176,6 +1209,9 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op, const
         if (!n) [[unlikely]] {
             return std::unexpected(failure{"start a node", n.error()});
         }
+        if (auto synced = sync_the_store(*n, n->get_step_end()); !synced) [[unlikely]] {
+            return std::unexpected(failure{"sync a node after its start", synced.error()});
+        }
         return std::move(*n);
     };
 }
@@ -1402,9 +1438,13 @@ struct threaded_cluster {
         join(*handled);
         const auto start = std::chrono::steady_clock::now();
         const auto committed = n.commit(*t);
+        const auto synced = committed ? sync_the_store(n, *committed) : std::expected<void, std::error_code>{};
         own.commit_time += std::chrono::steady_clock::now() - start;
         if (!committed) [[unlikely]] {
             return std::unexpected(failure{"commit", committed.error()});
+        }
+        if (!synced) [[unlikely]] {
+            return std::unexpected(failure{"sync", synced.error()});
         }
         std::vector<std::vector<inbox_element>> outgoing(nodes.size());
         std::uint64_t sent = 0;

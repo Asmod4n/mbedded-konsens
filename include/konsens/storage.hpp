@@ -200,6 +200,9 @@ template <typename T>
 using nested_transaction_of = typename decltype(std::declval<T&>().begin_nested())::value_type;
 
 template <typename T>
+using prepared_transaction_of = typename decltype(std::declval<T&&>().prepare())::value_type;
+
+template <typename T>
 concept storage_write = storage_read<T> && state_write<T> && state_write<nested_transaction_of<T>> &&
                         std::movable<T> &&
                         requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b,
@@ -218,13 +221,23 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             {
                                 t.write_repaired_log(index, entries, b, b, index)
                             } -> std::same_as<std::expected<void, std::error_code>>;
+                            { std::as_const(t).has_writes() } -> std::same_as<bool>;
                             { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
+                            {
+                                std::move(moved).prepare()
+                            } -> std::same_as<std::expected<prepared_transaction_of<T>, std::error_code>>;
+                            {
+                                std::declval<prepared_transaction_of<T>&&>().commit()
+                            } -> std::same_as<std::expected<void, std::error_code>>;
                         };
 
 template <typename S>
 concept storage = storage_write<typename S::transaction> && storage_read<typename S::read_only_transaction> &&
                   requires(S& s, const S& cs) {
                       { s.begin() } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
+                      {
+                          s.begin_without_sync()
+                      } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
                       {
                           cs.begin_read_only()
                       } -> std::same_as<std::expected<typename S::read_only_transaction, std::error_code>>;

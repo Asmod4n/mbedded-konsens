@@ -396,17 +396,40 @@ public:
             drop_incoming_and_outgoing();
             return stopped;
         }
-        write_unfinished_ = true;
         auto txn = std::move(*txn_);
         txn_.reset();
-        if (auto c = std::move(txn).commit(); !c) [[unlikely]] {
+        incoming_.clear();
+        if (!txn.has_writes()) {
+            mark_ = raise_mark(mark_, mark_of(*m));
+            return {};
+        }
+        write_unfinished_ = true;
+        auto p = std::move(txn).prepare();
+        if (!p) [[unlikely]] {
+            throw write_error(p.error(), "konsens: the storage failed to prepare the step");
+        }
+        write_unfinished_ = false;
+        prepared_.emplace(std::move(*p));
+        prepared_mark_ = mark_of(*m);
+        return {};
+    }
+
+    void synced()
+    {
+        if (!prepared_) [[unlikely]] {
+            return;
+        }
+        auto p = std::move(*prepared_);
+        prepared_.reset();
+        write_unfinished_ = true;
+        if (auto c = std::move(p).commit(); !c) [[unlikely]] {
             throw write_error(c.error(), "konsens: the storage failed to commit the step");
         }
         write_unfinished_ = false;
-        mark_ = raise_mark(mark_, mark_of(*m));
-        incoming_.clear();
-        return {};
+        mark_ = raise_mark(mark_, prepared_mark_);
     }
+
+    bool is_prepared() const { return prepared_.has_value(); }
 
 private:
     template <storage, state_machine>
@@ -956,13 +979,21 @@ private:
 
     std::expected<meta_record, std::error_code> read_meta() const { return txn_->get_meta(); }
 
+    void throw_if_a_sync_is_pending() const
+    {
+        if (prepared_) [[unlikely]] {
+            throw std::logic_error("konsens: a step begins before the sync of the step before");
+        }
+    }
+
     result begin_step()
     {
         throw_if_a_write_did_not_finish();
         if (txn_) {
             return {};
         }
-        auto t = internal_storage_.begin();
+        throw_if_a_sync_is_pending();
+        auto t = internal_storage_.begin_without_sync();
         if (!t) [[unlikely]] {
             return stop_voting(t.error());
         }
@@ -1915,20 +1946,21 @@ private:
         if (chain != re.last_chain_crc || !meta_values_are_consistent(repaired)) [[unlikely]] {
             return {};
         }
-        auto t = internal_storage_.begin();
-        if (!t) [[unlikely]] {
-            return stop_voting(t.error());
+        if (!txn_) {
+            throw_if_a_sync_is_pending();
+            auto t = internal_storage_.begin_without_sync();
+            if (!t) [[unlikely]] {
+                return stop_voting(t.error());
+            }
+            txn_.emplace(std::move(*t));
         }
         write_unfinished_ = true;
-        if (auto w = t->write_repaired_log(re.from_idx, re.entries, re.promise, re.accepted_round, re.decided_idx); !w)
-            [[unlikely]] {
+        if (auto w = txn_->write_repaired_log(re.from_idx, re.entries, re.promise, re.accepted_round, re.decided_idx);
+            !w) [[unlikely]] {
             throw write_error(w.error(), "konsens: the storage failed to write the repaired log");
         }
-        if (auto c = std::move(*t).commit(); !c) [[unlikely]] {
-            throw write_error(c.error(), "konsens: the storage failed to commit the repaired log");
-        }
         write_unfinished_ = false;
-        mark_ = mark_of(repaired);
+        mark_ = {};
         repair_.reset();
         verified_idx_ = std::min(verified_idx_, re.decided_idx);
         leader_state_ = leader_state::with(re.promise, nodes_);
@@ -2055,6 +2087,8 @@ private:
     std::vector<node_id> nodes_;
     S internal_storage_;
     std::optional<typename S::transaction> txn_;
+    std::optional<prepared_transaction_of<typename S::transaction>> prepared_;
+    high_water_mark prepared_mark_{};
     high_water_mark mark_{};
     std::pair<role, phase> state_{role::follower, phase::none};
     leader_state leader_state_{};

@@ -183,7 +183,7 @@ struct world {
             }
         }
         join(n.handle_incoming(std::move(batch)));
-        REQUIRE(n.commit(*t));
+        REQUIRE(batches::commit_and_sync(n, *t));
         free_at[i] = now + commit_time;
         for (auto& m : n.take_outgoing_messages()) {
             const auto to = batches::to_of(m) - 1;

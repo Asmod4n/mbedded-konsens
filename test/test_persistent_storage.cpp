@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <crc32c/crc32c.h>
 #include <lmdb.h>
@@ -1077,4 +1078,72 @@ TEST_CASE("a use of the parent while a nested transaction is open is a wrong use
     CHECK_THROWS_AS(static_cast<void>(w->insert_or_assign(key, key)), std::logic_error);
     CHECK_THROWS_AS(static_cast<void>(w->get_meta()), std::logic_error);
     CHECK_THROWS_AS(static_cast<void>(w->begin_nested()), std::logic_error);
+}
+
+// Plan one-environment 3.5 item 3: a transaction without sync writes its
+// data pages at the prepare and its meta page at the commit. A read sees
+// the writes only after the commit.
+TEST_CASE("a transaction without sync becomes visible at the commit after its prepare")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    auto w = storage.begin_without_sync();
+    REQUIRE(w.has_value());
+    CHECK_FALSE(w->has_writes());
+    const std::vector written{normal_entry("a")};
+    REQUIRE(w->append_entries(written));
+    CHECK(w->has_writes());
+    auto p = std::move(*w).prepare();
+    REQUIRE(p.has_value());
+    CHECK(meta_of(storage).log_len == 0u);
+    REQUIRE(fdatasync(storage.file_descriptor()) == 0);
+    REQUIRE(std::move(*p).commit());
+    CHECK(meta_of(storage).log_len == 1u);
+    CHECK(entries_of(storage, 0, 1) == written);
+}
+
+// A transaction without sync ends with prepare, and a transaction with
+// sync ends with commit. The other end is a wrong use. A prepared
+// transaction keeps the writer, so a second write transaction is a wrong
+// use until its commit.
+TEST_CASE("each kind of write transaction has one end")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    {
+        auto w = storage.begin_without_sync();
+        REQUIRE(w.has_value());
+        CHECK_THROWS_AS(static_cast<void>(std::move(*w).commit()), std::logic_error);
+    }
+    {
+        auto w = storage.begin();
+        REQUIRE(w.has_value());
+        CHECK_THROWS_AS(static_cast<void>(std::move(*w).prepare()), std::logic_error);
+    }
+    auto w = storage.begin_without_sync();
+    REQUIRE(w.has_value());
+    const std::vector written{normal_entry("a")};
+    REQUIRE(w->append_entries(written));
+    auto p = std::move(*w).prepare();
+    REQUIRE(p.has_value());
+    CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
+    REQUIRE(std::move(*p).commit());
+    CHECK(storage.begin().has_value());
+}
+
+// LMDB ends a prepared transaction that changed no page, and a later commit
+// or abort of it reads memory that LMDB freed. So only a transaction that
+// changed a page has writes, and the prepare of any other transaction is a
+// wrong use. An erase of an absent key changes no page.
+TEST_CASE("the prepare of a transaction without writes is a wrong use")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array key{std::byte{1}};
+    auto w = storage.begin_without_sync();
+    REQUIRE(w.has_value());
+    REQUIRE(w->erase(key));
+    REQUIRE(w->erase_session(1));
+    CHECK_FALSE(w->has_writes());
+    CHECK_THROWS_AS(static_cast<void>(std::move(*w).prepare()), std::logic_error);
 }

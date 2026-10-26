@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 
+#include "batches.hpp"
 #include "konsens/client.hpp"
 #include "konsens/sequence_paxos.hpp"
 #include "lmdb_storage.hpp"
@@ -34,7 +35,7 @@ constexpr std::uint32_t config_id = 1;
 template <typename S>
 std::vector<paxos_message> committed_messages_of(konsens::sequence_paxos<S>& sp)
 {
-    static_cast<void>(sp.commit());
+    static_cast<void>(batches::commit_and_sync(sp));
     return sp.take_outgoing_messages();
 }
 

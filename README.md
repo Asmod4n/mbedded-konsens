@@ -67,9 +67,10 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   `konsens::sync_error`. The messages and the replies of that commit
   stay in the node.
 - **Group commit.** Each call collects its writes and its messages, and
-  returns a `konsens::transaction`. `commit()` takes the transaction,
-  writes all collected writes in one synchronous LMDB commit, and only
-  then gives the messages and the replies to the program.
+  returns a `konsens::transaction`. `commit()` takes the transaction and
+  writes all collected writes in one LMDB transaction without a sync.
+  The program syncs the file of the store and calls `synced()`. Only a
+  sync gives the messages and the replies to the program.
 - **Execute-verify.** Every node runs every decided request on its own
   state and sends its result to the leader. The leader appends the
   result of a majority as a `results` entry. Each node checks that entry
@@ -92,7 +93,8 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   `allow_one_more_repair()` and starts the node again. A leader whose
   `results` entry a majority refused throws in the same way.
 - **Runs on your thread.** Each call runs on the thread of the caller.
-  `commit()` returns when its LMDB commit is done.
+  `commit()` returns when its writes reach the file. The program makes
+  the sync.
 
 ## How a write works
 
@@ -223,16 +225,28 @@ for (auto& bytes : arrived)
     batch.push_back(konsens::decode(std::move(bytes)).value());
 t += node.handle_incoming(std::move(batch)).value();
 
-node.commit(t).value();
+auto end = node.commit(t).value();
+while (end != konsens::step_end::nothing) {
+    const int fd = node.get_sequence_paxos().get_internal_storage().file_descriptor();
+    if (fdatasync(fd) != 0)
+        throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync failed");
+    end = node.synced().value();
+}
 
 for (const auto& m : node.take_outgoing_messages())
     send(konsens::encode(m).value());
 ```
 
 Each call collects its writes and its messages and returns a
-transaction. `commit()` writes the collected writes in one LMDB commit.
-`take_outgoing_messages()` and `take_client_replies()` give what a
-commit released. The compiler refuses a transaction that the program
+transaction. `commit()` writes the collected writes in one LMDB
+transaction and makes no sync. It returns `step_end::commit` when the
+step wrote, `step_end::sync_only` when messages wait for a sync, and
+`step_end::nothing` when no sync is due. After `step_end::commit`, the
+next call begins only after the sync. The messages of a step leave after
+the sync that makes the whole step durable: the sync of the next step,
+or a sync of its own. After `with()`, the program reads `get_step_end()`
+and syncs in the same way. `take_outgoing_messages()` and
+`take_client_replies()` give what a sync released. The compiler refuses a transaction that the program
 drops. A commit of a transaction that is committed, or of a transaction
 of another node, throws `std::logic_error`. At most
 `konsens::max_batch_size` messages wait for one commit.

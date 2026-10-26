@@ -646,7 +646,7 @@ std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change chang
             try {
                 const auto t = nodes[i].handle_incoming(std::move(inbox[i]));
                 if (t) {
-                    static_cast<void>(nodes[i].commit(*t));
+                    static_cast<void>(batches::commit_and_sync(nodes[i], *t));
                 }
             } catch (const konsens::node_fault&) {
                 faulted.insert(static_cast<node_id>(i + 1));
@@ -850,13 +850,13 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
     // Plan 3.3 to 3.5: the next start counts the proof and sets the open
     // mark at its index. The mark covers the index, so the node writes the
     // chosen bytes and does not run it again. The mark closes when the
-    // applied index passes it.
+    // applied index passes it, after the sync of the start.
     auto n = *node_t::with(config_of(1), lmdb_storage::open_in(directory),
                            lmdb_storage::open_node_storage_in(own_directory),
                            marked{'x'}, 2);
-    CHECK(state_of(n) == bytes_of('a'));
     CHECK(n.get_repair_record() == konsens::repair_record{1, 2, false, std::nullopt});
-    batches::commit(n, n.tick());
+    batches::sync_after_the_start(n);
+    CHECK(state_of(n) == bytes_of('a'));
     CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, false, std::nullopt});
 }
 
@@ -867,9 +867,9 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 {
     for (const auto& out : {std::vector<node_id>{1}, std::vector<node_id>{2}}) {
         CAPTURE(out.front());
-        const auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed(out)),
-                                     lmdb_storage::open_new_node_storage(),
-                                     marked{0}, 1);
+        auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed(out)),
+                               lmdb_storage::open_new_node_storage(), marked{0}, 1);
+        batches::sync_after_the_start(n);
         CHECK(state_of(n) == bytes_of('a'));
         CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
     }
@@ -882,6 +882,7 @@ TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
 {
     auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed({1})),
                            lmdb_storage::open_new_node_storage(), marked{0}, 1);
+    batches::sync_after_the_start(n);
     const auto request = konsens::encode_result(
         {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     const auto crc = konsens::compute_result_crc(2, request);
@@ -1100,10 +1101,10 @@ TEST_CASE("a reply that is no CBOR data item under the float rule is a wrong use
             }
             for (std::size_t k = 0; k < nodes.size(); ++k) {
                 if (const auto t = nodes[k].handle_incoming(std::move(inbox[k]))) {
-                    static_cast<void>(nodes[k].commit(*t));
+                    static_cast<void>(batches::commit_and_sync(nodes[k], *t));
                 }
                 if (const auto t = nodes[k].tick()) {
-                    static_cast<void>(nodes[k].commit(*t));
+                    static_cast<void>(batches::commit_and_sync(nodes[k], *t));
                 }
             }
         }

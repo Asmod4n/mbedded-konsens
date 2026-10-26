@@ -84,9 +84,24 @@ public:
         environment* env_;
     };
 
+    class prepared_transaction {
+    public:
+        [[nodiscard]] std::expected<void, std::error_code> commit() &&;
+
+        prepared_transaction(prepared_transaction&& other) noexcept;
+        prepared_transaction& operator=(prepared_transaction&& other) noexcept;
+        ~prepared_transaction();
+
+    private:
+        friend class persistent_storage;
+
+        explicit prepared_transaction(environment* env) noexcept;
+
+        environment* env_;
+    };
+
     class transaction {
     public:
-
         [[nodiscard]] std::expected<meta_record, std::error_code> get_meta() const;
         [[nodiscard]] std::expected<std::vector<entry>, read_failure> read_entries(std::uint64_t from,
                                                                                    std::uint64_t to) const;
@@ -121,7 +136,9 @@ public:
         [[nodiscard]] std::expected<void, std::error_code>
         set_applied(std::uint64_t applied_idx, std::uint32_t applied_chain_crc, std::uint64_t pointer);
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
+        [[nodiscard]] bool has_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
+        [[nodiscard]] std::expected<prepared_transaction, std::error_code> prepare() &&;
 
         transaction(transaction&& other) noexcept;
         transaction& operator=(transaction&& other) noexcept;
@@ -139,6 +156,8 @@ public:
     open(const std::filesystem::path& directory, std::size_t map_size, uid_t effective_user_id);
 
     [[nodiscard]] std::expected<transaction, std::error_code> begin();
+    [[nodiscard]] std::expected<transaction, std::error_code> begin_without_sync();
+    [[nodiscard]] int file_descriptor() const;
     [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
     [[nodiscard]] std::expected<void, std::error_code> copy(const std::filesystem::path& directory) const;
 
@@ -150,6 +169,7 @@ private:
     explicit persistent_storage(std::unique_ptr<environment> env) noexcept;
 
     void throw_if_moved_from() const;
+    std::expected<transaction, std::error_code> begin_writer(bool sync_outside);
 
     std::unique_ptr<environment> env_;
 };

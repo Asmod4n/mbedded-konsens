@@ -281,7 +281,7 @@ TEST_CASE("a follower that lost the last Decide catches up after reconnected")
     auto nodes = lose_the_last_decide();
     const auto t = nodes[behind - 1].reconnected(elected);
     REQUIRE(t);
-    REQUIRE(nodes[behind - 1].commit(*t));
+    REQUIRE(batches::commit_and_sync(nodes[behind - 1], *t));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -368,6 +368,8 @@ struct recording_storage {
             return t_.set_applied(index, crc, pointer);
         }
         auto begin_nested() { return t_.begin_nested(); }
+        bool has_writes() const { return t_.has_writes(); }
+        auto prepare() && { return std::move(t_).prepare(); }
 
         auto append_entries(const std::span<const konsens::entry> entries)
         {
@@ -402,6 +404,12 @@ struct recording_storage {
         return inner.begin().transform(
             [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
     }
+    std::expected<transaction, std::error_code> begin_without_sync()
+    {
+        return inner.begin_without_sync().transform(
+            [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
+    }
+    int file_descriptor() const { return inner.file_descriptor(); }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return inner.begin_read_only(); }
 };
 
