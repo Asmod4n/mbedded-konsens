@@ -94,7 +94,9 @@ what it shows from a node (owner, 2026-10-26 15:42: with no state in
 the server or the client, any server of a pool can answer).
 The only state the tool needs is the permission to connect and to run
 management commands (owner, 15:43). Before TLS, the VPN is that
-permission (question 6.7). Where it is kept later is open.
+permission (question 6.7). Later it is kept in a named database of its
+own in the LMDB environment, for authentication and authorization only
+(owner, 15:45).
 
 So the tool is an mruby binary. The core is C++ and has an mruby
 binding. The front ends are Ruby.
