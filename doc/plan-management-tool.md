@@ -186,10 +186,24 @@ Each step is its own branch and is green before the next starts.
      Proposal for the first tests only.
   b) A shared key from the start (libhydrogen).
 
-6.8 The `rb-*` router on the phone. Today it calls a bound Ruby
-  function and needs the webview.
-  a) The router of ascaridol gets a second transport: `fetch` to the
-     same path when no bridge exists. The page stays one page.
-     Proposal. This is a change in ascaridol.
-  b) The phone page uses htmx, and the webview page uses `rb-*`. The
-     page then exists in two forms.
+6.8 The page on the phone and in the webview.
+  The owner asks for htmx 4 (2026-10-26 14:30). htmx 2 sends with XHR,
+  and a webview has no server to answer it. So ascaridol has its own
+  `rb-*` router.
+  htmx 4.0.0 (npm, 2026-08-28, BSD-0-Clause) sends with `ctx.fetch`.
+  It sets `ctx.fetch ||= window.fetch` and fires
+  `htmx:before:request` before the call (dist/htmx.js:576-581). An
+  extension can replace `ctx.fetch` in that event. The official
+  extension hx-preload does that (dist/ext/hx-preload.js:85). The
+  field is not in htmx.d.ts.
+  Tested in one file outside the tree: a page from file://, htmx 4 and
+  an extension of 15 lines. The extension calls a Ruby binding as
+  (method, path, params) and returns `new Response(html)`. In headless
+  Chromium, an hx-post of a form and an hx-get were swapped, with no
+  network request and no error. WebKit (WebKitGTK, WKWebView) is not
+  tested: this machine has no WebKit browser.
+  a) htmx 4 with that extension in the webview, and plain htmx 4 over
+     HTTP on the phone. The page has `hx-*` attributes only, and the
+     `rb-*` router is not needed. The extension goes into ascaridol.
+     Proposal.
+  b) The `rb-*` router of ascaridol gets a `fetch` transport.
