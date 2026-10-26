@@ -438,14 +438,13 @@ own.
    syncs (done, synced) after the round that runs (work, ran). Before:
    the round of the request and the round of the `results` entry both
    synced on each node.
-4. Accept means verify (2.7) applies to the done record. A node commits
-   a done record only after its check. The leader checks its own done
-   record before it commits it, as every node does (2.7.4). A node
-   checks each done record that arrives in an accept sync from an
-   earlier ballot before it commits it; a done record that fails the
-   check is refused as in 2.7.6. So every durable entry was checked by
-   its node, and `verified_idx` (2.7.4, 2.7.5) goes: a promise carries
-   only done records.
+4. Accept means verify (2.7) applies to the done record. A node writes
+   a done record when it arrives and checks it in the same step. The
+   leader checks its own done record in the step that appends it, as
+   every node does (2.7.4). A done record that fails the check is
+   refused as in 2.7.6. `verified_idx` (2.7.4, 2.7.5) stays: it bounds
+   the accepted of the node to the done records that the node checked
+   (owner, card 2026-10-26 15:26).
 5. Try again (2.6.4), the list (2.6.5), the minority (2.8), the rounding
    of floats (2.2.2a) and the read back (2.3.5) stay as they are.
 6. The leader appends at most one verdict entry in each step (2.6.5)
@@ -695,8 +694,7 @@ first. The arm before is fa14f44. No number is written before the run.
   5.1 to 5.5 (the open transaction, the bound, two write transactions).
 - plan-execute-verify.md: 2.1.2 and 2.1.3 (verdict entries), 2.3 (V and
   `p`), 2.4.2 (the open transaction holds the base), 2.4.4
-  (`max_in_flight`), 2.6.5 (one verdict entry in each step), 2.7.4 and
-  2.7.5 (`verified_idx`), 2.9.1 (the second round), 4.4 and 4.6 (model
+  (`max_in_flight`), 2.6.5 (one verdict entry in each step), 2.9.1 (the second round), 4.4 and 4.6 (model
   variables of the verdict entries). 2.5.3 (answers sent again on the
   resend timeout) stays, and "work" is sent again in the same way
   (5.3).
@@ -730,5 +728,5 @@ an accept, and the "synced" message an accepted.
 5. The tombstone "in progress" by file system (card 10:59, section 5.1).
 6. Q1, one `fdatasync` for each step (card 10:51). The test of section 15
    item 7 runs before the build.
-
-No question is open.
+7. `verified_idx` stays and bounds the accepted of a node (card 15:26,
+   section 7 item 4).
