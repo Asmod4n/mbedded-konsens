@@ -307,7 +307,12 @@ measurement of blob against columns (section 10).
    which still works in the old schema. Then one entry of the log
    switches all nodes at the same index. From that index on, an older
    binary does not vote. This is Jepsen question 4 (mixed versions).
-8. How a task reaches SQL is not in this plan. The `state_machine`
+8. The schema of the library is fixed from release 1.0 on. The tables
+   of a user are not part of it. The CBOR functions that the library
+   gives to SQLite (`cbor_extract` with an index on an expression,
+   `cbor_query`, `cbor_valid`) stand in `vorbereitung.md` sections 19
+   and 20.
+9. How a task reaches SQL is not in this plan. The `state_machine`
    concept offers `find` of a byte key (`state_machine.hpp:28-31`). A
    plan of its own gives the interface.
 
