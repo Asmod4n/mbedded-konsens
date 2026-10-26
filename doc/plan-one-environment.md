@@ -369,10 +369,17 @@ Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
    (owner 2026-10-26 10:54). A retry while the tombstone stands gets
    "still in progress" (RIFL 4.1; draft-ietf-httpapi-idempotency-key-header-08
    2.7: 409); /mnt/project-files/actor-raft/exactly-once.md.
-6. The start deletes each tombstone in its first write transaction.
-7. A node deletes its tombstones when its promise changes, in the step
-   that sees the new promise. The tombstones stand in `meta` only, never
-   in `data` (owner 2026-10-26 15:30).
+6. A tombstone carries the nonce of the start of its node and the tick
+   count of that start when it was written. It has expired when its
+   nonce is of another start, or when it is N ticks old. N is a field
+   of the config (provisional value). An expired tombstone answers
+   nothing, and the next step that sees it leaves it out of its commit.
+   No other rule deletes a tombstone (owner 2026-10-26 15:33): neither
+   the start nor a new promise. A done record or an accept sync that
+   writes the log index of a tombstone replaces it, because both have
+   the same key.
+7. The tombstones stand in `meta` only, never in `data` (owner
+   2026-10-26 15:30).
 
 ### 5.2 The base and the run
 
@@ -555,9 +562,12 @@ when a write is durable.
   form of section 18 item 4, it leaves at once. "work", "ran", "decide" and "acceptsync" leave at once.
 - The leader counts itself for a decide only from `dur`.
 - The decided index rides in a commit with no sync of its own.
-- `WorkRecords`: the tombstone is a record of a commit with no sync. The
-  start deletes it. Both forms of 5.1 lose an unsynced tombstone at a
-  crash, so the model checks both with this switch.
+- `WorkRecords`: the tombstone is a record of a commit with no sync,
+  with the nonce of the start and the tick count (5.1 item 6). `Tick`
+  counts up to `MaxTick`; a tombstone expires after `Expiry` ticks or
+  with another nonce; `DropExpired` leaves an expired tombstone out of
+  a commit. Both forms of 5.1 lose an unsynced tombstone at a crash, so
+  the model checks both with this switch.
 - A result is a function of the entries before it, so the model has no
   result values. The agreement rules are those of `SequencePaxos.tla`.
 - A request can be proposed again (a client retry).
@@ -571,19 +581,23 @@ when a write is durable.
   to its applied index (owner 07:19).
 - `AppliedIsDecided`: applied index at most decided index, and every
   applied entry chosen.
-- `NoOldWorkRecords`: a recovering node holds no work record.
+- `NoOldWorkRecords`: a tombstone that has not expired comes from the
+  last start of its node and stands above its log.
 - Covers, each must be violated: `NoForgottenDone` (a node holds a
   durable done record of another request than the chosen one at that
   index), `NoForgottenDoneAfterCrash` (the same at a node that crashed:
   the case of owner 07:19), `NoRetryChosen` (a retry is chosen at a
   second index), `NoDecidedLost` (a crash lost a decided index that rode
-  on no sync), `NoWorkRecordSurvives` ( a work record survived a
-  crash).
+  on no sync), `NoWorkRecordSurvives` (a work record survived a
+  crash), `NoOrphanTombstone` (a live tombstone stands while no node
+  has its task in work: the cost of the expiry), `NoTombstoneExpires`
+  (a tombstone of the current start expires by its age).
 - Mutations, each must break its property: `ApplyAtDone` (the done
   commit applies the state): `StateIsFold`; `ReplyAtLeaderSync` (the
   reply after the sync of the leader alone): `ChosenOnce`;
   `DoneWithoutSync` (a node sends "synced" before its sync):
-  `ChosenOnce`; `LeaderCountsUnsynced` (with `DoneBeforeOwnSync`, the
+  `ChosenOnce`; `NoNonce` (a tombstone without the nonce of its start):
+  `NoOldWorkRecords`; `LeaderCountsUnsynced` (with `DoneBeforeOwnSync`, the
   leader counts its own done before its sync): `ChosenOnce`.
 - `NoRecovery` (a restarted node votes at once): every promise and every
   accept leave only after their sync, so the model has no case where the
@@ -733,5 +747,6 @@ an accept, and the "synced" message an accepted.
    item 7 runs before the build.
 7. `verified_idx` stays and bounds the accepted of a node (card 15:26,
    section 7 item 4).
-8. The tombstone stands in `meta` only; a new promise deletes it
-   (15:30, section 5.1 item 7).
+8. The tombstone stands in `meta` only (15:30, section 5.1 item 7).
+9. A tombstone expires by the nonce of its start or after N ticks; no
+   other rule deletes it (15:33, section 5.1 item 6).

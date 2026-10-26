@@ -16,7 +16,10 @@
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
-          WorkRecords,        \* P0: the work is a record of the commit
+          WorkRecords,        \* P0: the work is a record of the commit (a tombstone)
+          Expiry,             \* a tombstone expires after this many ticks
+          MaxTick,            \* bound of the tick count of a start
+          NoNonce,            \* mutation: a tombstone carries no nonce of its start
           DoneBeforeOwnSync,  \* the leader sends "done" while its sync runs (question 4)
           ApplyAtDone,        \* mutation: the done write also applies the state
           ReplyAtLeaderSync,  \* mutation: the client reply after the sync of the leader only
@@ -26,12 +29,14 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec, state, applied,
-\* wrec (the work records of P0).
+\* wrec (the tombstones of P0: a set of [idx, req, start, tick]).
+\* ticks[i]: the ticks of node i since its last start. starts[i]: the
+\* nonce of its last start.
 VARIABLES cur, dur, queue, work, status, lead, answers,
-          msgs, chosen, replied, crashes, crashed, decAtCrash
+          msgs, chosen, replied, crashes, crashed, decAtCrash, ticks, starts
 
 vars == <<cur, dur, queue, work, status, lead, answers, msgs, chosen, replied,
-          crashes, crashed, decAtCrash>>
+          crashes, crashed, decAtCrash, ticks, starts>>
 
 N == Cardinality(Nodes)
 IsMajority(Q) == 2 * Cardinality(Q) > N
@@ -68,7 +73,18 @@ Commit(i, r) == cur' = [cur EXCEPT ![i] = r]
 
 NoLead == [b |-> 0, phase |-> "none", promises |-> {}]
 Empty == [promise |-> 0, acc |-> 0, log |-> <<>>, dec |-> 0, state |-> <<>>,
-          applied |-> 0, wrec |-> <<>>]
+          applied |-> 0, wrec |-> {}]
+
+\* A tombstone has expired when it comes from another start of its node,
+\* or when it is Expiry ticks old (owner 2026-10-26 15:33).
+Expired(i, w) ==
+    \/ ~NoNonce /\ w.start # starts[i]
+    \/ ticks[i] >= w.tick + Expiry
+Live(i) == {w \in cur[i].wrec : ~Expired(i, w)}
+Tombstone(i, idx, r) == [idx |-> idx, req |-> r, start |-> starts[i], tick |-> ticks[i]]
+\* A done record and a tombstone have the same key, the log index: a write
+\* of the log up to n replaces each tombstone at or below n.
+Above(W, n) == {w \in W : w.idx > n}
 
 Init ==
     /\ cur = [i \in Nodes |-> Empty]
@@ -84,8 +100,10 @@ Init ==
     /\ crashes = 0
     /\ crashed = [i \in Nodes |-> FALSE]
     /\ decAtCrash = [i \in Nodes |-> 0]
+    /\ ticks = [i \in Nodes |-> 0]
+    /\ starts = [i \in Nodes |-> 0]
 
-Ghosts == <<crashes, crashed, decAtCrash>>
+Ghosts == <<crashes, crashed, decAtCrash, ticks, starts>>
 
 ----------------------------------------------------------------------------
 (* The sync. One fdatasync makes every commit before it durable and       *)
@@ -166,7 +184,7 @@ HandleAcceptSync(j, m) ==
     /\ cur[j].promise = m.b
     /\ cur[j].acc # m.b
     /\ LET d == Min(Len(m.log), Max(cur[j].dec, m.dec))
-       IN Commit(j, [cur[j] EXCEPT !.log = m.log, !.acc = m.b, !.dec = d, !.wrec = <<>>])
+       IN Commit(j, [cur[j] EXCEPT !.log = m.log, !.acc = m.b, !.dec = d, !.wrec = Above(@, Len(m.log))])
     /\ work' = [work EXCEPT ![j] = <<>>]
     /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> Len(m.log)])
     /\ UNCHANGED <<dur, status, lead, answers, msgs, chosen, replied, Ghosts>>
@@ -181,8 +199,9 @@ Propose(i, r) ==
     /\ lead[i].phase = "accept"
     /\ Len(cur[i].log) + Len(work[i]) < MaxLog
     /\ work' = [work EXCEPT ![i] = Append(@, r)]
-    /\ IF WorkRecords THEN Commit(i, [cur[i] EXCEPT !.wrec = Append(@, r)]) ELSE UNCHANGED cur
-    /\ Send([type |-> "work", b |-> lead[i].b, idx |-> Len(cur[i].log) + Len(work[i]) + 1, req |-> r])
+    /\ LET idx == Len(cur[i].log) + Len(work[i]) + 1
+       IN /\ IF WorkRecords THEN Commit(i, [cur[i] EXCEPT !.wrec = @ \cup {Tombstone(i, idx, r)}]) ELSE UNCHANGED cur
+          /\ Send([type |-> "work", b |-> lead[i].b, idx |-> idx, req |-> r])
     /\ UNCHANGED <<dur, queue, status, lead, answers, chosen, replied, Ghosts>>
 
 \* A follower runs the work in log order and reports at once.
@@ -193,7 +212,7 @@ HandleWork(j, m) ==
     /\ Owner(m.b) # j
     /\ m.idx = Len(cur[j].log) + Len(work[j]) + 1
     /\ work' = [work EXCEPT ![j] = Append(@, m.req)]
-    /\ IF WorkRecords THEN Commit(j, [cur[j] EXCEPT !.wrec = Append(@, m.req)]) ELSE UNCHANGED cur
+    /\ IF WorkRecords THEN Commit(j, [cur[j] EXCEPT !.wrec = @ \cup {Tombstone(j, m.idx, m.req)}]) ELSE UNCHANGED cur
     /\ Send([type |-> "ran", b |-> m.b, from |-> j, idx |-> m.idx, req |-> m.req])
     /\ UNCHANGED <<dur, queue, status, lead, answers, chosen, replied, Ghosts>>
 
@@ -213,7 +232,7 @@ LeaderDone(i) ==
        IN /\ IsMajority(Q)
           /\ work' = [work EXCEPT ![i] = Tail(@)]
           /\ Commit(i, [cur[i] EXCEPT !.log = nl,
-                         !.wrec = IF @ # <<>> THEN Tail(@) ELSE @,
+                         !.wrec = Above(@, idx),
                          !.state = IF ApplyAtDone THEN FoldSeq(SubSeq(nl, cur[i].applied + 1, idx), @) ELSE @,
                          !.applied = IF ApplyAtDone THEN idx ELSE @])
           /\ IF DoneBeforeOwnSync
@@ -235,7 +254,7 @@ HandleDone(j, m) ==
     /\ Owner(m.b) # j
     /\ m.idx = Len(cur[j].log) + 1
     /\ Commit(j, [cur[j] EXCEPT !.log = Append(@, [bal |-> m.b, req |-> m.req]),
-                   !.wrec = IF @ # <<>> THEN Tail(@) ELSE @])
+                   !.wrec = Above(@, m.idx)])
     /\ work' = [work EXCEPT ![j] = IF @ # <<>> THEN Tail(@) ELSE @]
     /\ LET sm == [type |-> "synced", b |-> m.b, from |-> j, idx |-> m.idx]
        IN IF DoneWithoutSync
@@ -298,14 +317,31 @@ Crash(i) ==
     /\ work' = [work EXCEPT ![i] = <<>>]
     /\ lead' = [lead EXCEPT ![i] = NoLead]
     /\ answers' = [answers EXCEPT ![i] = {}]
-    /\ UNCHANGED <<dur, msgs, chosen, replied>>
+    /\ UNCHANGED <<dur, msgs, chosen, replied, ticks, starts>>
 
-\* The start deletes the work records (P0) in its first write.
+\* A start takes a new nonce and counts its ticks from zero. It deletes
+\* nothing: the tombstones of the earlier start have expired.
 Restart(i) ==
     /\ status[i] = "down"
     /\ status' = [status EXCEPT ![i] = IF NoRecovery THEN "running" ELSE "recovering"]
-    /\ Commit(i, [cur[i] EXCEPT !.wrec = <<>>])
-    /\ UNCHANGED <<dur, queue, work, lead, answers, msgs, chosen, replied, Ghosts>>
+    /\ starts' = [starts EXCEPT ![i] = @ + 1]
+    /\ ticks' = [ticks EXCEPT ![i] = 0]
+    /\ UNCHANGED <<cur, dur, queue, work, lead, answers, msgs, chosen, replied, crashes, crashed, decAtCrash>>
+
+\* The library counts the calls of tick(); it has no clock.
+Tick(i) ==
+    /\ status[i] # "down"
+    /\ ticks[i] < MaxTick
+    /\ ticks' = [ticks EXCEPT ![i] = @ + 1]
+    /\ UNCHANGED <<cur, dur, queue, work, status, lead, answers, msgs, chosen, replied,
+                   crashes, crashed, decAtCrash, starts>>
+
+\* A step that sees an expired tombstone leaves it out of its commit.
+DropExpired(i) ==
+    /\ status[i] # "down"
+    /\ Live(i) # cur[i].wrec
+    /\ Commit(i, [cur[i] EXCEPT !.wrec = Live(i)])
+    /\ UNCHANGED <<dur, queue, work, status, lead, answers, msgs, chosen, replied, Ghosts>>
 
 \* After each start, a node votes only after f + 1 answers (VR Revisited).
 RecoveryAnswer(i, j) ==
@@ -327,12 +363,13 @@ RecoveryComplete(i) ==
 
 Next ==
     \/ \E i \in Nodes : Crash(i)
+    \/ \E i \in Nodes : Restart(i) \/ Tick(i)
     \/ /\ UNCHANGED Ghosts
        /\ \/ \E i \in Nodes : SyncDone(i)
           \/ \E i \in Nodes, b \in Ballots : Prepare(i, b)
           \/ \E i \in Nodes, r \in Requests : Propose(i, r)
           \/ \E i \in Nodes : LeaderDone(i) \/ LeaderDecide(i) \/ Apply(i)
-          \/ \E i \in Nodes : Restart(i) \/ RecoveryComplete(i)
+          \/ \E i \in Nodes : RecoveryComplete(i) \/ DropExpired(i)
           \/ \E i, j \in Nodes : RecoveryAnswer(i, j)
           \/ \E m \in msgs :
                \/ \E j \in Nodes : HandlePrepare(j, m)
@@ -371,9 +408,12 @@ AppliedIsDecided ==
     \A i \in Nodes : /\ cur[i].applied <= cur[i].dec
                      /\ ChosenPrefixDefined(cur[i].applied)
 
-\* A running node holds no work record from before its last start.
+\* A tombstone that has not expired comes from the last start of its node,
+\* and it stands only above the log of its node: no live tombstone names
+\* an index that holds a done record.
 NoOldWorkRecords ==
-    \A i \in Nodes : status[i] = "recovering" => cur[i].wrec = <<>>
+    \A i \in Nodes : status[i] # "down" =>
+        \A w \in Live(i) : w.start = starts[i] /\ w.idx > Len(cur[i].log)
 
 \* Covers: each must be violated by a trace.
 NoForgottenDone ==
@@ -394,6 +434,14 @@ NoDecidedLost ==
     ~ \E i \in Nodes : status[i] = "recovering" /\ decAtCrash[i] > cur[i].dec
 \* A work record survived a crash (P0) and the start deleted it.
 NoWorkRecordSurvives ==
-    ~ \E i \in Nodes : status[i] = "down" /\ cur[i].wrec # <<>>
+    ~ \E i \in Nodes : status[i] = "down" /\ cur[i].wrec # {}
+\* A live tombstone stands while no node has its task in work: the cost of
+\* the expiry, a retry gets "still in progress" until the tombstone expires.
+InWork(j, idx) == idx > Len(cur[j].log) /\ idx <= Len(cur[j].log) + Len(work[j])
+NoOrphanTombstone ==
+    ~ \E i \in Nodes : status[i] = "running" /\ \E w \in Live(i) : \A j \in Nodes : ~InWork(j, w.idx)
+\* A tombstone of the current start expired by its age.
+NoTombstoneExpires ==
+    ~ \E i \in Nodes : \E w \in cur[i].wrec : w.start = starts[i] /\ ticks[i] >= w.tick + Expiry
 
 =============================================================================
