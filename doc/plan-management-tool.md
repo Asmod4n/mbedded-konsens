@@ -49,8 +49,22 @@ Packages, read in this session:
 | webview, Linux | WebKitGTK 6.0 | 24.04 has 2.52.6 | not checked |
 | webview, all OS | webview/webview | no source package | no package |
 
-webview/webview has no package. It is not a candidate unless the
-owner makes it an exception, as for CRC32C, libhydrogen and LMDB.
+webview/webview has no package.
+
+The webview comes from ascaridol (owner, 2026-10-26 14:20: "the
+webview works everywhere, look at ascaridol"). Read in this session,
+ascaridol at 8dd27ee:
+
+- An mruby gem. It carries webview/webview as the submodule
+  vendor/webview: WebView2 on Windows, WKWebView on macOS, WebKitGTK
+  on Linux.
+- `Ascaridol.bind` and `bind_async` give Ruby functions to the page.
+- The `rb-*` router sends `rb-get`, `rb-post`, `rb-put`, `rb-patch`
+  and `rb-delete` from the page to one Ruby block as (method, path,
+  params). The block returns HTML.
+- `Ascaridol.poll_add` watches a socket in the run loop of the window.
+- It depends on mruby-cbor, mruby-lmdb, mruby-mustache and
+  mruby-socket.
 
 ## 2. Form
 
@@ -73,9 +87,23 @@ The core:
 4. Sends the commands of part 3.
 5. Writes the configs of a new cluster.
 
-The web level is the phone level. The page is the same on the phone
-and in the webview. The webview is a window that shows the page of a
-local web level. So the page is written once.
+So the tool is an mruby binary. The core is C++ and has an mruby
+binding. The front ends are Ruby.
+
+The page is written once, with `rb-*` attributes and mustache
+templates. One set of Ruby route handlers answers (method, path,
+params) and returns HTML:
+
+- On the desktop, ascaridol shows the page in the webview. The router
+  calls the handlers through the bridge. No port is open.
+- On the phone, mruby-webmachine serves the page. The router sends the
+  same requests as HTTP, and a webmachine resource calls the same
+  handlers (question 6.8).
+
+One source gives two builds. The desktop build links ascaridol. The
+build for the VPS has no webview, so it needs no GTK and no WebKit on
+a server with 1 GB RAM. It has the CLI, the TUI and the web level.
+This split is provisional.
 
 The tool runs where the operator is, or on the VPS for the phone. On
 the VPS it runs as a service with the web level on. The phone opens
@@ -109,10 +137,11 @@ The names of the commands are provisional (question 6.6).
 
 1. Core and CLI, with tests against the three-node example. The CLI is
    the level that a test can call.
-2. Web level and page, on the same core.
-3. Webview on the web level.
-4. TUI on the same core.
-5. Web Push.
+2. The mruby binding of the core, and the route handlers.
+3. The webview through ascaridol.
+4. The web level through mruby-webmachine.
+5. TUI on the same core.
+6. Web Push.
 
 Each step is its own branch and is green before the next starts.
 
@@ -130,7 +159,8 @@ Each step is its own branch and is green before the next starts.
      interface".
 
 6.2 The HTTP server of the web level.
-  a) mruby-webmachine. Proposal: it is the HTTP server of the owner.
+  a) mruby-webmachine. Proposal: the tool is an mruby binary, and the
+     route handlers are Ruby.
   b) A small C++ HTTP library from a package.
 
 6.3 The protocol between the tool and a node.
@@ -138,12 +168,9 @@ Each step is its own branch and is green before the next starts.
      the node then needs no HTTP.
   b) HTTP on the node.
 
-6.4 The webview.
-  a) Linux only, with WebKitGTK from the package. Other systems open
-     the default browser on the local page. Proposal.
-  b) webview/webview as a submodule for all systems. This needs an
-     exception from the package rule.
-  c) No webview. Every system opens the default browser.
+6.4 The webview. Answered (owner, 2026-10-26 14:20): ascaridol on
+  every system. webview/webview comes with it as a submodule of
+  ascaridol.
 
 6.5 The TUI library.
   a) FTXUI. Proposal: C++, a package in Ubuntu and Debian.
@@ -158,3 +185,11 @@ Each step is its own branch and is green before the next starts.
   a) Everyone who reaches the port. The VPN is the only guard.
      Proposal for the first tests only.
   b) A shared key from the start (libhydrogen).
+
+6.8 The `rb-*` router on the phone. Today it calls a bound Ruby
+  function and needs the webview.
+  a) The router of ascaridol gets a second transport: `fetch` to the
+     same path when no bridge exists. The page stays one page.
+     Proposal. This is a change in ascaridol.
+  b) The phone page uses htmx, and the webview page uses `rb-*`. The
+     page then exists in two forms.
