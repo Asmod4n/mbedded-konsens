@@ -97,6 +97,11 @@ management commands (owner, 15:43). Before TLS, the VPN is that
 permission (question 6.7). Later it is kept in a named database of its
 own in the LMDB environment, for authentication and authorization only
 (owner, 15:45).
+The model of that database is decided in plan one-environment 3.1
+(c3645c4): Unix users and groups, a TLS client certificate with CN =
+user and O = groups, prefix masks with r, w and x after the ACLs of
+Redis, for data and management commands, replicated in the database
+`auth` (name provisional). konsensctl uses the same certificate.
 
 So the tool is an mruby binary. The core is C++ and has an mruby
 binding. The front ends are Ruby.
