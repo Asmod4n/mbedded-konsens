@@ -45,6 +45,7 @@ Packages, read in this session:
 |---|---|---|---|
 | CLI options | CLI11 | yes (Launchpad) | not checked |
 | TUI | FTXUI | yes (Launchpad) | yes, libftxui-dev |
+| TUI | FINAL CUT | yes (Launchpad, noble and resolute) | yes, libfinal-dev |
 | TUI | notcurses | 24.04 has 3.0.7 | not checked |
 | webview, Linux | WebKitGTK 6.0 | 24.04 has 2.52.6 | not checked |
 | webview, all OS | webview/webview | no source package | no package |
@@ -183,7 +184,13 @@ Each step is its own branch and is green before the next starts.
   every system. webview/webview comes with it as a submodule of
   ascaridol.
 
-6.5 The TUI library. Answered (owner, 2026-10-26 14:40): FTXUI.
+6.5 The TUI library. Answered (owner, 2026-10-26 15:18): FINAL CUT
+  (C++, LGPL-3.0, libfinal-dev in Debian 12 and 13 and in Ubuntu 24.04
+  and 26.04). The owner wants the form of Turbo Vision: a menu bar,
+  Alt keys, a status line of function keys, windows and dialogs. A
+  first screen shows whether FINAL CUT looks good enough. tvision has
+  no clear licence for the code of Borland; FTXUI has no menu bar.
+  An earlier answer (14:40) was FTXUI.
   a) FTXUI. Proposal: C++, a package in Ubuntu and Debian.
   b) notcurses.
   c) ncurses.
