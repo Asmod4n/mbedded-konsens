@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=localhost/cxx-matrix
+image=localhost/cxx-matrix-fuse
 compiler=g++-16
 c_compiler=gcc-16
 build_jobs=2
@@ -9,83 +9,108 @@ bench_user=bench
 bench_uid=1001
 default_samples=31
 default_rounds=7
-binaries=(konsens_bench konsens_bench_aa)
-cases=(
-    "crc32c 64" "crc32c 1024" "crc32c 65536"
-    "encode_accept_decide 0" "decode_accept_decide 0" "encode_decide 0" "decode_decide 0"
-    "handle_accept_decide 0" "handle_decide 0"
-    "commit_lmdb 64" "commit_lmdb 1024" "commit_lmdb 65536"
-    "write_lmdb 64" "write_lmdb 1024" "write_lmdb 65536"
-    "read_lmdb 0"
-    "write_batch_lmdb 64" "write_batch_lmdb 1024" "write_batch_lmdb 65536"
-    "lmdb_put 64" "lmdb_put 1024" "lmdb_put 65536"
-    "lmdb_put_like_storage 64" "lmdb_put_like_storage 1024" "lmdb_put_like_storage 65536"
-    "lmdb_get 64" "lmdb_get 1024" "lmdb_get 65536"
-    "get_entries_lmdb 64" "get_entries_lmdb 1024" "get_entries_lmdb 65536"
-    "write_lmdb_threads 64" "write_lmdb_threads 1024" "write_lmdb_threads 65536"
-    "read_lmdb_threads 0"
-    "write_batch_lmdb_threads 64" "write_batch_lmdb_threads 1024" "write_batch_lmdb_threads 65536"
-)
+main_binary=konsens_bench
+aa_binary=konsens_bench_aa
 
 usage() {
-    echo "Usage: bench/run.sh <work_dir> <ccache_dir> [<samples> [<rounds> [<result_dir> [<prefixes>]]]]" >&2
-    echo "The work directory holds the build, the LMDB stores and the logs." >&2
+    echo "Usage: bench/run.sh <work_dir> <ccache_dir> [<samples> [<rounds> [<result_dir> [<prefixes> [<arm commit>...]]]]]" >&2
+    echo "The work directory holds the builds, the LMDB stores and the logs." >&2
     echo "The result file goes to <result_dir>, by default bench/results." >&2
-    echo "<prefixes>: a comma-separated list. Only a case whose name starts with one of them runs." >&2
+    echo "<prefixes>: a comma-separated list, or 'all'. Only a case whose name starts with one of them runs." >&2
+    echo "<arm commit>: a commit of this repository. Its tree is built as one more arm, konsens_bench_<commit>." >&2
+    echo "When bench/arms/<commit>.patch exists, the arm keeps its own bench with that patch applied;" >&2
+    echo "otherwise the arm takes bench/konsens_bench.cpp of the working tree." >&2
     exit 1
 }
 
 host() {
-    (($# >= 2 && $# <= 6)) || usage
-    local work ccache samples=${3:-$default_samples} rounds=${4:-$default_rounds} prefixes=${6:-} repo results stamp commit dirty
+    (($# >= 2)) || usage
+    local work ccache samples=${3:-$default_samples} rounds=${4:-$default_rounds} prefixes=${6:-all} repo results stamp
+    local commit dirty arm
+    local -a arms=("${@:7}")
     work=$(realpath -m "$1")
     ccache=$(realpath -m "$2")
     repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     results=$(realpath -m "${5:-$repo/bench/results}")
     stamp=$(date -u +%Y-%m-%d-%H%M%SZ)
-    mkdir -p "$work/build" "$work/lmdb" "$ccache" "$results"
+    mkdir -p "$work/build" "$work/lmdb" "$work/arms" "$ccache" "$results"
     find "$work/lmdb" -mindepth 1 -delete
     commit=$(git -C "$repo" rev-parse HEAD)
     git -C "$repo" status --porcelain > "$work/dirty-paths-$stamp.txt"
     if [[ -s $work/dirty-paths-$stamp.txt ]]; then dirty=dirty; else dirty=clean; fi
+    : > "$work/arms-$stamp.txt"
+    for arm in "${arms[@]}"; do
+        prepare_arm "$repo" "$work/arms/$arm" "$arm"
+        echo "$arm $(git -C "$repo" rev-parse "$arm") $(cat "$work/arms/$arm/bench-source.txt")" >> "$work/arms-$stamp.txt"
+    done
     podman --version > "$work/podman-version-$stamp.txt"
     podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
     podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/lmdb:/lmdb" -v "$ccache:/ccache" \
-        -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" "$prefixes"
+        -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
+        "$prefixes" "${arms[@]}"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
     echo "$results/$stamp.txt"
 }
 
-build() {
-    local stamp=$1
-    cmake -S /src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" \
+prepare_arm() {
+    local repo=$1 directory=$2 arm=$3 patch
+    rm -rf "$directory"
+    mkdir -p "$directory/src"
+    git -C "$repo" archive "$arm" | tar -x -C "$directory/src"
+    tar -C "$repo" --exclude=.git -c deps | tar -x -C "$directory/src"
+    patch=$repo/bench/arms/$arm.patch
+    if [[ -f $patch ]]; then
+        (cd "$directory/src" && patch -p1 --quiet < "$patch")
+        echo "its own bench/konsens_bench.cpp with bench/arms/$arm.patch" > "$directory/bench-source.txt"
+    else
+        cp "$repo/bench/konsens_bench.cpp" "$directory/src/bench/konsens_bench.cpp"
+        echo "bench/konsens_bench.cpp of the working tree" > "$directory/bench-source.txt"
+    fi
+}
+
+configure() {
+    local source=$1 build=$2 log=$3
+    cmake -S "$source" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" \
         "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" \
         -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_C_COMPILER=$c_compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
-        > "/work/cmake-$stamp.log" 2>&1 || { tail -n 40 "/work/cmake-$stamp.log" >&2; exit 1; }
-    cmake --build /work/build --target "${binaries[@]}" -j $build_jobs \
+        > "$log" 2>&1 || { tail -n 40 "$log" >&2; exit 1; }
+}
+
+build() {
+    local stamp=$1 arm
+    shift
+    configure /src /work/build "/work/cmake-$stamp.log"
+    cmake --build /work/build --target $main_binary $aa_binary -j $build_jobs \
         > "/work/build-$stamp.log" 2>&1 || { tail -n 40 "/work/build-$stamp.log" >&2; exit 1; }
+    for arm in "$@"; do
+        configure "/work/arms/$arm/src" "/work/arms/$arm/build" "/work/cmake-$arm-$stamp.log"
+        cmake --build "/work/arms/$arm/build" --target $main_binary -j $build_jobs \
+            > "/work/build-$arm-$stamp.log" 2>&1 || { tail -n 40 "/work/build-$arm-$stamp.log" >&2; exit 1; }
+        cp "/work/arms/$arm/build/$main_binary" "/work/build/${main_binary}_$arm"
+    done
 }
 
 context() {
     local commit=$1 dirty=$2 stamp=$3 b
     echo "# commit $commit $dirty"
     sed 's/^/# dirty path /' "/work/dirty-paths-$stamp.txt"
+    sed 's/^/# arm /' "/work/arms-$stamp.txt"
     echo "# podman $(cat "/work/podman-version-$stamp.txt")"
     echo "# container podman, image $(cat "/work/image-$stamp.txt")"
     echo "# os $(. /etc/os-release && echo "$PRETTY_NAME")"
     echo "# compiler $($compiler --version | head -n 1)"
     echo "# build type Release, CMAKE_CXX_FLAGS_RELEASE $(grep -E '^CMAKE_CXX_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# build type Release, CMAKE_C_FLAGS_RELEASE $(grep -E '^CMAKE_C_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
-    echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/bench/konsens_bench.cpp')"
-    echo "# compile command $(ninja -C /work/build -t commands konsens_bench | grep -F -- '-c /src/deps/lmdb/libraries/liblmdb/mdb.c')"
+    echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/bench/konsens_bench.cpp')"
+    echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/deps/lmdb/libraries/liblmdb/mdb.c')"
     echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
     for b in "${binaries[@]}"; do
         echo "# binary $b sha256 $(sha256sum "/work/build/$b" | cut -c1-16) needs $(objdump -T "/work/build/$b" | grep -oE '(GLIBCXX|CXXABI|GLIBC)_[0-9.]+' | sort -uV | tr '\n' ' ')"
+        echo "# binary $b comment $(readelf -p .comment "/work/build/$b" | grep -oE 'GCC: .*' | sort -u | tr '\n' ' ')"
     done
-    echo "# binary comment $(readelf -p .comment /work/build/konsens_bench | grep -oE 'GCC: .*' | sort -u | tr '\n' ' ')"
-    echo "# libraries $(ldd /work/build/konsens_bench | awk '{printf "%s %s; ", $1, $3}')"
+    echo "# libraries $(ldd /work/build/$main_binary | awk '{printf "%s %s; ", $1, $3}')"
     echo "# packages $(dpkg-query -W -f='${Package} ${Version}; ' libstdc++6 libc6 || true)"
     echo "# lmdb $(grep -E '^#define MDB_VERSION_(MAJOR|MINOR|PATCH)' /src/deps/lmdb/libraries/liblmdb/lmdb.h | awk '{printf "%s ", $3}')from the submodule deps/lmdb"
     echo "# kernel $(uname -r) $(uname -v)"
@@ -97,16 +122,16 @@ context() {
     echo "# virtual machine hypervisor flag $(grep -m 1 -cw hypervisor /proc/cpuinfo || true)"
     echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') nproc $(nproc)"
     echo "# cpu flags sha256 $(grep -m 1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)"
-    echo "# user $bench_user uid $bench_uid through setpriv, nice $(nice), threads 1 in a serial case, 4 in a case whose name ends in _threads (the main thread and three node threads, at most 3 runnable)"
+    echo "# user $bench_user uid $bench_uid through setpriv, nice $(nice), threads 1 in a serial case; 4 in a case whose name ends in _threads (the main thread and three node threads); 5 in a pipeline or execute_verify case (the main thread, three node threads and a thread that ticks)"
     echo "# lmdb mount $(awk '$2 == "/lmdb"' /proc/mounts)"
     echo "# loadavg at start $(cat /proc/loadavg)"
 }
 
 run_one() {
-    local round=$1 name=$2 payload=$3 binary=$4 samples=$5
-    local directory=/lmdb/$round-$name-$payload-$binary other running steal_before steal_after line status=0
-    local -a arguments=("$name" "$samples" "$payload")
-    if [[ $name == *lmdb* ]]; then
+    local round=$1 name=$2 argument=$3 binary=$4 samples=$5
+    local directory=/lmdb/$round-$name-$argument-$binary other running steal_before steal_after line status=0
+    local -a arguments=("$name" "$samples" "$argument")
+    if [[ $name == *lmdb* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* ]]; then
         mkdir "$directory"
         chown "$bench_uid:$bench_uid" "$directory"
         arguments+=("$directory")
@@ -121,239 +146,12 @@ run_one() {
     rm -rf "$directory"
 }
 
-rounds() {
-    local samples=$1 rounds=$2 round item name payload binary
-    local -a order binary_order
-    for ((round = 1; round <= rounds; round++)); do
-        if ((round % 2 == 0)); then
-            mapfile -t order < <(printf '%s\n' "${cases[@]}" | tac)
-            mapfile -t binary_order < <(printf '%s\n' "${binaries[@]}" | tac)
-        else
-            order=("${cases[@]}")
-            binary_order=("${binaries[@]}")
-        fi
-        for item in "${order[@]}"; do
-            read -r name payload <<< "$item"
-            for binary in "${binary_order[@]}"; do
-                run_one "$round" "$name" "$payload" "$binary" "$samples"
-            done
-        done
-    done
-}
-
-summary() {
-    awk -v main="${binaries[0]}" -v aa="${binaries[1]}" '
-    BEGIN { payload_count = split("64 1024 65536", payloads, " ") }
-    function shown(table, key) { return (key in table && table[key] != "") ? table[key] : "-" }
-    function cell(key) { return (key in median) ? sprintf("%.2f", median[key]) : "-" }
-    function middle(key, binary,    n, i, j, t, a) {
-        n = count[key, binary]
-        for (i = 1; i <= n; i++) a[i] = value[key, binary, i] + 0
-        for (i = 2; i <= n; i++) { t = a[i]; for (j = i - 1; j >= 1 && a[j] > t; j--) a[j + 1] = a[j]; a[j + 1] = t }
-        low = a[1]; high = a[n]
-        if (n % 2 == 1) return a[(n + 1) / 2]
-        return (a[n / 2] + a[n / 2 + 1]) / 2
-    }
-    {
-        split("", field)
-        for (i = 1; i <= NF; i++) { p = index($i, "="); if (p > 0) field[substr($i, 1, p - 1)] = substr($i, p + 1) }
-        if (field["exit"] != 0 || !("ns_per_op_median" in field)) { failed++; next }
-        key = field["case"] " " field["payload_bytes"]
-        if (!(key in seen)) { seen[key] = 1; keys[++key_count] = key }
-        n = ++count[key, field["binary"]]
-        value[key, field["binary"], n] = field["ns_per_op_median"]
-        if (field["binary"] == main) {
-            messages_per_op[key] = field["messages_per_op"]
-            writes_per_op[key] = field["write_atomically_per_op"]
-            writes_per_node[key] = field["write_atomically_per_node_per_op"]
-            leader_ns[key] = field["leader_ns_per_op"]; follower_ns[key] = field["follower_ns_per_op"]
-        }
-    }
-    END {
-        print "## A/A difference of each case"
-        print ""
-        print "The median of the round medians of each binary, in ns per operation."
-        print ""
-        print "| case | payload B | " main " | " aa " | A/A |"
-        print "|---|---|---|---|---|"
-        largest = 0
-        for (k = 1; k <= key_count; k++) {
-            split(keys[k], part, " ")
-            m = middle(keys[k], main); a = middle(keys[k], aa)
-            d = m > 0 ? (a - m) / m * 100 : 0
-            if ((d < 0 ? -d : d) > largest) largest = d < 0 ? -d : d
-            printf "| %s | %s | %.2f | %.2f | %+.1f %% |\n", part[1], part[2], m, a, d
-        }
-        print ""
-        printf "Largest A/A difference: %.1f %%. This is the noise floor of the run.\n", largest
-        print ""
-        print "## Result, " main
-        print ""
-        print "ns per operation: the median of the round medians. Spread: the lowest and the highest round median."
-        print ""
-        print "Leader and follower: the commit time of the leader and of the slower follower, in ns per operation,"
-        print "from the last raw line of the case."
-        print ""
-        print "| case | payload B | ns per op | spread | messages per op | write_atomically per op | per node | leader ns | follower ns |"
-        print "|---|---|---|---|---|---|---|---|---|"
-        for (k = 1; k <= key_count; k++) {
-            split(keys[k], part, " ")
-            m = middle(keys[k], main)
-            median[keys[k]] = m
-            printf "| %s | %s | %.2f | %.2f-%.2f | %s | %s | %s | %s | %s |\n", part[1], part[2], m, low, high, \
-                shown(messages_per_op, keys[k]), shown(writes_per_op, keys[k]), shown(writes_per_node, keys[k]), \
-                shown(leader_ns, keys[k]), shown(follower_ns, keys[k])
-        }
-        print ""
-        print "## Each library case beside its LMDB baseline"
-        print ""
-        print "ns per operation, " main ". Commits: the LMDB commits in series of one write_lmdb operation."
-        print "lmdb_put x commits: lmdb_put times that number."
-        print ""
-        print "| payload B | lmdb_put | lmdb_put_like_storage | commit_lmdb | write_lmdb | commits | lmdb_put x commits | write_lmdb_threads | write_batch_lmdb | write_batch_lmdb_threads |"
-        print "|---|---|---|---|---|---|---|---|---|---|"
-        for (p = 1; p <= payload_count; p++) {
-            b = payloads[p]
-            n = shown(writes_per_op, "write_lmdb " b)
-            series = ("lmdb_put " b) in median && n != "-" ? sprintf("%.2f", median["lmdb_put " b] * n) : "-"
-            printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", b, cell("lmdb_put " b), \
-                cell("lmdb_put_like_storage " b), cell("commit_lmdb " b), cell("write_lmdb " b), n, series, \
-                cell("write_lmdb_threads " b), cell("write_batch_lmdb " b), cell("write_batch_lmdb_threads " b)
-        }
-        print ""
-        print "| payload B | lmdb_get | get_entries_lmdb |"
-        print "|---|---|---|"
-        for (p = 1; p <= payload_count; p++) {
-            b = payloads[p]
-            printf "| %s | %s | %s |\n", b, cell("lmdb_get " b), cell("get_entries_lmdb " b)
-        }
-        print ""
-        printf "Processes that failed: %d.\n", failed
-    }'
-}
-
-header() {
-    local samples=$1 rounds=$2
-    cat <<EOF
-# Bench: each part of a write
-
-What: konsens_bench, built from bench/konsens_bench.cpp at the commit in
-the context below. Each process runs one case with one payload. It takes
-one warm-up sample and then $samples samples. A sample is a fixed number of
-operations (ops_per_sample in each raw line). The time of one operation is
-the time of the sample divided by that number. Each process prints the
-median, the minimum and the maximum of its samples.
-
-Cases:
-- crc32c: crc32c::Crc32c of Google crc32c over one payload, taken in turn from 16 buffers.
-  The operations are independent, so the number is throughput.
-- encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
-  entries of 1024 B. encode_decide, decode_decide: one Decide. A decode
-  case copies the bytes before the timer starts.
-- handle_accept_decide, handle_decide: node::handle_incoming and
-  node::commit for each batch of at most konsens::max_batch_size messages
-  of the sample, at a follower in
-  (Follower, Accept), over a store that counts the payload bytes and keeps
-  no entry. The messages are encoded and decoded before the timer starts.
-- commit_lmdb: write_atomically of one append_entries with one entry,
-  on a fresh persistent_storage for each sample.
-- write_lmdb: three nodes in one process. Each message goes
-  through encode and decode, and the network is a queue. One
-  client_request at a follower, timed from the call to its reply.
-- read_lmdb: one client_query at a follower, timed from the call to its
-  reply. It answers from the state machine in memory after one
-  read-index round, so it does not stand beside lmdb_get.
-- write_batch_lmdb: 64 client_request calls at a
-  follower before the first round, timed until the last reply, divided
-  by 64.
-
-- lmdb_put: LMDB alone. One mdb_txn_begin, one mdb_put of the payload
-  under a big-endian 8-byte key that rises by one, with flags 0, and one
-  mdb_txn_commit. The env opens as persistent_storage::open opens it:
-  env flags 0, so each commit syncs, mode 0600, maxdbs 2, one named
-  database, the map size of commit_lmdb. A fresh env for each sample,
-  opened before the timer starts.
-- lmdb_put_like_storage: as lmdb_put, but each transaction calls
-  mdb_stat once and reserves the payload plus the record overhead of
-  the library (the kind and the CRC) with MDB_APPEND | MDB_RESERVE, as
-  write_atomically does. It copies the record into the reserved bytes.
-- lmdb_get: LMDB alone. One read-only mdb_txn_begin, one mdb_get of a
-  key that was written before the timer starts, a comparison of the
-  value with the payload, and one mdb_txn_abort.
-- get_entries_lmdb: persistent_storage::get_entries(0, 1) of an entry
-  that was written before the timer starts, and a comparison of the
-  payload. It stands beside lmdb_get.
-
-write_lmdb runs the three nodes in one process. Its time holds the
-commits of all three nodes one after the other: write_atomically_per_op
-LMDB commits in series, the number as measured. A cluster on three
-machines commits on the followers at the same time.
-
-leader_ns_per_op and follower_ns_per_op are the time spent in
-node::commit at the leader and at the slower of the two followers, for
-each operation. The latency on three machines is about the leader time
-plus the slowest follower time plus the network. This bench does not
-measure that latency. A cluster case fails when the leader changes
-during the samples.
-
-- write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
-  same operations with each node on its
-  own thread. Each node has its own LMDB env in its own directory; the
-  three envs share one disk. The election, the registration of the
-  client and the write before the reads run on the serial harness
-  before the threads start. A node thread takes the messages and the
-  client calls that wait in its inbox, at most konsens::max_batch_size,
-  calls handle_incoming once and commit once, and puts the encoded
-  messages into the inbox of each target. The main thread puts the
-  calls into the inbox of the follower and waits for the replies. After
-  the last sample it waits until no message is in flight, stops and
-  joins the threads, and checks that each node has the same log length
-  and the same decided index and that the leader did not change.
-
-The serial harness calls tick at each node in each round of the timed
-part, so its rounds also carry heartbeats and resends. The threaded
-harness calls no tick. The parts do not add up to a write.
-messages_per_op gives the messages of each operation,
-write_atomically_per_op the calls of write_atomically at all nodes and
-write_atomically_per_node_per_op the calls at node 1, 2 and 3. These
-numbers and the commit times count all samples, the warm-up sample
-too. log_len_first and log_len_last give the log length of the
-follower before the first sample and after the last sample.
-
-write_lmdb_threads stands beside lmdb_put times the number of LMDB
-commits in series of write_lmdb.
-
-Checks: crc32c compares the CRC of "123456789" with the check value
-e3069283. The encode and decode cases compare each decoded message with
-the encoded one. handle_accept_decide compares the bytes counted with the
-bytes sent; handle_decide compares the decided index with the last
-Decide. The commit cases compare the log length with the number of
-commits after each sample. The cluster cases compare each counter reply
-with the number of writes. lmdb_put and lmdb_put_like_storage compare
-the number of entries of mdb_stat with the number of puts after each
-sample. lmdb_get and get_entries_lmdb compare each value with the
-payload. A process whose check fails prints the
-failure and exits with 1; its raw line shows the exit status.
-
-Run: $rounds rounds. Each round runs every case with every payload in
-konsens_bench and in konsens_bench_aa. The order of the cases and the
-order of the two binaries turn around each second round.
-konsens_bench_aa is the same source built a second time. The difference
-between the two binaries is the A/A difference of the case.
-
-User and priority: each process runs as the user bench (uid 1001, not
-root), started by setpriv. Not pinned. Each raw line gives nice,
-other_processes_of_user (the processes of the user bench before the
-start), procs_running of /proc/stat before the start, and the steal ticks
-of /proc/stat during the process.
-
-EOF
-}
-
 select_cases() {
     local prefixes=$1 item prefix
-    local -a chosen=() wanted
-    [[ -n $prefixes ]] || return 0
+    local -a wanted
+    mapfile -t cases < <(/work/build/$main_binary --list)
+    [[ $prefixes != all ]] || return 0
+    local -a chosen=()
     IFS=, read -r -a wanted <<< "$prefixes"
     for item in "${cases[@]}"; do
         for prefix in "${wanted[@]}"; do
@@ -367,14 +165,229 @@ select_cases() {
     cases=("${chosen[@]}")
 }
 
+binary_lists() {
+    local item binary
+    for binary in "${binaries[@]}"; do
+        /work/build/$binary --list > "/work/list-$binary.txt"
+    done
+}
+
+rounds() {
+    local samples=$1 rounds=$2 round item name argument binary
+    local -a order binary_order
+    for ((round = 1; round <= rounds; round++)); do
+        if ((round % 2 == 0)); then
+            mapfile -t order < <(printf '%s\n' "${cases[@]}" | tac)
+            mapfile -t binary_order < <(printf '%s\n' "${binaries[@]}" | tac)
+        else
+            order=("${cases[@]}")
+            binary_order=("${binaries[@]}")
+        fi
+        for item in "${order[@]}"; do
+            read -r name argument <<< "$item"
+            for binary in "${binary_order[@]}"; do
+                if grep -qxF "$item" "/work/list-$binary.txt"; then
+                    run_one "$round" "$name" "$argument" "$binary" "$samples"
+                fi
+            done
+        done
+    done
+}
+
+summary() {
+    awk -v main="$main_binary" -v aa="$aa_binary" -v others="$*" '
+    BEGIN {
+        other_count = split(others, other, " ")
+        detail_count = split("latency_p50_ns latency_p99_ns processor_ns_per_op runs_per_request runs_again_per_1000 commits_per_op write_atomically_per_op messages_per_op", detail, " ")
+    }
+    function middle(table, key, binary,    n, i, j, t, a) {
+        n = table[key, binary, 0] + 0
+        if (n == 0) { low = 0; high = 0; return "" }
+        for (i = 1; i <= n; i++) a[i] = table[key, binary, i] + 0
+        for (i = 2; i <= n; i++) { t = a[i]; for (j = i - 1; j >= 1 && a[j] > t; j--) a[j + 1] = a[j]; a[j + 1] = t }
+        low = a[1]; high = a[n]
+        if (n % 2 == 1) return a[(n + 1) / 2]
+        return (a[n / 2] + a[n / 2 + 1]) / 2
+    }
+    function add(table, key, binary, v) { table[key, binary, ++table[key, binary, 0]] = v }
+    function percent(x, y) { return y > 0 ? sprintf("%+.1f %%", (x - y) / y * 100) : "-" }
+    {
+        split("", field)
+        for (i = 1; i <= NF; i++) { p = index($i, "="); if (p > 0) field[substr($i, 1, p - 1)] = substr($i, p + 1) }
+        if (field["exit"] != 0 || !("ns_per_op_median" in field)) { failed++; failures[failed] = $0; next }
+        argument = ("payload_bytes" in field) ? field["payload_bytes"] : field["parameter"]
+        key = field["case"] " " argument
+        if (!(key in seen)) { seen[key] = 1; keys[++key_count] = key }
+        add(ns, key, field["binary"], field["ns_per_op_median"])
+        for (d = 1; d <= detail_count; d++) if (detail[d] in field) { add(dv, key SUBSEP detail[d], field["binary"], field[detail[d]]); has[key, detail[d]] = 1 }
+    }
+    END {
+        print "## A/A difference of each case"
+        print ""
+        print "ns per operation: the median of the process medians of each binary."
+        print ""
+        print "| case | argument | " main " | " aa " | A/A |"
+        print "|---|---|---|---|---|"
+        largest = 0
+        for (k = 1; k <= key_count; k++) {
+            split(keys[k], part, " ")
+            m = middle(ns, keys[k], main); a = middle(ns, keys[k], aa)
+            if (m == "" || a == "") continue
+            d = m > 0 ? (a - m) / m * 100 : 0
+            if ((d < 0 ? -d : d) > largest) largest = d < 0 ? -d : d
+            printf "| %s | %s | %.2f | %.2f | %+.1f %% |\n", part[1], part[2], m, a, d
+        }
+        print ""
+        printf "Largest A/A difference: %.1f %%. This is the noise floor of the run.\n", largest
+        print ""
+        print "## Result of each binary"
+        print ""
+        print "ns per operation: the median of the process medians. Spread: the lowest and the highest process median."
+        print "Each other arm: the branch binary " main " against that arm, (branch - arm) / arm."
+        print ""
+        header = "| case | argument | " main " | spread"
+        line = "|---|---|---|---"
+        for (o = 1; o <= other_count; o++) { header = header " | " main "_" other[o] " | spread | branch vs arm"; line = line "|---|---|---" }
+        print header " |"; print line "|"
+        for (k = 1; k <= key_count; k++) {
+            split(keys[k], part, " ")
+            m = middle(ns, keys[k], main); ml = low; mh = high
+            row = sprintf("| %s | %s | %s | %s", part[1], part[2], m == "" ? "-" : sprintf("%.2f", m), m == "" ? "-" : sprintf("%.2f-%.2f", ml, mh))
+            for (o = 1; o <= other_count; o++) {
+                b = main "_" other[o]
+                x = middle(ns, keys[k], b)
+                row = row sprintf(" | %s | %s | %s", x == "" ? "-" : sprintf("%.2f", x), x == "" ? "-" : sprintf("%.2f-%.2f", low, high), (x == "" || m == "") ? "-" : percent(m, x))
+            }
+            print row " |"
+        }
+        print ""
+        print "## Details of each binary"
+        print ""
+        print "The median over the processes of each field of the raw lines."
+        print ""
+        print "| case | argument | binary | field | median | spread |"
+        print "|---|---|---|---|---|---|"
+        nb = 2 + other_count; bl[1] = main; bl[2] = aa
+        for (o = 1; o <= other_count; o++) bl[2 + o] = main "_" other[o]
+        for (k = 1; k <= key_count; k++) {
+            split(keys[k], part, " ")
+            for (d = 1; d <= detail_count; d++) {
+                if (!((keys[k], detail[d]) in has)) continue
+                for (b = 1; b <= nb; b++) {
+                    v = middle(dv, keys[k] SUBSEP detail[d], bl[b])
+                    if (v == "") continue
+                    printf "| %s | %s | %s | %s | %.3f | %.3f-%.3f |\n", part[1], part[2], bl[b], detail[d], v, low, high
+                }
+            }
+        }
+        print ""
+        printf "Processes that failed: %d.\n", failed
+        for (f = 1; f <= failed; f++) print "failed: " failures[f]
+    }'
+}
+
+header() {
+    local samples=$1 rounds=$2
+    cat <<EOF
+# Bench: konsens_bench
+
+What: konsens_bench, built from bench/konsens_bench.cpp at the commit in
+the context below, and one binary for each arm commit. Each process runs
+one case with one argument (a payload in bytes or a parameter). It takes
+one warm-up sample and then $samples samples. A sample is a fixed number of
+operations (ops_per_sample in each raw line). The time of one operation is
+the time of the sample divided by that number. Each process prints the
+median, the minimum and the maximum of its samples.
+
+Cases of 06a52bf, with the same names, inputs and operations:
+- crc32c: crc32c::Crc32c over one payload, taken in turn from 16 buffers.
+- encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
+  entries of 1024 B. encode_decide, decode_decide: one Decide.
+- commit_lmdb: one write transaction of the log with one append of one
+  entry and its commit, on a fresh store for each sample (06a52bf: one
+  write_atomically of one append_entries). This is the commit of a step.
+- write_lmdb: three nodes in one process, messages through encode and
+  decode, the network a queue. One client_request at a follower, timed
+  from the call to its reply.
+- read_lmdb: one client_query at a follower after one write, timed from
+  the call to its reply. This is a read after a step.
+- write_batch_lmdb: 64 client_request calls at a follower before the
+  first round, timed until the last reply, divided by 64.
+- write_batch_size_lmdb (new; the arm 06a52bf has it through
+  bench/arms/06a52bf.patch): as write_batch_lmdb with a payload of 1024 B,
+  at the batch size of the argument (1, 16 or 256).
+- lmdb_put, lmdb_put_like_storage, lmdb_get: LMDB alone, env flags 0, as
+  at 06a52bf. get_entries_lmdb: get_entries(0, 1) of one entry in a read
+  transaction.
+- write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
+  same operations with each node on its own thread, no tick.
+Removed at the branch: handle_accept_decide and handle_decide. They ran
+on a store that keeps no entry, and each step of the branch reads its
+entries back.
+
+New cases:
+- pipeline_<work>_<delay>_<rate>: one leader and two followers, each node
+  on its own thread, each message delayed by the delay (0 or 20 ms). A
+  thread puts a tick call into each inbox every tick_ms (1 ms at 0 ms
+  delay, 20 ms at 20 ms delay). Requests arrive at the leader in an open
+  loop at the rate (10000/s, the rate of
+  bench/results/2026-10-24-231534Z, or 20000/s), with an empty payload.
+  The argument is max_in_flight. Work put: one get and one put of a
+  counter. Work loop: the same and 63 more puts. ns per op: from the
+  planned arrival of the first request of a sample to the last reply of
+  that sample, divided by the requests of the sample. Latency: from the
+  planned arrival to the release of the reply, of each request after the
+  warm-up. processor_ns_per_op: getrusage of the process (all threads)
+  over the requests after the warm-up. runs_per_request: the calls of
+  apply at all nodes over all requests, warm-up included;
+  runs_again_per_1000: the calls above one per node and request, per
+  1000 requests.
+- execute_verify_int, execute_verify_float: the pipeline harness at 0 ms
+  delay and 10000 requests/s, argument max_in_flight. int: the counter.
+  float: each node returns (n + 1/3) * (1 + e) as a CBOR double, with e
+  0, 1e-14 and -1e-14 at nodes 1, 2 and 3, and float_digits 12 where the
+  commit has Execute-Verify.
+- read_back: a copy of the reads of node::written_values_read_back, done
+  in one open write transaction of a state_storage after one put of a
+  value of the payload size. Before the samples, the case compares the
+  copy with the state of each node after a step of the cluster.
+- scan_the_whole_log: sequence_paxos::scan_the_whole_log over a log of
+  the argument in entries of 64 B.
+
+Checks: as at 06a52bf for its cases. The cluster cases compare each
+reply with its request number. A process whose check fails exits with 1;
+its raw line shows the exit status.
+
+Run: $rounds rounds. Each round runs every case in every binary that
+lists it (konsens_bench --list). The order of the cases and of the
+binaries turns around each second round. konsens_bench_aa is the source
+of the branch built a second time; the difference between
+konsens_bench and konsens_bench_aa is the A/A difference.
+
+User and priority: each process runs as the user bench (uid 1001, not
+root), started by setpriv. Not pinned. Each raw line gives nice,
+other_processes_of_user (the processes of the user bench before the
+start), procs_running of /proc/stat before the start, and the steal ticks
+of /proc/stat during the process.
+
+EOF
+}
+
 inside() {
-    local samples=$1 rounds=$2 commit=$3 dirty=$4 stamp=$5 prefixes=${6:-}
+    local samples=$1 rounds=$2 commit=$3 dirty=$4 stamp=$5 prefixes=${6:-all} arm
+    shift 6 || true
+    local -a arms=("$@")
+    binaries=($main_binary $aa_binary)
+    for arm in "${arms[@]}"; do
+        binaries+=("${main_binary}_$arm")
+    done
+    build "$stamp" "${arms[@]}"
     select_cases "$prefixes"
-    build "$stamp"
+    binary_lists
     getent passwd "$bench_user" > /dev/null || useradd -u "$bench_uid" -M "$bench_user"
     chown "$bench_uid:$bench_uid" /lmdb
     context "$commit" "$dirty" "$stamp" > "/work/context-$stamp.txt"
-    echo "# cases chosen by the prefixes '${prefixes:-all}': ${#cases[@]}" >> "/work/context-$stamp.txt"
+    echo "# cases chosen by the prefixes '$prefixes': ${#cases[@]}" >> "/work/context-$stamp.txt"
     rounds "$samples" "$rounds" > "/work/raw-$stamp.txt"
     echo "# loadavg at end $(cat /proc/loadavg)" >> "/work/context-$stamp.txt"
     {
@@ -383,7 +396,7 @@ inside() {
         echo ""
         cat "/work/context-$stamp.txt"
         echo ""
-        summary < "/work/raw-$stamp.txt"
+        summary "${arms[@]}" < "/work/raw-$stamp.txt"
         echo ""
         echo "## Raw lines"
         echo ""

@@ -1,0 +1,129 @@
+--- a/bench/konsens_bench.cpp
++++ b/bench/konsens_bench.cpp
+@@ -45,6 +45,7 @@
+ constexpr std::size_t entries_per_accept_decide = 64;
+ constexpr std::size_t accept_decide_entry_bytes = 1024;
+ constexpr std::size_t batch_size = 64;
++constexpr std::size_t batch_payload_bytes = 1024;
+ constexpr std::size_t crc_buffer_count = 16;
+ constexpr std::string_view crc32c_check_input = "123456789";
+ constexpr std::uint32_t crc32c_check_value = 0xe3069283;
+@@ -1593,6 +1594,36 @@
+     return ns;
+ };
+ 
++timed_samples time_batches_of(const std::size_t size, const run_settings& s, auto& c, const std::size_t at,
++                              const std::uint64_t session)
++{
++    std::uint64_t request_number = 0;
++    std::vector<double> ns;
++    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
++        std::vector<std::vector<std::byte>> payloads(s.ops, std::vector<std::byte>(s.payload_bytes, payload_byte));
++        const auto start = std::chrono::steady_clock::now();
++        for (std::size_t b = 0; b < payloads.size(); b += size) {
++            const auto first_call = c.next_call;
++            const auto first_request = request_number + 1;
++            const auto replies = c.send_requests(at, session, first_request, std::span(payloads).subspan(b, size));
++            if (!replies) [[unlikely]] {
++                return std::unexpected(failure{"write one batch", replies.error()});
++            }
++            request_number += size;
++            if (!std::ranges::all_of(*replies, [first_call, first_request](const auto& reply) {
++                    return counter_value_of(reply) == first_request + (reply.client_id - first_call);
++                })) [[unlikely]] {
++                return std::unexpected(failure{"compare each counter reply with its request number", check_failed()});
++            }
++        }
++        const auto end = std::chrono::steady_clock::now();
++        if (sample >= warm_up_samples) {
++            ns.push_back(ns_per_op_of(start, end, s.ops));
++        }
++    }
++    return ns;
++}
++
+ constexpr auto time_write_batches = [](const run_settings& s, auto& c, const std::size_t at,
+                                        const std::uint64_t session) -> timed_samples {
+     std::uint64_t request_number = 0;
+@@ -1675,6 +1706,22 @@
+     return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_write_batches);
+ }
+ 
++case_outcome measure_write_batch_size_lmdb(const run_settings& given)
++{
++    const auto size = given.payload_bytes;
++    run_settings s = given;
++    s.payload_bytes = batch_payload_bytes;
++    return measure_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0,
++                                     [size](const run_settings& t, auto& c, const std::size_t at,
++                                            const std::uint64_t session) -> timed_samples {
++                                         return time_batches_of(size, t, c, at, session);
++                                     });
++}
++
++constexpr std::array<std::array<std::uint64_t, 2>, 3> write_batch_size_ops{{{1, 4}, {16, 32}, {256, 256}}};
++constexpr std::string_view write_batch_size_name = "write_batch_size_lmdb";
++constexpr std::string_view list_flag = "--list";
++
+ case_outcome measure_write_lmdb_threads(const run_settings& s)
+ {
+     return measure_threaded_cluster<lmdb_spy>(s, lmdb_nodes(s, 1), 0, time_writes);
+@@ -1773,8 +1820,58 @@
+     return EXIT_FAILURE;
+ }
+ 
++int list_cases()
++{
++    for (const auto& c : cases) {
++        if (c.ops_without_payload != 0) {
++            std::cout << c.name << " 0\n";
++            continue;
++        }
++        for (const auto p : payload_sizes) {
++            std::cout << c.name << ' ' << p << '\n';
++        }
++    }
++    for (const auto& [size, ops] : write_batch_size_ops) {
++        std::cout << write_batch_size_name << ' ' << size << '\n';
++    }
++    return EXIT_SUCCESS;
++}
++
++int run_write_batch_size(const std::vector<std::string_view>& args)
++{
++    const auto samples = number_of(args.at(samples_argument));
++    const auto size = number_of(args.at(payload_argument));
++    const auto it = std::ranges::find_if(write_batch_size_ops, [&size](const auto& p) { return size && p[0] == *size; });
++    if (args.size() != directory_argument + 1 || !samples || *samples == 0 || it == write_batch_size_ops.end())
++        [[unlikely]] {
++        std::cerr << usage;
++        return EXIT_FAILURE;
++    }
++    const auto ops = (*it)[1];
++    const run_settings settings{*samples, ops, static_cast<std::size_t>(*size),
++                                std::filesystem::path(args.at(directory_argument))};
++    auto outcome = measure_write_batch_size_lmdb(settings);
++    if (!outcome) [[unlikely]] {
++        return fail(write_batch_size_name, outcome.error());
++    }
++    auto& ns = outcome->ns_per_op;
++    std::ranges::sort(ns);
++    std::cout << std::format("case={} parameter={} ops_per_sample={} samples={} ns_per_op_median={:.2f} "
++                             "min={:.2f} max={:.2f}{}{}",
++                             write_batch_size_name, *size, ops, *samples, ns.at(ns.size() / 2), ns.front(), ns.back(),
++                             outcome->details.empty() ? "" : " ", outcome->details)
++              << '\n';
++    return EXIT_SUCCESS;
++}
++
+ int run(const std::vector<std::string_view>& args)
+ {
++    if (args.size() == 2 && args.at(1) == list_flag) {
++        return list_cases();
++    }
++    if (args.size() > payload_argument && args.at(case_argument) == write_batch_size_name) {
++        return run_write_batch_size(args);
++    }
+     if (args.size() != directory_argument && args.size() != directory_argument + 1) [[unlikely]] {
+         std::cerr << usage;
+         return EXIT_FAILURE;
