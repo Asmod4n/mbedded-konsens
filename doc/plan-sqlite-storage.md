@@ -84,7 +84,7 @@ plan-device-faults.md; the speed of anything in this plan.
 | `KONSENS_TEST_TMPDIR` | `CMakeLists.txt:157` | tests on tmpfs |
 
 The interface does not name LMDB: the concept `storage`
-(`include/konsens/storage.hpp:236-245`) is the boundary. A second
+(`include/konsens/storage.hpp:237-245`) is the boundary. A second
 implementation fits behind it.
 
 ## 3. Older plans that this plan replaces
