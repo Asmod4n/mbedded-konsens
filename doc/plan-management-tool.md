@@ -248,11 +248,13 @@ The change, on a branch of its own in ascaridol:
 
 Questions:
 
-7.1 How htmx comes into the page.
+7.1 How htmx comes into the page. Answered (owner, 2026-10-26 14:38):
+  a).
   a) The gem carries htmx.js and embeds it. The page needs no network.
      Proposal.
   b) The application author loads htmx. The gem carries only the
      extension.
 
-7.2 The name of the helper. No specification gives it. Proposal:
+7.2 The name of the helper. Answered (owner, 2026-10-26 14:38): as
+  proposed.
   `Ascaridol.htmx(bind_name)`, after the library it returns.
