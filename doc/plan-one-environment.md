@@ -169,6 +169,11 @@ The owner named two: metadata and data (07:16). So there are two:
 - `data`: the keys and values of the state machine, as `state` now. No
   key of the library stands in it, so the keys of the machine need no
   prefix.
+- `auth` (provisional name): authentication and authorization only:
+  who may connect and who may run management commands (owner
+  2026-10-26 15:45). It is the only state that the management needs.
+  Open: whether the log replicates it, and its keys. It is built after
+  the stages of this plan.
 
 The node storage stays an environment of its own: the repair count, the
 open mark, the proof, the hidden identity and the name of the directory
@@ -750,3 +755,5 @@ an accept, and the "synced" message an accepted.
 8. The tombstone stands in `meta` only (15:30, section 5.1 item 7).
 9. A tombstone expires by the nonce of its start or after N ticks; no
    other rule deletes it (15:33, section 5.1 item 6).
+10. A third named database in the same environment holds only
+    authentication and authorization (15:45, section 3.1).
