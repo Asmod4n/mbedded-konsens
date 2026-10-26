@@ -114,6 +114,20 @@ copy with `mdb_env_copyfd2`).
 4. Each statement is prepared at the start with
    `SQLITE_PREPARE_PERSISTENT` and kept. A step binds and runs it, then
    calls `sqlite3_reset`. The statements are a fixed list in one place.
+5. A field whose CBOR value has an exact SQLite form is stored in that
+   form (owner, 17:26): an integer from -2^63 to 2^63-1 as `INTEGER`,
+   a text string as `TEXT`, a byte string as `BLOB`, a float as a
+   float. Each other value stays CBOR with its tag, in a `BLOB`. The
+   type of the column decides how a value is read back, so `true` and
+   `1` stay apart.
+6. Measured with the package 3.53.4 (a small C file outside the tree,
+   `sqlite3_bind_double` and `sqlite3_column_double`): a `REAL` column
+   gives -0.0 back as +0.0. An `ANY` column keeps the sign. NaN becomes
+   `NULL` in both. An integer above 2^63-1 becomes a `REAL` and loses
+   bits. So -0.0 needs a column of type `ANY` or CBOR, and NaN and the
+   large integers need CBOR (floats.md: -0 stays, NaN is f97e00).
+7. The CRC of a record covers its deterministic CBOR encoding (RFC 8949
+   4.2), as now. The library encodes the row to compute it.
 
 ## 5. The transaction of a step
 
