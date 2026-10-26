@@ -49,3 +49,14 @@ One request does not make the search smaller enough: the run without
 the fix does not reach the violation at depth 29 either. Run 4 uses
 the simulation of TLC, with the configuration without the fix as the
 check that the simulation finds the violation.
+
+## Run 4: simulation, `-simulate -depth 60`, 900 s each
+
+| config | exit | result |
+|---|---|---|
+| MC_oe_rollback_l1 | 124 | 60,510,906 states checked, no violation |
+| MC_oe_rollback_takeslog_l1 | 124 | 59,801,815 states checked, no violation |
+| MC_oe_rollback_takeslog_parallel_l1 | 124 | 60,003,826 states checked, no violation |
+
+The simulation does not find the known violation in the configuration
+without the fix. So the simulation says nothing about the fix.
