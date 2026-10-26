@@ -23,13 +23,14 @@ Source: the owner, 2026-10-26.
 - 07:18: the client gets its reply after a majority reported "synced
   done" to the leader. That step needs no further sync, only one more
   round trip.
-- 07:30: the binary syncs through io_uring: `fdatasync` and the send
-  of the messages that wait on it, linked (`IOSQE_IO_LINK`). LMDB
-  commits with no sync of its own; the binary takes the file descriptor
+- 07:30: the binary syncs through io_uring. It links the `fdatasync`
+  to the send of the messages that wait on it (`IOSQE_IO_LINK`). LMDB
+  commits with no sync of its own. The binary takes the file descriptor
   (`mdb_env_get_fd`). A "synced" ack leaves only after the sync of its
-  node. The library does no IO: a step tells its caller "sync, then
+  node. The library does no IO. A step tells its caller "sync, then
   send these messages". The leader may send "done" while its own sync
-  runs (Raft dissertation 10.2.1); this is a proposal, not decided.
+  runs (Raft dissertation 10.2.1). This is a proposal of the owner and
+  is not decided.
 - 07:19: a node may forget work. The client keeps its session and
   request number, waits for its timeout and asks again. The cluster
   answers "already done" with the stored reply, or runs the work again
@@ -44,8 +45,7 @@ Release, A/A 4.4 %): a write of 1 KiB through three nodes
 (`write_lmdb`) takes 4.70 ms. A plain LMDB put with its commit
 (`lmdb_put`, 1 KiB) takes 0.33 ms. The write makes 27 commits of the
 log storage over the three nodes (`commits_per_op`); the commits of the
-state storage come on top and the bench does not count them. A review
-of the code counted about 9 syncs in series for each request. The
+state storage come on top and the bench does not count them. The
 apply commits the state environment as a second sync on each node
 (`include/konsens/node.hpp:1085`).
 
@@ -124,6 +124,10 @@ that commit outside the tree.
   slipstreamIO has no operation for a sync yet. A search of
   /home/claude/Claude-state for "fsync" found no such line. Not checked
   in slipstreamIO.
+- A prepared transaction keeps the writer lock until its commit:
+  `_mdb_txn_commit` returns after the prepare at `mdb.c:4610-4613`, and
+  only `mdb_txn_end` at `:4630` releases the lock (`:3762`). So no other
+  write transaction begins while the sync of a prepared step runs.
 - The client reply at fa14f44 waits for the decide of the `results`
   entry: the second round of plan-execute-verify.md 2.9.1.
 
@@ -156,11 +160,9 @@ The names in quotes are provisional message names.
    no sync of its own (section 4.3). The state takes the entry with the
    next commit of the node (section 4.2).
 
-The sync of the done record is the one sync for each task on a node
-(section 3.5 says what one sync is with LMDB).
-Messages for each task: work, ran, done, synced, and the reply. Syncs in
-series on the path of the client: the sync of the leader, then the sync
-of a follower (question 4 can make them parallel).
+Messages for each task: work, ran, done, synced, and the reply. Section
+3.6 gives the count of `fdatasync` calls for each task and node, and the
+count in series on the path of the client.
 
 ## 3. The one environment
 
@@ -206,9 +208,14 @@ the whole record.
 1. A step is one write transaction of the one environment. It holds the
    done records of the step, the meta record, and the apply of the
    entries that became decided (section 4.2). One commit holds them all.
-2. A step that wrote nothing aborts its transaction and syncs nothing.
-3. A step that wrote a done record or an apply commits in the form of
-   section 3.5.
+2. A step ends in one of three results, which the caller reads:
+   - "nothing": the step wrote nothing. It aborts its transaction and
+     asks for no sync.
+   - "commit": the step wrote a done record, an apply or a promise. It
+     commits in the form of section 3.5 and gives its groups.
+   - "sync only": the step wrote nothing, and a commit before it is not
+     durable yet while messages wait on it (Q1 of section 3.5). The
+     step asks for a bare `fdatasync` and gives the group that waits.
 4. The runs of the work happen in a child transaction of the step
    (section 5.2). The child ends before the parent commits
    (`lmdb.h:1132-1137`).
@@ -241,21 +248,56 @@ the whole record.
    the meta page with no sync. The meta page is durable after the next
    `fdatasync`. Two forms follow:
    - Q1 (proposal): one `fdatasync` for each step. The messages of a
-     step wait on the sync of the next step, which also makes the meta
-     page of the step before durable. Under load a step follows at
-     once; an idle node makes the next sync at once by itself. This is
-     the form of the bench of 2026-10-24 (13 to 32 % less time for each
-     message, bench/results/2026-10-24-145849Z-lmdb-txn-nometasync.txt).
+     step wait on the sync of the next step. That sync also makes the
+     meta page of the step before durable. Under load the next step
+     follows at once. An idle node asks for a bare sync ("sync only",
+     3.4 item 2). The bench of 2026-10-24 ran this form
+     (bench/results/2026-10-24-145849Z-lmdb-txn-nometasync.txt). It
+     measured 13 to 32 % less time for each message.
    - Q2: two `fdatasync` for each step, data then meta page, linked.
      The messages wait for the second one.
    - Not taken: `MDB_NOSYNC` with one sync after the commit. A power loss
      before the end of the sync can leave a meta page whose data pages
      are not on the disk (section 1).
-4. A failed sync throws `sync_error` in the caller's call that reports
+4. The prepared transaction keeps the writer lock of LMDB until the
+   library commits its meta page after the sync (section 1). So the next
+   step of the node begins its write only after the sync. Messages that
+   arrive during the sync wait for that step (section 6).
+5. A failed sync throws `sync_error` in the caller's call that reports
    the result of the sync, and the process ends, as now (owner,
    2026-10-21). Nothing repeats the sync.
-5. Dependency: slipstreamIO needs an operation for `fdatasync` in its
+6. Dependency: slipstreamIO needs an operation for `fdatasync` in its
    engine, with the link to a send. Section 1 says what is not checked.
+
+### 3.6 The count of syncs
+
+One sync is one `fdatasync` of the store. "Idle" is one task with no
+other work; "loaded" is a step that follows the step before at once.
+"In series" counts the syncs on the path from "done" to the client
+reply.
+
+| form | idle, each node | loaded, each step and node | in series |
+|---|---|---|---|
+| Q1 | 2 (done) + 1 (apply) | 1 | 4; 2 with question 4 |
+| Q2 | 2 (done) + 1 (apply) | 2 | 4; 2 with question 4 |
+| now, fa14f44 | not counted | not counted | not counted |
+
+The meta page of the apply need not be durable: a start applies the
+decided entries again. So the apply costs one sync for its data pages
+when it rides on no other commit.
+
+The work record adds, on each node:
+
+| form | idle | loaded |
+|---|---|---|
+| P1 | 0 | 0 |
+| P0 | 1 | 0, it rides in the commit of the step |
+| P2 | 1 | 1 for each step with work |
+
+The goal of the owner (one sync for each task and node) holds only for
+Q1 under load, where one sync serves each step and a step holds several
+tasks. A normal LMDB commit at fa14f44 makes two flushes (section 1).
+Section 15 measures the counts; none of these numbers is measured.
 
 ## 4. The order of log and state
 
@@ -288,8 +330,8 @@ the whole record.
 3. The apply rides in the next commit of the node. Under load that is
    the commit of the next done record, so the apply costs no sync of its
    own. When no done record waits, the node commits the apply alone at
-   the end of the step in which it learned the decide (one sync, off the
-   path of the client reply). A read through the read index waits until
+   the end of the step in which it learned the decide. That costs one
+   sync, off the path of the client reply (section 3.6). A read through the read index waits until
    the applied index reaches the read index, as now.
 4. The order "log first, state second" is gone: there is one commit.
 
@@ -301,8 +343,8 @@ the whole record.
 2. After a power loss, the stored decided index can be below the value
    that the node had. It is never above it. The done records up to the
    true decided index stand synced on a majority, so no decided entry
-   is lost. The node learns the decided index again in the recovery
-   after the start (section 8.1).
+   is lost. The node learns the decided index again from the leader: in
+   the accept sync of the next ballot or in the next "decide".
 
 ## 5. The work before the done
 
@@ -314,11 +356,14 @@ system that does not keep the order of writes (section 1). A corrupt
 file is a damage, and the repair is a full copy from a peer. So the
 plan takes this form provisionally:
 
-- P1 (provisional): the work is not committed. The request and the own
-  result of each task in work stay in memory until the done record. A
-  crash forgets them, as the owner allows (07:19). The node keeps no
-  durable value in memory; the rule "no answer comes from a copy in
-  memory" (owner 2026-10-24 14:44) covers the durable values.
+- P1 (provisional): the work is not committed. The request, the own
+  result and its mutations of each task in work stay in memory until
+  the done record. A crash forgets them, as the owner allows (07:19).
+  P1 conflicts with two owner decisions of 2026-10-24: a value from
+  LMDB is used only inside its transaction and is never copied (19:29);
+  outside a transaction a node knows only its state machine (19:38).
+  The own result is not a value from LMDB, but it is kept across steps.
+  P1 needs the word of the owner (question 5).
 - P0 (the text of the owner): the work is committed with `MDB_NOSYNC`.
   A start deletes each work record in its first write transaction. The
   risk of a corrupt file stays: section 3.5 item 3 shows that each
@@ -357,6 +402,14 @@ the tasks in log order, each on the base of section 5.2. The leader
 counts a "ran" for `q` only on the selected base (plan-execute-verify.md
 2.6.2). Done records are written in log order.
 
+A node that lost its tasks in work (a restart in the same ballot) gets
+them again. The leader sends "work" again for each task in work to a
+node when that node ends its recovery or sends a promise, and on the
+resend timeout of the node, as plan-execute-verify.md 2.5.3 does for
+the answers. The resend timeout exists now (`resend_message_tick_timeout`);
+it is no wait before a step. Without it, a leader with f nodes down
+waits for good on a node that lost its work.
+
 ### 5.4 No bound from the library
 
 `max_in_flight` goes from `node_config`, from the model and from the
@@ -388,10 +441,14 @@ own.
    syncs (done, synced) after the round that runs (work, ran). Before:
    the round of the request and the round of the `results` entry both
    synced on each node.
-4. Accept means verify (2.7) applies to the done record. A node syncs a
-   done record only after its check. So every durable entry was checked
-   by its node, and `verified_idx` (2.7.4, 2.7.5) goes: a promise
-   carries only done records.
+4. Accept means verify (2.7) applies to the done record. A node commits
+   a done record only after its check. The leader checks its own done
+   record before it commits it, as every node does (2.7.4). A node
+   checks each done record that arrives in an accept sync from an
+   earlier ballot before it commits it; a done record that fails the
+   check is refused as in 2.7.6. So every durable entry was checked by
+   its node, and `verified_idx` (2.7.4, 2.7.5) goes: a promise carries
+   only done records.
 5. Try again (2.6.4), the list (2.6.5), the minority (2.8), the rounding
    of floats (2.2.2a) and the read back (2.3.5) stay as they are.
 6. The leader appends at most one verdict entry in each step (2.6.5)
@@ -477,25 +534,30 @@ format, as plan-lmdb-only-source.md 2.9 says. No converter is needed.
 
 A new module `model/tla/OneEnvironment.tla` (provisional name) models
 the form of section 2. `SequencePaxos.tla` models two commits for each
-entry and the verdict entries; it stays as the model of the agreement
+entry and the verdict entries. It stays as the model of the agreement
 rules of Execute-Verify. The new module models what this plan changes:
 when a write is durable.
 
-- Durable, kept up to the last sync of the node: `promise`, `acc`,
-  `log`, `syn` (the log length at the last sync), `durdec`, `state`,
-  `applied`.
-- Volatile: `dec`, `work`, `status`, `lead`, `answers`.
-- Ghost: `chosen` (each decided index with its entry), `replied` (each
-  client reply), `crashes`.
-- A crash drops everything after the last sync: the log falls to `syn`,
-  the decided index to `durdec`, the tasks in work go (owner 07:16, the
-  model rule).
-- The work is not durable (P1; also the worst case of P0, where every
-  work record is lost). A result is a function of the entries before
-  it, so the model has no result values; the agreement rules are those
-  of `SequencePaxos.tla`.
-- A request can be proposed again (a client retry). The state is the
-  fold of the applied entries: each request takes effect once.
+- `cur[i]`: the values of the last commit of node `i`: promise,
+  accepted round, log, decided index, state, applied index, work
+  records. `dur[i]`: the same values at the last sync.
+- A commit (`Commit`) changes `cur`. A sync (`SyncDone`) copies `cur`
+  to `dur` and sends the messages that wait in `queue[i]`: the groups
+  "sync, then send" of section 3.5. Commit and sync are two actions, so
+  any number of commits can stand between two syncs. This covers Q1 and
+  Q2.
+- A crash puts `cur` back to `dur` and empties `queue`: everything after
+  the last sync is lost (the rule of the owner for this model).
+- "synced", "promise" and "prepare" wait on the sync. "done" waits on
+  the sync of the leader; with `DoneBeforeOwnSync` it leaves at once
+  (question 4). "work", "ran", "decide" and "acceptsync" leave at once.
+- The leader counts itself for a decide only from `dur`.
+- The decided index rides in a commit with no sync of its own.
+- `WorkRecords` (P0): the work is a record of a commit with no sync. The
+  start deletes the work records. Without it (P1) the work is in memory.
+- A result is a function of the entries before it, so the model has no
+  result values. The agreement rules are those of `SequencePaxos.tla`.
+- A request can be proposed again (a client retry).
 
 ### 13.2 Properties
 
@@ -503,35 +565,50 @@ when a write is durable.
   reply names that request (no confirmed entry is lost).
 - `DecidedAgree` (S2), `DecidedIsChosen`.
 - `StateIsFold`: the state of each node is the fold of the chosen log up
-  to its applied index, each request once (owner 07:19).
-- `AppliedIsDecided`, `TypeOK` (applied index at most the durable
-  decided index).
+  to its applied index (owner 07:19).
+- `AppliedIsDecided`: applied index at most decided index, and every
+  applied entry chosen.
+- `NoOldWorkRecords` (P0): a recovering node holds no work record.
 - Covers, each must be violated: `NoForgottenDone` (a node holds a
-  synced done record that is not chosen at its index; the case of owner
-  07:19), `NoRetryChosen` (a retry of a request is chosen at a second
-  index), `NoDecidedLost` (a restarted node holds a decided index below
-  the chosen log).
+  durable done record of another request than the chosen one at that
+  index), `NoForgottenDoneAfterCrash` (the same at a node that crashed:
+  the case of owner 07:19), `NoRetryChosen` (a retry is chosen at a
+  second index), `NoDecidedLost` (a crash lost a decided index that rode
+  on no sync), `NoWorkRecordSurvives` (P0: a work record survived a
+  crash).
 - Mutations, each must break its property: `ApplyAtDone` (the done
-  write applies the state): `StateIsFold`; `ReplyAtLeaderSync` (the
+  commit applies the state): `StateIsFold`; `ReplyAtLeaderSync` (the
   reply after the sync of the leader alone): `ChosenOnce`;
-  `DoneWithoutSync` (a node acks "synced" before its sync):
-  `ChosenOnce` or `DecidedAgree`. `NoRecovery` (a restarted node votes
-  at once) is a question: does safety in this form rest on the
-  recovery?
+  `DoneWithoutSync` (a node sends "synced" before its sync):
+  `ChosenOnce`; `LeaderCountsUnsynced` (with `DoneBeforeOwnSync`, the
+  leader counts its own done before its sync): `ChosenOnce`.
+- `NoRecovery` (a restarted node votes at once): every promise and every
+  accept leave only after their sync, so the model has no case where the
+  recovery protects safety. The recovery protects against a lying disk,
+  which `SequencePaxos.tla` models.
 
 ### 13.3 Runs
 
-Nodes {n1, n2, n3}, Requests {r1, r2}, MaxBallot 3, MaxLog 2, MaxCrash
-1, BFS where it ends, at most three TLC at a time, one worker each. The
-results are in `model/results/<time>-one-environment-runs-1.md`.
+Nodes {n1, n2, n3}, Requests {r1, r2}, MaxBallot 2, MaxLog 2 (3 for
+`NoRetryChosen`), MaxCrash 1. Covers and mutations run as BFS; the two
+mutations that need a crash and a second ballot run with MaxLog 1. The
+safe forms run as a BFS with MaxLog 1 up to two hours, and as a
+simulation of 15 minutes with MaxLog 2. At most three TLC at a time, one
+worker each. The results are in
+`model/results/<time>-one-environment-runs-1.md`.
 
 ### 13.4 What the model does not show
 
-- That LMDB keeps the integrity of the file. P0 is outside the model.
+- That LMDB keeps the integrity of the file. The order of prepare, sync
+  and commit of section 3.5 is outside the model; section 15 item 7
+  tests it.
+- The check of the session table. `StateIsFold` folds with the same
+  function as the node, so it checks which entries the state holds and
+  in which order, not that the node takes a request only once.
 - The agreement rules of Execute-Verify; `SequencePaxos.tla` rounds 1
   to 3 cover them.
-- Group commit: the model writes one done record in each action, a
-  subset of the behaviours of a commit of several.
+- Group commit: the model writes one done record in each commit.
+  Several commits between two syncs give the same durable states.
 - A lying disk (stale meta, rollback): plan-lmdb-only-source.md rounds 5
   to 15 cover them in `SequencePaxos.tla`.
 
@@ -601,6 +678,14 @@ first. The arm before is fa14f44. No number is written before the run.
   the decide in an open transaction, the pipeline with `max_in_flight`,
   the abort on a cut, two environments without `MDB_WRITEMAP`: now one);
   question 11 and 12.
+- plan-lmdb-only-source.md 2.1 item 2 (the messages of a step leave
+  only after its commit): "work", "ran", "decide" and the heartbeats
+  leave at once (3.5 item 2); the rest waits on the sync, not on the
+  commit. 2.6 item 2 (a read in a read transaction of the state
+  environment): now of the one environment. 2.6 item 6 (the result CRC
+  compared at the commit of the state): the apply writes the stored
+  mutations of the done record (4.2 item 2), and the check of the
+  result happens before the done (7.4).
 - plan-state-in-lmdb.md: 1.1 (`state_storage`, own environment), 1.3,
   1.4 (`state_differs_from_log`), 1.5, 3.2 and 3.3 (the state commit),
   5.1 to 5.5 (the open transaction, the bound, two write transactions).
@@ -608,7 +693,13 @@ first. The arm before is fa14f44. No number is written before the run.
   `p`), 2.4.2 (the open transaction holds the base), 2.4.4
   (`max_in_flight`), 2.6.5 (one verdict entry in each step), 2.7.4 and
   2.7.5 (`verified_idx`), 2.9.1 (the second round), 4.4 and 4.6 (model
-  variables of the verdict entries).
+  variables of the verdict entries). 2.5.3 (answers sent again on the
+  resend timeout) stays, and "work" is sent again in the same way
+  (5.3).
+- State file, decisions of 2026-10-24: "a value from LMDB is used only
+  inside its transaction and is never copied" (19:29) and "outside a
+  transaction a node knows only its state machine" (19:38) conflict with
+  P1 (5.1, question 5).
 - State file, decisions in force: "an entry counts as stored only
   after a synchronous LMDB commit" (now: after the sync of section 3.5);
   "the decide index keeps its own
@@ -620,9 +711,12 @@ first. The arm before is fa14f44. No number is written before the run.
 ## 17. Provisional names
 
 `OneEnvironment`, `meta`, `data`, done record, "work", "ran", "done",
-"synced", "refused", `syn`, `durdec`, `NoForgottenDone`,
-`NoRetryChosen`, `NoDecidedLost`, `ApplyAtDone`, `ReplyAtLeaderSync`,
-`DoneWithoutSync`, `NoRecovery`, P0, P1, P2. Paxos names the done record
+"synced", "refused", "nothing", "commit", "sync only", `cur`, `dur`,
+`queue`, `SyncDone`, `WorkRecords`, `DoneBeforeOwnSync`,
+`NoForgottenDone`, `NoForgottenDoneAfterCrash`, `NoRetryChosen`,
+`NoDecidedLost`, `NoWorkRecordSurvives`, `NoOldWorkRecords`,
+`ApplyAtDone`, `ReplyAtLeaderSync`, `DoneWithoutSync`,
+`LeaderCountsUnsynced`, `NoRecovery`, P0, P1, P2, Q1, Q2. Paxos names the done record
 an accept, and the "synced" message an accepted.
 
 ## 18. Questions for the owner
@@ -646,11 +740,14 @@ an accept, and the "synced" message an accepted.
    (07:30) that the leader sends "done" while its sync runs (Raft
    dissertation 10.2.1); it counts itself only after its sync. Safety
    does not change, and the client path loses one sync in series.
-   Proposal: take it. Option: the order of 07:16.
+   The model checks this form (`DoneBeforeOwnSync`, config
+   `MC_oe_parallel`). Proposal: take it. Option: the order of 07:16.
 5. The work record (section 5.1). Proposal: P1, no commit, the work stays
-   in memory. Option P0, `MDB_NOSYNC` as given, with the risk of a
-   corrupt file at a power loss on a file system that does not keep the
-   order of writes. Option P2, `MDB_NOMETASYNC`, two syncs for each task.
+   in memory. P1 needs an exception to the decisions of 2026-10-24 19:29
+   and 19:38. Option P0, a commit with `MDB_NOSYNC` that rides in the
+   commit of a step that syncs anyway, and needs a sync of its own in an
+   idle step (3.6). Option P2, `MDB_NOMETASYNC`, one more sync for each
+   step with work.
 6. The commit with LMDB (section 3.5 item 3). LMDB needs the data pages
    on the disk before the meta page that names them. Proposal Q1: one
    `fdatasync` for each step, and the messages of a step leave after
