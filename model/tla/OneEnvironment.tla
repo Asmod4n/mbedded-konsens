@@ -25,18 +25,21 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           ReplyAtLeaderSync,  \* mutation: the client reply after the sync of the leader only
           DoneWithoutSync,    \* mutation: a follower sends "synced" before its sync
           LeaderCountsUnsynced, \* mutation: the leader counts its own done before its sync
-          NoRecovery          \* a restarted node votes at once
+          NoRecovery,         \* a restarted node votes at once
+          StoreRollback       \* fault: a start finds the store at the sync before its last one
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec, state, applied,
 \* wrec (the tombstones of P0: a set of [idx, req, start, tick]).
 \* ticks[i]: the ticks of node i since its last start. starts[i]: the
-\* nonce of its last start.
+\* nonce of its last start. prevDur[i]: the durable values before the last
+\* sync (a damaged WAL frame drops the last synced commit, plan-sqlite-storage.md 7.3).
 VARIABLES cur, dur, queue, work, status, lead, answers,
-          msgs, chosen, replied, crashes, crashed, decAtCrash, ticks, starts
+          msgs, chosen, replied, crashes, crashed, decAtCrash, ticks, starts,
+          prevDur
 
 vars == <<cur, dur, queue, work, status, lead, answers, msgs, chosen, replied,
-          crashes, crashed, decAtCrash, ticks, starts>>
+          crashes, crashed, decAtCrash, ticks, starts, prevDur>>
 
 N == Cardinality(Nodes)
 IsMajority(Q) == 2 * Cardinality(Q) > N
@@ -102,8 +105,9 @@ Init ==
     /\ decAtCrash = [i \in Nodes |-> 0]
     /\ ticks = [i \in Nodes |-> 0]
     /\ starts = [i \in Nodes |-> 0]
+    /\ prevDur = [i \in Nodes |-> Empty]
 
-Ghosts == <<crashes, crashed, decAtCrash, ticks, starts>>
+Ghosts == <<crashes, crashed, decAtCrash, ticks, starts, prevDur>>
 
 ----------------------------------------------------------------------------
 (* The sync. One fdatasync makes every commit before it durable and       *)
@@ -113,9 +117,11 @@ SyncDone(i) ==
     /\ status[i] # "down"
     /\ dur[i] # cur[i] \/ queue[i] # {}
     /\ dur' = [dur EXCEPT ![i] = cur[i]]
+    /\ prevDur' = [prevDur EXCEPT ![i] = IF dur[i] # cur[i] THEN dur[i] ELSE @]
     /\ SendAll(queue[i])
     /\ queue' = [queue EXCEPT ![i] = {}]
-    /\ UNCHANGED <<cur, work, status, lead, answers, chosen, replied, Ghosts>>
+    /\ UNCHANGED <<cur, work, status, lead, answers, chosen, replied,
+                   crashes, crashed, decAtCrash, ticks, starts>>
 
 ----------------------------------------------------------------------------
 (* Phase 1.                                                               *)
@@ -317,7 +323,26 @@ Crash(i) ==
     /\ work' = [work EXCEPT ![i] = <<>>]
     /\ lead' = [lead EXCEPT ![i] = NoLead]
     /\ answers' = [answers EXCEPT ![i] = {}]
-    /\ UNCHANGED <<dur, msgs, chosen, replied, ticks, starts>>
+    /\ UNCHANGED <<dur, msgs, chosen, replied, ticks, starts, prevDur>>
+
+\* A crash after which the store holds the values of the sync before its
+\* last one: SQLite recovery stopped at a damaged frame of the last commit.
+RollbackCrash(i) ==
+    /\ StoreRollback
+    /\ status[i] # "down"
+    /\ crashes < MaxCrash
+    /\ dur[i] # prevDur[i]
+    /\ crashes' = crashes + 1
+    /\ crashed' = [crashed EXCEPT ![i] = TRUE]
+    /\ decAtCrash' = [decAtCrash EXCEPT ![i] = cur[i].dec]
+    /\ status' = [status EXCEPT ![i] = "down"]
+    /\ cur' = [cur EXCEPT ![i] = prevDur[i]]
+    /\ dur' = [dur EXCEPT ![i] = prevDur[i]]
+    /\ queue' = [queue EXCEPT ![i] = {}]
+    /\ work' = [work EXCEPT ![i] = <<>>]
+    /\ lead' = [lead EXCEPT ![i] = NoLead]
+    /\ answers' = [answers EXCEPT ![i] = {}]
+    /\ UNCHANGED <<msgs, chosen, replied, ticks, starts, prevDur>>
 
 \* A start takes a new nonce and counts its ticks from zero. It deletes
 \* nothing: the tombstones of the earlier start have expired.
@@ -326,7 +351,7 @@ Restart(i) ==
     /\ status' = [status EXCEPT ![i] = IF NoRecovery THEN "running" ELSE "recovering"]
     /\ starts' = [starts EXCEPT ![i] = @ + 1]
     /\ ticks' = [ticks EXCEPT ![i] = 0]
-    /\ UNCHANGED <<cur, dur, queue, work, lead, answers, msgs, chosen, replied, crashes, crashed, decAtCrash>>
+    /\ UNCHANGED <<cur, dur, queue, work, lead, answers, msgs, chosen, replied, crashes, crashed, decAtCrash, prevDur>>
 
 \* The library counts the calls of tick(); it has no clock.
 Tick(i) ==
@@ -334,7 +359,7 @@ Tick(i) ==
     /\ ticks[i] < MaxTick
     /\ ticks' = [ticks EXCEPT ![i] = @ + 1]
     /\ UNCHANGED <<cur, dur, queue, work, status, lead, answers, msgs, chosen, replied,
-                   crashes, crashed, decAtCrash, starts>>
+                   crashes, crashed, decAtCrash, starts, prevDur>>
 
 \* A step that sees an expired tombstone leaves it out of its commit.
 DropExpired(i) ==
@@ -362,11 +387,11 @@ RecoveryComplete(i) ==
 ----------------------------------------------------------------------------
 
 Next ==
-    \/ \E i \in Nodes : Crash(i)
+    \/ \E i \in Nodes : Crash(i) \/ RollbackCrash(i)
     \/ \E i \in Nodes : Restart(i) \/ Tick(i)
+    \/ \E i \in Nodes : SyncDone(i)
     \/ /\ UNCHANGED Ghosts
-       /\ \/ \E i \in Nodes : SyncDone(i)
-          \/ \E i \in Nodes, b \in Ballots : Prepare(i, b)
+       /\ \/ \E i \in Nodes, b \in Ballots : Prepare(i, b)
           \/ \E i \in Nodes, r \in Requests : Propose(i, r)
           \/ \E i \in Nodes : LeaderDone(i) \/ LeaderDecide(i) \/ Apply(i)
           \/ \E i \in Nodes : RecoveryComplete(i) \/ DropExpired(i)
