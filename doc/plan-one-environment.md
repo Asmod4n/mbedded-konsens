@@ -172,8 +172,15 @@ The owner named two: metadata and data (07:16). So there are two:
 - `auth` (provisional name): authentication and authorization only:
   who may connect and who may run management commands (owner
   2026-10-26 15:45). It is the only state that the management needs.
-  Open: whether the log replicates it, and its keys. It is built after
-  the stages of this plan.
+  The form (owner 15:47 to 15:56): Unix users and groups; the TLS
+  client certificate names the user (CN) and its groups (O). For each
+  user or group, `auth` holds masks with the bits r, w and x, after the
+  ACLs of Redis: r reads a key, w writes or deletes it, x calls a
+  contract on it; the management commands have masks too. A mask is a
+  prefix that ends in `*`. One check decides each access. The check is
+  part of the replicated state, so Execute-Verify runs it on every
+  node. Open: the keys of `auth`. It is built after the stages of this
+  plan.
 
 The node storage stays an environment of its own: the repair count, the
 open mark, the proof, the hidden identity and the name of the directory
