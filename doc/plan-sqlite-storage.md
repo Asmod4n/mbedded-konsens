@@ -129,6 +129,19 @@ copy with `mdb_env_copyfd2`).
 7. The CRC of a record covers its deterministic CBOR encoding (RFC 8949
    4.2), as now. The library encodes the row to compute it.
 
+### 4.1 Virtual tables, relations and types (owner, 17:29)
+
+1. A `STRICT` table and the types of the prepared statements give an
+   error value when a value of a wrong type arrives.
+2. The state may use relations and joins.
+3. A virtual table may give data of another form (a CSV file, for
+   example) and logic to the state. Its code stands in the binary or in
+   the library, never in the log. A virtual table that the state reads
+   gives the same rows on each node for the same state, because
+   Execute-Verify compares the results. A clock, a file outside the
+   store or the network as its source breaks this; such a table is not
+   readable from a task.
+
 ## 5. The transaction of a step
 
 1. A step is `BEGIN IMMEDIATE` ... `COMMIT` on one connection. The
@@ -217,7 +230,7 @@ copy with `mdb_env_copyfd2`).
 - Q7. The recovery tool: the `.recover` of the package `sqlite3`
   (proposal), or the interface `sqlite3_recover` from the source in the
   binary.
-- Q8. The lowest supported SQLite version.
+- Q8. The lowest SQLite version is the one that the distribution gives. This is not a question for the owner.
 - Q9. Without the padding of `FULL`, a later write in the same sector
   can tear a frame that a sync already made durable, where the device
   has no powersafe overwrite (section 1). Proposal: test it with the
