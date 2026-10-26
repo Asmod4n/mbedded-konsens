@@ -490,7 +490,7 @@ Answers of the owner, 2026-10-26 18:22, to the cards of section 9.1:
    of its statement, as `RawBytes` in Go. A debug build checks that a
    view is not read after that call (a generation count).
 2. The checkpoint: card open, explained again.
-3. `psow`: card open, explained again; its cost is measured.
+3. `psow=0` (owner card 18:23). Its cost is measured.
 4. The log record as a blob or in columns: both are arms of the
    measurement of section 10; the numbers decide.
 5. "done" before the commit of the leader: decided before (11:38),
@@ -503,6 +503,29 @@ Answers of the owner, 2026-10-26 18:22, to the cards of section 9.1:
    now, not deferred.
 9. The identity after a restore: the effects of both forms are
    measured in a test before the decision.
+
+### 9.0 The changeset, tried (2026-10-26)
+
+A C file outside the tree, the package 3.53.4, g++ 16 container:
+
+1. A change inside a savepoint that is rolled back (`ROLLBACK TO`,
+   `RELEASE`) does not appear in the changeset of a session. Only the
+   change outside the savepoint does.
+2. Repair form: the live store and a snapshot file (`VACUUM INTO`) on
+   one connection (`ATTACH`). `sqlite3session_diff` of a table gives the
+   changeset from the snapshot to the live state. Applied to the
+   snapshot with `sqlite3changeset_apply`, the two tables are equal
+   (`EXCEPT` gives 0 rows), for 100,000 rows with 1,000 changed and for
+   1,000,000 rows with 10,000 changed.
+3. The changeset holds about 144 bytes for each changed row of 64 B
+   values (144,007 bytes for 1,000 rows). No time is written here: the
+   run was one build and one repetition, which is not a measurement.
+4. The diff needs no session during normal work, so no preupdate hook
+   runs on the path that succeeds. It needs the snapshot as a file.
+5. For the model: a node that holds snapshot S and is behind asks a
+   peer that holds S too. The peer attaches S, diffs, and sends the
+   changeset with the log index of its live state. Each record in it
+   keeps its CRC.
 
 ### 9.1 What known systems do, for each open card
 
