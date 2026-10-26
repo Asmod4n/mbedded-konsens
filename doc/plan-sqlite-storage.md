@@ -215,10 +215,15 @@ the section named.
    `TEXT`, a byte string as `BLOB`, a float as `ANY` (it keeps -0.0).
    CBOR stands only on the wire. The store holds no CBOR; each value
    takes a form that SQLite gives, also through an extension or a
-   virtual table (owner, 2026-10-26 18:40). Provisional, not checked:
-   an integer above 2^63-1 is decimal `TEXT`, which the decimal
-   extension computes on. NaN has no SQLite form, because SQLite stores
-   it as `NULL`; its form is open.
+   virtual table (owner, 2026-10-26 18:40). Each CBOR tag on the wire
+   has a typed form in SQLite (owner, 18:42). A tag with no form is
+   refused at the wire with an RFC 9290 error, and tag 24 is decoded
+   and stored in the form of its type (owner, 18:44, relayed). This
+   replaces "every tag allowed" of 2026-10-17. The table of forms, the
+   form of NaN and the form of an integer above 2^63-1 belong to the
+   thread "user logic on virtual tables"
+   (`/mnt/project-files/actor-raft/nutzer-logik/vorbereitung.md`
+   section 10). Nothing of it is built or measured.
 4. A `STRICT` column checks the type and converts a value that it can
    convert without loss (text `'12'` into `INTEGER`). A prepared
    statement has no parameter types. An `ANY` column checks nothing;
