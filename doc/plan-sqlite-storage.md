@@ -484,6 +484,26 @@ submodule, or none).
 Not a question for the owner: the lowest SQLite version is the one
 that the distribution gives.
 
+Answers of the owner, 2026-10-26 18:22, to the cards of section 9.1:
+
+1. `find` gives a pointer, no copy. The view lives until the next call
+   of its statement, as `RawBytes` in Go. A debug build checks that a
+   view is not read after that call (a generation count).
+2. The checkpoint: card open, explained again.
+3. `psow`: card open, explained again; its cost is measured.
+4. The log record as a blob or in columns: both are arms of the
+   measurement of section 10; the numbers decide.
+5. "done" before the commit of the leader: decided before (11:38),
+   parallel.
+6. Only the library writes SQL. No task sends SQL, so no authorizer and
+   no version check are needed. Section 4.3 item 4 and 5 fall away.
+7. Keys take what SQLite offers: `INTEGER`, with the bound 2^63-1 as
+   one check for safety where a value enters.
+8. The changeset repair: tried in a file outside the tree and modelled
+   now, not deferred.
+9. The identity after a restore: the effects of both forms are
+   measured in a test before the decision.
+
 ### 9.1 What known systems do, for each open card
 
 Checked 2026-10-26 on the web. etcd and MongoDB are not cited (owner).
