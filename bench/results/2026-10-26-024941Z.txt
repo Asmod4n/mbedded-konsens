@@ -1,0 +1,1027 @@
+# Bench: konsens_bench
+
+What: konsens_bench, built from bench/konsens_bench.cpp at the commit in
+the context below, and one binary for each arm commit. Each process runs
+one case with one argument (a payload in bytes or a parameter). It takes
+one warm-up sample and then 31 samples. A sample is a fixed number of
+operations (ops_per_sample in each raw line). The time of one operation is
+the time of the sample divided by that number. Each process prints the
+median, the minimum and the maximum of its samples.
+
+Cases of 06a52bf, with the same names, inputs and operations:
+- crc32c: crc32c::Crc32c over one payload, taken in turn from 16 buffers.
+- encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
+  entries of 1024 B. encode_decide, decode_decide: one Decide.
+- commit_lmdb: one write transaction of the log with one append of one
+  entry and its commit, on a fresh store for each sample (06a52bf: one
+  write_atomically of one append_entries). This is the commit of a step.
+- write_lmdb: three nodes in one process, messages through encode and
+  decode, the network a queue. One client_request at a follower, timed
+  from the call to its reply.
+- read_lmdb: one client_query at a follower after one write, timed from
+  the call to its reply. This is a read after a step.
+- write_batch_lmdb: 64 client_request calls at a follower before the
+  first round, timed until the last reply, divided by 64.
+- write_batch_size_lmdb (new; the arm 06a52bf has it through
+  bench/arms/06a52bf.patch): as write_batch_lmdb with a payload of 1024 B,
+  at the batch size of the argument (1, 16 or 256).
+- lmdb_put, lmdb_put_like_storage, lmdb_get: LMDB alone, env flags 0, as
+  at 06a52bf. get_entries_lmdb: get_entries(0, 1) of one entry in a read
+  transaction.
+- write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
+  same operations with each node on its own thread, no tick.
+Removed at the branch: handle_accept_decide and handle_decide. They ran
+on a store that keeps no entry, and each step of the branch reads its
+entries back.
+
+New cases:
+- pipeline_<work>_<delay>_<rate>: one leader and two followers, each node
+  on its own thread, each message delayed by the delay (0 or 20 ms). A
+  thread puts a tick call into each inbox every tick_ms (1 ms at 0 ms
+  delay, 20 ms at 20 ms delay). Requests arrive at the leader in an open
+  loop at the rate (10000/s, the rate of
+  bench/results/2026-10-24-231534Z, or 20000/s), with an empty payload.
+  The argument is max_in_flight. Work put: one get and one put of a
+  counter. Work loop: the same and 63 more puts. ns per op: from the
+  planned arrival of the first request of a sample to the last reply of
+  that sample, divided by the requests of the sample. Latency: from the
+  planned arrival to the release of the reply, of each request after the
+  warm-up. processor_ns_per_op: getrusage of the process (all threads)
+  over the requests after the warm-up. runs_per_request: the calls of
+  apply at all nodes over all requests, warm-up included;
+  runs_again_per_1000: the calls above one per node and request, per
+  1000 requests.
+- execute_verify_int, execute_verify_float: the pipeline harness at 0 ms
+  delay and 10000 requests/s, argument max_in_flight. int: the counter.
+  float: each node returns (n + 1/3) * (1 + e) as a CBOR double, with e
+  0, 1e-14 and -1e-14 at nodes 1, 2 and 3, and float_digits 12 where the
+  commit has Execute-Verify.
+- read_back: a copy of the reads of node::written_values_read_back, done
+  in one open write transaction of a state_storage after one put of a
+  value of the payload size. Before the samples, the case compares the
+  copy with the state of each node after a step of the cluster.
+- scan_the_whole_log: sequence_paxos::scan_the_whole_log over a log of
+  the argument in entries of 64 B.
+
+Checks: as at 06a52bf for its cases. The cluster cases compare each
+reply with its request number. A process whose check fails exits with 1;
+its raw line shows the exit status.
+
+Run: 7 rounds. Each round runs every case in every binary that
+lists it (konsens_bench --list). The order of the cases and of the
+binaries turns around each second round. konsens_bench_aa is the source
+of the branch built a second time; the difference between
+konsens_bench and konsens_bench_aa is the A/A difference.
+
+User and priority: each process runs as the user bench (uid 1001, not
+root), started by setpriv. Not pinned. Each raw line gives nice,
+other_processes_of_user (the processes of the user bench before the
+start), procs_running of /proc/stat before the start, and the steal ticks
+of /proc/stat during the process.
+
+## Context
+
+# commit ddfe456c1160c5673813d927c57f985b3ff1e3fd dirty
+# dirty path ?? bench/results/2026-10-26-021654Z.txt
+# dirty path ?? bench/results/2026-10-26-022833Z.txt
+# podman podman version 4.9.3
+# container podman, image localhost/cxx-matrix-fuse b75330d2a88388f2719307b285d46078be1bde6a14d8cd28bb1152c8aeb82d79 created 2026-10-24 09:11:56.516505767 +0000 UTC
+# os Ubuntu Stonking Stingray (development branch)
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# build type Release, CMAKE_CXX_FLAGS_RELEASE -O2 -DNDEBUG
+# build type Release, CMAKE_C_FLAGS_RELEASE -O2 -DNDEBUG
+# compile command ccache /usr/bin/g++-16  -I/src/src -I/src/include -I/src/deps/mbedded-cbor/include -I/src/deps/crc32c/include -I/src/deps/lmdb/libraries/liblmdb -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -MF CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o.d -o CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -c /src/bench/konsens_bench.cpp
+# compile command ccache /usr/bin/gcc-16  -I/src/deps/lmdb/libraries/liblmdb -O2 -DNDEBUG -fPIC -W -Wall -Wno-unused-parameter -Wbad-function-cast -Wuninitialized -MD -MT CMakeFiles/lmdb.dir/deps/lmdb/libraries/liblmdb/mdb.c.o -MF CMakeFiles/lmdb.dir/deps/lmdb/libraries/liblmdb/mdb.c.o.d -o CMakeFiles/lmdb.dir/deps/lmdb/libraries/liblmdb/mdb.c.o -c /src/deps/lmdb/libraries/liblmdb/mdb.c
+# instruction set -march=x86-64 -mtune=generic 
+# instruction set macros __MMX__ __SSE2__ __SSE__ 
+# binary konsens_bench sha256 ef998dc57921ef02 needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.9 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 GLIBC_2.38 
+# binary konsens_bench comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary konsens_bench_aa sha256 ef998dc57921ef02 needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.9 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.14 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 GLIBC_2.38 
+# binary konsens_bench_aa comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# libraries linux-vdso.so.1 ; libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6; libm.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6; libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1; libc.so.6 /usr/lib/x86_64-linux-gnu/libc.so.6; /lib64/ld-linux-x86-64.so.2 ; 
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1; 
+# lmdb 1 0 2 from the submodule deps/lmdb
+# kernel 6.18.44-fc-v153 #1 SMP PREEMPT_DYNAMIC @0
+# scheduler no /sys/kernel/sched_ext
+# virtual machine hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user bench uid 1001 through setpriv, nice 0, threads 1 in a serial case; 4 in a case whose name ends in _threads (the main thread and three node threads); 5 in a pipeline or execute_verify case (the main thread, three node threads and a thread that ticks)
+# lmdb mount /dev/vda /lmdb ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# loadavg at start 0.89 1.55 1.43 1/134 136
+# cases chosen by the prefixes 'pipeline_': 32
+# loadavg at end 0.58 0.69 0.89 1/127 6875
+
+## A/A difference of each case
+
+ns per operation: the median of the process medians of each binary.
+
+| case | argument | konsens_bench | konsens_bench_aa | A/A |
+|---|---|---|---|---|
+| pipeline_put_0ms_10000ps | 16 | 4734318.52 | 6141651.39 | +29.7 % |
+| pipeline_put_0ms_10000ps | 64 | 808143.70 | 551841.88 | -31.7 % |
+| pipeline_put_0ms_20000ps | 64 | 1372737.31 | 1455610.97 | +6.0 % |
+| pipeline_loop_0ms_10000ps | 16 | 9670017.15 | 9132047.30 | -5.6 % |
+| pipeline_loop_0ms_10000ps | 64 | 3773193.04 | 3731002.61 | -1.1 % |
+| pipeline_loop_0ms_20000ps | 64 | 4844188.34 | 4925791.61 | +1.7 % |
+
+Largest A/A difference: 31.7 %. This is the noise floor of the run.
+
+## Result of each binary
+
+ns per operation: the median of the process medians. Spread: the lowest and the highest process median.
+Each other arm: the branch binary konsens_bench against that arm, (branch - arm) / arm.
+
+| case | argument | konsens_bench | spread |
+|---|---|---|---|
+| pipeline_put_0ms_10000ps | 16 | 4734318.52 | 3739133.63-6620931.26 |
+| pipeline_put_0ms_10000ps | 64 | 808143.70 | 448421.02-834744.83 |
+| pipeline_put_0ms_20000ps | 64 | 1372737.31 | 1226655.00-1515614.72 |
+| pipeline_loop_0ms_10000ps | 16 | 9670017.15 | 8645978.18-10362569.15 |
+| pipeline_loop_0ms_10000ps | 64 | 3773193.04 | 3471047.94-3913207.97 |
+| pipeline_loop_0ms_20000ps | 64 | 4844188.34 | 4713101.46-4965541.58 |
+
+## Details of each binary
+
+The median over the processes of each field of the raw lines.
+
+| case | argument | binary | field | median | spread |
+|---|---|---|---|---|---|
+| pipeline_put_0ms_10000ps | 16 | konsens_bench | latency_p50_ns | 4506053588.000 | 3531463629.000-6320643424.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench_aa | latency_p50_ns | 5890472290.000 | 4048393751.000-6125854528.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench | latency_p99_ns | 8302248521.000 | 7291609242.000-12274833076.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench_aa | latency_p99_ns | 9746559490.000 | 7661718470.000-11595957379.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench | processor_ns_per_op | 232596.000 | 223895.000-341839.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench_aa | processor_ns_per_op | 269026.000 | 235401.000-328754.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench_aa | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench | runs_again_per_1000 | 0.030 | 0.000-0.310 |
+| pipeline_put_0ms_10000ps | 16 | konsens_bench_aa | runs_again_per_1000 | 0.000 | -0.470-0.380 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench | latency_p50_ns | 686429103.000 | 347377089.000-733282946.000 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench_aa | latency_p50_ns | 433330203.000 | 156811778.000-674350805.000 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench | latency_p99_ns | 1102645634.000 | 565898134.000-1504978727.000 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench_aa | latency_p99_ns | 1060852358.000 | 201549441.000-1559360528.000 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench | processor_ns_per_op | 123998.000 | 116194.000-133185.000 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench_aa | processor_ns_per_op | 124620.000 | 112813.000-135386.000 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench | runs_per_request | 3.000 | 3.000-3.002 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench_aa | runs_per_request | 3.000 | 3.000-3.001 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench | runs_again_per_1000 | 0.000 | 0.000-1.590 |
+| pipeline_put_0ms_10000ps | 64 | konsens_bench_aa | runs_again_per_1000 | 0.000 | 0.000-0.780 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench | latency_p50_ns | 2573531370.000 | 2294898872.000-2853850048.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench_aa | latency_p50_ns | 2749700132.000 | 2544719807.000-3354879310.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench | latency_p99_ns | 4801360293.000 | 4487799566.000-5030045402.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench_aa | latency_p99_ns | 4990313651.000 | 4678272333.000-6724420059.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench | processor_ns_per_op | 105907.000 | 104129.000-109511.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench_aa | processor_ns_per_op | 108784.000 | 107270.000-138012.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench_aa | runs_per_request | 3.000 | 2.999-3.001 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench | runs_again_per_1000 | 0.000 | -0.220-0.020 |
+| pipeline_put_0ms_20000ps | 64 | konsens_bench_aa | runs_again_per_1000 | 0.000 | -0.660-0.560 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench | latency_p50_ns | 9308106395.000 | 8278438240.000-9971448925.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench_aa | latency_p50_ns | 8789660596.000 | 7727037709.000-9632706225.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench | latency_p99_ns | 17246988313.000 | 15958932361.000-18725792392.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench_aa | latency_p99_ns | 16290046539.000 | 14960613240.000-18264403604.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench | processor_ns_per_op | 625944.000 | 565612.000-722851.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench_aa | processor_ns_per_op | 605407.000 | 550759.000-692639.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench | runs_per_request | 3.000 | 2.993-3.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench_aa | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench | runs_again_per_1000 | 0.000 | -7.500-0.190 |
+| pipeline_loop_0ms_10000ps | 16 | konsens_bench_aa | runs_again_per_1000 | 0.000 | -0.030-0.440 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench | latency_p50_ns | 3552202461.000 | 3260805521.000-3685341678.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench_aa | latency_p50_ns | 3526397521.000 | 3198020413.000-3671953282.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench | latency_p99_ns | 7087777077.000 | 6731461227.000-7442246534.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench_aa | latency_p99_ns | 6993668844.000 | 6585969328.000-7291410027.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench | processor_ns_per_op | 431063.000 | 428522.000-500046.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench_aa | processor_ns_per_op | 425576.000 | 421806.000-432412.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench_aa | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench | runs_again_per_1000 | 0.000 | 0.000-0.000 |
+| pipeline_loop_0ms_10000ps | 64 | konsens_bench_aa | runs_again_per_1000 | 0.000 | 0.000-0.310 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench | latency_p50_ns | 9302881000.000 | 9058506244.000-9500313367.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench_aa | latency_p50_ns | 9455947516.000 | 8988735542.000-9900470017.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench | latency_p99_ns | 18529022337.000 | 17971616328.000-18833865954.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench_aa | latency_p99_ns | 18848848143.000 | 17724625016.000-19399246040.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench | processor_ns_per_op | 423149.000 | 418533.000-459743.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench_aa | processor_ns_per_op | 433678.000 | 411371.000-512684.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench | runs_per_request | 3.000 | 3.000-3.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench_aa | runs_per_request | 3.000 | 2.999-3.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench | runs_again_per_1000 | 0.000 | 0.000-0.000 |
+| pipeline_loop_0ms_20000ps | 64 | konsens_bench_aa | runs_again_per_1000 | 0.000 | -1.000-0.000 |
+
+Processes that failed: 365.
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=23 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=29 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=34 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=27 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=10 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=33 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=35 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=19 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=2 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+failed: round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=28 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=4 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+failed: round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+failed: round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+
+## Raw lines
+
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=6620931.26 min=826615.20 max=12478168.09 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=6320643424 latency_p99_ns=12274833076 processor_ns_per_op=341839 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=4272970.17 min=695274.37 max=7823612.56 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=4048393751 latency_p99_ns=7661718470 processor_ns_per_op=235401 runs_per_request=3.000 runs_again_per_1000=0.19 leader_changes=0
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=834744.83 min=200385.18 max=922000.93 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=733282946 latency_p99_ns=821459184 processor_ns_per_op=116194 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=451254.36 min=137069.58 max=521654.91 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=350797099 latency_p99_ns=421514941 processor_ns_per_op=113723 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1515614.72 min=242847.60 max=2583152.83 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2853850048 latency_p99_ns=5030045402 processor_ns_per_op=109511 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1778166.69 min=229599.86 max=3442448.77 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3354879310 latency_p99_ns=6724420059 processor_ns_per_op=138012 runs_per_request=2.999 runs_again_per_1000=-0.66 leader_changes=0
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=23 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=29 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=10087998.50 min=1247862.32 max=17824462.96 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9738743316 latency_p99_ns=17587968006 processor_ns_per_op=625944 runs_per_request=2.999 runs_again_per_1000=-0.62 leader_changes=0
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=9564101.81 min=1186579.48 max=17096988.31 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9229084134 latency_p99_ns=16852333736 processor_ns_per_op=604933 runs_per_request=3.000 runs_again_per_1000=-0.03 leader_changes=0
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3871959.90 min=545965.75 max=7231035.14 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3658115749 latency_p99_ns=7057770945 processor_ns_per_op=428522 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3426962.03 min=485192.74 max=6741002.10 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3198020413 latency_p99_ns=6585969328 processor_ns_per_op=423184 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4965541.58 min=575894.26 max=9557067.05 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9500313367 latency_p99_ns=18833865954 processor_ns_per_op=418533 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=5015976.59 min=654748.60 max=9850637.44 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9621116477 latency_p99_ns=19399246040 processor_ns_per_op=437258 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=34 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=23 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=5151305.72 min=635575.67 max=9710685.62 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9900470017 latency_p99_ns=19139620800 processor_ns_per_op=512684 runs_per_request=2.999 runs_again_per_1000=-0.69 leader_changes=0
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4913285.31 min=566272.25 max=9172327.09 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9436795420 latency_p99_ns=18092793053 processor_ns_per_op=421843 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3795840.33 min=514321.65 max=7395607.47 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3593213932 latency_p99_ns=7207582507 processor_ns_per_op=430116 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3623084.17 min=482484.05 max=7069304.71 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3426672034 latency_p99_ns=6902320350 processor_ns_per_op=430553 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=9485056.98 min=1262308.43 max=17687697.97 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9140438225 latency_p99_ns=17417687600 processor_ns_per_op=629922 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=9985872.47 min=1240116.98 max=17495531.61 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9619213287 latency_p99_ns=17246988313 processor_ns_per_op=647840 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=7 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1387055.07 min=238627.73 max=2408216.00 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2581081023 latency_p99_ns=4678272333 processor_ns_per_op=108010 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1296991.70 min=237526.29 max=2413057.96 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2423059946 latency_p99_ns=4670639407 processor_ns_per_op=104129 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=27 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=257920.34 min=154701.68 max=301275.62 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=156811778 latency_p99_ns=201549441 processor_ns_per_op=112813 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=646849.41 min=137736.94 max=1216535.13 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=530946901 latency_p99_ns=1102645634 processor_ns_per_op=124316 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=6150710.67 min=637647.03 max=9912562.61 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=5908070877 latency_p99_ns=9746559490 processor_ns_per_op=277745 runs_per_request=3.000 runs_again_per_1000=0.38 leader_changes=0
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=3739133.63 min=534396.71 max=7476345.71 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=3531463629 latency_p99_ns=7310226405 processor_ns_per_op=223895 runs_per_request=3.000 runs_again_per_1000=0.28 leader_changes=0
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=4794251.25 min=740548.96 max=8461641.58 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=4574481273 latency_p99_ns=8302248521 processor_ns_per_op=232282 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=5309907.44 min=798943.81 max=8957864.35 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=5074187732 latency_p99_ns=8791516430 processor_ns_per_op=241489 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=631339.72 min=164390.28 max=1146807.35 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=515788778 latency_p99_ns=1037599339 processor_ns_per_op=123131 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=778054.45 min=154267.54 max=1489792.12 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=652941533 latency_p99_ns=1377932704 processor_ns_per_op=125262 runs_per_request=3.001 runs_again_per_1000=0.56 leader_changes=0
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1372737.31 min=226656.25 max=2463772.78 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2573531370 latency_p99_ns=4801360293 processor_ns_per_op=105514 runs_per_request=3.000 runs_again_per_1000=0.02 leader_changes=0
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1455610.97 min=220488.85 max=2562747.86 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2749700132 latency_p99_ns=4990313651 processor_ns_per_op=109748 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=34 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=8645978.18 min=1179603.90 max=17103709.05 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=8278438240 latency_p99_ns=16848989347 processor_ns_per_op=580398 runs_per_request=2.993 runs_again_per_1000=-7.50 leader_changes=0
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=10040050.68 min=1156464.69 max=18536047.07 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9632706225 latency_p99_ns=18264403604 processor_ns_per_op=692639 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3773193.04 min=448531.09 max=7481096.44 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3552202461 latency_p99_ns=7316976094 processor_ns_per_op=500046 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3896958.64 min=475724.95 max=7465687.58 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3671953282 latency_p99_ns=7291410027 processor_ns_per_op=425576 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4713101.46 min=568452.03 max=9122805.14 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9058506244 latency_p99_ns=17971616328 processor_ns_per_op=419202 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4925791.61 min=591674.48 max=9730293.67 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9455947516 latency_p99_ns=19164834276 processor_ns_per_op=433678 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4920933.42 min=564846.86 max=9343678.88 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9434486817 latency_p99_ns=18405650707 processor_ns_per_op=411371 runs_per_request=2.999 runs_again_per_1000=-1.00 leader_changes=0
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4756636.01 min=598406.75 max=9402360.63 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9134241244 latency_p99_ns=18529022337 processor_ns_per_op=430633 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3603091.42 min=461742.77 max=7269804.62 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3405903706 latency_p99_ns=7105650232 processor_ns_per_op=421806 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3471047.94 min=464942.66 max=7259053.82 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3260805521 latency_p99_ns=7087777077 processor_ns_per_op=487977 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=8092567.75 min=1022653.78 max=15216429.16 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=7727037709 latency_p99_ns=14960613240 processor_ns_per_op=550759 runs_per_request=3.000 runs_again_per_1000=0.44 leader_changes=0
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=9035266.88 min=1260909.67 max=16201253.60 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=8691512183 latency_p99_ns=15958932361 processor_ns_per_op=565612 runs_per_request=3.000 runs_again_per_1000=-0.09 leader_changes=0
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1362037.14 min=227945.81 max=2526310.86 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2544719807 latency_p99_ns=4908754875 processor_ns_per_op=107686 runs_per_request=3.001 runs_again_per_1000=0.56 leader_changes=0
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1358747.88 min=250798.49 max=2484024.70 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2546451809 latency_p99_ns=4832559159 processor_ns_per_op=105907 runs_per_request=3.000 runs_again_per_1000=-0.22 leader_changes=0
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=10 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=770430.25 min=196472.96 max=1555047.42 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=647050364 latency_p99_ns=1445325529 processor_ns_per_op=125074 runs_per_request=3.001 runs_again_per_1000=0.78 leader_changes=0
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=808143.70 min=143985.92 max=1247910.51 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=686429103 latency_p99_ns=1139107725 processor_ns_per_op=125263 runs_per_request=3.001 runs_again_per_1000=0.78 leader_changes=0
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=6185395.38 min=741599.76 max=11815392.95 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=5890472290 latency_p99_ns=11595957379 processor_ns_per_op=328754 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=6221465.57 min=734627.42 max=9982551.51 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=5990964404 latency_p99_ns=9792134156 processor_ns_per_op=273788 runs_per_request=3.000 runs_again_per_1000=0.03 leader_changes=0
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=3958177.13 min=677402.39 max=7488551.08 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=3733106654 latency_p99_ns=7291609242 processor_ns_per_op=227754 runs_per_request=3.000 runs_again_per_1000=0.31 leader_changes=0
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=6443659.67 min=767948.96 max=10327502.74 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=6125854528 latency_p99_ns=10166963944 processor_ns_per_op=286469 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=823199.11 min=157197.08 max=1332264.18 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=698428311 latency_p99_ns=1230694745 processor_ns_per_op=123998 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=551841.88 min=166553.36 max=1173619.99 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=433330203 latency_p99_ns=1060852358 processor_ns_per_op=124620 runs_per_request=3.001 runs_again_per_1000=0.62 leader_changes=0
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1380895.72 min=254984.92 max=2490767.04 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2583535120 latency_p99_ns=4830424683 processor_ns_per_op=104958 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1638615.52 min=232965.36 max=2638088.53 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3106306159 latency_p99_ns=5143690518 processor_ns_per_op=115415 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=33 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=9203162.19 min=1176470.85 max=16506214.59 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=8892296456 latency_p99_ns=16258268841 processor_ns_per_op=622446 runs_per_request=3.000 runs_again_per_1000=0.03 leader_changes=0
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=28 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=8712484.85 min=1286482.67 max=15851524.67 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=8360607093 latency_p99_ns=15605665562 processor_ns_per_op=579678 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3521469.29 min=494921.28 max=6900220.25 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3301710976 latency_p99_ns=6731461227 processor_ns_per_op=435286 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3731002.61 min=505679.06 max=7051626.75 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3526397521 latency_p99_ns=6874344393 processor_ns_per_op=432412 runs_per_request=3.000 runs_again_per_1000=0.31 leader_changes=0
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=35 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=19 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4844188.34 min=529177.51 max=9413479.44 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9302881000 latency_p99_ns=18552130193 processor_ns_per_op=423149 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4693183.06 min=601283.41 max=9006663.53 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=8988735542 latency_p99_ns=17724625016 processor_ns_per_op=424175 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=2 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4951859.92 min=628733.87 max=9397471.53 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9541548515 latency_p99_ns=18536227110 processor_ns_per_op=428219 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4884593.24 min=613469.18 max=9320664.41 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9373992885 latency_p99_ns=18390682282 processor_ns_per_op=459743 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3669561.81 min=504744.59 max=7158937.62 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3467181609 latency_p99_ns=6993668844 processor_ns_per_op=429546 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3913207.97 min=573832.39 max=7376942.43 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3682417532 latency_p99_ns=7216932476 processor_ns_per_op=428713 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=8779037.63 min=1217694.64 max=15995436.01 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=8438882967 latency_p99_ns=15727759342 processor_ns_per_op=605881 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=10362569.15 min=1585283.58 max=19006519.01 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9971448925 latency_p99_ns=18725792392 processor_ns_per_op=712201 runs_per_request=3.000 runs_again_per_1000=0.19 leader_changes=0
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=28 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1368388.68 min=230719.72 max=2503586.45 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2570000959 latency_p99_ns=4877008952 processor_ns_per_op=107270 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1384362.30 min=272952.46 max=2441643.20 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2584800282 latency_p99_ns=4749366691 processor_ns_per_op=106625 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=416564.41 min=190130.04 max=649237.69 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=312182826 latency_p99_ns=543598974 processor_ns_per_op=117461 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=448421.02 min=212572.46 max=666965.29 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=347377089 latency_p99_ns=565898134 processor_ns_per_op=116465 runs_per_request=3.002 runs_again_per_1000=1.59 leader_changes=0
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=6141651.39 min=821662.63 max=10246210.10 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=5906119161 latency_p99_ns=10055183544 processor_ns_per_op=269026 runs_per_request=3.000 runs_again_per_1000=-0.47 leader_changes=0
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=4635409.12 min=802298.88 max=8218537.08 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=4426682255 latency_p99_ns=8050113939 processor_ns_per_op=232596 runs_per_request=3.000 runs_again_per_1000=0.25 leader_changes=0
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=6 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=6 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=4734318.52 min=717074.09 max=8802320.97 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=4506053588 latency_p99_ns=8630673687 processor_ns_per_op=246886 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=0 case=pipeline_put_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=5288966.38 min=774126.74 max=9357398.78 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=5041359448 latency_p99_ns=9172395480 processor_ns_per_op=256555 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=827597.49 min=167788.16 max=1620988.53 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=703747204 latency_p99_ns=1504978727 processor_ns_per_op=133185 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=0 case=pipeline_put_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=802658.29 min=189070.95 max=1671927.07 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=674350805 latency_p99_ns=1559360528 processor_ns_per_op=135386 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1226655.00 min=235605.03 max=2313569.80 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2294898872 latency_p99_ns=4487799566 processor_ns_per_op=106247 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=0 case=pipeline_put_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=1512477.78 min=231759.00 max=2602906.23 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=2830793226 latency_p99_ns=5071226143 processor_ns_per_op=108784 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=14 exit=0 case=pipeline_loop_0ms_10000ps parameter=16 ops_per_sample=1000 samples=31 ns_per_op_median=9670017.15 min=1174401.86 max=18933124.44 rate_per_s=10000 max_in_flight=16 delay_ms=0 tick_ms=100 latency_p50_ns=9308106395 latency_p99_ns=18633042166 processor_ns_per_op=722851 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3900880.00 min=476777.29 max=7609546.20 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3685341678 latency_p99_ns=7442246534 processor_ns_per_op=431063 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=pipeline_loop_0ms_10000ps parameter=64 ops_per_sample=1000 samples=31 ns_per_op_median=3796912.53 min=563173.20 max=7038359.65 rate_per_s=10000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=3589014661 latency_p99_ns=6877067121 processor_ns_per_op=425139 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=26 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4768554.54 min=528953.64 max=9504725.42 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9119632739 latency_p99_ns=18715492433 processor_ns_per_op=436354 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=0 case=pipeline_loop_0ms_20000ps parameter=64 ops_per_sample=2000 samples=31 ns_per_op_median=4820030.57 min=560605.45 max=9567260.81 rate_per_s=20000 max_in_flight=64 delay_ms=0 tick_ms=100 latency_p50_ns=9251077302 latency_p99_ns=18848848143 processor_ns_per_op=433790 runs_per_request=3.000 runs_again_per_1000=0.00 leader_changes=0
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=4 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=10 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=7 exit=1 
+round=7 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=1 
+round=7 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=9 exit=1 
