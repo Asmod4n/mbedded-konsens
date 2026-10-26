@@ -215,9 +215,14 @@ the section named.
    `TEXT`, a byte string as `BLOB`, a float as `ANY` (it keeps -0.0).
    CBOR stands only on the wire. The store holds no CBOR; each value
    takes a form that SQLite gives, also through an extension or a
-   virtual table (owner, 2026-10-26 18:40). A CBOR value may stay in a
-   `BLOB` when a virtual table gives its fields as typed columns, as
-   `json_each` does for JSON (owner, 19:05). Each CBOR tag on the wire
+   virtual table (owner, 2026-10-26 18:40). CBOR is a type that an
+   extension gives (owner, 19:05 and 19:08). SQLite has five storage
+   classes, and an extension cannot add one: a `STRICT` table refuses
+   every column type except `ANY`, `BLOB`, `INT`, `INTEGER`, `REAL` and
+   `TEXT` (`build.c:2686-2698`, `global.c:394`). So the form is that of
+   JSONB in SQLite: a `BLOB` column with `CHECK(cbor_valid(x))`, the
+   functions of the extension, and a virtual table that gives the
+   fields as typed columns. Each CBOR tag on the wire
    has a typed form in SQLite (owner, 18:42). A tag with no form is
    refused at the wire with an RFC 9290 error, and tag 24 is decoded
    and stored in the form of its type (owner, 18:44, relayed). This
