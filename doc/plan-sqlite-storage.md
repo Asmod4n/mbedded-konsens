@@ -233,6 +233,22 @@ big-endian `BLOB` key, as now (`persistent_storage.cpp:137-142`).
 The insert of the log checks that the index is the next one, as
 `MDB_APPEND` did.
 
+### 4.2.1 Points from the thread on SQLite for clients (to weigh)
+
+These points come from another thread. They are open until the
+measurement of blob against columns (section 10).
+
+1. The state column of an entry and its state CRC repeat
+   `idx < decided` of the meta record, because both stand in one
+   commit. If the column stays, `set_entry_states` needs a CRC function
+   in SQL or a loop in C++.
+2. With one CRC over the whole meta record, each setter reads, changes
+   and writes the whole record. A
+   `CHECK(applied<=decided AND decided<=log_len)` works with separate
+   columns.
+3. `holds_the_request` and `find_the_verified_idx` become one statement
+   each when kind, session and request number are columns of their own.
+
 ### 4.3 Virtual tables, relations and types (owner, 17:29)
 
 1. A `STRICT` table gives an error value when a value of a wrong type
@@ -242,9 +258,15 @@ The insert of the log checks that the index is the next one, as
    example) and logic to the state. Its code stands in the binary or in
    the library, never in the log.
 4. Execute-Verify compares the results of the nodes. So the same state
-   must give the same result on each node (card open). Proposal: all
-   nodes of one cluster run one SQLite version and one binary version,
-   and the handshake compares them. An authorizer
+   must give the same result on each node. The owner decided on
+   2026-10-26 18:22 and 18:34 that the cluster does not check the
+   SQLite version (thread "SQLite functions for clients"). So no
+   function whose result depends on the SQLite version is offered:
+   no FTS5, no R*Tree, no float to text, no `sum` or `avg` over floats.
+   A sum of floats uses `decimal_sum` of the decimal extension (section
+   8 item 1), whose version stands in the tree. `sum(x ORDER BY pk)`
+   (`parse.y:1238`) gives the same order of addition on each node. An
+   authorizer
    (`sqlite3_set_authorizer`) allows a task only the functions of a
    list, and no `ATTACH`, `PRAGMA` or `ANALYZE`. Each query of a task
    orders its rows totally. A virtual table with a clock, a file
@@ -255,7 +277,14 @@ The insert of the log checks that the index is the next one, as
    (`func.c:1873-1896`), random rowids at the largest rowid
    (`vdbe.c:5672-5692`), `VACUUM` that renumbers rowids
    (`insert.c:3288-3289`).
-5. How a task reaches SQL is not in this plan. The `state_machine`
+5. Reads and writes use one list of SQLite functions. A read gets no
+   function that a write does not get (owner, 2026-10-26 18:34).
+6. A client sends a query as a CBOR structure, never as SQL (owner,
+   2026-10-26 18:35). The library prepares the statement of a form at
+   its first use and keeps it in a cache by form. The cache has one
+   named bound. The rule of 17:24 (prepared at open) holds for the
+   statements of the library only.
+7. How a task reaches SQL is not in this plan. The `state_machine`
    concept offers `find` of a byte key (`state_machine.hpp:28-31`). A
    plan of its own gives the interface.
 
@@ -402,6 +431,11 @@ request enters, and gives an error value above the bound.
    `test/lsan-mdb_dump-0.9.txt` and `test_lmdb_upgrade` go. RULES.md
    names LMDB as an exception to the rule on packages; the owner
    changes that text.
+   The decimal extension of SQLite (`ext/misc/decimal.c`) comes as a
+   submodule from the source of SQLite (owner, 2026-10-26 18:34). The
+   package `libsqlite3` does not hold it; only the shell does
+   (`shell.c.in:279` in 3.53.4). It is one more exception to the rule
+   on packages, beside CRC32C and libhydrogen.
 2. The interface tests of the concept `storage` change with the
    concept (sections 5.3 and 6.2). The tests that name LMDB
    (`lmdb_cluster.hpp`, `lmdb_damage.hpp`, `lmdb_storage.hpp`) get
