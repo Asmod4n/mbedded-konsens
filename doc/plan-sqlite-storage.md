@@ -213,8 +213,12 @@ the section named.
 3. A field of the state whose value has an exact SQLite form takes that
    form: an integer from -2^63 to 2^63-1 as `INTEGER`, a text string as
    `TEXT`, a byte string as `BLOB`, a float as `ANY` (it keeps -0.0).
-   NaN and the integers above 2^63-1 stay CBOR with their tag, in a
-   `BLOB` (floats.md: -0 stays, NaN is f97e00).
+   CBOR stands only on the wire. The store holds no CBOR; each value
+   takes a form that SQLite gives, also through an extension or a
+   virtual table (owner, 2026-10-26 18:40). Provisional, not checked:
+   an integer above 2^63-1 is decimal `TEXT`, which the decimal
+   extension computes on. NaN has no SQLite form, because SQLite stores
+   it as `NULL`; its form is open.
 4. A `STRICT` column checks the type and converts a value that it can
    convert without loss (text `'12'` into `INTEGER`). A prepared
    statement has no parameter types. An `ANY` column checks nothing;
