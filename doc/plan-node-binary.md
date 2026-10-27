@@ -54,7 +54,10 @@ builds the program that runs one node from that config.
 
 ## 2. Decisions of the owner for this plan
 
-1. Clients speak HTTP/1.1 (card, 18:12).
+1. Clients speak HTTP/1.1 (card, 18:12), as REST, so that every
+   client talks to the cluster directly (owner, 18:18). The API
+   expresses what the clients speak among themselves, CoAP over TCP
+   (owner, 18:16).
 2. HTTP comes from mruby-webmachine, which is renamed to
    embedded-webmachine later (owner, 18:13). It is a submodule.
 3. io_uring comes from slipstreamIO, a submodule that builds liburing
