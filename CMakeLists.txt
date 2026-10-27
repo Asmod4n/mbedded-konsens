@@ -161,7 +161,7 @@ if(KONSENS_PROGRAM)
     add_library(konsensd_parts STATIC ${KONSENS_PROGRAM_SOURCES})
     target_include_directories(konsensd_parts PUBLIC ${PROJECT_SOURCE_DIR}/program)
     target_include_directories(konsensd_parts SYSTEM PUBLIC ${PROJECT_SOURCE_DIR}/deps/mruby-webmachine/src)
-    target_link_libraries(konsensd_parts PUBLIC konsens tomlplusplus::tomlplusplus ada::ada
+    target_link_libraries(konsensd_parts PUBLIC konsens ada::ada
                                                 ${KONSENS_LIBURING_OUT}/lib/liburing.a slipstream)
     target_compile_options(konsensd_parts PRIVATE ${KONSENS_WARNINGS})
     add_executable(konsensd ${PROJECT_SOURCE_DIR}/program/main.cpp)
