@@ -132,8 +132,8 @@ appears in a changeset; a writable shared `mmap` of the `-shm` file on
 | a failed commit throws `sync_error` | `commit_or_throw` | a failed sync ends the process (owner 2026-10-21) |
 | `mdb_env_copy2` | `persistent_storage.cpp:1498` | a full copy for repair and a new node |
 | a second environment | `node_storage` | the repair count, the proof, the hidden identity |
-| file mode 0600 | `persistent_storage.cpp:29` | only the user reads the store and the hidden identity |
-| format version, empty-store check | `persistent_storage.cpp:39`, `:694-722` | `storage_errc::unsupported_format` |
+| file mode 0600 | `persistent_storage.cpp:28` | only the user reads the store and the hidden identity |
+| format version, empty-store check | `persistent_storage.cpp:38`, `:694-722` | `storage_errc::unsupported_format` |
 | destructor with an open transaction ends the process | `persistent_storage.cpp:1367-1372` | a wrong use fails loudly |
 | `effective_user_id` check | `open` | no start as root |
 | `lmdb_category` | `src/lmdb_category.hpp`, `bench/konsens_bench.cpp:41,955` | LMDB codes as `std::error_code` |
@@ -161,13 +161,14 @@ the section named.
 |---|---|
 | 3.4 item 2, "sync only" | gone: no descriptor; an idle node has nothing to sync |
 | 3.5 items 1, 3, 4 and 6 (io_uring, `mdb_txn_prepare`, the writer lock through the sync, slipstreamIO) | section 6 |
-| 3.5 item 2, "done" while the leader syncs (owner decision 18 item 4) | section 6.3, card open |
+| 3.5 item 2, "done" while the leader syncs (owner decision 18 item 4) | section 6.3, decided (section 9) |
 | 3.6, the count of syncs | section 6.4 |
 | 4.3 item 1, the decided index without a sync | each commit syncs (section 6.1) |
 | 5.1 items 2 to 4 and 9 item 6 (the tombstone by file system, `MDB_NOSYNC`) | the tombstone rides in the commit of its step, which syncs |
-| 8.2 item 3, the copy with `mdb_env_copy2` | section 7.3 |
+| 8.1 item 1, the vote after f + 1 answers as the only rule after a start | section 7.3 (`RecoveryWaitsForLeader`) |
+| 8.2 item 3, the copy with `mdb_env_copy2` | section 7.5 |
 | 15 items 6 to 8 | section 10 |
-| owner decisions 18 items 5 and 6 | section 6, card open |
+| owner decisions 18 items 5 and 6 | section 6, decided (section 9) |
 
 ## Part B: the form with SQLite
 
@@ -182,9 +183,8 @@ the section named.
    `sqlite3_open_v2`. The WAL and the `-shm` file take the mode of the
    database file.
 4. Each table is `STRICT`. The key of the log and of the client table
-   is an `INTEGER` (card open, section 4.2). Whether the log is a
-   `WITHOUT ROWID` table or a rowid table with `INTEGER PRIMARY KEY` is
-   an arm of the measurement (section 10); the log rows are large.
+   is an `INTEGER` (section 4.2). The log is a rowid table with
+   `INTEGER PRIMARY KEY` (measured, section 10.2).
 5. Each statement is prepared at the start with
    `SQLITE_PREPARE_PERSISTENT` and kept. A step binds and runs it, then
    calls `sqlite3_reset`. The statements are a fixed list in one place.
@@ -195,7 +195,7 @@ the section named.
    SQLite has a field for this in its header (`PRAGMA user_version`);
    the record in `meta` keeps its CRC.
 
-### 4.1 The columns and the CRC (card open)
+### 4.1 The record and the CRC
 
 1. Today a log entry is a kind byte and little-endian fields
    (`storage.cpp:78-97`), not CBOR. The meta record, the session record
@@ -204,12 +204,11 @@ the section named.
    of a log record holds the entry CRC, the chain CRC, the state and
    the state CRC (`persistent_storage.cpp:47-53`). The entry CRC
    travels on the wire.
-2. Proposal: each field gets a native column (owner, 17:26). The
-   entry CRC and the chain CRC stay columns and keep covering the
-   current binary form, which the library builds to compute them. The
-   wire does not change, and `format_version` goes to 5 only for the
-   file. The other form, a new deterministic CBOR encoding of an entry,
-   changes every CRC on the wire.
+2. A log entry is one `BLOB` record in the current binary form, with
+   its entry CRC and chain CRC, in a rowid table (measured, section
+   10.2; owner 18:22 item 4). The wire does not change, and
+   `format_version` goes to 5 only for the file. The fields of the
+   state take native columns (item 3).
 3. A field of the state whose value has an exact SQLite form takes that
    form: an integer from -2^63 to 2^63-1 as `INTEGER`, a text string as
    `TEXT`, a byte string as `BLOB`, a float as `ANY` (it keeps -0.0).
@@ -239,7 +238,7 @@ the section named.
    type, and a column of a fixed type is `INTEGER`, `TEXT`, `BLOB` or
    `REAL`, never `ANY`, except for floats.
 
-### 4.2 Integer keys (card open)
+### 4.2 Integer keys (owner, 2026-10-26 18:22 item 7)
 
 The log index, the session id, `client_id` and `pid` are `uint64_t`.
 Proposal: one check for safety, with one named bound (2^63-1), at each
@@ -333,9 +332,13 @@ measurement of blob against columns (section 10).
    `throw_if_nested_is_open` stays on each method of the parent.
 3. After each statement that fails, the store reads
    `sqlite3_get_autocommit`. When it is 1, SQLite has rolled back the
-   whole step. The transaction object then enters a closed state: each
-   later call returns the error without SQL, and `commit` returns it.
-   The child does the same. So no part of a step becomes durable alone.
+   whole step. When it is 0, SQLite rolled back only the statement: a
+   statement with a statement journal keeps the transaction open after
+   `SQLITE_FULL` or `SQLITE_NOMEM` (`vdbeaux.c:3376-3377`). The store
+   then runs `ROLLBACK` itself. In both cases the transaction object
+   enters a closed state: each later call returns the error without
+   SQL, and `commit` returns it. The child does the same. So no part of
+   a step becomes durable alone.
 4. The destructor of the store with an open transaction ends the
    process, as now.
 
@@ -348,14 +351,15 @@ measurement of blob against columns (section 10).
 3. A reader that stays open stops the checkpoint at its snapshot. The
    library holds no reader between steps.
 
-### 5.3 `find` (card open)
+### 5.3 `find` (owner, 2026-10-26 18:22 item 1)
 
-The pointer of `sqlite3_column_blob` dies at the next step or reset of
-its statement (section 1). A span from `find` would point to memory
-that is not alive after the next `find`. Proposal: `find` returns a
-`std::vector<std::byte>`, a copy that the caller owns. Its cost goes
-into the measurement. The other form: `find` calls a function with the
-span, and the span does not leave that call.
+`find` returns a view of the bytes, no copy, as `RawBytes` in Go. The
+pointer of `sqlite3_column_blob` dies at the next step or reset of its
+statement (section 1), so the view lives until the next call of its
+statement. A debug build keeps a generation count for each statement
+and throws `std::logic_error` when a view is read after that call. Not
+checked: whether a caller holds two views of one statement at the same
+time.
 
 ## 6. The sync
 
@@ -373,20 +377,26 @@ span, and the span does not leave that call.
    option; it is measured in the binary with the sends before it
    enters. In that form a reader sees the commit before the sync
    (section 1).
-3. "done" from the leader (card open). Proposal: the leader sends
-   "done" before its `commit`, so that its own sync runs while the
-   followers write. It counts itself only after its `commit` returns.
-   The model of section 10.1 shows that this keeps safety. The other
-   form sends "done" after the commit, with one sync more in series
-   before the reply.
+3. "done" from the leader (owner, 11:38): the leader sends "done"
+   before its `commit`, so that its own sync runs while the followers
+   write. It counts itself only after its `commit` returns. The model
+   (`MC_oe_parallel_l1`) has no violation; the runs with the store
+   rollback end at their limit. The model has no commit that fails;
+   what the leader does after a failed commit of "done" is a card
+   (review 2 B4).
 4. The count of syncs: one sync of the WAL for each commit. A
    checkpoint adds one sync of the WAL and, when it reaches the end of
    the WAL, one sync of the database file.
-5. The checkpoint (card open). Proposal: `PRAGMA
-   wal_autocheckpoint=0`. The library calls
+5. The checkpoint (owner card 18:23): `PRAGMA wal_autocheckpoint=0`
+   runs first, because it removes any WAL hook (`main.c:2510-2524`);
+   the library installs its own hook after it. The library calls
    `sqlite3_wal_checkpoint_v2` with `SQLITE_CHECKPOINT_PASSIVE` after
-   the commit and after the sends of the step, when the WAL holds 1000
-   frames or more (the WAL hook gives the count). `SQLITE_IOERR_FSYNC`
+   the commit and after the sends of the step, when the WAL holds
+   `checkpoint_frames` frames or more (one named constant; the WAL hook
+   gives the count). Before `sqlite3_close` the library runs this
+   checkpoint itself and checks its result, because the checkpoint
+   inside `sqlite3_close` syncs the database file and does not raise a
+   failure. `SQLITE_IOERR_FSYNC`
    from it throws `sync_error`, and nothing repeats it.
    `SQLITE_FULL` from it is the "full" value. No C++ exception crosses
    a callback that SQLite calls. The sync stays the work of SQLite.
@@ -394,9 +404,9 @@ span, and the span does not leave that call.
    gives the bound in pages; the parameter of `open` gives it in bytes,
    and the library converts it. Over the bound, SQLite gives
    `SQLITE_FULL`.
-7. Torn sectors (card open). Proposal: each database file opens with
-   the URI parameter `psow=0`, so that SQLite pads the last frame of a
-   commit to the sector. The cost is measured.
+7. Torn sectors (owner card 18:23): each database file opens with the
+   URI parameter `psow=0`, so that SQLite pads the last frame of a
+   commit to the sector. Measured in section 10.2.
 
 ### 6.1 The error codes
 
@@ -410,7 +420,8 @@ The rule "An error goes to whoever can repair it" decides each row.
 | other `SQLITE_IOERR_*` on a read | `read_error` |
 | `SQLITE_CORRUPT*`, `SQLITE_NOTADB` | a damage code that `error_is_a_damage` (`sequence_paxos.hpp:83-88`) lists |
 | `SQLITE_TOOBIG` | the value of section 6.2 |
-| `SQLITE_BUSY`, `SQLITE_MISUSE`, `SQLITE_CONSTRAINT` on a key that the library computed | `std::logic_error` |
+| `SQLITE_BUSY` at open (another process holds the store) | an error value, the store is in use |
+| `SQLITE_BUSY` after open, `SQLITE_MISUSE`, `SQLITE_CONSTRAINT` on a key that the library computed | `std::logic_error` |
 
 The limit X of free space stays a field, off by default.
 
@@ -432,7 +443,13 @@ request enters, and gives an error value above the bound.
 3. A damaged frame in the middle of the WAL drops that commit and every
    later one without an error (section 1). The store then holds an
    older state that is whole in itself. With LMDB the page checksum
-   gave `MDB_BAD_CHECKSUM`. The vote after f + 1 answers after each
+   gave `MDB_BAD_CHECKSUM`. The older state is not always whole: a
+   PASSIVE checkpoint copies frames into the database file and keeps
+   them in the WAL (`wal.c:2254-2337`). After a damaged frame the
+   recovery sets `nBackfill` to 0 (`wal.c:1579-1580`), and the
+   database file keeps pages of commits after that frame. So the state
+   can be a mix of commits, and each record CRC still holds (review 2
+   B1). How a start detects that is a card. The vote after f + 1 answers after each
    start (plan-one-environment.md 8.1) does not keep Paxos safe here:
    TLC found a decided entry that is lost (`OneEnvironment` with
    `StoreRollback`, and `RecoveryRollback`). Taking the log of the
@@ -441,7 +458,12 @@ request enters, and gives an error value above the bound.
    models: after the f + 1 answers the node does not count in a
    prepare. Its promise carries a mark, the leader counts it only in
    its accept phase and sends it the accept sync, and the node votes
-   again after that accept sync (`RecoveryWaitsForLeader`). Results:
+   again after that accept sync, and only an accept sync of a ballot
+   above the highest promise of its answers (`RecoveryWaitsForLeader`).
+   A recovering or rejoining node gives no answers and does not lead.
+   Each start enters the recovery again, so the mark needs no store.
+   What happens when a majority starts at the same time is a card
+   (review 2 B3). Results:
    `model/results/20261026T185400Z-one-environment-rollback.md`.
 4. A checksum on each page needs `cksumvfs.c`, which is in no package
    (section 9).
@@ -452,10 +474,12 @@ request enters, and gives an error value above the bound.
    (plan-one-environment.md 8.2 item 3).
 6. A backup and an archive are the same copy. The hidden identity of
    the node storage is not in it, because the node storage is another
-   file (card open).
+   file. The effects of both forms are measured in a test before the
+   decision (owner 18:22 item 9).
 7. A damaged store (owner card 2026-10-26 17:30): the operator copies
    the database file and its `-wal` file together to a clone, and runs
    `sqlite3 clone.db .recover | sqlite3 new.db` on the clone. The node
+   is stopped while its files are copied. The node
    then takes the repair by entries from its peers. The library does
    not call `.recover`.
 8. The repair after a snapshot by a changeset of the session extension
@@ -468,7 +492,11 @@ request enters, and gives an error value above the bound.
    because `sqlite3changeset_apply` checks only the rows it changes. So
    after the changeset the node compares the digest of its whole state
    with the digest of the peer at the same index, and a difference asks
-   for the full copy. With this check the model holds.
+   for the full copy. With this check the model holds. The digest is
+   the digest of the state that Execute-Verify compares. Each table of
+   the state has an explicit primary key, because a session leaves out
+   a table without one. The conflict handler of
+   `sqlite3changeset_apply` returns `SQLITE_CHANGESET_ABORT`.
 
 ## 8. Build and tests
 
@@ -536,7 +564,8 @@ follows the rules.
 Decided, 2026-10-26:
 
 - 17:24: statements prepared once at open.
-- 17:26: native column types, CBOR with tag where none fits.
+- 17:26: native column types, CBOR with tag where none fits (replaced
+  18:40: CBOR only on the wire, section 4.1 item 3).
 - 17:29: virtual tables, relations, strict types.
 - 17:30: one file with all tables; the node storage a second file.
 - 17:30: `.recover` of the package `sqlite3`, on a clone.
@@ -544,9 +573,8 @@ Decided, 2026-10-26:
   a changeset.
 - 17:54: the first version lets SQLite sync (`synchronous=FULL`).
 
-Cards open (each with its proposal). The owner asked at 18:14 for the
-practice of known systems on each; section 9.1 gives it, and the cards
-are asked again:
+The cards below were asked at 18:14 and are answered (18:22 and
+18:23, further down). The list stays as the record of the questions:
 
 1. `find` returns a copy (5.3).
 2. The checkpoint is called by the library, not automatic (6.5).
@@ -577,7 +605,9 @@ Answers of the owner, 2026-10-26 18:22, to the cards of section 9.1:
 5. "done" before the commit of the leader: decided before (11:38),
    parallel.
 6. Only the library writes SQL. No task sends SQL, so no authorizer and
-   no version check are needed. Section 4.3 item 4 and 5 fall away.
+   no version check are needed. The authorizer and the version check
+   of section 4.3 item 4 fall away; its rules on deterministic queries
+   stay.
 7. Keys take what SQLite offers: `INTEGER`, with the bound 2^63-1 as
    one check for safety where a value enters.
 8. The changeset repair: tried in a file outside the tree and modelled
@@ -711,8 +741,12 @@ rowid 167, 165, 821; columns 140, 180, 1099; columns_rowid 196, 153,
 are above the spread.
 
 `psow=0` against the default: 158 against 230 µs at 1 entry per
-commit, the same within the noise at 16 and 1024. So `psow=0` costs no
-measurable time here.
+commit, with no overlap of the rounds; the same within the noise at 16
+and 1024. `psow=0` was not slower in any case. Why the default was
+slower at 1 entry is not known.
+
+Faults of this run against the rules: nice 0, the release build only,
+one machine.
 
 Result: the log is a rowid table (idx is the rowid) with one BLOB
 record. It is the fastest arm for the lookup in each size, and the
@@ -721,6 +755,30 @@ lookup. The three points of section 4.2.1 (one statement for a query
 by session) are not measured; a query by session needs its own index
 in both forms.
 
+## 12. Review 2 and changes
+
+doc/review-plan-sqlite-storage-2.md (second agent, 2026-10-27): 7
+blocking, 9 others.
+
+| finding | change |
+|---|---|
+| B1, a mixed state after a damaged WAL frame | 7.3; card (detection at start) |
+| B2, the rejoining node took an old accept sync | model 803da6d: only a ballot above its answers; 7.3 |
+| B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3; card |
+| B4, a failed commit of "done" at the leader | 6.3; card |
+| B5, `SQLITE_FULL` rolls back only the statement | 5.1 item 3 |
+| B6, `CHECK(cbor_valid(x))` against `.recover` | card |
+| B7, text against owner decisions | 4.1, 4.2, 5.3, 6.3, 6.5, 6.7, 7.6, 9, tables |
+| O1, the checkpoint in `sqlite3_close` | 6.5 |
+| O2, `wal_autocheckpoint=0` removes the hook; 1000 frames | 6.5 |
+| O3, `SQLITE_BUSY` from another process | 6.1 |
+| O4, "the model shows" | 6.3 |
+| O5, the rules of the rejoining node | 7.3 |
+| O6, the digest, primary keys, the conflict handler | 7.8 |
+| O7, the faults of the run of 10.2, psow | 10.2 |
+| O8, the node stops during the copy | 7.7 |
+| O9, two citations | section 2 |
+
 ## 11. Review 1 and changes
 
 doc/review-plan-sqlite-storage-1.md (second agent, 2026-10-26): 28
@@ -728,22 +786,22 @@ findings, 6 blocking. Verdict: approve after the blocking fixes.
 
 | finding | change |
 |---|---|
-| 1 blocking, `find` span | 5.3, card open |
+| 1 blocking, `find` span | 5.3, decided (section 9) |
 | 2 blocking, a full disk in a savepoint | 5.1 item 3, test 8.4 |
-| 3 blocking, the automatic checkpoint drops its error | 6.5, card open |
+| 3 blocking, the automatic checkpoint drops its error | 6.5, decided (section 9) |
 | 4 blocking, `ENOSPC` of an `fsync` | 6.1, test 8.4 |
-| 5 blocking, no padding with `FULL` | section 1, 6.7, card open |
-| 6 blocking, the record is not CBOR | 4.1, card open |
+| 5 blocking, no padding with `FULL` | section 1, 6.7, decided (section 9) |
+| 6 blocking, the record is not CBOR | 4.1, decided (section 9) |
 | 7, a damaged frame in the middle of the WAL | section 1, 7.3, 10.1, test 8.4 |
 | 8, error codes | 6.1 |
 | 9, the reader snapshot | 5.2 |
 | 10, `RELEASE` | 5.1 item 2 |
 | 11, the inventory | section 2 |
-| 12, what `FULL` removes | section 3, 6.3, card open |
-| 13, determinism | 4.3 item 4, card open |
+| 12, what `FULL` removes | section 3, 6.3, decided (section 9) |
+| 13, determinism | 4.3 item 4, decided (section 9) |
 | 14, the tests | 8.3, 8.4 |
-| 15, integer keys | 4.2, card open |
-| 16, the changeset | 7.8, card open |
+| 15, integer keys | 4.2, decided (section 9) |
+| 16, the changeset | 7.8, decided (section 9) |
 | 17, the copy | 7.5 |
 | 18, the size of a value | 6.2 |
 | 19 to 28 | section 1, 4.1, 6.1, 6.2, 7.7, 8.1, 8.2, 9, 10 |
