@@ -858,34 +858,66 @@ The build of the first step (2026-10-27) changed three points of this plan.
 
 The models check the rejoin for safety. They do not say which node raises
 the ballot above the promises of the answers. This section gives the form
-of the code. Item 7 is provisional and waits on the owner.
+of the code after review 3 (findings F1 to F12). Items 1 and 8 are
+provisional and wait on the owner.
 
-1. `complete_recovery` keeps the highest promise of the answers and of
+1. Provisional (F5): `complete_recovery` keeps the log of the store and
+   raises only the promise, as `RecoveryComplete` of the model does. The
+   log of the leader comes with the accept sync of item 5. The copy of
+   the log of a primary or of the best answer goes, because no model
+   checks the copy followed by the wait, and the copy alone is unsafe
+   (results, run 5). The comparison of the chain CRCs of the answers
+   (`find_hardware_fault`) stays.
+2. `complete_recovery` keeps the highest promise of the answers and of
    the store as `rejoin_above` in RAM. No store holds it: each start
    enters the recovery again (section 7.3).
-2. While `rejoin_above` is set, the node does not lead: `handle_leader`
-   does nothing. Its answer to a recovery says `recovering`, so that it
-   does not count as a normal answer. A client request gets
-   `client_errc::recovering`.
-3. The node answers a prepare as now. Its promise carries the new field
-   `rejoin_above`, an optional ballot (model `OneEnvironment.tla`, field
-   `rejoin` of the promise). The wire format of the promise changes.
-4. A leader in its prepare phase does not count a promise that carries
-   `rejoin_above` (model `HandlePromise`, `m.rejoin => phase = accept`).
-   A leader in its accept phase takes it and sends the accept sync, as
-   now.
-5. The node takes an accept sync only when its ballot is above
-   `rejoin_above` (model `HandleAcceptSync`). After that accept sync it
-   clears `rejoin_above` and votes as any follower.
-6. Every other message reaches a rejoining node as now. The node stays
-   in the phase `recover` until the accept sync, so it accepts and
-   decides nothing before it.
-7. Provisional: a leader in its accept phase that gets a promise whose
-   `rejoin_above` is not below its own ballot starts a new ballot above
-   `rejoin_above`, with its own pid, in the same step. Without this, a
-   node that restarts under a leader that stays never votes again.
-8. Tests: the TLC trace of `StoreRollback` (a decided entry lost) as a
-   test of `sequence_paxos` that fails without items 4 and 5; a restart
-   under a stable leader that votes again after item 7; a rejoining node
+3. While `rejoin_above` is set, the node does not lead: `handle_leader`
+   does nothing, and Ballot Leader Election sends its heartbeats but
+   never takes over (F1; a non-voting member of Raft starts no
+   election). Its answer to a recovery says `recovering`. A client
+   request gets `client_errc::recovering`. Execute-Verify runs no work
+   and sends no answer until the node is in its accept phase (F4).
+4. The node answers a prepare as now. Its promise and its `prepare_req`
+   carry the new field `rejoin_above`, an optional ballot (model field
+   `rejoin`; F2). A promise that the node sends again from
+   `answered_prepare_` carries it too (F3). The wire format of the
+   promise and of the prepare request changes.
+5. A leader in its prepare phase drops a promise that carries
+   `rejoin_above`: it neither counts nor records it, so the node is no
+   promised follower and no source of `max_promise_sync` (F3; model
+   `m.rejoin => phase = accept`). A leader in its accept phase takes it,
+   resets `accepted_indexes` of that node, and sends the accept sync
+   (F7).
+6. The node takes an accept sync only when its ballot is above
+   `rejoin_above` (model `HandleAcceptSync`). After it, the node clears
+   `rejoin_above` and votes as any follower. Before it, the node accepts
+   and decides nothing: `accept_decide` and `decide` need the phase
+   `accept`, and only an accepted accept sync enters that phase (F6).
+   A heartbeat ack of the node is true, because its raised promise is
+   durable (F8).
+7. Why the stale accepted index of item 5 does no harm (F7, inferred):
+   a node that accepted in `n_leader` before its crash has
+   `rejoin_above >= n_leader`, because f + 1 answers of 2f peers meet
+   every majority that holds the node.
+8. Provisional (owner card 14.7): a leader in its accept phase that gets
+   a promise or a `prepare_req` whose `rejoin_above` is not below its
+   own ballot starts a new ballot in the same step, with
+   `n = max(n_leader.n, rejoin_above.n) + 1` and its own pid (F2, F9).
+   Each rejoin gives at most one more ballot. With three nodes, two
+   nodes that rejoin at the same time wait on each other; this is a
+   case for the operator, as a majority that starts at the same time.
+9. Tests: the TLC trace of `StoreRollback` (a decided entry lost) as a
+   test of `sequence_paxos` that fails without items 5 and 6; a restart
+   under a stable leader that votes again after item 8; a rejoining node
    that gets a prepare and an accept sync of the same ballot as its
-   answers and stays out.
+   answers and stays out; a rejoining node that wins no takeover; a
+   `rejoin_above` above `n_leader`; a promise of a rejoining node in the
+   prepare phase that changes neither `max_promise_sync` nor the
+   promised followers; a resent promise with `rejoin_above`; no work
+   and no counted answer of a rejoining node; no `decide` and no
+   `accept_decide` before the accept sync; a restart during the rejoin;
+   two rejoining nodes; the new fields on the wire, and a truncated
+   input that fails as a value.
+10. The OneEnvironment runs end at depth 29 to 30; the trace of review 2
+   needs about 33 steps. Only `MC_rr_newleader_b2` is a complete search
+   (F10).
