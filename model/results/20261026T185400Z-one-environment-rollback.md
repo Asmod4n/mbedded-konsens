@@ -60,3 +60,37 @@ check that the simulation finds the violation.
 
 The simulation does not find the known violation in the configuration
 without the fix. So the simulation says nothing about the fix.
+
+## Run 5: the small model `tla/RecoveryRollback.tla`
+
+The model holds only the ballots, the logs, the store rollback and the
+recovery. Each write is synced. The invariant `ChosenOnce` says that
+one index has one chosen value. TLC 1 worker, `-deadlock`.
+
+| config | Recovery | exit | result |
+|---|---|---|---|
+| MC_rr_promise_b2 | promise | 12 | ChosenOnce violated, 354,275 distinct states |
+| MC_rr_answerlog_b2 | answerlog | 12 | ChosenOnce violated, 362,232 distinct states |
+| MC_rr_newleader_b2 | newleader | 0 | complete, 1,228,309 distinct states, no violation |
+
+The form "answerlog" (`RecoveryTakesLog` of OneEnvironment) is wrong
+(`20261027T041800Z-rr-answerlog-b2-trace.out`):
+
+1. n1 leads ballot 1. It accepts v1 and sends the accept.
+2. n1 falls back to its store before v1, and starts its recovery.
+3. n2 and n3 answer with an empty log.
+4. n3 then accepts v1 from the old message. v1 is chosen by n1 and n3.
+5. n1 completes the recovery with an empty log.
+6. n2 leads ballot 2 with the promises of n2 and n1. Both logs are
+   empty, and v2 is chosen.
+
+The answers of the recovery can be older than an accept that is still
+on the way. The form "newleader" waits: the node votes again only at
+the first accept of a ballot above each promise of f + 1 answers, and
+takes the log of that accept. A leader of such a ballot completed its
+prepare without the node. This is the rule of "Paxos Made Live"
+(Chandra, Griesemer, Redstone, PODC 2007, section 5.1): a replica with
+a lost disk does not vote until it has seen one instance that started
+after its rebuild. Viewstamped Replication Revisited (section 4.3) has
+the same form: the recovering replica takes its state from the primary
+of the latest view.
