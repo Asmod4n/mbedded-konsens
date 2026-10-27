@@ -643,8 +643,7 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
     const auto bytes = konsens::encode_result({0, {}, {}});
     const auto crc = konsens::compute_result_crc(1, bytes);
     const konsens::fault_proof proof{konsens::proof_kind::result_crc, 1, leader_ballot, crc + 1, crc};
-    CHECK(sqlite_storage::open_node_storage_in(own_directory).get_repair_record() ==
-          konsens::repair_record{0, std::nullopt, false, proof});
+    CHECK(sqlite_storage::open_node_storage_in(own_directory).get_fault_proof().value() == std::optional{proof});
     // Plan clean-stop 2.3: the start that threw deleted the mark, so the
     // next start retires the node and does not throw again.
     const auto n = start_after_a_crash(directory, own_directory, marked{0}, 2);
@@ -894,12 +893,12 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
     const auto own_directory = sqlite_storage::new_directory();
     CHECK_THROWS_AS(static_cast<void>(start_after_a_clean_stop(directory, own_directory, marked{'x'}, 1)),
                     konsens::node_fault);
-    const auto record = sqlite_storage::open_node_storage_in(own_directory).get_repair_record();
-    REQUIRE(record.has_value());
-    REQUIRE(record->proof.has_value());
-    CHECK(record->proof->kind == konsens::proof_kind::listed_result_differs);
-    CHECK(record->proof->index == 2);
-    CHECK(record->proof->n == leader_ballot);
+    const auto proof = sqlite_storage::open_node_storage_in(own_directory).get_fault_proof();
+    REQUIRE(proof.has_value());
+    REQUIRE(proof->has_value());
+    CHECK((*proof)->kind == konsens::proof_kind::listed_result_differs);
+    CHECK((*proof)->index == 2);
+    CHECK((*proof)->n == leader_ballot);
 }
 
 // Plan 2.8.1 and 2.8.2: a listed node whose second run agrees does not
@@ -911,7 +910,7 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
         CAPTURE(out.front());
         auto n = *start_after_a_clean_stop(decided_log_with_a_listed(out), sqlite_storage::new_directory(), marked{0}, 1);
         CHECK(state_of(n) == bytes_of('a'));
-        CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
+        CHECK(n.get_fault_proof().value() == std::optional<konsens::fault_proof>{});
     }
 }
 
@@ -954,11 +953,11 @@ TEST_CASE("a leader whose done record a majority refused throws")
         }
     });
     CHECK(faulted.contains(l));
-    const auto record = c.at(l).get_repair_record();
-    REQUIRE(record.has_value());
-    REQUIRE(record->proof.has_value());
-    CHECK(record->proof->kind == konsens::proof_kind::refused_by_a_majority);
-    CHECK(record->proof->index == request_index);
+    const auto proof = c.at(l).get_fault_proof();
+    REQUIRE(proof.has_value());
+    REQUIRE(proof->has_value());
+    CHECK((*proof)->kind == konsens::proof_kind::refused_by_a_majority);
+    CHECK((*proof)->index == request_index);
 }
 
 // Plan 3.1 and 3.2: a damage that a step finds is no returned value any
@@ -974,10 +973,10 @@ TEST_CASE("a damage that a step finds throws after its proof is durable")
     const auto faulted = deliver_changed(c.nodes, change_the_done_record_to(f, give_another_result));
     REQUIRE(faulted.contains(f));
     CHECK_FALSE(faulted.contains(l));
-    const auto record = c.at(f).get_repair_record();
-    REQUIRE(record.has_value());
-    REQUIRE(record->proof.has_value());
-    CHECK(record->proof->kind == konsens::proof_kind::damage);
+    const auto proof = c.at(f).get_fault_proof();
+    REQUIRE(proof.has_value());
+    REQUIRE(proof->has_value());
+    CHECK((*proof)->kind == konsens::proof_kind::damage);
 }
 
 namespace {

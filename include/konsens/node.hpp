@@ -32,7 +32,6 @@
 namespace konsens {
 
 inline constexpr std::size_t max_batch_size = 1024;
-inline constexpr std::uint64_t auto_repair_count = 1;
 
 static_assert(std::is_nothrow_move_constructible_v<message> && std::is_nothrow_move_constructible_v<received>);
 
@@ -154,9 +153,9 @@ public:
                 return std::unexpected(r.error());
             }
         }
-        const auto record = own_storage.get_repair_record();
-        if (!record) [[unlikely]] {
-            return std::unexpected(record.error());
+        const auto proof = own_storage.get_fault_proof();
+        if (!proof) [[unlikely]] {
+            return std::unexpected(proof.error());
         }
         auto promise = std::expected<ballot, std::error_code>{ballot{}};
         if (sp->votes()) {
@@ -175,7 +174,7 @@ public:
                 return std::unexpected(r.error());
             }
         }
-        n.retire_after_a_fault_at_the_start(*record);
+        n.retire_after_a_fault_at_the_start(*proof);
         if (n.seq_paxos_.retired()) {
             static_cast<void>(n.ble_.take_outgoing_messages());
         }
@@ -290,13 +289,6 @@ private:
             if (build_started_ && !seq_paxos_.building() && seq_paxos_.votes()) {
                 start_the_election_after_the_build();
             }
-            if (repair_started_ && !seq_paxos_.repairing() && seq_paxos_.votes()) {
-                if (auto r = close_the_repair(); !r) [[unlikely]] {
-                    drop_held_messages_and_replies();
-                    return r;
-                }
-                static_cast<void>(check_the_applied_state());
-            }
             if (!seq_paxos_.votes()) {
                 release_the_output();
                 return {};
@@ -305,12 +297,6 @@ private:
             if (auto r = serve_reads(); !r) [[unlikely]] {
                 drop_held_messages_and_replies();
                 return r;
-            }
-            if (open_mark_ && !repair_started_ && get_applied_idx() >= *open_mark_) {
-                if (auto r = close_the_open_mark(); !r) [[unlikely]] {
-                    drop_held_messages_and_replies();
-                    return r;
-                }
             }
             release_the_output();
             return {};
@@ -497,12 +483,10 @@ public:
 
     const sequence_paxos<S>& get_sequence_paxos() const { return seq_paxos_; }
     bool waits_for_the_operator() const { return waits_for_the_operator_; }
-    std::expected<std::uint64_t, std::error_code> get_repair_count() const
+    std::expected<std::optional<fault_proof>, std::error_code> get_fault_proof() const
     {
-        return own_storage_.get_repair_record().transform([](const repair_record& r) { return r.count; });
+        return own_storage_.get_fault_proof();
     }
-    std::expected<repair_record, std::error_code> get_repair_record() const { return own_storage_.get_repair_record(); }
-    [[nodiscard]] result allow_one_more_repair() { return own_storage_.allow_one_more_repair(); }
     const ballot_leader_election& get_ballot_leader_election() const { return ble_; }
     const M& get_state_machine() const { return machine_; }
     const std::optional<konsens::selection>& get_selection() const { return selection_; }
@@ -775,13 +759,13 @@ private:
         return {config.configuration_id, config.pid, config.peers, config.leader_priority};
     }
 
-    void retire_after_a_fault_at_the_start(const repair_record& record)
+    void retire_after_a_fault_at_the_start(const std::optional<fault_proof>& proof)
     {
         const auto e = seq_paxos_.get_error();
         if (e == make_error_code(storage_errc::missing_meta_record)) [[unlikely]] {
             waits_for_the_operator_ = true;
         }
-        if (record.proof || (e && error_is_a_damage(*e))) [[unlikely]] {
+        if (proof || (e && error_is_a_damage(*e))) [[unlikely]] {
             seq_paxos_.retired_ = true;
         }
     }
@@ -818,26 +802,6 @@ private:
             throw sync_error(w.error(), "konsens: the node storage failed to keep the proof of a fault");
         }
         throw node_fault(e, what);
-    }
-
-    result close_the_open_mark()
-    {
-        open_mark_.reset();
-        return own_storage_.close_the_repair();
-    }
-
-    result close_the_repair()
-    {
-        repair_started_ = false;
-        if (auto c = close_the_open_mark(); !c) [[unlikely]] {
-            return c;
-        }
-        const auto promise = seq_paxos_.get_promise();
-        if (!promise) [[unlikely]] {
-            return std::unexpected(promise.error());
-        }
-        ble_ = ballot_leader_election::with(ble_config_, *promise);
-        return {};
     }
 
     void start_the_election_after_the_build()
@@ -1318,7 +1282,7 @@ private:
                                           make_error_code(paxos_errc::result_differs),
                                           "konsens: a chosen result fails its CRC on this node");
             }
-            if (std::ranges::contains(e.out, seq_paxos_.get_pid()) && !(open_mark_ && k <= *open_mark_)) {
+            if (std::ranges::contains(e.out, seq_paxos_.get_pid())) {
                 const auto own = encode_result(run_request(request_of(e), begin_the_nested_transaction()));
                 const fault_proof proof{proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise, e.result_crc,
                                         compute_result_crc(k, own)};
@@ -1816,9 +1780,7 @@ private:
     std::uint64_t last_read_{};
     std::unique_ptr<std::uint64_t> commit_count_ = std::make_unique<std::uint64_t>();
     std::uint64_t nonce_;
-    bool repair_started_{};
     bool build_started_{};
-    std::optional<std::uint64_t> open_mark_;
     bool waits_for_the_operator_{};
     bool faulted_{};
     bool stopped_{};

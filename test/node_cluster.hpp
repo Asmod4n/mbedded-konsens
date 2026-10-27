@@ -96,11 +96,6 @@ struct disk_storage {
         auto set_accepted_round(const ballot b) { return t_.set_accepted_round(b); }
         auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
         auto set_config_first_idx(const std::uint64_t index) { return t_.set_config_first_idx(index); }
-        auto write_repaired_log(const std::uint64_t from_idx, const std::span<const entry> entries,
-                                const ballot promise, const ballot accepted_round, const std::uint64_t decided_idx)
-        {
-            return t_.write_repaired_log(from_idx, entries, promise, accepted_round, decided_idx);
-        }
         std::expected<void, std::error_code> commit() &&
         {
             d_->commits += 1;

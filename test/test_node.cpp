@@ -387,12 +387,6 @@ struct recording_storage {
         auto set_accepted_round(const konsens::ballot b) { return t_.set_accepted_round(b); }
         auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
         auto set_config_first_idx(const std::uint64_t index) { return t_.set_config_first_idx(index); }
-        auto write_repaired_log(const std::uint64_t from_idx, const std::span<const konsens::entry> entries,
-                                const konsens::ballot promise, const konsens::ballot accepted_round,
-                                const std::uint64_t decided_idx)
-        {
-            return t_.write_repaired_log(from_idx, entries, promise, accepted_round, decided_idx);
-        }
         std::expected<void, std::error_code> commit() && { return std::move(t_).commit(); }
 
     private:
@@ -484,8 +478,7 @@ void end_without_stop(node_t& n)
 
 }
 
-// Plan clean-stop 2.6, decided 2026-10-27: a repair replaces promises
-// that the node sent, which is a rollback, so a damage that the start
+// Plan clean-stop 2.6, decided 2026-10-27: a damage that the start
 // checks find retires the node, also after a clean stop. The two other
 // nodes elect a leader among them when the damaged node led, and decide
 // without it.
@@ -534,8 +527,8 @@ TEST_CASE("a damage that the start checks find retires the node")
 
 // Owner, 2026-10-26: the meta record and the log stand in one environment,
 // and each commit writes both. A store with no meta record was changed from
-// outside the library. The node does not repair it: it waits for the
-// operator, counts no repair and does not vote.
+// outside the library. The node waits for the operator and does not
+// vote.
 TEST_CASE("a start without a meta record waits for the operator")
 {
     const auto log_directory = sqlite_storage::new_directory();
@@ -549,35 +542,23 @@ TEST_CASE("a start without a meta record waits for the operator")
                            sqlite_storage::open_node_storage_in(own_directory), echo{}, 5);
     CHECK(n.waits_for_the_operator());
     CHECK_FALSE(n.get_sequence_paxos().votes());
-    CHECK_FALSE(n.get_sequence_paxos().repairing());
-    CHECK(n.get_repair_count() == 0);
     CHECK(n.get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_meta_record));
 }
 
-// Plan execute-verify 3.1 and 3.3: the proof is one field of the repair
-// record, and it survives a close of the node storage. count_a_repair
-// sets the open mark and clears the proof in one commit, and the other
-// members keep the fields that they do not name.
-TEST_CASE("the repair record keeps the proof and the open mark")
+// Plan execute-verify 3.1, and plan clean-stop section 6 question 2:
+// the proof survives a close of the node storage, so each later start
+// reads it and retires the node. Each field of the proof comes back.
+TEST_CASE("the node storage keeps the proof of a fault")
 {
     const auto directory = sqlite_storage::new_directory();
     const konsens::fault_proof proof{konsens::proof_kind::listed_result_differs, 7, {1, 2, 0, 3}, 11, 12};
     {
         auto own = sqlite_storage::open_node_storage_in(directory);
-        CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
+        CHECK(own.get_fault_proof().value() == std::optional<konsens::fault_proof>{});
         REQUIRE(own.write_the_proof(proof));
     }
-    auto own = sqlite_storage::open_node_storage_in(directory);
-    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, proof});
-    REQUIRE(own.count_a_repair(proof.index));
-    CHECK(own.get_repair_record() == konsens::repair_record{1, 7, false, std::nullopt});
-    REQUIRE(own.write_the_proof(proof));
-    REQUIRE(own.allow_one_more_repair());
-    CHECK(own.get_repair_record() == konsens::repair_record{0, 7, false, proof});
-    REQUIRE(own.cover_the_proof());
-    CHECK(own.get_repair_record() == konsens::repair_record{0, 7, true, std::nullopt});
-    REQUIRE(own.close_the_repair());
-    CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
+    const auto own = sqlite_storage::open_node_storage_in(directory);
+    CHECK(own.get_fault_proof().value() == std::optional{proof});
 }
 
 // Plan execute-verify 3.6: the start reads the whole log, so an entry that

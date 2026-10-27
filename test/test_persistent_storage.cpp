@@ -1001,67 +1001,6 @@ TEST_CASE("the storage erases a key and a session")
     CHECK(r->find_session(2).value() == std::nullopt);
 }
 
-// Owner, 2026-10-26: a store without a meta record was changed from
-// outside the library. A repair does not guess the applied point: it
-// refuses with missing_meta_record, and the log, the state and the client
-// table stay as they are.
-TEST_CASE("a repair without a meta record is refused and changes nothing")
-{
-    const temporary_directory dir;
-    const std::array key{std::byte{1}};
-    const std::vector written{normal_entry("a"), normal_entry("b")};
-    {
-        auto storage = open_storage(dir.path());
-        write(storage, [&](auto& t) {
-            REQUIRE(t.append_entries(written));
-            REQUIRE(t.insert_or_assign(key, key));
-            REQUIRE(t.insert_or_assign_session(2, {1, {}}));
-            REQUIRE(t.set_decided_index(2));
-            REQUIRE(t.set_applied(2, 9));
-        });
-    }
-    change_with_sqlite(dir.path(), [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
-    auto storage = open_storage(dir.path());
-    {
-        auto t = storage.begin();
-        REQUIRE(t.has_value());
-        const std::vector repaired{normal_entry("c")};
-        CHECK(t->write_repaired_log(0, repaired, {1, 1, 0, 1}, {1, 1, 0, 1}, 1) ==
-              std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
-    }
-    const auto r = storage.begin_read_only();
-    REQUIRE(r.has_value());
-    CHECK(r->get_meta() == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
-    CHECK(r->get_entries(0, 2) == written);
-    CHECK_FALSE(finds_no_value(r->find(key)));
-    CHECK(r->find_session(2).value() == konsens::session_record{1, {}});
-}
-
-// A repair with a meta record keeps the applied point and the state.
-TEST_CASE("a repair with a meta record keeps the state")
-{
-    const temporary_directory dir;
-    const std::array key{std::byte{1}};
-    auto storage = open_storage(dir.path());
-    const std::vector written{normal_entry("a"), normal_entry("b")};
-    write(storage, [&](auto& t) {
-        REQUIRE(t.append_entries(written));
-        REQUIRE(t.insert_or_assign(key, key));
-        REQUIRE(t.set_decided_index(2));
-        REQUIRE(t.set_applied(2, 9));
-    });
-    write(storage, [&](auto& t) { REQUIRE(t.write_repaired_log(1, std::span(written).subspan(1), {1, 1, 0, 1}, {1, 1, 0, 1}, 2)); });
-    const auto r = storage.begin_read_only();
-    REQUIRE(r.has_value());
-    const auto m = r->get_meta();
-    REQUIRE(m.has_value());
-    CHECK(m->applied_idx == 2u);
-    CHECK(m->applied_chain_crc == 9u);
-    const auto found = r->find(key);
-    REQUIRE(found.has_value());
-    CHECK(found->has_value());
-}
-
 // Plan one-environment 4: the runs of the requests write into a nested
 // transaction. It sees the writes of its parent, and its end drops its own
 // writes, so the step commits only what the parent wrote.

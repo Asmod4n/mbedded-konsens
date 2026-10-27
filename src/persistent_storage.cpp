@@ -31,7 +31,7 @@ constexpr std::string_view store_file_name = "konsens.db";
 constexpr std::string_view node_file_name = "node.db";
 constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
-constexpr std::string_view repair_key = "repair";
+constexpr std::string_view fault_proof_key = "fault_proof";
 constexpr std::string_view clean_stop_key = "clean_stop";
 constexpr std::string_view config_first_key = "config_first";
 constexpr std::uint32_t format_version = 5;
@@ -76,17 +76,12 @@ constexpr std::size_t applied_idx_offset = last_chain_crc_offset + sizeof(meta_r
 constexpr std::size_t applied_chain_crc_offset = applied_idx_offset + sizeof(meta_record::applied_idx);
 constexpr std::size_t meta_record_size = applied_chain_crc_offset + sizeof(meta_record::applied_chain_crc);
 
-constexpr std::size_t flag_size = sizeof(std::uint8_t);
-constexpr std::size_t open_flag_offset = sizeof(repair_record::count);
-constexpr std::size_t open_mark_offset = open_flag_offset + flag_size;
-constexpr std::size_t covered_flag_offset = open_mark_offset + sizeof(std::uint64_t);
-constexpr std::size_t proof_flag_offset = covered_flag_offset + flag_size;
-constexpr std::size_t proof_kind_offset = proof_flag_offset + flag_size;
+constexpr std::size_t proof_kind_offset = 0;
 constexpr std::size_t proof_index_offset = proof_kind_offset + sizeof(proof_kind);
 constexpr std::size_t proof_ballot_offset = proof_index_offset + sizeof(fault_proof::index);
 constexpr std::size_t proof_crc_offset = proof_ballot_offset + ballot_size;
 constexpr std::size_t proof_other_crc_offset = proof_crc_offset + sizeof(fault_proof::crc);
-constexpr std::size_t repair_record_size = proof_other_crc_offset + sizeof(fault_proof::other_crc);
+constexpr std::size_t fault_proof_size = proof_other_crc_offset + sizeof(fault_proof::other_crc);
 
 constexpr std::size_t mark_pid_offset = 0;
 constexpr std::size_t mark_configuration_id_offset = mark_pid_offset + sizeof(clean_stop_mark::pid);
@@ -261,57 +256,6 @@ meta_record decode_meta(const std::span<const std::byte, meta_record_size> bytes
     };
 }
 
-std::array<std::byte, repair_record_size> encode_repair_record(const repair_record& r) noexcept
-{
-    std::array<std::byte, repair_record_size> out{};
-    std::ranges::copy(to_little_endian(r.count), out.begin());
-    if (r.open_mark) {
-        out[open_flag_offset] = std::byte{1};
-        std::ranges::copy(to_little_endian(*r.open_mark), std::span(out).subspan<open_mark_offset>().begin());
-    }
-    if (r.mark_covered) {
-        out[covered_flag_offset] = std::byte{1};
-    }
-    if (r.proof) {
-        out[proof_flag_offset] = std::byte{1};
-        out[proof_kind_offset] = std::byte{std::to_underlying(r.proof->kind)};
-        std::ranges::copy(to_little_endian(r.proof->index), std::span(out).subspan<proof_index_offset>().begin());
-        std::ranges::copy(encode_ballot(r.proof->n), std::span(out).subspan<proof_ballot_offset>().begin());
-        std::ranges::copy(to_little_endian(r.proof->crc), std::span(out).subspan<proof_crc_offset>().begin());
-        std::ranges::copy(to_little_endian(r.proof->other_crc), std::span(out).subspan<proof_other_crc_offset>().begin());
-    }
-    return out;
-}
-
-std::expected<repair_record, std::error_code>
-decode_repair_record(const std::span<const std::byte, repair_record_size> bytes) noexcept
-{
-    const auto open_flag = std::to_integer<std::uint8_t>(bytes[open_flag_offset]);
-    const auto covered_flag = std::to_integer<std::uint8_t>(bytes[covered_flag_offset]);
-    const auto proof_flag = std::to_integer<std::uint8_t>(bytes[proof_flag_offset]);
-    const auto kind = std::to_integer<std::uint8_t>(bytes[proof_kind_offset]);
-    if (open_flag > 1 || covered_flag > 1 || proof_flag > 1 ||
-        (proof_flag == 1 && (kind < std::to_underlying(proof_kind::damage) || kind > std::to_underlying(last_proof_kind))))
-        [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::malformed_record));
-    }
-    repair_record r{from_little_endian<std::uint64_t>(bytes.first<sizeof(repair_record::count)>()), std::nullopt,
-                    covered_flag == 1, std::nullopt};
-    if (open_flag == 1) {
-        r.open_mark = from_little_endian<std::uint64_t>(bytes.subspan<open_mark_offset, sizeof(std::uint64_t)>());
-    }
-    if (proof_flag == 1) {
-        r.proof = fault_proof{
-            static_cast<proof_kind>(kind),
-            from_little_endian<std::uint64_t>(bytes.subspan<proof_index_offset, sizeof(fault_proof::index)>()),
-            decode_ballot(bytes.subspan<proof_ballot_offset, ballot_size>()),
-            from_little_endian<std::uint32_t>(bytes.subspan<proof_crc_offset, sizeof(fault_proof::crc)>()),
-            from_little_endian<std::uint32_t>(bytes.subspan<proof_other_crc_offset, sizeof(fault_proof::other_crc)>()),
-        };
-    }
-    return r;
-}
-
 struct stored_record {
     std::span<const std::byte> bytes;
     std::span<const std::byte> encoded;
@@ -392,7 +336,6 @@ struct statements {
     statement get_last_entry;
     statement append_entry;
     statement update_entry;
-    statement delete_entries_from;
     statement delete_entries_between;
     statement get_value;
     statement put_value;
@@ -425,7 +368,6 @@ std::expected<statements, int> prepare_statements(sqlite3* db)
                   std::string_view{"INSERT INTO log (idx, record) SELECT ?1, ?2 "
                                    "WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)"}},
         std::pair{&s.update_entry, std::string_view{"UPDATE log SET record = ?2 WHERE idx = ?1"}},
-        std::pair{&s.delete_entries_from, std::string_view{"DELETE FROM log WHERE idx >= ?1"}},
         std::pair{&s.delete_entries_between, std::string_view{"DELETE FROM log WHERE idx >= ?1 AND idx < ?2"}},
         std::pair{&s.get_value, std::string_view{"SELECT value FROM data WHERE key = ?1"}},
         std::pair{&s.put_value,
@@ -775,19 +717,6 @@ std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, 
         m.log_len = index + 1;
     }
     return {};
-}
-
-std::expected<void, std::error_code> delete_entries_from(const link& l, const std::uint64_t from)
-{
-    if (!key_fits_in_an_sqlite_integer(from)) [[unlikely]] {
-        return {};
-    }
-    sqlite3_stmt* const s = l.s->delete_entries_from.get();
-    sqlite3_reset(s);
-    if (const int bound = bind_key(s, 1, from); bound != SQLITE_OK) [[unlikely]] {
-        return std::unexpected(fail(l, bound));
-    }
-    return run(l, s);
 }
 
 std::expected<void, std::error_code> delete_entries(const link& l, const std::uint64_t from, const std::uint64_t to)
@@ -1557,40 +1486,6 @@ persistent_storage::transaction::set_config_first_idx(const std::uint64_t config
     return put_checked(env_->of_writer(), config_first_key, to_little_endian(config_first_idx));
 }
 
-std::expected<void, std::error_code>
-persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx, const std::span<const entry> entries,
-                                                    const ballot promise, const ballot accepted_round,
-                                                    const std::uint64_t decided_idx)
-{
-    throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested_open);
-    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
-        return f;
-    }
-    env_->written = true;
-    throw_if_an_entry_has_a_field_of_another_kind(entries);
-    const auto l = env_->of_writer();
-    const auto old = read_meta(l);
-    if (!old) [[unlikely]] {
-        return std::unexpected(old.error());
-    }
-    if (auto deleted = delete_entries_from(l, from_idx); !deleted) [[unlikely]] {
-        return deleted;
-    }
-    if (auto states = set_entry_states(l, env_->record, 0, from_idx, decided_idx); !states) [[unlikely]] {
-        return states;
-    }
-    const auto chain = chain_crc_before(l, from_idx);
-    if (!chain) [[unlikely]] {
-        return std::unexpected(chain.error());
-    }
-    meta_record m{promise, accepted_round, decided_idx, from_idx, *chain, old->applied_idx, old->applied_chain_crc};
-    if (auto put = put_entries(l, m, env_->record, entries); !put) [[unlikely]] {
-        return put;
-    }
-    return write_meta(l, m);
-}
-
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
 persistent_storage::transaction::find(const std::span<const std::byte> key) const
 {
@@ -2006,46 +1901,63 @@ std::expected<node_storage, std::error_code> node_storage::open(const std::files
     return node_storage{std::move(env)};
 }
 
-std::expected<repair_record, std::error_code> node_storage::get_repair_record() const
+std::expected<std::optional<fault_proof>, std::error_code> node_storage::get_fault_proof() const
 {
     throw_if_moved_from();
     sqlite3_stmt* const s = env_->get_record.get();
     sqlite3_reset(s);
-    if (const int bound = bind_text(s, 1, repair_key); bound != SQLITE_OK) [[unlikely]] {
+    if (const int bound = bind_text(s, 1, fault_proof_key); bound != SQLITE_OK) [[unlikely]] {
         return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::read));
     }
     const int status = sqlite3_step(s);
     if (status == SQLITE_DONE) {
         sqlite3_reset(s);
-        return repair_record{0, std::nullopt, false, std::nullopt};
+        return std::nullopt;
     }
     if (status != SQLITE_ROW) [[unlikely]] {
         sqlite3_reset(s);
         return std::unexpected(error_code_or_throw(status, env_->db.get(), access::read));
     }
     const auto bytes = column_bytes(s, 0);
-    if (bytes.size() != repair_record_size + crc_size) [[unlikely]] {
+    if (bytes.size() != fault_proof_size + crc_size) [[unlikely]] {
         sqlite3_reset(s);
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
-    const auto body = bytes.first<repair_record_size>();
+    const auto body = bytes.first<fault_proof_size>();
     if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
         sqlite3_reset(s);
         return std::unexpected(make_error_code(storage_errc::crc_mismatch));
     }
-    auto r = decode_repair_record(body);
+    const auto kind = std::to_integer<std::uint8_t>(body[proof_kind_offset]);
+    if (kind < std::to_underlying(proof_kind::damage) || kind > std::to_underlying(last_proof_kind)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const fault_proof proof{
+        static_cast<proof_kind>(kind),
+        from_little_endian<std::uint64_t>(body.subspan<proof_index_offset, sizeof(fault_proof::index)>()),
+        decode_ballot(body.subspan<proof_ballot_offset, ballot_size>()),
+        from_little_endian<std::uint32_t>(body.subspan<proof_crc_offset, sizeof(fault_proof::crc)>()),
+        from_little_endian<std::uint32_t>(body.subspan<proof_other_crc_offset, sizeof(fault_proof::other_crc)>()),
+    };
     sqlite3_reset(s);
-    return r;
+    return proof;
 }
 
-std::expected<void, std::error_code> node_storage::write_repair_record(const repair_record& r)
+std::expected<void, std::error_code> node_storage::write_the_proof(const fault_proof& proof)
 {
-    const auto body = encode_repair_record(r);
-    std::array<std::byte, repair_record_size + crc_size> record{};
-    std::ranges::copy(to_little_endian(crc_of(body)), std::ranges::copy(body, record.begin()).out);
+    throw_if_moved_from();
+    std::array<std::byte, fault_proof_size + crc_size> record{};
+    record[proof_kind_offset] = std::byte{std::to_underlying(proof.kind)};
+    std::ranges::copy(to_little_endian(proof.index), std::span(record).subspan<proof_index_offset>().begin());
+    std::ranges::copy(encode_ballot(proof.n), std::span(record).subspan<proof_ballot_offset>().begin());
+    std::ranges::copy(to_little_endian(proof.crc), std::span(record).subspan<proof_crc_offset>().begin());
+    std::ranges::copy(to_little_endian(proof.other_crc), std::span(record).subspan<proof_other_crc_offset>().begin());
+    std::ranges::copy(to_little_endian(crc_of(std::span(record).first<fault_proof_size>())),
+                      std::span(record).subspan<fault_proof_size>().begin());
     sqlite3_stmt* const s = env_->put_record.get();
     sqlite3_reset(s);
-    if (const int bound = bind_text(s, 1, repair_key); bound != SQLITE_OK) [[unlikely]] {
+    if (const int bound = bind_text(s, 1, fault_proof_key); bound != SQLITE_OK) [[unlikely]] {
         return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
     }
     if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
@@ -2057,56 +1969,6 @@ std::expected<void, std::error_code> node_storage::write_repair_record(const rep
         return std::unexpected(error_code_or_throw(status, env_->db.get(), access::write));
     }
     return {};
-}
-
-std::expected<void, std::error_code> node_storage::write_the_proof(const fault_proof& proof)
-{
-    throw_if_moved_from();
-    const auto r = get_repair_record();
-    if (!r) [[unlikely]] {
-        return std::unexpected(r.error());
-    }
-    return write_repair_record({r->count, r->open_mark, r->mark_covered, proof});
-}
-
-std::expected<void, std::error_code> node_storage::cover_the_proof()
-{
-    throw_if_moved_from();
-    const auto r = get_repair_record();
-    if (!r) [[unlikely]] {
-        return std::unexpected(r.error());
-    }
-    return write_repair_record({r->count, r->open_mark, true, std::nullopt});
-}
-
-std::expected<void, std::error_code> node_storage::count_a_repair(const std::uint64_t open_mark)
-{
-    throw_if_moved_from();
-    const auto r = get_repair_record();
-    if (!r) [[unlikely]] {
-        return std::unexpected(r.error());
-    }
-    return write_repair_record({r->count + 1, open_mark, false, std::nullopt});
-}
-
-std::expected<void, std::error_code> node_storage::close_the_repair()
-{
-    throw_if_moved_from();
-    const auto r = get_repair_record();
-    if (!r) [[unlikely]] {
-        return std::unexpected(r.error());
-    }
-    return write_repair_record({r->count, std::nullopt, false, r->proof});
-}
-
-std::expected<void, std::error_code> node_storage::allow_one_more_repair()
-{
-    throw_if_moved_from();
-    const auto r = get_repair_record();
-    if (!r) [[unlikely]] {
-        return std::unexpected(r.error());
-    }
-    return write_repair_record({0, r->open_mark, r->mark_covered, r->proof});
 }
 
 }

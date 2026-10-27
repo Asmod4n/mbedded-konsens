@@ -106,10 +106,6 @@ public:
         [[nodiscard]] std::expected<void, std::error_code> set_accepted_round(ballot accepted_round);
         [[nodiscard]] std::expected<void, std::error_code> set_decided_index(std::uint64_t decided_idx);
         [[nodiscard]] std::expected<void, std::error_code> set_config_first_idx(std::uint64_t config_first_idx);
-        [[nodiscard]] std::expected<void, std::error_code> write_repaired_log(std::uint64_t from_idx,
-                                                                              std::span<const entry> entries,
-                                                                              ballot promise, ballot accepted_round,
-                                                                              std::uint64_t decided_idx);
         [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
         find(std::span<const std::byte> key) const;
         [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
@@ -176,15 +172,6 @@ struct fault_proof {
     friend bool operator==(const fault_proof&, const fault_proof&) = default;
 };
 
-struct repair_record {
-    std::uint64_t count;
-    std::optional<std::uint64_t> open_mark;
-    bool mark_covered;
-    std::optional<fault_proof> proof;
-
-    friend bool operator==(const repair_record&, const repair_record&) = default;
-};
-
 struct clean_stop_mark {
     node_id pid;
     std::uint32_t configuration_id;
@@ -201,12 +188,8 @@ public:
     [[nodiscard]] static std::expected<node_storage, std::error_code> open(const std::filesystem::path& directory,
                                                                            uid_t effective_user_id);
 
-    [[nodiscard]] std::expected<repair_record, std::error_code> get_repair_record() const;
+    [[nodiscard]] std::expected<std::optional<fault_proof>, std::error_code> get_fault_proof() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_proof(const fault_proof& proof);
-    [[nodiscard]] std::expected<void, std::error_code> cover_the_proof();
-    [[nodiscard]] std::expected<void, std::error_code> count_a_repair(std::uint64_t open_mark);
-    [[nodiscard]] std::expected<void, std::error_code> close_the_repair();
-    [[nodiscard]] std::expected<void, std::error_code> allow_one_more_repair();
     [[nodiscard]] std::expected<std::optional<clean_stop_mark>, std::error_code> get_clean_stop_mark() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_clean_stop_mark(const clean_stop_mark& mark);
     [[nodiscard]] std::expected<void, std::error_code> delete_the_clean_stop_mark();
@@ -219,7 +202,6 @@ private:
     explicit node_storage(std::unique_ptr<environment> env) noexcept;
 
     void throw_if_moved_from() const;
-    std::expected<void, std::error_code> write_repair_record(const repair_record& r);
 
     std::unique_ptr<environment> env_;
 };

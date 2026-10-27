@@ -79,8 +79,6 @@ struct hardware_fault {
     std::uint32_t other_crc;
 };
 
-inline constexpr std::size_t repair_probe_count = 64;
-
 inline bool error_is_a_damage(const std::error_code e) noexcept
 {
     return e == make_error_code(paxos_errc::hardware_fault) || e == make_error_code(paxos_errc::inconsistent_storage) ||
@@ -88,25 +86,11 @@ inline bool error_is_a_damage(const std::error_code e) noexcept
            e == make_error_code(storage_errc::missing_entry) || e == make_error_code(storage_errc::missing_meta_record);
 }
 
-inline bool repair_request_exceeds_the_probe_count(const repair_request& r) noexcept
-{
-    return r.lengths.size() > repair_probe_count;
-}
-
 constexpr bool meta_values_are_consistent(const meta_record& m) noexcept
 {
     return !(m.log_len > 0 && m.accepted_round == ballot{}) && m.accepted_round <= m.promise &&
            m.decided_idx <= m.log_len;
 }
-
-struct repair_search {
-    std::vector<std::uint32_t> own_chain_crcs;
-    std::uint64_t agreed;
-    std::uint64_t differs;
-    std::uint64_t round;
-    std::vector<std::uint64_t> lengths;
-    std::optional<node_id> source;
-};
 
 struct peer_seen {
     ballot n;
@@ -439,10 +423,6 @@ public:
             drop_incoming_and_outgoing();
             return error_unless_retired();
         }
-        if (repair_) {
-            incoming_.clear();
-            return {};
-        }
         if (auto r = begin_step(); !r) [[unlikely]] {
             drop_incoming_and_outgoing();
             return r;
@@ -471,7 +451,7 @@ public:
             drop_incoming_and_outgoing();
             return error_unless_retired();
         }
-        if (repair_ || !txn_) {
+        if (!txn_) {
             return {};
         }
         const auto m = read_checked_meta(*txn_);
@@ -511,7 +491,7 @@ private:
             return std::unexpected(*error_);
         }
         if constexpr (std::is_same_v<T, build_request>) {
-            if (to != pid_ || from == pid_ || repair_ || build_) {
+            if (to != pid_ || from == pid_ || build_) {
                 return {};
             }
             if (auto r = begin_step(); !r) [[unlikely]] {
@@ -539,15 +519,6 @@ private:
         }
         if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) [[unlikely]] {
             return {};
-        }
-        if (repair_) {
-            if constexpr (std::is_same_v<T, repair_response>) {
-                return handle_repair_response(msg, from);
-            } else if constexpr (std::is_same_v<T, repair_entries>) {
-                return handle_repair_entries(msg, from);
-            } else {
-                return {};
-            }
         }
         if constexpr (carries_a_ballot_of_the_sender<T>) {
             if (!raise_peer_seen(from, msg)) [[unlikely]] {
@@ -600,12 +571,7 @@ private:
             return handle_heartbeat_ack(msg, from);
         } else if constexpr (std::is_same_v<T, read_index_reply>) {
             return handle_read_index_reply(msg);
-        } else if constexpr (std::is_same_v<T, repair_request>) {
-            return handle_repair_request(msg, from);
-        } else if constexpr (std::is_same_v<T, get_repair_entries>) {
-            return handle_get_repair_entries(msg, from);
-        } else if constexpr (std::is_same_v<T, repair_response> || std::is_same_v<T, repair_entries> ||
-                             std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
+        } else if constexpr (std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
                              std::is_same_v<T, work> || std::is_same_v<T, build_request> ||
                              std::is_same_v<T, build_response> || std::is_same_v<T, build_refused>) {
             return {};
@@ -621,7 +587,7 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (recovering_ || repair_) {
+        if (recovering_) {
             return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
@@ -689,10 +655,6 @@ public:
         }
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
-        }
-        if (repair_) {
-            restart_repair_search();
-            return {};
         }
         if (build_) {
             return ask_again_for_the_build();
@@ -769,7 +731,7 @@ public:
 
     result refuse_if_recovering() const
     {
-        if (recovering_ || repair_ || build_) [[unlikely]] {
+        if (recovering_ || build_) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::recovering));
         }
         return {};
@@ -917,12 +879,11 @@ public:
     }
     node_id get_pid() const { return pid_; }
     std::uint64_t get_verified_idx() const { return verified_idx_; }
-    bool votes() const { return !error_ && !repair_ && !build_ && !retired_; }
+    bool votes() const { return !error_ && !build_ && !retired_; }
     bool retired() const { return retired_; }
     bool building() const { return build_.has_value(); }
     std::uint64_t get_config_first_idx() const { return config_first_idx_; }
     bool recovering() const { return recovering_; }
-    bool repairing() const { return repair_.has_value(); }
 
     result scan_the_whole_log()
     {
@@ -936,32 +897,6 @@ public:
         return {};
     }
 
-    result start_repair(const std::uint64_t nonce)
-    {
-        if (!error_ || !error_is_a_damage(*error_) || write_unfinished_) [[unlikely]] {
-            throw std::logic_error("konsens: start_repair on a node whose error is not a damage");
-        }
-        error_.reset();
-        txn_.reset();
-        drop_incoming_and_outgoing();
-        nonce_ = nonce;
-        recovering_ = false;
-        recovery_responses_.clear();
-        state_request_.reset();
-        std::ranges::fill(peers_seen_, peer_seen{});
-        state_ = {role::follower, phase::recover};
-        leader_state_ = leader_state::with(ballot{}, nodes_);
-        current_seq_num_ = {};
-        answered_prepare_.reset();
-        buffered_proposals_.clear();
-        auto chains = read_verified_chain_crcs();
-        if (!chains) [[unlikely]] {
-            return stop_voting(chains.error());
-        }
-        repair_.emplace(repair_search{std::move(*chains), 0, 0, 0, {}, std::nullopt});
-        restart_repair_search();
-        return {};
-    }
     std::optional<std::error_code> get_error() const { return error_; }
     std::optional<konsens::hardware_fault> get_hardware_fault() const { return hardware_fault_; }
     std::vector<peer_step_back> take_peer_step_backs() { return std::exchange(peer_step_backs_, {}); }
@@ -977,7 +912,7 @@ public:
         if (pid != pid_) {
             peers_seen_.at(node_index_of(pid)) = {};
         }
-        if (pid == pid_ || recovering_ || repair_ || retired_) {
+        if (pid == pid_ || recovering_ || retired_) {
             return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
@@ -1999,144 +1934,6 @@ private:
         }
     }
 
-    void restart_repair_search()
-    {
-        repair_->agreed = 0;
-        repair_->differs = repair_->own_chain_crcs.size() + 1;
-        repair_->source.reset();
-        send_repair_round(peers_);
-    }
-
-    void send_repair_round(const std::span<const node_id> to)
-    {
-        auto& r = *repair_;
-        r.round += 1;
-        const auto gap = r.differs - r.agreed;
-        if (gap == 1) {
-            r.lengths.clear();
-            for (const auto peer : to) {
-                outgoing_.push_back({pid_, peer, get_repair_entries{nonce_, r.agreed}});
-            }
-            return;
-        }
-        const auto count = std::min<std::uint64_t>(gap - 1, repair_probe_count);
-        r.lengths.assign_range(std::views::iota(std::uint64_t{1}, count + 1) |
-                               std::views::transform([&r, gap, count](const std::uint64_t j) {
-                                   return r.agreed + j * gap / (count + 1);
-                               }));
-        for (const auto peer : to) {
-            outgoing_.push_back({pid_, peer, repair_request{nonce_, r.round, r.lengths}});
-        }
-    }
-
-    result handle_repair_request(const repair_request& req, const node_id from)
-    {
-        if (repair_request_exceeds_the_probe_count(req)) [[unlikely]] {
-            return {};
-        }
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        std::vector<std::uint32_t> chains;
-        for (const auto length : req.lengths) {
-            if (length > m->log_len) {
-                continue;
-            }
-            const auto c = read_prefix_chain_crc(length);
-            if (!c) [[unlikely]] {
-                return stop_voting(c.error());
-            }
-            chains.push_back(*c);
-        }
-        outgoing_.push_back({pid_, from, repair_response{req.nonce, req.round, m->log_len, std::move(chains)}});
-        return {};
-    }
-
-    result handle_get_repair_entries(const get_repair_entries& req, const node_id from)
-    {
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        auto entries = read_range(*txn_, std::min(req.from_idx, m->log_len), m->log_len);
-        if (!entries) [[unlikely]] {
-            return stop_voting(entries.error());
-        }
-        outgoing_.push_back({pid_, from,
-                             repair_entries{req.nonce, req.from_idx, std::move(*entries), m->promise, m->accepted_round,
-                                            m->decided_idx, m->last_chain_crc}});
-        return {};
-    }
-
-    result handle_repair_response(const repair_response& resp, const node_id from)
-    {
-        auto& r = *repair_;
-        if (resp.nonce != nonce_ || resp.round != r.round || r.lengths.empty() || (r.source && *r.source != from)) {
-            return {};
-        }
-        const auto answered = std::ranges::count_if(r.lengths, [&resp](const auto l) { return l <= resp.log_len; });
-        if (static_cast<std::size_t>(answered) != resp.chain_crcs.size()) [[unlikely]] {
-            return {};
-        }
-        r.source = from;
-        auto agreed = r.agreed;
-        auto differs = r.differs;
-        for (const auto& [i, length] : std::views::enumerate(r.lengths)) {
-            const bool agrees =
-                length <= resp.log_len && resp.chain_crcs[static_cast<std::size_t>(i)] == r.own_chain_crcs[length - 1];
-            if (agrees) {
-                agreed = std::max(agreed, length);
-            }
-        }
-        for (const auto length : r.lengths) {
-            if (length > agreed) {
-                differs = std::min(differs, length);
-            }
-        }
-        r.agreed = agreed;
-        r.differs = differs;
-        const std::array<node_id, 1> source{from};
-        send_repair_round(source);
-        return {};
-    }
-
-    result handle_repair_entries(const repair_entries& re, const node_id from)
-    {
-        const auto& r = *repair_;
-        if (re.nonce != nonce_ || !r.lengths.empty() || r.differs - r.agreed != 1 || re.from_idx != r.agreed ||
-            (r.source && *r.source != from)) {
-            return {};
-        }
-        const auto previous = r.agreed == 0 ? std::uint32_t{0} : r.own_chain_crcs[r.agreed - 1];
-        const auto chain = compute_chain_crc(previous, re.from_idx, re.entries);
-        const meta_record repaired{re.promise, re.accepted_round, re.decided_idx, re.from_idx + re.entries.size(),
-                                   chain};
-        if (chain != re.last_chain_crc || !meta_values_are_consistent(repaired)) [[unlikely]] {
-            return {};
-        }
-        if (!txn_) {
-            auto t = internal_storage_.begin();
-            if (!t) [[unlikely]] {
-                return stop_voting(t.error());
-            }
-            txn_.emplace(std::move(*t));
-        }
-        write_unfinished_ = true;
-        if (auto w = txn_->write_repaired_log(re.from_idx, re.entries, re.promise, re.accepted_round, re.decided_idx);
-            !w) [[unlikely]] {
-            throw write_error(w.error(), "konsens: the storage failed to write the repaired log");
-        }
-        write_unfinished_ = false;
-        mark_ = {};
-        repair_.reset();
-        verified_idx_ = std::min(verified_idx_, re.decided_idx);
-        leader_state_ = leader_state::with(re.promise, nodes_);
-        recovering_ = true;
-        send_recovery_to_all_peers();
-        return {};
-    }
-
     void send_build_request(const std::uint64_t from_idx)
     {
         outgoing_.push_back({pid_, build_->sources[build_->source], build_request{nonce_, from_idx}});
@@ -2398,7 +2195,6 @@ private:
     std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
     std::optional<std::pair<node_id, konsens::get_state>> state_request_;
     std::optional<konsens::hardware_fault> hardware_fault_;
-    std::optional<repair_search> repair_;
     std::vector<peer_seen> peers_seen_;
     std::vector<peer_step_back> peer_step_backs_;
     std::vector<pending_read> read_pending_;

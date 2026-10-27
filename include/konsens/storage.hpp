@@ -231,9 +231,6 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             { t.set_accepted_round(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_decided_index(index) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_config_first_idx(index) } -> std::same_as<std::expected<void, std::error_code>>;
-                            {
-                                t.write_repaired_log(index, entries, b, b, index)
-                            } -> std::same_as<std::expected<void, std::error_code>>;
                             { std::as_const(t).has_writes() } -> std::same_as<bool>;
                             { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
                         };

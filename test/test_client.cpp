@@ -508,8 +508,6 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
 // Plan state-in-lmdb 1.4: the storage keeps the chain CRC of the
 // log at its applied index. A start whose state belongs to another log,
 // or to a longer log, stops the vote and keeps both CRCs as the proof.
-// The node does not repair its log for it, because the log is not the
-// part that differs.
 TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
 {
     auto c = elected();
@@ -540,7 +538,6 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
         auto stopped = sqlite_storage::open_node_storage_stopped_cleanly(storage, 1);
         const auto n = *node_t::with(config_of(1), std::move(storage), std::move(stopped), concatenation{}, 1);
         CHECK(n.get_sequence_paxos().get_error() == differs);
-        CHECK_FALSE(n.get_sequence_paxos().repairing());
         CHECK_FALSE(n.waits_for_the_operator());
         CHECK(n.get_applied_idx() == applied.index);
         if (applied.index == 2) {
