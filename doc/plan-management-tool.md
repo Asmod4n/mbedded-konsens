@@ -354,3 +354,43 @@ after each step, with digits masked.
 - tabs_and_modals: the same text, except one step. A click on the
   dark area around the delete dialog closes the dialog in the new arm.
   In the old arm the dialog stayed open. The markup asks for the close.
+
+## 10. Repair after a power loss (owner, 2026-10-27)
+
+Requirement: after a power loss, the operator repairs the cluster with
+one action in the tool.
+
+What the architecture thread gives (form B, details are open there):
+
+- A node that starts without the mark of a clean stop retires.
+- A retired node comes back only with a new node ID, through a
+  reconfiguration.
+- When a majority of the nodes retired, the operator must act.
+
+What the tool does:
+
+1. `status` shows each retired node, the cause "no clean stop" and
+   the time of the start.
+2. The tool offers one action, `repair` (provisional name). The
+   action shows first what it will do: which nodes get a new ID, the
+   new configuration, and whether a majority is lost.
+3. The operator confirms once. The tool then starts the
+   reconfiguration and shows each step in `watch`.
+4. When a majority is lost, the action shows the operator command of
+   the architecture thread with its warning, and asks for a second
+   confirmation. The tool does not choose the stage by itself.
+
+The action is the same in the CLI, the TUI and the web level. The CLI
+takes the confirmation as a flag, so that a script can call it.
+
+This moves one form of reconfiguration into the first version (part 3
+said: no reconfiguration). The steps of the reconfiguration, the
+operator command and its warning come from the architecture thread.
+The tool waits for that design before the action is built.
+
+Open:
+
+- 10.1 Is `repair` in the first version, or the first task after it?
+  Proposal: first version, after `status` and `watch`.
+- 10.2 The name of the action. Proposal: `repair`, until the
+  architecture thread names the operation.
