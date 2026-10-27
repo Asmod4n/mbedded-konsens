@@ -1,0 +1,214 @@
+#!/bin/bash
+# Three konsensd processes on loopback, with curl as the client (plan 7.5).
+# The test exists because only the running program shows that the loop,
+# the frames, HTTP and the sessions work together over TCP.
+set -u
+
+konsensd=$1
+base=${2:-17150}
+dir=$(mktemp -d)
+failed=0
+declare -A pids
+
+peer_port() { echo $((base + $1)); }
+client_url() { echo "http://127.0.0.1:$((base + 10 + $1))"; }
+
+write_config() {
+    local p=$1 q
+    {
+        printf '[cluster]\nname = "test"\nconfiguration_id = 1\n\n[node]\n'
+        printf 'pid = %s\ndata_directory = "%s/data%s"\n' "$p" "$dir" "$p"
+        printf 'peer_address = "127.0.0.1:%s"\n' "$(peer_port "$p")"
+        printf 'client_address = "127.0.0.1:%s"\n' $((base + 10 + p))
+        for q in 1 2 3; do
+            [ "$q" = "$p" ] && continue
+            printf '\n[[peers]]\npid = %s\naddress = "127.0.0.1:%s"\n' "$q" "$(peer_port "$q")"
+        done
+    } > "$dir/node$p.toml"
+}
+
+start() {
+    local p=$1
+    shift
+    "$konsensd" --config "$dir/node$p.toml" "$@" 2>> "$dir/log$p" &
+    pids[$p]=$!
+}
+
+stop() {
+    local p=$1 status
+    kill -TERM "${pids[$p]}"
+    wait "${pids[$p]}"
+    status=$?
+    unset "pids[$p]"
+    return $status
+}
+
+check() {
+    local what=$1
+    shift
+    if "$@"; then
+        echo "ok ($SECONDS s): $what"
+    else
+        echo "FAILED: $what"
+        failed=1
+    fi
+}
+
+status_of() {
+    curl -s --max-time 5 -o "$dir/body" -w '%{http_code}' "$@"
+}
+
+put() { status_of -X PUT --data-binary "$3" "$(client_url "$1")/kv/$2"; }
+get() { status_of "$(client_url "$1")/kv/$2"; }
+
+# A write waits for an elected leader: a 503 asks the client to try again.
+put_until_stored() {
+    local i
+    for i in $(seq 50); do
+        [ "$(put "$@")" = 204 ] && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+holds() {
+    [ "$(get "$1" "$2")" = 200 ] && [ "$(cat "$dir/body")" = "$3" ]
+}
+
+holds_soon() {
+    local i
+    for i in $(seq 50); do
+        holds "$@" && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+leader() {
+    local p
+    for p in 1 2 3; do
+        [ -n "${pids[$p]:-}" ] || continue
+        if grep "is " "$dir/log$p" | tail -1 | grep -q "is leader in accept"; then
+            echo "$p"
+            return
+        fi
+    done
+}
+
+sessions_at() {
+    sqlite3 -readonly "$dir/data$1/log/konsens.db" "SELECT count(*) FROM session"
+}
+
+end() {
+    local p
+    for p in "${!pids[@]}"; do
+        kill -TERM "${pids[$p]}"
+    done
+    wait
+    if [ "$failed" != 0 ]; then
+        for p in 1 2 3; do
+            echo "--- log of node $p"
+            cat "$dir/log$p"
+        done
+    fi
+    rm -r "$dir"
+    exit "$failed"
+}
+
+for p in 1 2 3; do
+    write_config "$p"
+    start "$p" --first-start
+done
+
+# Each node takes writes and reads, and sees what another node wrote.
+check "a write at node 1" put_until_stored 1 greeting hello
+check "a read at node 2 sees it" holds_soon 2 greeting hello
+check "a read at node 3 sees it" holds_soon 3 greeting hello
+check "a write at node 3" put_until_stored 3 a one
+check "a read at node 1 sees it" holds_soon 1 a one
+check "a delete at node 2" test "$(status_of -X DELETE "$(client_url 2)/kv/greeting")" = 204
+check "a read after the delete gives 404" test "$(get 1 greeting)" = 404
+check "an empty value round trip" put_until_stored 2 empty ""
+check "the empty value reads back" holds_soon 1 empty ""
+
+# A clean stop keeps the vote of a node.
+check "node 2 stops cleanly" stop 2
+start 2
+check "node 2 votes again and serves a write" put_until_stored 2 after-restart yes
+check "node 1 reads it" holds_soon 1 after-restart yes
+
+# A stop of the leader during writes loses no write that got 204.
+l=$(leader)
+check "a leader is known" test -n "$l"
+other=$(( l % 3 + 1 ))
+: > "$dir/acknowledged"
+(
+    for i in $(seq 200); do
+        [ "$(put "$other" "w$i" "v$i")" = 204 ] && echo "$i" >> "$dir/acknowledged"
+    done
+) &
+writer=$!
+sleep 0.5
+check "the leader stops cleanly during writes" stop "$l"
+wait "$writer"
+start "$l"
+lost=0
+for i in $(cat "$dir/acknowledged"); do
+    holds_soon "$l" "w$i" "v$i" || lost=1
+done
+check "every acknowledged write is there ($(wc -l < "$dir/acknowledged") of 200)" test "$lost" = 0
+
+# 1000 connections through a follower, each with one write. Each closed
+# connection expires its session, so the session count goes back.
+l=$(leader)
+follower=$(( l % 3 + 1 ))
+before=$(sessions_at "$l")
+for i in $(seq 1000); do
+    put "$follower" "c$i" "x" > /dev/null
+done
+for i in $(seq 50); do
+    [ "$(sessions_at "$l")" = "$before" ] && break
+    sleep 0.2
+done
+check "the session count of the leader goes back to $before" test "$(sessions_at "$l")" = "$before"
+
+# A follower that is stopped during many writes catches up after its start.
+l=$(leader)
+follower=$(( l % 3 + 1 ))
+check "follower $follower stops cleanly" stop "$follower"
+check "10000 writes on one connection" test "$(curl -s --max-time 120 -o /dev/null -w '%{http_code}\n' \
+    -X PUT --data-binary bulk "$(client_url "$l")/kv/bulk[1-10000]" | sort -u)" = 204
+start "$follower"
+check "the follower reads the last write" holds_soon "$follower" bulk10000 bulk
+
+# All three stop and start again: the data is there.
+for p in 1 2 3; do
+    check "node $p stops cleanly" stop "$p"
+done
+for p in 1 2 3; do
+    start "$p"
+done
+check "the data is there after a stop of all" holds_soon 3 a one
+
+# A start with --first-start after a clean stop is a clean start: the
+# clean-stop mark decides, and the flag changes nothing.
+check "node 3 stops cleanly" stop 3
+start 3 --first-start
+check "--first-start after a clean stop serves a write" put_until_stored 3 after-flag yes
+
+# SIGKILL retires a node. --first-start on its store ends with an error,
+# because the store holds a promise. Without the flag the node starts
+# retired: it answers 503, and the other two serve.
+kill -KILL "${pids[3]}"
+wait "${pids[3]}"
+unset "pids[3]"
+"$konsensd" --config "$dir/node3.toml" --first-start 2>> "$dir/log3"
+check "--first-start on the store of a killed node fails" test $? != 0
+start 3
+sleep 1
+check "the retired node answers 503" test "$(get 3 a)" = 503
+check "the other two serve a write" put_until_stored 1 after-kill yes
+check "the other two serve a read" holds_soon 2 after-kill yes
+check "the retired node exits with 0" stop 3
+
+end

@@ -112,7 +112,8 @@ struct loop {
     std::pair<konsens::role, konsens::phase> last_state;
     std::vector<io_uring_cqe> ready;
     std::unordered_map<std::uint64_t, call_in_flight> closed_calls;
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> expiries;
+    std::unordered_map<std::uint64_t, std::uint64_t> expiries;
+    std::uint64_t ticks;
 };
 
 std::uint64_t user_data_of(const op o, const std::uint64_t id)
@@ -195,7 +196,9 @@ void finish_the_close(loop& l, const std::uint64_t id)
     if (c.kind == link::outgoing_peer) {
         if (const auto o = l.outgoing.find(c.pid); o != l.outgoing.end() && o->second == id) {
             l.outgoing.erase(o);
-            std::println(std::cerr, "konsensd: the connection to node {} closed", c.pid);
+            if (c.open) {
+                std::println(std::cerr, "konsensd: the connection to node {} closed", c.pid);
+            }
         }
     } else if (c.kind == link::incoming_peer && c.pid != 0) {
         if (const auto i = l.incoming.find(c.pid); i != l.incoming.end() && i->second == id) {
@@ -205,7 +208,7 @@ void finish_the_close(loop& l, const std::uint64_t id)
         if (c.waits_for != awaited::nothing) {
             l.closed_calls.emplace(id, call_in_flight{c.waits_for, c.session});
         } else if (c.session) {
-            l.expiries.emplace_back(id, *c.session);
+            l.expiries.emplace(id, *c.session);
         }
     }
     l.connections.erase(it);
@@ -319,14 +322,18 @@ void take_a_reply_after_the_close(loop& l, const konsens::client_reply& r)
 {
     const auto it = l.closed_calls.find(r.client_id);
     if (it == l.closed_calls.end()) {
+        if (l.expiries.erase(r.client_id) == 0 || r.response) {
+            return;
+        }
+        l.expiries.emplace(r.client_id, r.session);
         return;
     }
     const auto [what, session] = it->second;
     l.closed_calls.erase(it);
     if (what == awaited::registration && r.response) {
-        l.expiries.emplace_back(r.client_id, r.session);
+        l.expiries.emplace(r.client_id, r.session);
     } else if (what == awaited::write && session) {
-        l.expiries.emplace_back(r.client_id, *session);
+        l.expiries.emplace(r.client_id, *session);
     }
 }
 
@@ -389,7 +396,7 @@ void expire_the_closed_sessions(loop& l)
         auto t = l.node.expire_session(x.first, x.second);
         if (t) {
             l.step = *t;
-            return true;
+            return false;
         }
         return t.error() == konsens::client_errc::session_expired;
     });
@@ -699,7 +706,7 @@ int serve(const config& c, const start_options options)
         return exit_failed;
     }
     std::println(std::cerr, "konsensd: node {} started{}", c.pid, n->retired() ? " retired" : "");
-    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}};
+    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}, 0};
     for (const auto& p : c.peers) {
         const auto a = resolve(p.address);
         if (!a) [[unlikely]] {
@@ -749,7 +756,10 @@ int serve(const config& c, const start_options options)
         if (now >= next_tick) {
             connect_the_missing_peers(l);
             keep_the_step(l, l.node.tick(), "tick");
-            expire_the_closed_sessions(l);
+            l.ticks += 1;
+            if (l.ticks % l.c.resend_ticks == 0) {
+                expire_the_closed_sessions(l);
+            }
             next_tick += tick;
             if (next_tick < now) {
                 next_tick = now + tick;
