@@ -110,3 +110,18 @@ counts such a promise only in its accept phase, and answers it with an
 accept sync. The node votes again after that accept sync. The run
 without the fix found its violation at depth 29; these runs reach
 depth 29 without one. Only MC_rr_newleader_b2 is a complete search.
+
+## Run 7: the rejoining node takes only a ballot above its answers (model 803da6d)
+
+Review 2 (B2) found that the node of run 6 could take an old accept
+sync of the ballot of its own promise. The fix: a rejoining node takes
+only an accept sync of a ballot above the highest promise of its
+answers, as RecoveryRollback "newleader" does.
+
+| config | exit | result |
+|---|---|---|
+| MC_oe_rollback_waits_l1 | 124 | limit 1800 s, depth 30, 26,391,751 distinct states, no violation |
+| MC_oe_rollback_waits_parallel_l1 | 124 | limit 1800 s, depth 29, 26,808,846 distinct states, no violation |
+
+The trace of review 2 needs about 33 steps; these runs do not reach it.
+Only MC_rr_newleader_b2 is a complete search.
