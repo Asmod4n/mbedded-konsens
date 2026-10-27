@@ -134,8 +134,17 @@ builds the program that runs one node from that config.
      percent-encoded in the path.
    - A body longer than `max_body_bytes` gets 413. The body buffer
      grows with the bytes read, never with Content-Length.
-   - Clients speak no SQL (owner, 18:22). The body of a QUERY is open
-     (question 6.4).
+   - Clients speak no SQL (owner, 18:22). A client feeds data into the
+     prepared statements that it may use, and nothing more (owner,
+     18:22; the form of 2026-10-26 18:48: the state machine declares
+     its statements by name, the client binds values). Proposal:
+     `QUERY /statements/{name}` for a read statement and
+     `POST /statements/{name}` for a write statement, with the values
+     as a CBOR array (`application/cbor`). Every error of the bound
+     values (a type, a constraint, a value too big, a name that the
+     client may not use) is refused at once with 4xx (owner, 18:21).
+     This comes after the key-value form, as its own step, because the
+     library has no declared statements yet.
    - Any node takes a call. A follower forwards writes and asks the
      leader for the read index, as the library does now.
 7. Status of each result (every value of `client_errc` and the rest):
@@ -223,7 +232,7 @@ image in its Linux machine.
    (a): it follows the owner rule "the end of a session is a log
    entry", and a removed pid holds no connection.
 3. The three machines and their systems.
-4. What the body of a QUERY holds, now that clients speak no SQL.
+4. The statements come after the key-value form (3.6). Proposal: yes.
 
 ## 7. Tests
 
