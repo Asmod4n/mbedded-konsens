@@ -1,0 +1,171 @@
+# what: the log table of plan-sqlite-storage.md 4.1; one writer, WAL, synchronous=FULL, automatic checkpoint; commits of N entries (kind, session, request, 64 B payload, entry CRC, chain CRC) with keys in order
+# commit_median_us: time per commit with its sync; lookup_median_ns: point lookup by idx in one read transaction, all fields read, 200000 random keys, median of 20 batches; file_bytes_per_entry: size of the db file after a truncate checkpoint
+# arm base: one BLOB record of 89 B, WITHOUT ROWID, psow=0
+# arm columns: six columns, WITHOUT ROWID, psow=0
+# arm rowid: one BLOB record, rowid table (idx is the rowid), psow=0
+# arm columns_rowid: six columns, rowid table, psow=0
+# arm psow1: as base, without psow=0 (the default of the unix VFS)
+# base_a and base_b: the same source built twice, for the noise floor
+# bench source sha256 90543826fe4276b7, outside the tree
+# image localhost/cxx-matrix 25e81e6d252a440e0642181483d2b3f757eb97a53043067729aace91902030b0 created 2026-10-20 11:58:39.325201083 +0000 UTC
+# os Ubuntu Stonking Stingray (development branch)
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0, flags -std=c++23 -O2 -DNDEBUG -Wall -Wextra -Werror
+# instruction set -march=x86-64 -mtune=generic 
+# sqlite libsqlite3-0 3.53.4-2; libsqlite3-dev 3.53.4-2; , libc 2.44-1ubuntu2, libstdc++ 16.2.0-3ubuntu1
+# binary base_a sha256 d028b91a4324e7ae
+# binary base_b sha256 d028b91a4324e7ae
+# binary columns sha256 99a961881a69c78e
+# binary rowid sha256 d146dcc612cd5f5b
+# binary columns_rowid sha256 d5a3c134ce8790f5
+# binary psow1 sha256 ec6d1e3a07bc779a
+# store mount /dev/vda ext4 /dev/vda /store ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# kernel 6.18.44-fc-v165 #1 SMP PREEMPT_DYNAMIC @0
+# hypervisor flag 1, processor Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user bench uid 1001 through setpriv, nice 0, threads 1, not pinned; a TLC run of 1 worker may share the machine
+# loadavg at start 0.58 0.24 0.09 1/132 152
+round=1 binary=base_a values_per_commit=1 commits=1000 loadavg=0.58 commit_median_us=186.4 lookup_median_ns=281 file_bytes_per_entry=118.8 check=428856258288654
+round=1 binary=columns values_per_commit=1 commits=1000 loadavg=0.58 commit_median_us=131.7 lookup_median_ns=374 file_bytes_per_entry=110.6 check=428856258288654
+round=1 binary=rowid values_per_commit=1 commits=1000 loadavg=0.58 commit_median_us=137.9 lookup_median_ns=252 file_bytes_per_entry=110.6 check=428856258288654
+round=1 binary=base_b values_per_commit=1 commits=1000 loadavg=0.58 commit_median_us=155.7 lookup_median_ns=280 file_bytes_per_entry=118.8 check=428856258288654
+round=1 binary=columns_rowid values_per_commit=1 commits=1000 loadavg=0.58 commit_median_us=144.2 lookup_median_ns=347 file_bytes_per_entry=102.4 check=428856258288654
+round=1 binary=psow1 values_per_commit=1 commits=1000 loadavg=0.58 commit_median_us=200.9 lookup_median_ns=280 file_bytes_per_entry=118.8 check=428856258288654
+round=1 binary=base_a values_per_commit=16 commits=1000 loadavg=0.58 commit_median_us=171.6 lookup_median_ns=382 file_bytes_per_entry=114.2 check=429551109121635
+round=1 binary=columns values_per_commit=16 commits=1000 loadavg=0.58 commit_median_us=179.4 lookup_median_ns=475 file_bytes_per_entry=105.7 check=429551109121635
+round=1 binary=rowid values_per_commit=16 commits=1000 loadavg=0.58 commit_median_us=165.0 lookup_median_ns=306 file_bytes_per_entry=100.6 check=429551109121635
+round=1 binary=base_b values_per_commit=16 commits=1000 loadavg=0.58 commit_median_us=177.3 lookup_median_ns=377 file_bytes_per_entry=114.2 check=429551109121635
+round=1 binary=columns_rowid values_per_commit=16 commits=1000 loadavg=0.58 commit_median_us=162.7 lookup_median_ns=398 file_bytes_per_entry=93.7 check=429551109121635
+round=1 binary=psow1 values_per_commit=16 commits=1000 loadavg=0.62 commit_median_us=175.6 lookup_median_ns=379 file_bytes_per_entry=114.2 check=429551109121635
+round=1 binary=base_a values_per_commit=1024 commits=100 loadavg=0.62 commit_median_us=1073.4 lookup_median_ns=1166 file_bytes_per_entry=113.9 check=430224169762752
+round=1 binary=columns values_per_commit=1024 commits=100 loadavg=0.62 commit_median_us=1163.4 lookup_median_ns=1232 file_bytes_per_entry=106.9 check=430224169762752
+round=1 binary=rowid values_per_commit=1024 commits=100 loadavg=0.62 commit_median_us=821.3 lookup_median_ns=1008 file_bytes_per_entry=100.2 check=430224169762752
+round=1 binary=base_b values_per_commit=1024 commits=100 loadavg=0.62 commit_median_us=1001.2 lookup_median_ns=1163 file_bytes_per_entry=113.9 check=430224169762752
+round=1 binary=columns_rowid values_per_commit=1024 commits=100 loadavg=0.62 commit_median_us=959.1 lookup_median_ns=1157 file_bytes_per_entry=95.2 check=430224169762752
+round=1 binary=psow1 values_per_commit=1024 commits=100 loadavg=0.62 commit_median_us=1007.3 lookup_median_ns=1191 file_bytes_per_entry=113.9 check=430224169762752
+round=2 binary=psow1 values_per_commit=1 commits=1000 loadavg=0.62 commit_median_us=237.9 lookup_median_ns=276 file_bytes_per_entry=118.8 check=428856258288654
+round=2 binary=columns_rowid values_per_commit=1 commits=1000 loadavg=0.62 commit_median_us=233.9 lookup_median_ns=345 file_bytes_per_entry=102.4 check=428856258288654
+round=2 binary=base_b values_per_commit=1 commits=1000 loadavg=0.62 commit_median_us=144.2 lookup_median_ns=281 file_bytes_per_entry=118.8 check=428856258288654
+round=2 binary=rowid values_per_commit=1 commits=1000 loadavg=0.62 commit_median_us=145.4 lookup_median_ns=251 file_bytes_per_entry=110.6 check=428856258288654
+round=2 binary=columns values_per_commit=1 commits=1000 loadavg=0.62 commit_median_us=149.1 lookup_median_ns=376 file_bytes_per_entry=110.6 check=428856258288654
+round=2 binary=base_a values_per_commit=1 commits=1000 loadavg=0.62 commit_median_us=161.3 lookup_median_ns=279 file_bytes_per_entry=118.8 check=428856258288654
+round=2 binary=psow1 values_per_commit=16 commits=1000 loadavg=0.62 commit_median_us=177.1 lookup_median_ns=378 file_bytes_per_entry=114.2 check=429551109121635
+round=2 binary=columns_rowid values_per_commit=16 commits=1000 loadavg=0.65 commit_median_us=163.3 lookup_median_ns=399 file_bytes_per_entry=93.7 check=429551109121635
+round=2 binary=base_b values_per_commit=16 commits=1000 loadavg=0.65 commit_median_us=172.2 lookup_median_ns=375 file_bytes_per_entry=114.2 check=429551109121635
+round=2 binary=rowid values_per_commit=16 commits=1000 loadavg=0.65 commit_median_us=165.0 lookup_median_ns=303 file_bytes_per_entry=100.6 check=429551109121635
+round=2 binary=columns values_per_commit=16 commits=1000 loadavg=0.65 commit_median_us=183.0 lookup_median_ns=474 file_bytes_per_entry=105.7 check=429551109121635
+round=2 binary=base_a values_per_commit=16 commits=1000 loadavg=0.65 commit_median_us=180.8 lookup_median_ns=573 file_bytes_per_entry=114.2 check=429551109121635
+round=2 binary=psow1 values_per_commit=1024 commits=100 loadavg=0.65 commit_median_us=923.8 lookup_median_ns=1146 file_bytes_per_entry=113.9 check=430224169762752
+round=2 binary=columns_rowid values_per_commit=1024 commits=100 loadavg=0.65 commit_median_us=925.3 lookup_median_ns=1094 file_bytes_per_entry=95.2 check=430224169762752
+round=2 binary=base_b values_per_commit=1024 commits=100 loadavg=0.65 commit_median_us=933.0 lookup_median_ns=1120 file_bytes_per_entry=113.9 check=430224169762752
+round=2 binary=rowid values_per_commit=1024 commits=100 loadavg=0.65 commit_median_us=746.4 lookup_median_ns=978 file_bytes_per_entry=100.2 check=430224169762752
+round=2 binary=columns values_per_commit=1024 commits=100 loadavg=0.65 commit_median_us=907.4 lookup_median_ns=1235 file_bytes_per_entry=106.9 check=430224169762752
+round=2 binary=base_a values_per_commit=1024 commits=100 loadavg=0.65 commit_median_us=912.5 lookup_median_ns=1169 file_bytes_per_entry=113.9 check=430224169762752
+round=3 binary=base_a values_per_commit=1 commits=1000 loadavg=0.65 commit_median_us=173.7 lookup_median_ns=290 file_bytes_per_entry=118.8 check=428856258288654
+round=3 binary=columns values_per_commit=1 commits=1000 loadavg=0.65 commit_median_us=129.9 lookup_median_ns=378 file_bytes_per_entry=110.6 check=428856258288654
+round=3 binary=rowid values_per_commit=1 commits=1000 loadavg=0.65 commit_median_us=166.9 lookup_median_ns=251 file_bytes_per_entry=110.6 check=428856258288654
+round=3 binary=base_b values_per_commit=1 commits=1000 loadavg=0.68 commit_median_us=176.9 lookup_median_ns=279 file_bytes_per_entry=118.8 check=428856258288654
+round=3 binary=columns_rowid values_per_commit=1 commits=1000 loadavg=0.68 commit_median_us=195.9 lookup_median_ns=349 file_bytes_per_entry=102.4 check=428856258288654
+round=3 binary=psow1 values_per_commit=1 commits=1000 loadavg=0.68 commit_median_us=231.3 lookup_median_ns=279 file_bytes_per_entry=118.8 check=428856258288654
+round=3 binary=base_a values_per_commit=16 commits=1000 loadavg=0.68 commit_median_us=176.5 lookup_median_ns=377 file_bytes_per_entry=114.2 check=429551109121635
+round=3 binary=columns values_per_commit=16 commits=1000 loadavg=0.68 commit_median_us=180.0 lookup_median_ns=476 file_bytes_per_entry=105.7 check=429551109121635
+round=3 binary=rowid values_per_commit=16 commits=1000 loadavg=0.68 commit_median_us=136.5 lookup_median_ns=300 file_bytes_per_entry=100.6 check=429551109121635
+round=3 binary=base_b values_per_commit=16 commits=1000 loadavg=0.68 commit_median_us=167.5 lookup_median_ns=376 file_bytes_per_entry=114.2 check=429551109121635
+round=3 binary=columns_rowid values_per_commit=16 commits=1000 loadavg=0.68 commit_median_us=139.9 lookup_median_ns=396 file_bytes_per_entry=93.7 check=429551109121635
+round=3 binary=psow1 values_per_commit=16 commits=1000 loadavg=0.68 commit_median_us=149.6 lookup_median_ns=376 file_bytes_per_entry=114.2 check=429551109121635
+round=3 binary=base_a values_per_commit=1024 commits=100 loadavg=0.68 commit_median_us=958.5 lookup_median_ns=1153 file_bytes_per_entry=113.9 check=430224169762752
+round=3 binary=columns values_per_commit=1024 commits=100 loadavg=0.68 commit_median_us=1099.0 lookup_median_ns=1263 file_bytes_per_entry=106.9 check=430224169762752
+round=3 binary=rowid values_per_commit=1024 commits=100 loadavg=0.68 commit_median_us=653.5 lookup_median_ns=1024 file_bytes_per_entry=100.2 check=430224169762752
+round=3 binary=base_b values_per_commit=1024 commits=100 loadavg=0.68 commit_median_us=923.2 lookup_median_ns=1129 file_bytes_per_entry=113.9 check=430224169762752
+round=3 binary=columns_rowid values_per_commit=1024 commits=100 loadavg=0.68 commit_median_us=853.4 lookup_median_ns=1091 file_bytes_per_entry=95.2 check=430224169762752
+round=3 binary=psow1 values_per_commit=1024 commits=100 loadavg=0.70 commit_median_us=963.4 lookup_median_ns=1097 file_bytes_per_entry=113.9 check=430224169762752
+round=4 binary=psow1 values_per_commit=1 commits=1000 loadavg=0.70 commit_median_us=226.9 lookup_median_ns=275 file_bytes_per_entry=118.8 check=428856258288654
+round=4 binary=columns_rowid values_per_commit=1 commits=1000 loadavg=0.70 commit_median_us=191.6 lookup_median_ns=344 file_bytes_per_entry=102.4 check=428856258288654
+round=4 binary=base_b values_per_commit=1 commits=1000 loadavg=0.70 commit_median_us=155.9 lookup_median_ns=276 file_bytes_per_entry=118.8 check=428856258288654
+round=4 binary=rowid values_per_commit=1 commits=1000 loadavg=0.70 commit_median_us=180.7 lookup_median_ns=250 file_bytes_per_entry=110.6 check=428856258288654
+round=4 binary=columns values_per_commit=1 commits=1000 loadavg=0.70 commit_median_us=162.5 lookup_median_ns=376 file_bytes_per_entry=110.6 check=428856258288654
+round=4 binary=base_a values_per_commit=1 commits=1000 loadavg=0.70 commit_median_us=152.4 lookup_median_ns=280 file_bytes_per_entry=118.8 check=428856258288654
+round=4 binary=psow1 values_per_commit=16 commits=1000 loadavg=0.70 commit_median_us=177.1 lookup_median_ns=375 file_bytes_per_entry=114.2 check=429551109121635
+round=4 binary=columns_rowid values_per_commit=16 commits=1000 loadavg=0.70 commit_median_us=139.8 lookup_median_ns=394 file_bytes_per_entry=93.7 check=429551109121635
+round=4 binary=base_b values_per_commit=16 commits=1000 loadavg=0.70 commit_median_us=167.1 lookup_median_ns=372 file_bytes_per_entry=114.2 check=429551109121635
+round=4 binary=rowid values_per_commit=16 commits=1000 loadavg=0.70 commit_median_us=165.0 lookup_median_ns=307 file_bytes_per_entry=100.6 check=429551109121635
+round=4 binary=columns values_per_commit=16 commits=1000 loadavg=0.70 commit_median_us=172.0 lookup_median_ns=474 file_bytes_per_entry=105.7 check=429551109121635
+round=4 binary=base_a values_per_commit=16 commits=1000 loadavg=0.70 commit_median_us=164.4 lookup_median_ns=381 file_bytes_per_entry=114.2 check=429551109121635
+round=4 binary=psow1 values_per_commit=1024 commits=100 loadavg=0.70 commit_median_us=1039.0 lookup_median_ns=1282 file_bytes_per_entry=113.9 check=430224169762752
+round=4 binary=columns_rowid values_per_commit=1024 commits=100 loadavg=0.73 commit_median_us=832.8 lookup_median_ns=1124 file_bytes_per_entry=95.2 check=430224169762752
+round=4 binary=base_b values_per_commit=1024 commits=100 loadavg=0.73 commit_median_us=898.5 lookup_median_ns=1169 file_bytes_per_entry=113.9 check=430224169762752
+round=4 binary=rowid values_per_commit=1024 commits=100 loadavg=0.73 commit_median_us=830.5 lookup_median_ns=1028 file_bytes_per_entry=100.2 check=430224169762752
+round=4 binary=columns values_per_commit=1024 commits=100 loadavg=0.73 commit_median_us=1019.1 lookup_median_ns=1240 file_bytes_per_entry=106.9 check=430224169762752
+round=4 binary=base_a values_per_commit=1024 commits=100 loadavg=0.73 commit_median_us=864.6 lookup_median_ns=1147 file_bytes_per_entry=113.9 check=430224169762752
+round=5 binary=base_a values_per_commit=1 commits=1000 loadavg=0.73 commit_median_us=145.2 lookup_median_ns=279 file_bytes_per_entry=118.8 check=428856258288654
+round=5 binary=columns values_per_commit=1 commits=1000 loadavg=0.73 commit_median_us=139.6 lookup_median_ns=375 file_bytes_per_entry=110.6 check=428856258288654
+round=5 binary=rowid values_per_commit=1 commits=1000 loadavg=0.73 commit_median_us=200.4 lookup_median_ns=253 file_bytes_per_entry=110.6 check=428856258288654
+round=5 binary=base_b values_per_commit=1 commits=1000 loadavg=0.73 commit_median_us=158.8 lookup_median_ns=281 file_bytes_per_entry=118.8 check=428856258288654
+round=5 binary=columns_rowid values_per_commit=1 commits=1000 loadavg=0.73 commit_median_us=207.7 lookup_median_ns=355 file_bytes_per_entry=102.4 check=428856258288654
+round=5 binary=psow1 values_per_commit=1 commits=1000 loadavg=0.73 commit_median_us=230.2 lookup_median_ns=278 file_bytes_per_entry=118.8 check=428856258288654
+round=5 binary=base_a values_per_commit=16 commits=1000 loadavg=0.73 commit_median_us=175.4 lookup_median_ns=372 file_bytes_per_entry=114.2 check=429551109121635
+round=5 binary=columns values_per_commit=16 commits=1000 loadavg=0.73 commit_median_us=182.2 lookup_median_ns=481 file_bytes_per_entry=105.7 check=429551109121635
+round=5 binary=rowid values_per_commit=16 commits=1000 loadavg=0.73 commit_median_us=147.5 lookup_median_ns=302 file_bytes_per_entry=100.6 check=429551109121635
+round=5 binary=base_b values_per_commit=16 commits=1000 loadavg=0.73 commit_median_us=179.1 lookup_median_ns=375 file_bytes_per_entry=114.2 check=429551109121635
+round=5 binary=columns_rowid values_per_commit=16 commits=1000 loadavg=0.75 commit_median_us=152.8 lookup_median_ns=398 file_bytes_per_entry=93.7 check=429551109121635
+round=5 binary=psow1 values_per_commit=16 commits=1000 loadavg=0.75 commit_median_us=177.6 lookup_median_ns=380 file_bytes_per_entry=114.2 check=429551109121635
+round=5 binary=base_a values_per_commit=1024 commits=100 loadavg=0.75 commit_median_us=903.4 lookup_median_ns=1164 file_bytes_per_entry=113.9 check=430224169762752
+round=5 binary=columns values_per_commit=1024 commits=100 loadavg=0.75 commit_median_us=1125.4 lookup_median_ns=1278 file_bytes_per_entry=106.9 check=430224169762752
+round=5 binary=rowid values_per_commit=1024 commits=100 loadavg=0.75 commit_median_us=846.3 lookup_median_ns=1031 file_bytes_per_entry=100.2 check=430224169762752
+round=5 binary=base_b values_per_commit=1024 commits=100 loadavg=0.75 commit_median_us=1092.7 lookup_median_ns=1165 file_bytes_per_entry=113.9 check=430224169762752
+round=5 binary=columns_rowid values_per_commit=1024 commits=100 loadavg=0.75 commit_median_us=1070.0 lookup_median_ns=1126 file_bytes_per_entry=95.2 check=430224169762752
+round=5 binary=psow1 values_per_commit=1024 commits=100 loadavg=0.75 commit_median_us=960.1 lookup_median_ns=1126 file_bytes_per_entry=113.9 check=430224169762752
+# summary: median over rounds, with min and max
+# values_per_commit=1 base_a commit_median_us 161.3 min 145.2 max 186.4
+# values_per_commit=1 base_a lookup_median_ns 280 min 279 max 290
+# values_per_commit=1 base_a file_bytes_per_entry 118.8 min 118.8 max 118.8
+# values_per_commit=1 base_b commit_median_us 155.9 min 144.2 max 176.9
+# values_per_commit=1 base_b lookup_median_ns 280 min 276 max 281
+# values_per_commit=1 base_b file_bytes_per_entry 118.8 min 118.8 max 118.8
+# values_per_commit=1 columns commit_median_us 139.6 min 129.9 max 162.5
+# values_per_commit=1 columns lookup_median_ns 376 min 374 max 378
+# values_per_commit=1 columns file_bytes_per_entry 110.6 min 110.6 max 110.6
+# values_per_commit=1 rowid commit_median_us 166.9 min 137.9 max 200.4
+# values_per_commit=1 rowid lookup_median_ns 251 min 250 max 253
+# values_per_commit=1 rowid file_bytes_per_entry 110.6 min 110.6 max 110.6
+# values_per_commit=1 columns_rowid commit_median_us 195.9 min 144.2 max 233.9
+# values_per_commit=1 columns_rowid lookup_median_ns 347 min 344 max 355
+# values_per_commit=1 columns_rowid file_bytes_per_entry 102.4 min 102.4 max 102.4
+# values_per_commit=1 psow1 commit_median_us 230.2 min 200.9 max 237.9
+# values_per_commit=1 psow1 lookup_median_ns 278 min 275 max 280
+# values_per_commit=1 psow1 file_bytes_per_entry 118.8 min 118.8 max 118.8
+# values_per_commit=16 base_a commit_median_us 175.4 min 164.4 max 180.8
+# values_per_commit=16 base_a lookup_median_ns 381 min 372 max 573
+# values_per_commit=16 base_a file_bytes_per_entry 114.2 min 114.2 max 114.2
+# values_per_commit=16 base_b commit_median_us 172.2 min 167.1 max 179.1
+# values_per_commit=16 base_b lookup_median_ns 375 min 372 max 377
+# values_per_commit=16 base_b file_bytes_per_entry 114.2 min 114.2 max 114.2
+# values_per_commit=16 columns commit_median_us 180.0 min 172.0 max 183.0
+# values_per_commit=16 columns lookup_median_ns 475 min 474 max 481
+# values_per_commit=16 columns file_bytes_per_entry 105.7 min 105.7 max 105.7
+# values_per_commit=16 rowid commit_median_us 165.0 min 136.5 max 165.0
+# values_per_commit=16 rowid lookup_median_ns 303 min 300 max 307
+# values_per_commit=16 rowid file_bytes_per_entry 100.6 min 100.6 max 100.6
+# values_per_commit=16 columns_rowid commit_median_us 152.8 min 139.8 max 163.3
+# values_per_commit=16 columns_rowid lookup_median_ns 398 min 394 max 399
+# values_per_commit=16 columns_rowid file_bytes_per_entry 93.7 min 93.7 max 93.7
+# values_per_commit=16 psow1 commit_median_us 177.1 min 149.6 max 177.6
+# values_per_commit=16 psow1 lookup_median_ns 378 min 375 max 380
+# values_per_commit=16 psow1 file_bytes_per_entry 114.2 min 114.2 max 114.2
+# values_per_commit=1024 base_a commit_median_us 912.5 min 864.6 max 1073.4
+# values_per_commit=1024 base_a lookup_median_ns 1164 min 1147 max 1169
+# values_per_commit=1024 base_a file_bytes_per_entry 113.9 min 113.9 max 113.9
+# values_per_commit=1024 base_b commit_median_us 933.0 min 898.5 max 1092.7
+# values_per_commit=1024 base_b lookup_median_ns 1163 min 1120 max 1169
+# values_per_commit=1024 base_b file_bytes_per_entry 113.9 min 113.9 max 113.9
+# values_per_commit=1024 columns commit_median_us 1099.0 min 907.4 max 1163.4
+# values_per_commit=1024 columns lookup_median_ns 1240 min 1232 max 1278
+# values_per_commit=1024 columns file_bytes_per_entry 106.9 min 106.9 max 106.9
+# values_per_commit=1024 rowid commit_median_us 821.3 min 653.5 max 846.3
+# values_per_commit=1024 rowid lookup_median_ns 1024 min 978 max 1031
+# values_per_commit=1024 rowid file_bytes_per_entry 100.2 min 100.2 max 100.2
+# values_per_commit=1024 columns_rowid commit_median_us 925.3 min 832.8 max 1070.0
+# values_per_commit=1024 columns_rowid lookup_median_ns 1124 min 1091 max 1157
+# values_per_commit=1024 columns_rowid file_bytes_per_entry 95.2 min 95.2 max 95.2
+# values_per_commit=1024 psow1 commit_median_us 963.4 min 923.8 max 1039.0
+# values_per_commit=1024 psow1 lookup_median_ns 1146 min 1097 max 1282
+# values_per_commit=1024 psow1 file_bytes_per_entry 113.9 min 113.9 max 113.9

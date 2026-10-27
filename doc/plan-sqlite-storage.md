@@ -673,6 +673,47 @@ and 1024, the cost of a checkpoint, the copy in `find`, the log as a
 default. Each build of the rules, with priority. No number stands here
 before the run.
 
+### 10.2 Measured: the form of the log table (2026-10-27)
+
+File: `bench/results/2026-10-27-071421Z-sqlite-layout.txt`. One writer,
+WAL, `synchronous=FULL`, entries of 89 B (kind, session, request, 64 B
+payload, two CRCs). g++-16 -O2, SQLite 3.53.4, ext4 in the VM of the
+session, 5 rounds, medians over rounds. Only the release build ran.
+
+Noise floor (base_a against base_b, one binary): commit up to 3.5 %,
+lookup up to 0.5 %. The spread of the commit time inside one arm is up
+to 30 %, so a commit difference under about 10 % is no difference.
+
+Lookup by idx, all fields read, ns, against `base` (BLOB, WITHOUT
+ROWID):
+
+| entries | base | columns | rowid |
+|---|---|---|---|
+| 1,000 | 280 | 376 | 251 |
+| 16,000 | 378 | 475 | 303 |
+| 102,400 | 1164 | 1240 | 1024 |
+
+`columns_rowid`: 347, 398, 1124 ns.
+
+File bytes per entry: base 113.9-118.8, columns 105.7-110.6, rowid
+100.2-110.6, columns_rowid 93.7-102.4.
+
+Commit time per commit, µs, medians: base 156-161, 172-175, 913-933;
+rowid 167, 165, 821; columns 140, 180, 1099; columns_rowid 196, 153,
+925. Only rowid at 1024 entries (-11 %) and columns at 1024 (+18 %)
+are above the spread.
+
+`psow=0` against the default: 158 against 230 µs at 1 entry per
+commit, the same within the noise at 16 and 1024. So `psow=0` costs no
+measurable time here.
+
+Result: the log is a rowid table (idx is the rowid) with one BLOB
+record. It is the fastest arm for the lookup in each size, and the
+fastest or equal for the commit. Columns cost 7 % to 34 % on the
+lookup. The three points of section 4.2.1 (one statement for a query
+by session) are not measured; a query by session needs its own index
+in both forms.
+
 ### 10.1 The model
 
 OneEnvironment.tla gets: the sync inside the commit; "done" sent
