@@ -27,7 +27,8 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           LeaderCountsUnsynced, \* mutation: the leader counts its own done before its sync
           NoRecovery,         \* a restarted node votes at once
           StoreRollback,      \* fault: a start finds the store at the sync before its last one
-          RecoveryTakesLog    \* the recovery takes the log of the answer with the highest acc
+          RecoveryWaitsForLeader \* after the recovery the node votes again only through the
+                                 \* accept sync of a leader that prepared its ballot without it
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec, state, applied,
@@ -142,13 +143,14 @@ Prepare(i, b) ==
 \* The promise leaves after its sync.
 HandlePrepare(j, m) ==
     /\ m.type = "prepare"
-    /\ status[j] = "running"
+    /\ status[j] \in {"running", "rejoining"}
     /\ m.b > cur[j].promise
     /\ Commit(j, [cur[j] EXCEPT !.promise = m.b])
     /\ lead' = [lead EXCEPT ![j] = NoLead]
     /\ work' = [work EXCEPT ![j] = <<>>]
     /\ Hold(j, [type |-> "promise", b |-> m.b, from |-> j, to |-> m.from,
-                acc |-> cur[j].acc, log |-> cur[j].log, dec |-> cur[j].dec])
+                acc |-> cur[j].acc, log |-> cur[j].log, dec |-> cur[j].dec,
+                rejoin |-> status[j] = "rejoining"])
     /\ UNCHANGED <<dur, status, answers, msgs, chosen, replied, Ghosts>>
 
 Best(P) == CHOOSE p \in P : \A q \in P : \/ p.acc > q.acc
@@ -161,6 +163,7 @@ HandlePromise(i, m) ==
     /\ m.to = i
     /\ status[i] = "running"
     /\ lead[i].b = m.b /\ cur[i].promise = m.b
+    /\ m.rejoin => lead[i].phase = "accept"
     /\ LET p == [from |-> m.from, acc |-> m.acc, log |-> m.log, dec |-> m.dec]
        IN
        IF lead[i].phase = "prepare"
@@ -187,14 +190,15 @@ HandlePromise(i, m) ==
 HandleAcceptSync(j, m) ==
     /\ m.type = "acceptsync"
     /\ m.to = j
-    /\ status[j] = "running"
+    /\ status[j] \in {"running", "rejoining"}
     /\ cur[j].promise = m.b
     /\ cur[j].acc # m.b
     /\ LET d == Min(Len(m.log), Max(cur[j].dec, m.dec))
        IN Commit(j, [cur[j] EXCEPT !.log = m.log, !.acc = m.b, !.dec = d, !.wrec = Above(@, Len(m.log))])
     /\ work' = [work EXCEPT ![j] = <<>>]
     /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> Len(m.log)])
-    /\ UNCHANGED <<dur, status, lead, answers, msgs, chosen, replied, Ghosts>>
+    /\ status' = [status EXCEPT ![j] = "running"]
+    /\ UNCHANGED <<dur, lead, answers, msgs, chosen, replied, Ghosts>>
 
 ----------------------------------------------------------------------------
 (* Phase 2.                                                               *)
@@ -374,23 +378,14 @@ RecoveryAnswer(i, j) ==
     /\ status[i] = "recovering"
     /\ status[j] = "running"
     /\ j # i
-    /\ answers' = [answers EXCEPT ![i] = @ \cup {<<j, cur[j].promise, cur[j].acc, cur[j].log, cur[j].dec>>}]
+    /\ answers' = [answers EXCEPT ![i] = @ \cup {<<j, cur[j].promise>>}]
     /\ UNCHANGED <<cur, dur, queue, work, status, lead, msgs, chosen, replied, Ghosts>>
 
 RecoveryComplete(i) ==
     /\ status[i] = "recovering"
     /\ Cardinality({a[1] : a \in answers[i]}) >= F + 1
-    /\ LET p    == SetMax({a[2] : a \in answers[i]} \cup {cur[i].promise})
-           own  == <<i, cur[i].promise, cur[i].acc, cur[i].log, cur[i].dec>>
-           best == CHOOSE a \in answers[i] \cup {own} :
-                     \A o \in answers[i] \cup {own} :
-                        \/ a[3] > o[3]
-                        \/ a[3] = o[3] /\ Len(a[4]) >= Len(o[4])
-       IN IF RecoveryTakesLog /\ best # own
-          THEN Commit(i, [cur[i] EXCEPT !.promise = p, !.acc = best[3], !.log = best[4],
-                                        !.dec = Max(@, best[5])])
-          ELSE Commit(i, [cur[i] EXCEPT !.promise = p])
-    /\ status' = [status EXCEPT ![i] = "running"]
+    /\ Commit(i, [cur[i] EXCEPT !.promise = SetMax({a[2] : a \in answers[i]} \cup {@})])
+    /\ status' = [status EXCEPT ![i] = IF RecoveryWaitsForLeader THEN "rejoining" ELSE "running"]
     /\ answers' = [answers EXCEPT ![i] = {}]
     /\ UNCHANGED <<dur, queue, work, lead, msgs, chosen, replied, Ghosts>>
 

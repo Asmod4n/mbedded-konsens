@@ -158,4 +158,7 @@ Chosen == {<<i, v>> \in (1..MaxLog) \X Values :
 
 ChosenOnce == \A c, d \in Chosen : c[1] = d[1] => c[2] = d[2]
 
+\* Cover: a node that fell back votes again. TLC must find this violated.
+CoverRejoin == ~(crashes = 1 /\ \A n \in Nodes : status[n] = "running")
+
 =============================================================================
