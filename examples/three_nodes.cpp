@@ -1,4 +1,3 @@
-#include <cerrno>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -28,22 +27,6 @@
 #include "temporary_directories.hpp"
 
 namespace {
-
-template <typename Node>
-std::expected<void, std::error_code> sync_the_store(Node& n, konsens::step_end end)
-{
-    while (end != konsens::step_end::nothing) {
-        if (fdatasync(n.get_sequence_paxos().get_internal_storage().file_descriptor()) != 0) [[unlikely]] {
-            throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync of the store failed");
-        }
-        const auto next = n.synced();
-        if (!next) [[unlikely]] {
-            return std::unexpected(next.error());
-        }
-        end = *next;
-    }
-    return {};
-}
 
 struct concatenation {
     static constexpr std::array key{std::byte{'v'}};
@@ -171,9 +154,6 @@ struct cluster {
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
-        if (auto synced = sync_the_store(*n, n->get_step_end()); !synced) [[unlikely]] {
-            return std::unexpected(synced.error());
-        }
         nodes.at(i).emplace(std::move(*n));
         return {};
     }
@@ -200,11 +180,7 @@ struct cluster {
         if (!t) [[unlikely]] {
             return std::unexpected(t.error());
         }
-        const auto end = nodes.at(i)->commit(*t);
-        if (!end) [[unlikely]] {
-            return std::unexpected(end.error());
-        }
-        return sync_the_store(*nodes.at(i), *end);
+        return nodes.at(i)->commit(*t);
     }
 
     std::optional<konsens::client_reply> take_reply(const std::uint64_t call)
@@ -340,12 +316,8 @@ std::expected<void, std::error_code> append_at_leader(cluster& c, const int firs
     if (!t) {
         return {};
     }
-    const auto end = n.commit(*t);
-    if (!end) [[unlikely]] {
-        return std::unexpected(end.error());
-    }
-    if (auto synced = sync_the_store(n, *end); !synced) [[unlikely]] {
-        return synced;
+    if (auto committed = n.commit(*t); !committed) [[unlikely]] {
+        return committed;
     }
     c.collect();
     std::cout << std::format("Node {} writes the {} entries in one commit.", *l + 1, count) << '\n';

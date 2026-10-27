@@ -52,7 +52,7 @@ TEST_CASE("64 requests make one commit of the storage on each node in each pass"
         for (std::size_t i = 0; i < node_count; ++i) {
             if (pending.at(i)) {
                 const auto before = c.disks.at(i)->commits;
-                REQUIRE(batches::commit_and_sync(c.nodes.at(i), *pending.at(i)));
+                REQUIRE(c.nodes.at(i).commit(*pending.at(i)));
                 CHECK(c.disks.at(i)->commits - before <= 1);
                 pending.at(i).reset();
             }
@@ -176,7 +176,7 @@ TEST_CASE("AcceptDecide and Decide in one batch apply the entries after the comm
     const auto t = value_of(c.nodes.at(slow).handle_incoming(std::move(to_slow)));
     CHECK(c.nodes.at(slow).get_sequence_paxos().get_decided_idx() == applied + 1);
     CHECK(c.nodes.at(slow).get_applied_idx() == applied);
-    REQUIRE(batches::commit_and_sync(c.nodes.at(slow), t));
+    REQUIRE(c.nodes.at(slow).commit(t));
     CHECK(c.nodes.at(slow).get_applied_idx() == applied + 1);
 }
 
@@ -195,12 +195,12 @@ TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the A
     const ballot second{config_id, 2, 0, 2};
     REQUIRE(sp.handle({3, 1, konsens::prepare{first, 0, ballot{}, 0}}));
     REQUIRE(sp.handle({3, 1, konsens::accept_sync{first, {1, 1}, 0, {{}, 0}, 0}}));
-    REQUIRE(batches::commit_and_sync(sp));
+    REQUIRE(sp.commit());
     static_cast<void>(sp.take_outgoing_messages());
     const auto commits = d->commits;
     REQUIRE(sp.handle({3, 1, konsens::accept_decide{first, {1, 2}, 0, {make_entry(7)}, 0}}));
     REQUIRE(sp.handle({2, 1, konsens::prepare{second, 0, ballot{}, 0}}));
-    REQUIRE(batches::commit_and_sync(sp));
+    REQUIRE(sp.commit());
     CHECK(d->commits - commits == 1);
     const auto out = sp.take_outgoing_messages();
     const auto it = std::ranges::find_if(
@@ -231,7 +231,7 @@ TEST_CASE("a read reply and a BLE reply wait for the commit")
     }
     const auto read = value_of(c.nodes.at(l).handle_incoming(messages_to(acks, pid_of(l))));
     CHECK(c.nodes.at(l).take_client_replies().empty());
-    REQUIRE(batches::commit_and_sync(c.nodes.at(l), read));
+    REQUIRE(c.nodes.at(l).commit(read));
     const auto replies = c.nodes.at(l).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].client_id == client_a);
@@ -240,7 +240,7 @@ TEST_CASE("a read reply and a BLE reply wait for the commit")
     request.emplace_back(konsens::ble_message{pid_of(l), pid_of(f), konsens::heartbeat_request{1}});
     const auto ble = value_of(c.nodes.at(f).handle_incoming(std::move(request)));
     CHECK(c.nodes.at(f).take_outgoing_messages().empty());
-    REQUIRE(batches::commit_and_sync(c.nodes.at(f), ble));
+    REQUIRE(c.nodes.at(f).commit(ble));
     const auto sent = c.nodes.at(f).take_outgoing_messages();
     CHECK(std::ranges::any_of(sent, [](const message& m) {
         const auto* b = std::get_if<konsens::ble_message>(&m);
@@ -262,7 +262,7 @@ TEST_CASE("the sum of the transactions of several calls commits all of them at o
     t += value_of(c.nodes.at(l).reconnected(pid_of(first_follower(l))));
     CHECK(c.nodes.at(l).take_outgoing_messages().empty());
     CHECK(c.nodes.at(l).take_client_replies().empty());
-    REQUIRE(batches::commit_and_sync(c.nodes.at(l), t));
+    REQUIRE(c.nodes.at(l).commit(t));
     CHECK(std::ranges::any_of(c.nodes.at(l).take_outgoing_messages(), holds<konsens::accept_decide>));
 }
 
@@ -277,15 +277,15 @@ TEST_CASE("a transaction of another node or of a done commit is a wrong use")
     const auto f = first_follower(l);
     const auto mine = value_of(c.nodes.at(l).tick());
     const auto other = value_of(c.nodes.at(f).tick());
-    CHECK_THROWS_AS(static_cast<void>(batches::commit_and_sync(c.nodes.at(l), other)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(other)), std::logic_error);
     auto sum = mine;
     CHECK_THROWS_AS(sum += other, std::logic_error);
-    REQUIRE(batches::commit_and_sync(c.nodes.at(l), mine));
-    REQUIRE(batches::commit_and_sync(c.nodes.at(f), other));
-    CHECK_THROWS_AS(static_cast<void>(batches::commit_and_sync(c.nodes.at(l), mine)), std::logic_error);
+    REQUIRE(c.nodes.at(l).commit(mine));
+    REQUIRE(c.nodes.at(f).commit(other));
+    CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(mine)), std::logic_error);
     auto later = value_of(c.nodes.at(l).tick());
     CHECK_THROWS_AS(later += mine, std::logic_error);
-    REQUIRE(batches::commit_and_sync(c.nodes.at(l), later));
+    REQUIRE(c.nodes.at(l).commit(later));
 }
 
 // R4 of the review: a read of the storage from outside while ops wait
@@ -301,7 +301,7 @@ TEST_CASE("a storage read from outside while ops wait is a wrong use")
     const auto t = value_of(c.nodes.at(f).handle_incoming(messages_to(out, pid_of(f))));
     CHECK_THROWS_AS(static_cast<void>(c.nodes.at(f).read_decided_suffix(0)), std::logic_error);
     CHECK_THROWS_AS(static_cast<void>(c.nodes.at(f).get_sequence_paxos().get_internal_storage()), std::logic_error);
-    REQUIRE(batches::commit_and_sync(c.nodes.at(f), t));
+    REQUIRE(c.nodes.at(f).commit(t));
     CHECK(c.nodes.at(f).read_decided_suffix(0));
     CHECK(lmdb_storage::meta_of(c.disks.at(f)->store).log_len == 1u);
 }
@@ -323,7 +323,7 @@ TEST_CASE("more messages than max_batch_size before a commit are a wrong use")
     auto t = value_of(c.nodes.at(f).handle_incoming(requests(konsens::max_batch_size - 1)));
     t += value_of(c.nodes.at(f).handle_incoming(requests(1)));
     CHECK_THROWS_AS(static_cast<void>(c.nodes.at(f).handle_incoming(requests(1))), std::logic_error);
-    REQUIRE(batches::commit_and_sync(c.nodes.at(f), t));
+    REQUIRE(c.nodes.at(f).commit(t));
     batches::commit(c.nodes.at(f), c.nodes.at(f).handle_incoming(requests(1)));
 }
 
@@ -341,52 +341,25 @@ TEST_CASE("a node releases the Recovery messages of its start with no commit")
 }
 
 // Plan one-environment 3.4 item 2: a step that writes nothing aborts its
-// transaction and asks for no sync, when no step before waits for one.
-TEST_CASE("a step that writes nothing needs no sync")
+// transaction and commits nothing.
+TEST_CASE("a step that writes nothing commits nothing")
 {
     auto c = elected();
     const auto l = c.leader();
-    const auto end = c.nodes.at(l).commit(value_of(c.nodes.at(l).tick()));
-    REQUIRE(end);
-    CHECK(*end == konsens::step_end::nothing);
+    const auto commits = c.disks.at(l)->commits;
+    REQUIRE(c.nodes.at(l).commit(value_of(c.nodes.at(l).tick())));
+    CHECK(c.disks.at(l)->commits == commits);
 }
 
-// Plan one-environment 3.5 item 3 (Q1): the sync of a step makes its data
-// durable, and its meta page becomes durable with the next sync. A message
-// of the step leaves only after that second sync.
-TEST_CASE("the messages of a step leave only after the sync that makes the step durable")
+// Plan sqlite-storage 6.3: the commit of a step syncs the store, and the
+// messages of the step leave only after that commit.
+TEST_CASE("the messages of a step leave only after its commit")
 {
     auto c = elected();
     const auto l = c.leader();
     auto& n = c.nodes.at(l);
-    const auto fd = c.disks.at(l)->store.file_descriptor();
-    const auto end = n.commit(value_of(n.append(make_entry(1))));
-    REQUIRE(end);
-    CHECK(*end == konsens::step_end::commit);
+    const auto t = n.append(make_entry(1));
     CHECK(n.take_outgoing_messages().empty());
-    REQUIRE(fdatasync(fd) == 0);
-    const auto first = n.synced();
-    REQUIRE(first);
-    CHECK(*first == konsens::step_end::sync_only);
-    CHECK(n.take_outgoing_messages().empty());
-    REQUIRE(fdatasync(fd) == 0);
-    const auto second = n.synced();
-    REQUIRE(second);
-    CHECK(*second == konsens::step_end::nothing);
+    REQUIRE(n.commit(value_of(t)));
     CHECK(std::ranges::any_of(n.take_outgoing_messages(), holds<konsens::accept_decide>));
-}
-
-// Plan one-environment 3.5 item 4: the prepared transaction keeps the
-// writer lock of LMDB until the sync. A step that begins before the sync
-// is a wrong use.
-TEST_CASE("a step that begins before the sync of the step before is a wrong use")
-{
-    auto c = elected();
-    const auto l = c.leader();
-    auto& n = c.nodes.at(l);
-    const auto end = n.commit(value_of(n.append(make_entry(1))));
-    REQUIRE(end);
-    REQUIRE(*end == konsens::step_end::commit);
-    CHECK_THROWS_AS(static_cast<void>(n.commit(value_of(n.tick()))), std::logic_error);
-    batches::sync(n, n.get_step_end());
 }

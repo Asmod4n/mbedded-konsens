@@ -1,4 +1,3 @@
-#include <cerrno>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -40,22 +39,6 @@
 #include "temporary_directories.hpp"
 
 namespace {
-
-template <typename Node>
-std::expected<void, std::error_code> sync_the_store(Node& n, konsens::step_end end)
-{
-    while (end != konsens::step_end::nothing) {
-        if (fdatasync(n.get_sequence_paxos().get_internal_storage().file_descriptor()) != 0) [[unlikely]] {
-            throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync of the store failed");
-        }
-        const auto next = n.synced();
-        if (!next) [[unlikely]] {
-            return std::unexpected(next.error());
-        }
-        end = *next;
-    }
-    return {};
-}
 
 struct counter {
     static constexpr std::array key{std::byte{'c'}};
@@ -410,12 +393,8 @@ struct cluster {
         for (std::size_t i = 0; i < node_count; ++i) {
             auto& n = nodes.at(i);
             if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
-                const auto end = n.value().commit(*t);
-                if (!end) [[unlikely]] {
-                    return std::unexpected(end.error());
-                }
-                if (auto synced = sync_the_store(n.value(), *end); !synced) [[unlikely]] {
-                    return synced;
+                if (auto committed = n.value().commit(*t); !committed) [[unlikely]] {
+                    return committed;
                 }
             }
             for (auto& m : n.value().take_outgoing_messages()) {
@@ -445,9 +424,6 @@ struct cluster {
             node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
-        }
-        if (auto synced = sync_the_store(*n, n->get_step_end()); !synced) [[unlikely]] {
-            return std::unexpected(synced.error());
         }
         nodes.at(i).emplace(std::move(*n));
         return {};

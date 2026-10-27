@@ -1,4 +1,3 @@
-#include <cerrno>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -26,22 +25,6 @@
 #include "temporary_directories.hpp"
 
 namespace {
-
-template <typename Node>
-std::expected<void, std::error_code> sync_the_store(Node& n, konsens::step_end end)
-{
-    while (end != konsens::step_end::nothing) {
-        if (fdatasync(n.get_sequence_paxos().get_internal_storage().file_descriptor()) != 0) [[unlikely]] {
-            throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync of the store failed");
-        }
-        const auto next = n.synced();
-        if (!next) [[unlikely]] {
-            return std::unexpected(next.error());
-        }
-        end = *next;
-    }
-    return {};
-}
 
 struct counter {
     static constexpr std::array key{std::byte{'c'}};
@@ -129,11 +112,7 @@ struct cluster {
         if (!t) [[unlikely]] {
             return std::unexpected(t.error());
         }
-        const auto end = nodes.at(i)->commit(*t);
-        if (!end) [[unlikely]] {
-            return std::unexpected(end.error());
-        }
-        return sync_the_store(*nodes.at(i), *end);
+        return nodes.at(i)->commit(*t);
     }
 
     std::expected<void, std::error_code> run_round()
@@ -254,9 +233,6 @@ int run(const std::span<const std::string_view> args)
                               counter{}, i + 1);
         if (!n) [[unlikely]] {
             return fail("start the nodes", n.error());
-        }
-        if (auto synced = sync_the_store(*n, n->get_step_end()); !synced) [[unlikely]] {
-            return fail("start the nodes", synced.error());
         }
         c.nodes.at(i).emplace(std::move(*n));
     }

@@ -457,7 +457,7 @@ struct world {
     void commit(std::size_t i, const std::expected<konsens::transaction, std::error_code>& t)
     {
         REQUIRE(t);
-        REQUIRE(::batches::commit_and_sync(nodes[i], *t));
+        REQUIRE(nodes[i].commit(*t));
         collect(i);
     }
 
@@ -527,7 +527,7 @@ struct world {
         REQUIRE((r || r.error() == konsens::client_errc::recovering));
         if (r) {
             proposed.insert(fields_of(e));
-            REQUIRE(::batches::commit_and_sync(nodes[i], *r));
+            REQUIRE(nodes[i].commit(*r));
         }
         collect(i);
     }
@@ -692,7 +692,7 @@ struct world {
         const auto r = send();
         if (r) {
             calls.emplace(id, std::move(k));
-            REQUIRE(::batches::commit_and_sync(nodes[i], *r));
+            REQUIRE(nodes[i].commit(*r));
         } else {
             const auto e = r.error();
             if (e != konsens::client_errc::recovering && e != konsens::client_errc::retry &&

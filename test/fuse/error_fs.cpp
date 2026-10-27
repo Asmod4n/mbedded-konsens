@@ -15,16 +15,16 @@
 #include <unistd.h>
 
 // A passthrough file system of the high-level API of libfuse 3 that fails
-// I/O as the target "error" of the device mapper does. The tests run LMDB
+// I/O as the target "error" of the device mapper does. The tests run SQLite
 // on it, so that a fault comes from a file system and not from a wrapper
 // of the storage. The faults:
 // - error_fsync: each fsync and fdatasync returns EIO.
-// - error_writes: each write of a data.mdb returns ENOSPC.
-// - error_reads_offset and error_reads_length: each read of a data.mdb
-//   that touches the range returns EIO.
+// - error_writes: each write of a konsens.db or of its WAL returns ENOSPC.
+// - error_reads_offset and error_reads_length: each read of a konsens.db
+//   or of its WAL that touches the range returns EIO.
 // The first two are mount options, and a write of "error_fsync",
 // "error_writes" or "none" to the file /.error_fs of the mount sets them
-// while LMDB keeps its files open. The write returns after the change, so
+// while SQLite keeps its files open. The write returns after the change, so
 // the next operation of the test meets the new faults. error_fs writes one
 // byte to ready_fd when the kernel has sent FUSE_INIT, so that the test
 // waits for the mount without a loop.
@@ -54,7 +54,8 @@ struct mount {
     std::atomic<bool> error_writes;
 };
 
-constexpr std::string_view data_file = "/data.mdb";
+constexpr std::string_view data_file = "/konsens.db";
+constexpr std::string_view wal_file = "/konsens.db-wal";
 constexpr std::string_view control_file = "/.error_fs";
 constexpr std::uint64_t control_handle = UINT64_MAX;
 
@@ -70,7 +71,7 @@ std::string backing_path(const char* path)
 
 bool is_data_file(const std::string_view path)
 {
-    return path.ends_with(data_file);
+    return path.ends_with(data_file) || path.ends_with(wal_file);
 }
 
 int status_of(const int result)

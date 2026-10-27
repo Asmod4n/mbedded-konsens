@@ -35,7 +35,7 @@ constexpr std::uint32_t config_id = 1;
 template <typename S>
 std::vector<paxos_message> committed_messages_of(konsens::sequence_paxos<S>& sp)
 {
-    static_cast<void>(batches::commit_and_sync(sp));
+    static_cast<void>(sp.commit());
     return sp.take_outgoing_messages();
 }
 

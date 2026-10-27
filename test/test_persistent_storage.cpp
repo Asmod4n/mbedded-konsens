@@ -27,12 +27,10 @@
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
-#include <lmdb.h>
+#include <sqlite3.h>
 
 #include "konsens/persistent_storage.hpp"
-#include "lmdb_category.hpp"
-#include "lmdb_checksum.hpp"
-#include "lmdb_damage.hpp"
+#include "sqlite_damage.hpp"
 #include "temporary_directory.hpp"
 
 static_assert(konsens::storage<konsens::persistent_storage>);
@@ -107,14 +105,11 @@ std::optional<konsens::entry_state> state_of(const konsens::persistent_storage& 
     return *state;
 }
 
-using lmdb_damage::change_with_lmdb;
-using lmdb_damage::delete_key;
-using lmdb_damage::key_of;
+using sqlite_damage::change_with_sqlite;
 
 void delete_entry(const std::filesystem::path& directory, const std::uint64_t index)
 {
-    change_with_lmdb(directory,
-                     [index](MDB_txn* txn, const MDB_dbi log, MDB_dbi) { delete_key(txn, log, key_of(index)); });
+    change_with_sqlite(directory, [index](sqlite3* db) { sqlite_damage::delete_entry(db, index); });
 }
 
 }
@@ -253,7 +248,7 @@ TEST_CASE("a transaction that is not committed writes nothing")
     CHECK(entries_of(storage, 0, 1) == std::vector<konsens::entry>{});
 }
 
-// LMDB has one writer for each environment, and a thread that begins a
+// The storage has one writer, and a thread that begins a
 // second write transaction waits on itself. A second write transaction or
 // a second read-only transaction of one storage is a wrong use, and so is
 // a use of a transaction after its commit.
@@ -301,15 +296,12 @@ TEST_CASE("a kept read-only transaction reads the state of the last commit at ea
     }
 }
 
-// Plan lmdb-only-source 2.1 item 11: LMDB checks the checksum of each page
-// that it reads. A byte that changes on the disk is found by LMDB before
-// the CRC of the entry sees it, and the read fails. A test of LMDB alone in
-// this session showed that the first read of a new transaction can give
-// MDB_BAD_TXN and not MDB_BAD_CHECKSUM: mdb_cursor_open meets the bad page,
-// marks the transaction as failed and returns success. So both codes are a
-// failed read here. The meta record and the few entries of this test lie on
-// one page, so the open reads the changed page first and fails.
-TEST_CASE("a flipped byte in a stored page fails the page checksum")
+// SQLite keeps no checksum of a page. A byte that changes on the disk
+// inside a record is read without an error by SQLite, and only the CRC of
+// the entry finds it. The read names the index of the entry. The test moves
+// the WAL into the database file first, so that the flipped byte stands in
+// the file that SQLite reads.
+TEST_CASE("a flipped byte in a stored record is a CRC mismatch at its index")
 {
     const temporary_directory dir;
     constexpr std::string_view marked = "konsens-marked-payload";
@@ -318,7 +310,8 @@ TEST_CASE("a flipped byte in a stored page fails the page checksum")
         const std::vector written{normal_entry("zero"), normal_entry(marked), normal_entry("two")};
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
-    const auto data_file = dir.path() / "data.mdb";
+    sqlite_damage::move_the_wal_into_the_file(dir.path());
+    const auto data_file = dir.path() / sqlite_damage::store_file_name;
     std::vector<char> contents;
     {
         std::ifstream in{data_file, std::ios::binary};
@@ -330,21 +323,25 @@ TEST_CASE("a flipped byte in a stored page fails the page checksum")
         found.front() = static_cast<char>(found.front() ^ 0x01);
         ++flipped;
     }
-    REQUIRE(flipped > 0);
+    REQUIRE(flipped == 1);
     {
         std::ofstream out{data_file, std::ios::binary | std::ios::trunc};
         out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     }
-    const auto opened = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
-    REQUIRE_FALSE(opened.has_value());
-    CHECK(opened.error().category() == konsens::lmdb_category());
-    CHECK((opened.error().value() == MDB_BAD_CHECKSUM || opened.error().value() == MDB_BAD_TXN));
+    const auto storage = open_storage(dir.path());
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto read = t->read_entries(0, 3);
+    REQUIRE_FALSE(read.has_value());
+    CHECK(read.error().code == konsens::storage_errc::crc_mismatch);
+    CHECK(read.error().index == 1u);
 }
 
-// A value whose page checksum is valid but whose bytes do not agree with the
-// CRC of the entry must not reach the protocol as a valid entry. The error
-// names the index of the entry.
-TEST_CASE("a changed value with a valid page checksum is a CRC mismatch at its index")
+// Plan sqlite-storage 8.4: a damaged page of the B-tree gives SQLITE_CORRUPT,
+// which the storage gives as storage_errc::corrupt, and the program does not
+// crash. The first byte of a B-tree page is its type (fileformat2.html,
+// section 1.6). The test sets it to a value that no page type has.
+TEST_CASE("a damaged page of the log gives corrupt and no crash")
 {
     const temporary_directory dir;
     {
@@ -352,16 +349,36 @@ TEST_CASE("a changed value with a valid page checksum is a CRC mismatch at its i
         const std::vector written{normal_entry("zero"), normal_entry("one"), normal_entry("two")};
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
-    change_with_lmdb(dir.path(), [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
-        const auto key_bytes = key_of(1);
-        MDB_val key{key_bytes.size(), const_cast<std::byte*>(key_bytes.data())};
-        MDB_val data{};
-        REQUIRE(mdb_get(txn, log, &key, &data) == MDB_SUCCESS);
-        std::vector<std::byte> changed(static_cast<const std::byte*>(data.mv_data),
-                                       static_cast<const std::byte*>(data.mv_data) + data.mv_size);
+    sqlite_damage::move_the_wal_into_the_file(dir.path());
+    const auto [page_size, log_root_page] = sqlite_damage::page_size_and_root_page_of(dir.path(), "log");
+    const auto data_file = dir.path() / sqlite_damage::store_file_name;
+    {
+        std::fstream file{data_file, std::ios::binary | std::ios::in | std::ios::out};
+        file.seekp(static_cast<std::streamoff>((log_root_page - 1) * page_size));
+        constexpr char no_page_type = static_cast<char>(0xff);
+        file.put(no_page_type);
+    }
+    const auto storage = open_storage(dir.path());
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    CHECK(t->get_entries(0, 3) == std::unexpected(make_error_code(konsens::storage_errc::corrupt)));
+    CHECK(t->get_last_entry() == std::unexpected(make_error_code(konsens::storage_errc::corrupt)));
+}
+
+// A value whose bytes do not agree with the CRC of the entry must not reach
+// the protocol as a valid entry. The error names the index of the entry.
+TEST_CASE("a changed value is a CRC mismatch at its index")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("zero"), normal_entry("one"), normal_entry("two")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    change_with_sqlite(dir.path(), [](sqlite3* db) {
+        auto changed = sqlite_damage::entry_record_of(db, 1);
         changed.at(1) ^= std::byte{0x01};
-        MDB_val replaced{changed.size(), changed.data()};
-        REQUIRE(mdb_put(txn, log, &key, &replaced, 0) == MDB_SUCCESS);
+        sqlite_damage::put_entry_record(db, 1, changed);
     });
     const auto storage = open_storage(dir.path());
     const auto t = storage.begin_read_only();
@@ -377,9 +394,8 @@ TEST_CASE("a changed value with a valid page checksum is a CRC mismatch at its i
 
 // The start-checks plan, item 2.2: a key that is missing in the middle of a
 // range is not a shorter log. The read names the missing index as an error.
-// The log shares its database with the meta record and the client table, so
-// the count of keys does not give the length of the log, and the read of the
-// last entry does not see the hole. The start scan finds it.
+// The read of the last entry does not see the hole. The start scan finds
+// it.
 TEST_CASE("a missing key in the middle of a range is missing_entry")
 {
     const temporary_directory dir;
@@ -415,9 +431,7 @@ TEST_CASE("a storage that lost its meta record gives missing_meta_record")
         const std::vector written{normal_entry("a")};
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
-    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        delete_key(txn, meta, std::as_bytes(std::span(lmdb_damage::meta_key)));
-    });
+    change_with_sqlite(dir.path(), [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
     auto storage = open_storage(dir.path());
     {
         const auto t = storage.begin_read_only();
@@ -440,25 +454,20 @@ TEST_CASE("open refuses another format and a store with data and no format")
         const std::vector written{normal_entry("a")};
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
-    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        constexpr std::string_view name{"\0format", 7};
-        const std::array<unsigned char, 8> version_5{5, 0, 0, 0, 0, 0, 0, 0};
-        const auto crc = crc32c::Crc32c(version_5.data(), 4);
-        std::array<unsigned char, 8> value = version_5;
+    change_with_sqlite(dir.path(), [](sqlite3* db) {
+        const std::array<unsigned char, 8> version_4{4, 0, 0, 0, 0, 0, 0, 0};
+        const auto crc = crc32c::Crc32c(version_4.data(), 4);
+        std::vector<std::byte> value(version_4.size());
+        std::ranges::transform(version_4, value.begin(), [](const unsigned char c) { return std::byte{c}; });
         for (std::size_t i = 0; i < 4; ++i) {
-            value.at(4 + i) = static_cast<unsigned char>(crc >> (8 * i));
+            value.at(4 + i) = static_cast<std::byte>(crc >> (8 * i));
         }
-        MDB_val key{name.size(), const_cast<char*>(name.data())};
-        MDB_val data{value.size(), value.data()};
-        REQUIRE(mdb_put(txn, meta, &key, &data, 0) == MDB_SUCCESS);
+        sqlite_damage::put_record(db, "format", value);
     });
     const auto other = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
     REQUIRE_FALSE(other.has_value());
     CHECK(other.error() == konsens::storage_errc::unsupported_format);
-    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        constexpr std::string_view name{"\0format", 7};
-        delete_key(txn, meta, std::as_bytes(std::span(name)));
-    });
+    change_with_sqlite(dir.path(), [](sqlite3* db) { sqlite_damage::delete_record(db, "format"); });
     const auto none = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
     REQUIRE_FALSE(none.has_value());
     CHECK(none.error() == konsens::storage_errc::unsupported_format);
@@ -580,7 +589,7 @@ TEST_CASE("set_decided_index commits the entries below it and nothing above")
     CHECK(t->set_decided_index(5) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
 }
 
-// An entry of more than about 2000 bytes lies on LMDB overflow pages. A
+// An entry of more than about 2000 bytes lay on LMDB overflow pages. A
 // raise of the decided index over two or more such entries in one
 // transaction once wrote each new state under a key that pointed into a page
 // of the previous put, so the next entry was lost or failed its CRC.
@@ -617,10 +626,11 @@ TEST_CASE("an entry written below the decided index is committed")
     CHECK(state_of(storage, 2) == konsens::entry_state::in_work);
 }
 
-// A full map is an error value of a write, which the node raises as
-// write_error (test_group_commit.cpp). A transaction that ends without a
-// commit after it leaves nothing behind.
-TEST_CASE("a full map gives no_space_on_device and writes nothing")
+// A full store is an error value of a write, which the node raises as
+// write_error (test_group_commit.cpp). SQLite gives SQLITE_FULL when a
+// write needs more pages than max_page_count allows. A transaction that
+// ends without a commit after it leaves nothing behind.
+TEST_CASE("a full store gives no_space_on_device and writes nothing")
 {
     const temporary_directory dir;
     auto opened = konsens::persistent_storage::open(dir.path(), tiny_map_size, non_root_user_id);
@@ -643,39 +653,43 @@ TEST_CASE("a full map gives no_space_on_device and writes nothing")
     CHECK(meta_of(storage).log_len == 1u);
 }
 
-// The decision of the owner (2026-10-21): an LMDB commit that fails is a
-// failure of the machine. The commit throws sync_error with the error
-// code, and nothing in the library catches it. A limit on the size of a
-// file makes the commit fail, because the pages of a write transaction
-// reach the file only in mdb_txn_commit. The limit holds this test process,
-// and the test sets it back before it checks anything.
-TEST_CASE("a failed LMDB commit throws sync_error and writes nothing")
+// Plan sqlite-storage 6.1: a write to the disk that fails is a failure of
+// the machine. The commit throws write_error with the error code, and
+// nothing in the library catches it. A limit on the size of a file makes
+// the commit fail, because the pages of a transaction reach the WAL only
+// at its commit. The limit holds this test process, and the test sets it
+// back before it checks anything. The store that opens again after the
+// failure holds nothing of the transaction.
+TEST_CASE("a failed write of a commit throws write_error and writes nothing")
 {
     const temporary_directory dir;
-    auto storage = open_storage(dir.path());
-    rlimit unlimited{};
-    REQUIRE(getrlimit(RLIMIT_FSIZE, &unlimited) == 0);
-    rlimit limited = unlimited;
-    limited.rlim_cur = std::filesystem::file_size(dir.path() / "data.mdb");
-    const std::vector large{
-        konsens::entry{konsens::entry_kind::normal, std::vector<std::byte>(large_entry_size, std::byte{0x5a})}};
-    auto t = storage.begin();
-    REQUIRE(t.has_value());
-    REQUIRE(t->append_entries(large));
-    const auto handler = std::signal(SIGXFSZ, SIG_IGN);
-    const int limit_set = setrlimit(RLIMIT_FSIZE, &limited);
-    std::optional<std::error_code> thrown;
-    try {
-        static_cast<void>(std::move(*t).commit());
-    } catch (const konsens::sync_error& e) {
-        thrown = e.code();
+    {
+        auto storage = open_storage(dir.path());
+        rlimit unlimited{};
+        REQUIRE(getrlimit(RLIMIT_FSIZE, &unlimited) == 0);
+        rlimit limited = unlimited;
+        limited.rlim_cur = std::filesystem::file_size(dir.path() / "konsens.db-wal");
+        const std::vector large{
+            konsens::entry{konsens::entry_kind::normal, std::vector<std::byte>(large_entry_size, std::byte{0x5a})}};
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->append_entries(large));
+        const auto handler = std::signal(SIGXFSZ, SIG_IGN);
+        const int limit_set = setrlimit(RLIMIT_FSIZE, &limited);
+        std::optional<std::error_code> thrown;
+        try {
+            static_cast<void>(std::move(*t).commit());
+        } catch (const konsens::write_error& e) {
+            thrown = e.code();
+        }
+        const int limit_reset = setrlimit(RLIMIT_FSIZE, &unlimited);
+        std::signal(SIGXFSZ, handler);
+        REQUIRE(limit_set == 0);
+        REQUIRE(limit_reset == 0);
+        REQUIRE(thrown);
+        CHECK(*thrown == std::errc::file_too_large);
     }
-    const int limit_reset = setrlimit(RLIMIT_FSIZE, &unlimited);
-    std::signal(SIGXFSZ, handler);
-    REQUIRE(limit_set == 0);
-    REQUIRE(limit_reset == 0);
-    REQUIRE(thrown);
-    CHECK((*thrown == std::errc::file_too_large || *thrown == std::errc::io_error));
+    const auto storage = open_storage(dir.path());
     CHECK(meta_of(storage).log_len == 0u);
 }
 
@@ -700,9 +714,8 @@ TEST_CASE("open of a missing directory gives no_such_file_or_directory")
 
 // A rollback in the simulation restores a copy that was made while the node
 // ran. The copy must hold the state of the last commit, and a write after the
-// copy must not reach it. The copy is the plain copy of LMDB, because a
-// compact copy of an environment with page checksums does not open (plan
-// lmdb-only-source 2.4 item 9).
+// copy must not reach it. The copy is VACUUM INTO on the reader, which
+// copies the state of its read transaction.
 TEST_CASE("copy keeps the state of the last commit and not a later write")
 {
     const temporary_directory dir;
@@ -731,8 +744,8 @@ TEST_CASE("copy keeps the state of the last commit and not a later write")
     CHECK(m.decided_idx == 1u);
 }
 
-// A user copies twice into the same directory. LMDB does not overwrite a
-// copy, and the second copy is an error value, not a crash.
+// A user copies twice into the same directory. The storage does not
+// overwrite a copy, and the second copy is an error value, not a crash.
 TEST_CASE("copy into a directory that holds a copy gives file_exists")
 {
     const temporary_directory dir;
@@ -1004,9 +1017,7 @@ TEST_CASE("a repair without a meta record is refused and changes nothing")
             REQUIRE(t.set_applied(2, 9));
         });
     }
-    change_with_lmdb(dir.path(), [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        lmdb_damage::delete_meta_record(txn, meta);
-    });
+    change_with_sqlite(dir.path(), [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
     auto storage = open_storage(dir.path());
     {
         auto t = storage.begin();
@@ -1083,8 +1094,9 @@ TEST_CASE("a nested transaction sees its parent and its writes end with it")
     CHECK(finds_no_value(r->find(nested_key)));
 }
 
-// LMDB forbids a use of a parent transaction while its child is open
-// (lmdb.h, mdb_txn_begin). Such a use is a wrong use of the library.
+// A savepoint holds no state of its own. A write through the parent while
+// the nested transaction is open would land inside the savepoint, and its
+// rollback would remove it. Such a use is a wrong use of the library.
 TEST_CASE("a use of the parent while a nested transaction is open is a wrong use")
 {
     const temporary_directory dir;
@@ -1100,70 +1112,20 @@ TEST_CASE("a use of the parent while a nested transaction is open is a wrong use
     CHECK_THROWS_AS(static_cast<void>(w->begin_nested()), std::logic_error);
 }
 
-// Plan one-environment 3.5 item 3: a transaction without sync writes its
-// data pages at the prepare and its meta page at the commit. A read sees
+// The node commits only a transaction that wrote something. A read sees
 // the writes only after the commit.
-TEST_CASE("a transaction without sync becomes visible at the commit after its prepare")
+TEST_CASE("a transaction has writes after its first write and shows them after its commit")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
-    auto w = storage.begin_without_sync();
+    auto w = storage.begin();
     REQUIRE(w.has_value());
     CHECK_FALSE(w->has_writes());
     const std::vector written{normal_entry("a")};
     REQUIRE(w->append_entries(written));
     CHECK(w->has_writes());
-    auto p = std::move(*w).prepare();
-    REQUIRE(p.has_value());
     CHECK(meta_of(storage).log_len == 0u);
-    REQUIRE(fdatasync(storage.file_descriptor()) == 0);
-    REQUIRE(std::move(*p).commit());
+    REQUIRE(std::move(*w).commit());
     CHECK(meta_of(storage).log_len == 1u);
     CHECK(entries_of(storage, 0, 1) == written);
-}
-
-// A transaction without sync ends with prepare, and a transaction with
-// sync ends with commit. The other end is a wrong use. A prepared
-// transaction keeps the writer, so a second write transaction is a wrong
-// use until its commit.
-TEST_CASE("each kind of write transaction has one end")
-{
-    const temporary_directory dir;
-    auto storage = open_storage(dir.path());
-    {
-        auto w = storage.begin_without_sync();
-        REQUIRE(w.has_value());
-        CHECK_THROWS_AS(static_cast<void>(std::move(*w).commit()), std::logic_error);
-    }
-    {
-        auto w = storage.begin();
-        REQUIRE(w.has_value());
-        CHECK_THROWS_AS(static_cast<void>(std::move(*w).prepare()), std::logic_error);
-    }
-    auto w = storage.begin_without_sync();
-    REQUIRE(w.has_value());
-    const std::vector written{normal_entry("a")};
-    REQUIRE(w->append_entries(written));
-    auto p = std::move(*w).prepare();
-    REQUIRE(p.has_value());
-    CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
-    REQUIRE(std::move(*p).commit());
-    CHECK(storage.begin().has_value());
-}
-
-// LMDB ends a prepared transaction that changed no page, and a later commit
-// or abort of it reads memory that LMDB freed. So only a transaction that
-// changed a page has writes, and the prepare of any other transaction is a
-// wrong use. An erase of an absent key changes no page.
-TEST_CASE("the prepare of a transaction without writes is a wrong use")
-{
-    const temporary_directory dir;
-    auto storage = open_storage(dir.path());
-    const std::array key{std::byte{1}};
-    auto w = storage.begin_without_sync();
-    REQUIRE(w.has_value());
-    REQUIRE(w->erase(key));
-    REQUIRE(w->erase_session(1));
-    CHECK_FALSE(w->has_writes());
-    CHECK_THROWS_AS(static_cast<void>(std::move(*w).prepare()), std::logic_error);
 }

@@ -404,32 +404,13 @@ public:
             return {};
         }
         write_unfinished_ = true;
-        auto p = std::move(txn).prepare();
-        if (!p) [[unlikely]] {
-            throw write_error(p.error(), "konsens: the storage failed to prepare the step");
-        }
-        write_unfinished_ = false;
-        prepared_.emplace(std::move(*p));
-        prepared_mark_ = mark_of(*m);
-        return {};
-    }
-
-    void synced()
-    {
-        if (!prepared_) [[unlikely]] {
-            return;
-        }
-        auto p = std::move(*prepared_);
-        prepared_.reset();
-        write_unfinished_ = true;
-        if (auto c = std::move(p).commit(); !c) [[unlikely]] {
+        if (auto c = std::move(txn).commit(); !c) [[unlikely]] {
             throw write_error(c.error(), "konsens: the storage failed to commit the step");
         }
         write_unfinished_ = false;
-        mark_ = raise_mark(mark_, prepared_mark_);
+        mark_ = raise_mark(mark_, mark_of(*m));
+        return {};
     }
-
-    bool is_prepared() const { return prepared_.has_value(); }
 
 private:
     template <storage, state_machine>
@@ -979,21 +960,13 @@ private:
 
     std::expected<meta_record, std::error_code> read_meta() const { return txn_->get_meta(); }
 
-    void throw_if_a_sync_is_pending() const
-    {
-        if (prepared_) [[unlikely]] {
-            throw std::logic_error("konsens: a step begins before the sync of the step before");
-        }
-    }
-
     result begin_step()
     {
         throw_if_a_write_did_not_finish();
         if (txn_) {
             return {};
         }
-        throw_if_a_sync_is_pending();
-        auto t = internal_storage_.begin_without_sync();
+        auto t = internal_storage_.begin();
         if (!t) [[unlikely]] {
             return stop_voting(t.error());
         }
@@ -1945,8 +1918,7 @@ private:
             return {};
         }
         if (!txn_) {
-            throw_if_a_sync_is_pending();
-            auto t = internal_storage_.begin_without_sync();
+            auto t = internal_storage_.begin();
             if (!t) [[unlikely]] {
                 return stop_voting(t.error());
             }
@@ -2082,8 +2054,6 @@ private:
     std::vector<node_id> nodes_;
     S internal_storage_;
     std::optional<typename S::transaction> txn_;
-    std::optional<prepared_transaction_of<typename S::transaction>> prepared_;
-    high_water_mark prepared_mark_{};
     high_water_mark mark_{};
     std::pair<role, phase> state_{role::follower, phase::none};
     leader_state leader_state_{};

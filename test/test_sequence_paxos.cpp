@@ -22,8 +22,8 @@
 #include <sys/resource.h>
 #include "batches.hpp"
 #include "konsens/sequence_paxos.hpp"
-#include "lmdb_damage.hpp"
 #include "lmdb_storage.hpp"
+#include "sqlite_damage.hpp"
 
 namespace {
 
@@ -45,14 +45,14 @@ constexpr std::uint32_t config_id = 1;
 template <typename S>
 std::vector<paxos_message> committed_messages_of(konsens::sequence_paxos<S>& sp)
 {
-    static_cast<void>(batches::commit_and_sync(sp));
+    static_cast<void>(sp.commit());
     return sp.take_outgoing_messages();
 }
 
 template <typename S>
 const S& committed_storage_of(konsens::sequence_paxos<S>& sp)
 {
-    static_cast<void>(batches::commit_and_sync(sp));
+    static_cast<void>(sp.commit());
     return sp.get_internal_storage();
 }
 
@@ -60,7 +60,7 @@ template <typename S>
 std::expected<std::vector<entry>, std::error_code> committed_decided_suffix_of(konsens::sequence_paxos<S>& sp,
                                                                                const std::uint64_t from_idx)
 {
-    static_cast<void>(batches::commit_and_sync(sp));
+    static_cast<void>(sp.commit());
     return sp.read_decided_suffix(from_idx);
 }
 
@@ -238,21 +238,22 @@ private:
 
 constexpr std::size_t largest_map_pages = 64;
 
-// A storage whose map has no room for one more write. open takes the
-// smallest map in which LMDB can create the databases of the storage, so
-// the next write gives MDB_MAP_FULL, which the storage gives as
-// no_space_on_device. The fault comes from LMDB and not from a wrapper.
+// A storage with no room for one more page. open takes the smallest bound
+// in which SQLite can create the tables of the storage, each try in a new
+// directory, because a try that fails leaves a file. So the next write
+// that needs a new page gives SQLITE_FULL, which the storage gives as
+// no_space_on_device. The fault comes from SQLite and not from a wrapper.
 persistent_storage storage_with_full_map()
 {
-    const auto directory = lmdb_storage::new_directory();
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
     for (std::size_t pages = 1; pages <= largest_map_pages; ++pages) {
-        auto opened = persistent_storage::open(directory, pages * page, lmdb_storage::non_root_user_id);
+        auto opened =
+            persistent_storage::open(lmdb_storage::new_directory(), pages * page, lmdb_storage::non_root_user_id);
         if (opened) {
             return std::move(*opened);
         }
     }
-    FAIL("no map of up to largest_map_pages pages holds the databases");
+    FAIL("no bound of up to largest_map_pages pages holds the tables");
     return lmdb_storage::open_new();
 }
 
@@ -264,10 +265,11 @@ entry large_entry_of(const std::uint8_t fill)
 }
 
 // A storage of three large entries, accepted in round b, whose middle entry
-// has a flipped byte on the disk. A large entry stands on pages of its own,
-// so the step check at the start, which reads the meta record and the last
-// entry, does not meet the flipped page. The first read of the middle entry
-// fails. The fault is in the file that LMDB reads and not in a wrapper.
+// has a flipped byte on the disk. The step check at the start reads the
+// meta record and the last entry, and does not check the middle entry. The
+// first read of the middle entry fails. The test moves the WAL into the
+// database file first, so that the flipped byte stands in the file that
+// SQLite reads. The fault is in that file and not in a wrapper.
 persistent_storage storage_with_flipped_middle_entry(const ballot b)
 {
     constexpr std::uint8_t middle_fill = 0x5a;
@@ -281,7 +283,8 @@ persistent_storage storage_with_flipped_middle_entry(const ballot b)
             REQUIRE(t.set_accepted_round(b));
         });
     }
-    const auto data_file = directory / "data.mdb";
+    sqlite_damage::move_the_wal_into_the_file(directory);
+    const auto data_file = directory / sqlite_damage::store_file_name;
     std::vector<char> contents;
     {
         std::ifstream in{data_file, std::ios::binary};
@@ -479,26 +482,30 @@ TEST_CASE("update_decided caps the decided_idx at the accepted_idx")
 
 // The decision of the owner (2026-10-21): a write that fails is a failure
 // of the machine, and it is raised with the error code of the store. The
-// handler writes the promise of the Prepare in the transaction of the step,
-// so the write fails inside the handler. The program does not repeat the
-// write, so a later commit is a wrong use, and no message of the step
-// leaves.
+// handler writes the entries of the AcceptSync in the transaction of the
+// step, and they need new pages, so the write fails inside the handler.
+// SQLite changes the meta record in its page, so the Prepare before it
+// needs no new page. The program does not repeat the write, so a later
+// commit is a wrong use, and no message of the step leaves.
 TEST_CASE("a failed write inside a step throws write_error, and a later commit is a wrong use")
 {
     auto sp = make(1, storage_with_full_map());
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    committed_messages_of(sp);
+    const std::vector large{large_entry_of(0x11), large_entry_of(0x22), large_entry_of(0x33)};
     try {
-        static_cast<void>(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+        static_cast<void>(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {large, 0}, 0}}));
         FAIL("the handler did not throw");
     } catch (const konsens::write_error& e) {
         CHECK(e.code() == std::make_error_code(std::errc::no_space_on_device));
     }
-    CHECK_THROWS_AS(static_cast<void>(batches::commit_and_sync(sp)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp.commit()), std::logic_error);
     CHECK_THROWS_AS(static_cast<void>(sp.take_outgoing_messages()), std::logic_error);
 }
 
-// The same failure at the commit. The file of the storage may not grow,
-// so the write of the pages at the commit fails with EFBIG, and the store
-// raises it as sync_error. The Promise of the Prepare depends on the
+// The same failure at the commit. The WAL of the storage may not grow, so
+// the write of the pages at the commit fails with EFBIG, and the store
+// raises it as write_error. The Promise of the Prepare depends on the
 // promise that the failed commit held, so it stays in the node, and a
 // second commit is a wrong use.
 TEST_CASE("a failed commit throws write_error and sends nothing")
@@ -506,18 +513,18 @@ TEST_CASE("a failed commit throws write_error and sends nothing")
     const auto directory = lmdb_storage::new_directory();
     auto sp = make(1, lmdb_storage::open_in(directory));
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    const auto file_size = std::filesystem::file_size(directory / "data.mdb");
+    const auto file_size = std::filesystem::file_size(directory / "konsens.db-wal");
     {
         const file_size_limit limit{file_size};
         try {
-            static_cast<void>(batches::commit_and_sync(sp));
+            static_cast<void>(sp.commit());
             FAIL("the commit did not throw");
-        } catch (const konsens::sync_error& e) {
+        } catch (const konsens::write_error& e) {
             CHECK(e.code() == std::make_error_code(std::errc::file_too_large));
         }
     }
     CHECK_THROWS_AS(static_cast<void>(sp.take_outgoing_messages()), std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(batches::commit_and_sync(sp)), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp.commit()), std::logic_error);
 }
 
 // A pid of 0 means "no leader" in mod.rs:371-384, so a node with pid 0 is
@@ -1364,7 +1371,7 @@ sp_t running_node_in(const std::filesystem::path& directory)
     auto sp = make(1, lmdb_storage::open_in(directory), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1, konsens::recovery{4}}));
-    REQUIRE(batches::commit_and_sync(sp));
+    REQUIRE(sp.commit());
     REQUIRE(sp.take_outgoing_messages().size() == 1);
     return sp;
 }
@@ -1379,9 +1386,7 @@ void check_stops_voting(sp_t& sp, const std::error_code e)
 std::vector<std::byte> meta_value_in(const std::filesystem::path& directory)
 {
     std::vector<std::byte> value;
-    lmdb_damage::change_with_lmdb(directory, [&value](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        value = lmdb_damage::meta_value_of(txn, meta);
-    });
+    sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { value = sqlite_damage::meta_value_of(db); });
     return value;
 }
 
@@ -1394,8 +1399,7 @@ TEST_CASE("a key lost while the node runs is found at the next step")
 {
     const auto directory = lmdb_storage::new_directory();
     auto sp = running_node_in(directory);
-    lmdb_damage::change_in_another_process(
-        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
     check_stops_voting(sp, make_error_code(konsens::storage_errc::missing_meta_record));
 }
 
@@ -1405,9 +1409,7 @@ TEST_CASE("a last entry lost while the node runs is found by the chain check")
 {
     const auto directory = lmdb_storage::new_directory();
     auto sp = running_node_in(directory);
-    lmdb_damage::change_in_another_process(directory, [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
-        lmdb_damage::delete_key(txn, log, lmdb_damage::key_of(1));
-    });
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_entry(db, 1); });
     check_stops_voting(sp, make_error_code(konsens::storage_errc::missing_entry));
 }
 
@@ -1429,9 +1431,7 @@ TEST_CASE("a promise lost while the node runs is found at the next step")
     auto value = meta_value_in(lost);
     const auto directory = lmdb_storage::new_directory();
     auto sp = running_node_in(directory);
-    lmdb_damage::change_in_another_process(directory, [&value](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        lmdb_damage::put_meta_value(txn, meta, value);
-    });
+    sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
     check_stops_voting(sp, make_error_code(konsens::paxos_errc::inconsistent_storage));
 }
 
@@ -1448,12 +1448,10 @@ TEST_CASE("a value below the mark stops the vote, and a getter between two steps
     REQUIRE(committed_storage_of(sp).copy(older));
     auto value = meta_value_in(older);
     REQUIRE(sp.handle({2, 1, konsens::prepare{ballot_of(2, 2), 0, ballot{}, 0}}));
-    REQUIRE(batches::commit_and_sync(sp));
+    REQUIRE(sp.commit());
     static_cast<void>(sp.take_outgoing_messages());
     REQUIRE(sp.get_promise() == ballot_of(2, 2));
-    lmdb_damage::change_in_another_process(directory, [&value](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        lmdb_damage::put_meta_value(txn, meta, value);
-    });
+    sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
     const auto inconsistent = make_error_code(konsens::paxos_errc::inconsistent_storage);
     CHECK(sp.get_promise() == std::unexpected(inconsistent));
     CHECK(sp.get_decided_idx() == std::unexpected(inconsistent));
@@ -1462,9 +1460,9 @@ TEST_CASE("a value below the mark stops the vote, and a getter between two steps
     CHECK(committed_messages_of(sp).empty());
 }
 
-// Plan 2.1 item 6: a page whose checksum does not match is a damage of the
+// Plan 2.1 item 6: an entry whose CRC does not match is a damage of the
 // step check, and the node stops voting.
-TEST_CASE("a page with a wrong checksum stops the vote")
+TEST_CASE("an entry with a wrong CRC stops the vote")
 {
     const auto b = ballot_of(1, 3);
     auto sp = make(1, storage_with_flipped_middle_entry(b));
@@ -1483,7 +1481,7 @@ TEST_CASE("no message leaves before the commit of its step")
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     CHECK_THROWS_AS(static_cast<void>(sp.take_outgoing_messages()), std::logic_error);
-    REQUIRE(batches::commit_and_sync(sp));
+    REQUIRE(sp.commit());
     CHECK(messages_of<konsens::promise>(sp.take_outgoing_messages()).size() == 1);
 }
 
@@ -1543,7 +1541,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         auto sp = make(1);
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
-        REQUIRE(batches::commit_and_sync(sp));
+        REQUIRE(sp.commit());
         CHECK(states_of(committed_storage_of(sp)) == committed_below(0, 2));
         REQUIRE(sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, chain_of(one_two, 2)}}));
         CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
@@ -1630,7 +1628,7 @@ TEST_CASE("a decide with another chain CRC stops the vote")
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
-    REQUIRE(batches::commit_and_sync(sp));
+    REQUIRE(sp.commit());
     static_cast<void>(sp.take_outgoing_messages());
     const auto other = chain_of({make_entry(9), make_entry(2)}, 2);
     const auto r = sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, other}});
@@ -1734,17 +1732,11 @@ constexpr std::size_t chain_crc_offset_in_tail = 4;
 // The chain CRC of a record is not under its entry CRC, so a flipped bit
 // there leaves an entry that reads without error and a chain that does not
 // follow.
-void flip_chain_crc(MDB_txn* txn, const MDB_dbi log, const std::uint64_t index)
+void flip_chain_crc(sqlite3* db, const std::uint64_t index)
 {
-    const auto key_bytes = lmdb_damage::key_of(index);
-    MDB_val key{key_bytes.size(), const_cast<std::byte*>(key_bytes.data())};
-    MDB_val value{};
-    REQUIRE(mdb_get(txn, log, &key, &value) == MDB_SUCCESS);
-    const std::span stored(static_cast<const std::byte*>(value.mv_data), value.mv_size);
-    std::vector<std::byte> changed(stored.begin(), stored.end());
+    auto changed = sqlite_damage::entry_record_of(db, index);
     changed.at(changed.size() - record_tail_size + chain_crc_offset_in_tail) ^= std::byte{1};
-    MDB_val replaced{changed.size(), changed.data()};
-    REQUIRE(mdb_put(txn, log, &key, &replaced, 0) == MDB_SUCCESS);
+    sqlite_damage::put_entry_record(db, index, changed);
 }
 
 std::vector<entry> numbered_log(const std::size_t length, const std::uint8_t first)
@@ -1783,9 +1775,7 @@ void lose_the_promise_in(const std::filesystem::path& directory, const std::vect
     const auto twin = lmdb_storage::new_directory();
     write_log_in(twin, log, decided_idx, false);
     const auto value = meta_value_in(twin);
-    lmdb_damage::change_with_lmdb(directory, [&value](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) {
-        lmdb_damage::put_meta_value(txn, meta, value);
-    });
+    sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
 }
 
 // A node whose promise is lost before its start: `with` gives a node that
@@ -1881,8 +1871,7 @@ TEST_CASE("a repair takes only the entries that differ, and sets the mark")
     const auto directory = lmdb_storage::new_directory();
     write_log_in(directory, source, 18, true);
     lose_the_promise_in(directory, source, 18);
-    lmdb_damage::change_with_lmdb(directory,
-                                  [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) { flip_chain_crc(txn, log, 12); });
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { flip_chain_crc(db, 12); });
     auto sp = make(1, lmdb_storage::open_in(directory), 7);
     REQUIRE(sp.get_error() == make_error_code(konsens::paxos_errc::inconsistent_storage));
     REQUIRE(sp.start_repair(9));
@@ -1974,8 +1963,7 @@ TEST_CASE("a follower that found a damage repairs from the cluster and votes aga
         REQUIRE(c.append(e));
     }
     deliver_all(nodes);
-    lmdb_damage::change_in_another_process(
-        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_the_last_entry(txn, meta); });
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_the_last_entry(db); });
     CHECK(a.handle({3, 1, konsens::recovery{5}}) ==
           std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
     REQUIRE(a.start_repair(11));

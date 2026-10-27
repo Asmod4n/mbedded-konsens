@@ -1,4 +1,3 @@
-#include <cerrno>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -36,9 +35,7 @@
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
-#include <lmdb.h>
 
-#include "lmdb_category.hpp"
 
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
@@ -82,10 +79,6 @@ constexpr std::size_t lmdb_copies_of_each_page = 2;
 constexpr std::size_t lmdb_base_map_bytes = std::size_t{64} << 20;
 constexpr std::size_t state_map_bytes = std::size_t{256} << 20;
 constexpr std::uint64_t setup_entries = 16;
-constexpr unsigned int lmdb_named_database_count = 2;
-constexpr mdb_mode_t lmdb_file_mode = 0600;
-constexpr const char* lmdb_database_name = "log";
-constexpr std::size_t entry_crc_bytes = sizeof(std::uint32_t);
 constexpr std::uint64_t stored_key = 0;
 constexpr std::chrono::seconds reply_timeout{20};
 constexpr std::size_t puts_of_the_loop = 64;
@@ -341,22 +334,6 @@ std::optional<std::uint64_t> reply_count_of(const floating&, const konsens::clie
     return float_count_of(reply);
 }
 
-template <typename Node>
-std::expected<void, std::error_code> sync_the_store(Node& n, konsens::step_end end)
-{
-    while (end != konsens::step_end::nothing) {
-        if (fdatasync(n.get_sequence_paxos().get_internal_storage().file_descriptor()) != 0) [[unlikely]] {
-            throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync of the store failed");
-        }
-        const auto next = n.synced();
-        if (!next) [[unlikely]] {
-            return std::unexpected(next.error());
-        }
-        end = *next;
-    }
-    return {};
-}
-
 struct counted_storage {
     using read_only_transaction = konsens::persistent_storage::read_only_transaction;
 
@@ -390,11 +367,6 @@ struct counted_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
-        auto prepare() &&
-        {
-            *commits_ += 1;
-            return std::move(t_).prepare();
-        }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
@@ -428,12 +400,6 @@ struct counted_storage {
         return store.begin().transform(
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), commits.get()}; });
     }
-    std::expected<transaction, std::error_code> begin_without_sync()
-    {
-        return store.begin_without_sync().transform(
-            [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), commits.get()}; });
-    }
-    int file_descriptor() const { return store.file_descriptor(); }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return store.begin_read_only(); }
 };
 
@@ -548,13 +514,9 @@ struct cluster {
             if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
                 const auto start = std::chrono::steady_clock::now();
                 const auto r = n.commit(*t);
-                const auto synced = r ? sync_the_store(n, *r) : std::expected<void, std::error_code>{};
                 commit_time.at(i) += std::chrono::steady_clock::now() - start;
                 if (!r) [[unlikely]] {
                     return std::unexpected(r.error());
-                }
-                if (!synced) [[unlikely]] {
-                    return synced;
                 }
             }
             for (const auto& m : n.take_outgoing_messages()) {
@@ -931,226 +893,6 @@ case_outcome measure_commit_lmdb(const run_settings& s)
     return case_result{ns, std::string{}};
 }
 
-struct env_close {
-    void operator()(MDB_env* env) const noexcept { mdb_env_close(env); }
-};
-
-struct transaction_abort {
-    void operator()(MDB_txn* txn) const noexcept { mdb_txn_abort(txn); }
-};
-
-using mdb_env = std::unique_ptr<MDB_env, env_close>;
-using mdb_txn = std::unique_ptr<MDB_txn, transaction_abort>;
-
-struct lmdb_store {
-    mdb_env env;
-    MDB_dbi dbi;
-};
-
-std::error_code error_code_of(const int lmdb_status)
-{
-    if (lmdb_status > 0) {
-        return {lmdb_status, std::generic_category()};
-    }
-    return {lmdb_status, konsens::lmdb_category()};
-}
-
-std::expected<mdb_txn, failure> begin_transaction(MDB_env* const env, const unsigned int flags)
-{
-    MDB_txn* txn = nullptr;
-    if (const int status = mdb_txn_begin(env, nullptr, flags, &txn); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_txn_begin", error_code_of(status)});
-    }
-    return mdb_txn{txn};
-}
-
-std::expected<lmdb_store, failure> open_lmdb_store(const std::filesystem::path& directory, const std::size_t map_bytes)
-{
-    std::filesystem::create_directories(directory);
-    MDB_env* raw_env = nullptr;
-    if (const int status = mdb_env_create(&raw_env); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_env_create", error_code_of(status)});
-    }
-    mdb_env env{raw_env};
-    if (const int status = mdb_env_set_maxdbs(env.get(), lmdb_named_database_count); status != MDB_SUCCESS)
-        [[unlikely]] {
-        return std::unexpected(failure{"mdb_env_set_maxdbs", error_code_of(status)});
-    }
-    if (const int status = mdb_env_set_mapsize(env.get(), map_bytes); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_env_set_mapsize", error_code_of(status)});
-    }
-    if (const int status = mdb_env_open(env.get(), directory.c_str(), 0, lmdb_file_mode); status != MDB_SUCCESS)
-        [[unlikely]] {
-        return std::unexpected(failure{"mdb_env_open", error_code_of(status)});
-    }
-    auto txn = begin_transaction(env.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    MDB_dbi dbi = 0;
-    if (const int status = mdb_dbi_open(txn->get(), lmdb_database_name, MDB_CREATE, &dbi); status != MDB_SUCCESS)
-        [[unlikely]] {
-        return std::unexpected(failure{"mdb_dbi_open", error_code_of(status)});
-    }
-    if (const int status = mdb_txn_commit(txn->release()); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_txn_commit of the database", error_code_of(status)});
-    }
-    return lmdb_store{std::move(env), dbi};
-}
-
-std::array<std::byte, sizeof(std::uint64_t)> big_endian_key_of(const std::uint64_t index)
-{
-    const auto ordered = std::endian::native == std::endian::big ? index : std::byteswap(index);
-    return std::bit_cast<std::array<std::byte, sizeof index>>(ordered);
-}
-
-MDB_val value_of(const std::span<const std::byte> bytes)
-{
-    return MDB_val{bytes.size(), const_cast<std::byte*>(bytes.data())};
-}
-
-std::expected<void, failure> put_payload(const lmdb_store& store, const std::uint64_t index,
-                                         const std::span<const std::byte> payload)
-{
-    auto txn = begin_transaction(store.env.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    const auto key_bytes = big_endian_key_of(index);
-    MDB_val key = value_of(key_bytes);
-    MDB_val data = value_of(payload);
-    if (const int status = mdb_put(txn->get(), store.dbi, &key, &data, 0); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_put", error_code_of(status)});
-    }
-    if (const int status = mdb_txn_commit(txn->release()); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_txn_commit", error_code_of(status)});
-    }
-    return {};
-}
-
-std::expected<void, failure> put_record_like_storage(const lmdb_store& store, const std::uint64_t index,
-                                                     const std::span<const std::byte> record)
-{
-    auto txn = begin_transaction(store.env.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    MDB_stat stat{};
-    if (const int status = mdb_stat(txn->get(), store.dbi, &stat); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_stat", error_code_of(status)});
-    }
-    const auto key_bytes = big_endian_key_of(index);
-    MDB_val key = value_of(key_bytes);
-    MDB_val data{record.size(), nullptr};
-    if (const int status = mdb_put(txn->get(), store.dbi, &key, &data, MDB_APPEND | MDB_RESERVE); status != MDB_SUCCESS)
-        [[unlikely]] {
-        return std::unexpected(failure{"mdb_put", error_code_of(status)});
-    }
-    std::ranges::copy(record, std::span(static_cast<std::byte*>(data.mv_data), data.mv_size).begin());
-    if (const int status = mdb_txn_commit(txn->release()); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_txn_commit", error_code_of(status)});
-    }
-    return {};
-}
-
-std::expected<std::uint64_t, failure> entry_count_of(const lmdb_store& store)
-{
-    const auto txn = begin_transaction(store.env.get(), MDB_RDONLY);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    MDB_stat stat{};
-    if (const int status = mdb_stat(txn->get(), store.dbi, &stat); status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(failure{"mdb_stat", error_code_of(status)});
-    }
-    return stat.ms_entries;
-}
-
-case_outcome measure_lmdb_puts(const run_settings& s, const std::span<const std::byte> value, const auto& put)
-{
-    std::vector<double> ns;
-    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        auto store =
-            open_lmdb_store(s.directory / std::format("sample-{}", sample), map_bytes_for(s.ops, s.payload_bytes));
-        if (!store) [[unlikely]] {
-            return std::unexpected(store.error());
-        }
-        const auto start = std::chrono::steady_clock::now();
-        for (std::uint64_t k = 0; k < s.ops; ++k) {
-            if (auto p = put(*store, k, value); !p) [[unlikely]] {
-                return std::unexpected(p.error());
-            }
-        }
-        const auto end = std::chrono::steady_clock::now();
-        const auto count = entry_count_of(*store);
-        if (!count) [[unlikely]] {
-            return std::unexpected(count.error());
-        }
-        if (*count != s.ops) [[unlikely]] {
-            return std::unexpected(failure{"compare the number of entries with the number of puts", check_failed()});
-        }
-        if (sample >= warm_up_samples) {
-            ns.push_back(ns_per_op_of(start, end, s.ops));
-        }
-    }
-    return case_result{ns, std::format("value_bytes={}", value.size())};
-}
-
-case_outcome measure_lmdb_put(const run_settings& s)
-{
-    const std::vector<std::byte> payload(s.payload_bytes, payload_byte);
-    return measure_lmdb_puts(s, payload, put_payload);
-}
-
-case_outcome measure_lmdb_put_like_storage(const run_settings& s)
-{
-    const konsens::entry e{konsens::entry_kind::normal, std::vector<std::byte>(s.payload_bytes, payload_byte)};
-    const std::vector<std::byte> record(konsens::encoded_size_of(e) + entry_crc_bytes, payload_byte);
-    return measure_lmdb_puts(s, record, put_record_like_storage);
-}
-
-std::span<const std::byte> as_bytes(const MDB_val& value)
-{
-    return {static_cast<const std::byte*>(value.mv_data), value.mv_size};
-}
-
-case_outcome measure_lmdb_get(const run_settings& s)
-{
-    const std::vector<std::byte> payload(s.payload_bytes, payload_byte);
-    const auto store = open_lmdb_store(s.directory / "store", map_bytes_for(1, s.payload_bytes));
-    if (!store) [[unlikely]] {
-        return std::unexpected(store.error());
-    }
-    if (auto p = put_payload(*store, stored_key, payload); !p) [[unlikely]] {
-        return std::unexpected(p.error());
-    }
-    const auto key_bytes = big_endian_key_of(stored_key);
-    std::vector<double> ns;
-    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        const auto start = std::chrono::steady_clock::now();
-        for (std::uint64_t k = 0; k < s.ops; ++k) {
-            const auto txn = begin_transaction(store->env.get(), MDB_RDONLY);
-            if (!txn) [[unlikely]] {
-                return std::unexpected(txn.error());
-            }
-            MDB_val key = value_of(key_bytes);
-            MDB_val data{};
-            if (const int status = mdb_get(txn->get(), store->dbi, &key, &data); status != MDB_SUCCESS) [[unlikely]] {
-                return std::unexpected(failure{"mdb_get", error_code_of(status)});
-            }
-            const auto value = as_bytes(data);
-            if (!std::equal(value.begin(), value.end(), payload.begin(), payload.end())) [[unlikely]] {
-                return std::unexpected(failure{"compare the value with the payload", check_failed()});
-            }
-        }
-        const auto end = std::chrono::steady_clock::now();
-        if (sample >= warm_up_samples) {
-            ns.push_back(ns_per_op_of(start, end, s.ops));
-        }
-    }
-    return case_result{ns, std::string{}};
-}
-
 case_outcome measure_get_entries_lmdb(const run_settings& s)
 {
     auto store = open_log(s.directory / "store", map_bytes_for(1, s.payload_bytes), s.user_id);
@@ -1208,9 +950,6 @@ auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op, const
                                      machine_of(pid), pid);
         if (!n) [[unlikely]] {
             return std::unexpected(failure{"start a node", n.error()});
-        }
-        if (auto synced = sync_the_store(*n, n->get_step_end()); !synced) [[unlikely]] {
-            return std::unexpected(failure{"sync a node after its start", synced.error()});
         }
         return std::move(*n);
     };
@@ -1438,13 +1177,9 @@ struct threaded_cluster {
         join(*handled);
         const auto start = std::chrono::steady_clock::now();
         const auto committed = n.commit(*t);
-        const auto synced = committed ? sync_the_store(n, *committed) : std::expected<void, std::error_code>{};
         own.commit_time += std::chrono::steady_clock::now() - start;
         if (!committed) [[unlikely]] {
             return std::unexpected(failure{"commit", committed.error()});
-        }
-        if (!synced) [[unlikely]] {
-            return std::unexpected(failure{"sync", synced.error()});
         }
         std::vector<std::vector<inbox_element>> outgoing(nodes.size());
         std::uint64_t sent = 0;
@@ -2299,8 +2034,6 @@ constexpr std::array<parameter_ops, 3> write_lmdb_ops{{{64, 5}, {1024, 5}, {6553
 constexpr std::array<parameter_ops, 1> read_lmdb_ops{{{0, 1700}}};
 constexpr std::array<parameter_ops, 3> write_batch_lmdb_ops{{{64, 64}, {1024, 64}, {65536, 64}}};
 constexpr std::array<parameter_ops, 3> write_batch_size_lmdb_ops{{{1, 4}, {16, 32}, {256, 256}}};
-constexpr std::array<parameter_ops, 3> lmdb_put_ops{{{64, 30}, {1024, 24}, {65536, 16}}};
-constexpr std::array<parameter_ops, 3> lmdb_get_ops{{{64, 140000}, {1024, 130000}, {65536, 8000}}};
 constexpr std::array<parameter_ops, 3> get_entries_lmdb_ops{{{64, 75000}, {1024, 55000}, {65536, 2000}}};
 constexpr std::array<parameter_ops, 3> write_lmdb_threads_ops{{{64, 5}, {1024, 5}, {65536, 3}}};
 constexpr std::array<parameter_ops, 1> read_lmdb_threads_ops{{{0, 115}}};
@@ -2331,9 +2064,6 @@ constexpr auto cases = std::to_array<bench_case>({
     {"write_batch_lmdb", measure_write_batch_lmdb, write_batch_lmdb_ops, argument_kind::payload_bytes, true, true},
     {"write_batch_size_lmdb", measure_write_batch_size_lmdb, write_batch_size_lmdb_ops, argument_kind::parameter, true,
      true},
-    {"lmdb_put", measure_lmdb_put, lmdb_put_ops, argument_kind::payload_bytes, true, true},
-    {"lmdb_put_like_storage", measure_lmdb_put_like_storage, lmdb_put_ops, argument_kind::payload_bytes, true, true},
-    {"lmdb_get", measure_lmdb_get, lmdb_get_ops, argument_kind::payload_bytes, true, true},
     {"get_entries_lmdb", measure_get_entries_lmdb, get_entries_lmdb_ops, argument_kind::payload_bytes, true, true},
     {"write_lmdb_threads", measure_write_lmdb_threads, write_lmdb_threads_ops, argument_kind::payload_bytes, true,
      true},

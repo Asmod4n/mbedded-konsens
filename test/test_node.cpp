@@ -19,8 +19,8 @@
 #include "batches.hpp"
 #include "echo.hpp"
 #include "konsens/node.hpp"
-#include "lmdb_damage.hpp"
 #include "lmdb_storage.hpp"
+#include "sqlite_damage.hpp"
 
 namespace {
 
@@ -281,7 +281,7 @@ TEST_CASE("a follower that lost the last Decide catches up after reconnected")
     auto nodes = lose_the_last_decide();
     const auto t = nodes[behind - 1].reconnected(elected);
     REQUIRE(t);
-    REQUIRE(batches::commit_and_sync(nodes[behind - 1], *t));
+    REQUIRE(nodes[behind - 1].commit(*t));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -369,7 +369,6 @@ struct recording_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
-        auto prepare() && { return std::move(t_).prepare(); }
 
         auto append_entries(const std::span<const konsens::entry> entries)
         {
@@ -404,12 +403,6 @@ struct recording_storage {
         return inner.begin().transform(
             [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
     }
-    std::expected<transaction, std::error_code> begin_without_sync()
-    {
-        return inner.begin_without_sync().transform(
-            [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
-    }
-    int file_descriptor() const { return inner.file_descriptor(); }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return inner.begin_read_only(); }
 };
 
@@ -476,8 +469,7 @@ namespace {
 
 void lose_the_last_entry_in(const std::filesystem::path& directory)
 {
-    lmdb_damage::change_with_lmdb(
-        directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_the_last_entry(txn, meta); });
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_the_last_entry(db); });
 }
 
 void stop(node_t& n)
@@ -593,8 +585,7 @@ TEST_CASE("a start without a meta record waits for the operator")
         auto s = lmdb_storage::open_in(log_directory);
         lmdb_storage::write(s, [](auto& t) { REQUIRE(t.set_promise({1, 1, 0, 2})); });
     }
-    lmdb_damage::change_with_lmdb(
-        log_directory, [](MDB_txn* txn, MDB_dbi, const MDB_dbi meta) { lmdb_damage::delete_meta_record(txn, meta); });
+    sqlite_damage::change_with_sqlite(log_directory, [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
     auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
                            lmdb_storage::open_node_storage_in(own_directory), echo{}, 5);
     CHECK(n.waits_for_the_operator());
@@ -657,9 +648,7 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
     }
     REQUIRE(*nodes[2].read_decided_suffix(0) == entries);
     stop(nodes[2]);
-    lmdb_damage::change_with_lmdb(log_directory, [](MDB_txn* txn, const MDB_dbi log, MDB_dbi) {
-        lmdb_damage::delete_key(txn, log, lmdb_damage::key_of(1));
-    });
+    sqlite_damage::change_with_sqlite(log_directory, [](sqlite3* db) { sqlite_damage::delete_entry(db, 1); });
     nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
                              lmdb_storage::open_node_storage_in(own_directory),
                              echo{}, 10);

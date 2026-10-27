@@ -9,8 +9,6 @@
 #include <variant>
 #include <vector>
 
-#include <unistd.h>
-
 #include "konsens/message.hpp"
 #include "konsens/node.hpp"
 
@@ -26,64 +24,16 @@ inline konsens::node_id to_of(const konsens::message& m)
     return std::visit([](const auto& x) { return x.to; }, m);
 }
 
-// The library makes no sync. The caller syncs the file of the store and
-// says so, until the node needs no further sync. A test syncs at once after
-// each step, so each step releases its messages before the next call.
-template <typename Node>
-void sync(Node& n, konsens::step_end end)
-{
-    while (end != konsens::step_end::nothing) {
-        REQUIRE(fdatasync(n.get_sequence_paxos().get_internal_storage().file_descriptor()) == 0);
-        const auto next = n.synced();
-        REQUIRE(next);
-        end = *next;
-    }
-}
-
-// A commit that succeeds is synced at once. The result is the result of the
-// commit, for a test that checks an error of the commit.
-template <typename Node>
-std::expected<konsens::step_end, std::error_code> commit_and_sync(Node& n, const konsens::transaction t)
-{
-    const auto end = n.commit(t);
-    if (end) {
-        sync(n, *end);
-    }
-    return end;
-}
-
-// The library makes no sync. A step of sequence_paxos that wrote waits for
-// the sync of the caller before the next step begins, so a test syncs at
-// once.
-template <typename S>
-std::expected<void, std::error_code> commit_and_sync(konsens::sequence_paxos<S>& sp)
-{
-    auto r = sp.commit();
-    if (sp.is_prepared()) {
-        REQUIRE(fdatasync(sp.get_internal_storage().file_descriptor()) == 0);
-        sp.synced();
-    }
-    return r;
-}
-
-// A node that starts may hold a step of its start that waits for its sync.
-template <typename Node>
-void sync_after_the_start(Node& n)
-{
-    sync(n, n.get_step_end());
-}
-
 // Each call that collects work gives a transaction, and only the commit of
-// that transaction and its sync release the messages and the replies of the
-// call. A test that commits at once after each call keeps the order of the
+// that transaction releases the messages and the replies of the call. The
+// commit syncs the store. A test that commits at once after each call keeps the order of the
 // old form, in which each call sent its messages at once.
 template <typename Node>
 void commit(Node& n, const std::expected<konsens::transaction, std::error_code>& t)
 {
     REQUIRE(t);
-    const auto end = n.commit(*t);
-    REQUIRE(end);
-    sync(n, *end);
+    const auto committed = n.commit(*t);
+    REQUIRE(committed);
 }
 
 // Each pass takes what each node released and gives each node the messages

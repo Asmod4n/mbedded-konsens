@@ -4,7 +4,6 @@
 #include <array>
 #include <bit>
 #include <cstddef>
-#include <cerrno>
 #include <cstdint>
 #include <optional>
 #include <random>
@@ -22,17 +21,6 @@
 #include "temporary_directory.hpp"
 
 namespace {
-
-template <typename Node>
-void sync_the_store(Node& node, konsens::step_end end)
-{
-    while (end != konsens::step_end::nothing) {
-        const int fd = node.get_sequence_paxos().get_internal_storage().file_descriptor();
-        if (fdatasync(fd) != 0)
-            throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync failed");
-        end = node.synced().value();
-    }
-}
 
 std::vector<std::byte> bytes_of(const std::uint64_t v)
 {
@@ -104,7 +92,6 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
                               .resend_message_tick_timeout = 3},
                              std::move(storage), std::move(own_storage), counter{}, fresh_nonce())
                     .value();
-    sync_the_store(node, node.get_step_end());
     return node;
 }
 
@@ -124,7 +111,7 @@ struct cluster {
             auto& node = nodes.at(i);
             auto t = node.tick().value();
             t += node.handle_incoming(std::move(arrived.at(i))).value();
-            sync_the_store(node, node.commit(t).value());
+            node.commit(t).value();
             for (const auto& m : node.take_outgoing_messages()) {
                 network.push_back(konsens::encode(m).value());
             }
@@ -152,7 +139,7 @@ struct cluster {
         for (int i = 0; i < round_limit; ++i) {
             round();
             if (const auto t = nodes.at(at).register_client(client_id)) {
-                sync_the_store(nodes.at(at), nodes.at(at).commit(*t).value());
+                nodes.at(at).commit(*t).value();
                 return wait_for_reply();
             }
         }

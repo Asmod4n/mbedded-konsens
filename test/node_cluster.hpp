@@ -82,12 +82,6 @@ struct disk_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
-        auto prepare() &&
-        {
-            d_->commits += 1;
-            return std::move(t_).prepare();
-        }
-
         auto append_entries(const std::span<const entry> entries)
         {
             d_->appended.push_back(entries.size());
@@ -123,12 +117,6 @@ struct disk_storage {
         return d->store.begin().transform(
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), d.get()}; });
     }
-    std::expected<transaction, std::error_code> begin_without_sync()
-    {
-        return d->store.begin_without_sync().transform(
-            [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), d.get()}; });
-    }
-    int file_descriptor() const { return d->store.file_descriptor(); }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return d->store.begin_read_only(); }
 };
 

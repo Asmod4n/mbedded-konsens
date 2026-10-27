@@ -2,45 +2,52 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <exception>
 #include <format>
-#include <iterator>
+#include <limits>
 #include <optional>
-#include <ranges>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include <crc32c/crc32c.h>
-#include <lmdb.h>
+#include <fcntl.h>
+#include <sqlite3.h>
+#include <unistd.h>
 
 #include "byte_order.hpp"
 #include "konsens/entry_range.hpp"
-#include "lmdb_category.hpp"
-#include "lmdb_checksum.hpp"
 
 namespace konsens {
 
 namespace {
 
-constexpr unsigned int named_database_count = 2;
-constexpr mdb_mode_t file_mode = 0600;
+constexpr mode_t file_mode = 0600;
 constexpr uid_t root_user_id = 0;
-constexpr unsigned int environment_flags = MDB_NOTLS | MDB_REMAP_CHUNKS;
-constexpr const char* meta_database_name = "meta";
-constexpr const char* data_database_name = "data";
-constexpr std::byte record_prefix{0};
-constexpr std::byte session_prefix{1};
-constexpr std::byte log_prefix{2};
-constexpr std::string_view meta_key{"\0meta", 5};
-constexpr std::string_view format_key{"\0format", 7};
-constexpr std::uint32_t format_version = 4;
-constexpr std::size_t node_storage_map_size = std::size_t{1} << 20;
-constexpr std::size_t session_head_size = sizeof(session_record::request_number);
-constexpr unsigned int node_database_count = 1;
-constexpr const char* node_database_name = "node";
+constexpr std::string_view store_file_name = "konsens.db";
+constexpr std::string_view node_file_name = "node.db";
+constexpr std::string_view meta_key = "meta";
+constexpr std::string_view format_key = "format";
 constexpr std::string_view repair_key = "repair";
+constexpr std::uint32_t format_version = 5;
+constexpr int synchronous_full = 2;
+constexpr int checkpoint_frames = 1000;
+constexpr std::uint64_t largest_key = std::numeric_limits<std::int64_t>::max();
+constexpr int open_flags =
+    SQLITE_OPEN_READWRITE | SQLITE_OPEN_URI | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_EXRESCODE;
+constexpr unsigned int prepare_flags = SQLITE_PREPARE_PERSISTENT;
+constexpr std::size_t session_head_size = sizeof(session_record::request_number);
+
+constexpr std::string_view store_schema =
+    "CREATE TABLE meta (name TEXT PRIMARY KEY, record BLOB NOT NULL) STRICT, WITHOUT ROWID;"
+    "CREATE TABLE log (idx INTEGER PRIMARY KEY, record BLOB NOT NULL) STRICT;"
+    "CREATE TABLE session (id INTEGER PRIMARY KEY, record BLOB NOT NULL) STRICT;"
+    "CREATE TABLE data (key BLOB PRIMARY KEY, value BLOB NOT NULL) STRICT, WITHOUT ROWID;";
+constexpr std::string_view node_schema =
+    "CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, record BLOB NOT NULL) STRICT, WITHOUT ROWID;";
 
 constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
@@ -66,7 +73,6 @@ constexpr std::size_t last_chain_crc_offset = log_len_offset + sizeof(meta_recor
 constexpr std::size_t applied_idx_offset = last_chain_crc_offset + sizeof(meta_record::last_chain_crc);
 constexpr std::size_t applied_chain_crc_offset = applied_idx_offset + sizeof(meta_record::applied_idx);
 constexpr std::size_t meta_record_size = applied_chain_crc_offset + sizeof(meta_record::applied_chain_crc);
-constexpr std::size_t prefixed_key_size = sizeof(std::byte) + sizeof(std::uint64_t);
 
 constexpr std::size_t flag_size = sizeof(std::uint8_t);
 constexpr std::size_t open_flag_offset = sizeof(repair_record::count);
@@ -98,83 +104,88 @@ public:
             return "The storage has no meta record";
         case storage_errc::unsupported_format:
             return "The storage has a format that this version of the library does not read";
+        case storage_errc::corrupt:
+            return "The database file of the storage is damaged";
         }
         return "Unknown storage error";
     }
 };
 
-class lmdb_error_category final : public std::error_category {
+class sqlite_error_category final : public std::error_category {
 public:
-    const char* name() const noexcept override { return "lmdb"; }
+    const char* name() const noexcept override { return "sqlite"; }
 
-    std::string message(const int code) const override { return mdb_strerror(code); }
+    std::string message(const int code) const override { return sqlite3_errstr(code); }
 };
 
-struct env_close {
-    void operator()(MDB_env* env) const noexcept { mdb_env_close(env); }
-};
-
-struct transaction_abort {
-    void operator()(MDB_txn* txn) const noexcept { mdb_txn_abort(txn); }
-};
-
-using mdb_txn = std::unique_ptr<MDB_txn, transaction_abort>;
-
-struct cursor_close {
-    void operator()(MDB_cursor* cursor) const noexcept { mdb_cursor_close(cursor); }
-};
-
-using cursor = std::unique_ptr<MDB_cursor, cursor_close>;
-
-struct databases {
-    MDB_txn* txn;
-    MDB_dbi meta_dbi;
-    MDB_dbi data_dbi;
-};
-
-using prefixed_key = std::array<std::byte, prefixed_key_size>;
-
-prefixed_key key_of(const std::byte prefix, const std::uint64_t number) noexcept
+const std::error_category& sqlite_category() noexcept
 {
-    prefixed_key key{prefix};
-    std::ranges::copy(to_big_endian(number), std::next(key.begin()));
-    return key;
+    static const sqlite_error_category category;
+    return category;
 }
 
-bool is_log_key(const MDB_val& key) noexcept
+struct connection_close {
+    void operator()(sqlite3* db) const noexcept { sqlite3_close_v2(db); }
+};
+
+using connection = std::unique_ptr<sqlite3, connection_close>;
+
+struct statement_finalize {
+    void operator()(sqlite3_stmt* s) const noexcept { sqlite3_finalize(s); }
+};
+
+using statement = std::unique_ptr<sqlite3_stmt, statement_finalize>;
+
+bool status_is_a_failed_sync(const int status) noexcept
 {
-    return key.mv_size == prefixed_key_size && *static_cast<const std::byte*>(key.mv_data) == log_prefix;
+    return status == SQLITE_IOERR_FSYNC || status == SQLITE_IOERR_DIR_FSYNC;
 }
 
-std::error_code to_error_code(const int lmdb_status) noexcept
+bool status_is_a_wrong_use(const int status) noexcept
 {
-    if (lmdb_status == MDB_MAP_FULL) {
+    const int primary = status & 0xff;
+    return primary == SQLITE_BUSY || primary == SQLITE_MISUSE || primary == SQLITE_CONSTRAINT ||
+           primary == SQLITE_LOCKED || primary == SQLITE_RANGE;
+}
+
+std::error_code to_error_code(const int status, sqlite3* db) noexcept
+{
+    switch (status & 0xff) {
+    case SQLITE_FULL:
         return std::make_error_code(std::errc::no_space_on_device);
+    case SQLITE_CORRUPT:
+    case SQLITE_NOTADB:
+        return make_error_code(storage_errc::corrupt);
+    case SQLITE_TOOBIG:
+        return std::make_error_code(std::errc::value_too_large);
+    case SQLITE_IOERR:
+    case SQLITE_CANTOPEN:
+        if (const int system_errno = db == nullptr ? 0 : sqlite3_system_errno(db); system_errno != 0) {
+            return {system_errno, std::generic_category()};
+        }
+        return {status, sqlite_category()};
+    default:
+        return {status, sqlite_category()};
     }
-    if (lmdb_status > 0) {
-        return {lmdb_status, std::generic_category()};
+}
+
+enum class access { read, write };
+
+std::error_code error_code_or_throw(const int status, sqlite3* db, const access a)
+{
+    if (status_is_a_failed_sync(status)) [[unlikely]] {
+        throw sync_error(to_error_code(status, db), "konsens: SQLite failed to sync the storage");
     }
-    return {lmdb_status, lmdb_category()};
-}
-
-MDB_val value_of(const std::span<const std::byte> bytes) noexcept
-{
-    return MDB_val{bytes.size(), const_cast<std::byte*>(bytes.data())};
-}
-
-MDB_val value_of(const std::string_view text) noexcept
-{
-    return MDB_val{text.size(), const_cast<char*>(text.data())};
-}
-
-std::span<const std::byte> as_bytes(const MDB_val& value) noexcept
-{
-    return {static_cast<const std::byte*>(value.mv_data), value.mv_size};
-}
-
-std::span<std::byte> as_writable_bytes(const MDB_val& value) noexcept
-{
-    return {static_cast<std::byte*>(value.mv_data), value.mv_size};
+    if ((status & 0xff) == SQLITE_IOERR) [[unlikely]] {
+        if (a == access::write) {
+            throw write_error(to_error_code(status, db), "konsens: SQLite failed to write the storage");
+        }
+        throw read_error(to_error_code(status, db), "konsens: SQLite failed to read the storage");
+    }
+    if (status_is_a_wrong_use(status)) [[unlikely]] {
+        throw std::logic_error(std::format("konsens: the storage refused a statement: {}", sqlite3_errstr(status)));
+    }
+    return to_error_code(status, db);
 }
 
 std::uint32_t crc_of(const std::span<const std::byte> bytes) noexcept
@@ -190,26 +201,9 @@ std::uint32_t compute_state_crc(const std::uint64_t index, const entry_state sta
     return crc_of(bytes);
 }
 
-std::expected<mdb_txn, std::error_code> begin_transaction(MDB_env* env, const unsigned int flags)
+bool key_fits_in_an_sqlite_integer(const std::uint64_t key) noexcept
 {
-    MDB_txn* txn = nullptr;
-    const int status = mdb_txn_begin(env, nullptr, flags, &txn);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return mdb_txn{txn};
-}
-
-std::expected<void, std::error_code> commit_or_throw(mdb_txn txn)
-{
-    const int status = mdb_txn_commit(txn.release());
-    if (status == MDB_MAP_FULL) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        throw sync_error(to_error_code(status), "konsens: mdb_txn_commit failed");
-    }
-    return {};
+    return key <= largest_key;
 }
 
 std::array<std::byte, ballot_size> encode_ballot(const ballot& b) noexcept
@@ -311,6 +305,7 @@ decode_repair_record(const std::span<const std::byte, repair_record_size> bytes)
 }
 
 struct stored_record {
+    std::span<const std::byte> bytes;
     std::span<const std::byte> encoded;
     std::uint32_t entry_crc;
     std::uint32_t chain_crc;
@@ -341,7 +336,7 @@ std::expected<stored_record, read_failure> check_record(const std::uint64_t inde
     if (stored_state_crc != computed_state_crc) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::crc_mismatch, index, stored_state_crc, computed_state_crc});
     }
-    return stored_record{encoded, stored, chain, state};
+    return stored_record{value, encoded, stored, chain, state};
 }
 
 void write_state(const std::uint64_t index, const entry_state state, const std::span<std::byte> record) noexcept
@@ -364,300 +359,589 @@ std::uint32_t encode_record(const std::uint64_t index, const entry& e, const std
     return chain;
 }
 
-std::uint64_t index_of(const MDB_val& key) noexcept
+std::expected<statement, int> prepare(sqlite3* db, const std::string_view sql)
 {
-    return from_big_endian<std::uint64_t>(as_bytes(key).subspan<sizeof(std::byte), index_size>());
+    sqlite3_stmt* s = nullptr;
+    const int status = sqlite3_prepare_v3(db, sql.data(), static_cast<int>(sql.size()), prepare_flags, &s, nullptr);
+    if (status != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(status);
+    }
+    return statement{s};
 }
 
-std::expected<std::uint64_t, std::error_code> read_entry_count(MDB_txn* txn, const MDB_dbi dbi)
+struct statements {
+    statement begin_immediate;
+    statement begin_deferred;
+    statement commit;
+    statement rollback;
+    statement savepoint;
+    statement release;
+    statement rollback_to;
+    statement get_record;
+    statement put_record;
+    statement get_entry;
+    statement get_entries_from;
+    statement get_last_entry;
+    statement append_entry;
+    statement update_entry;
+    statement delete_entries_from;
+    statement delete_entries_between;
+    statement get_value;
+    statement put_value;
+    statement erase_value;
+    statement get_session;
+    statement put_session;
+    statement erase_session;
+    statement vacuum_into;
+};
+
+std::expected<statements, int> prepare_statements(sqlite3* db)
 {
-    MDB_stat stat{};
-    const int status = mdb_stat(txn, dbi, &stat);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    statements s;
+    const std::array list{
+        std::pair{&s.begin_immediate, std::string_view{"BEGIN IMMEDIATE"}},
+        std::pair{&s.begin_deferred, std::string_view{"BEGIN"}},
+        std::pair{&s.commit, std::string_view{"COMMIT"}},
+        std::pair{&s.rollback, std::string_view{"ROLLBACK"}},
+        std::pair{&s.savepoint, std::string_view{"SAVEPOINT nested"}},
+        std::pair{&s.release, std::string_view{"RELEASE nested"}},
+        std::pair{&s.rollback_to, std::string_view{"ROLLBACK TO nested"}},
+        std::pair{&s.get_record, std::string_view{"SELECT record FROM meta WHERE name = ?1"}},
+        std::pair{&s.put_record,
+                  std::string_view{"INSERT INTO meta (name, record) VALUES (?1, ?2) "
+                                   "ON CONFLICT (name) DO UPDATE SET record = excluded.record"}},
+        std::pair{&s.get_entry, std::string_view{"SELECT record FROM log WHERE idx = ?1"}},
+        std::pair{&s.get_entries_from, std::string_view{"SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx"}},
+        std::pair{&s.get_last_entry, std::string_view{"SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1"}},
+        std::pair{&s.append_entry,
+                  std::string_view{"INSERT INTO log (idx, record) SELECT ?1, ?2 "
+                                   "WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)"}},
+        std::pair{&s.update_entry, std::string_view{"UPDATE log SET record = ?2 WHERE idx = ?1"}},
+        std::pair{&s.delete_entries_from, std::string_view{"DELETE FROM log WHERE idx >= ?1"}},
+        std::pair{&s.delete_entries_between, std::string_view{"DELETE FROM log WHERE idx >= ?1 AND idx < ?2"}},
+        std::pair{&s.get_value, std::string_view{"SELECT value FROM data WHERE key = ?1"}},
+        std::pair{&s.put_value,
+                  std::string_view{"INSERT INTO data (key, value) VALUES (?1, ?2) "
+                                   "ON CONFLICT (key) DO UPDATE SET value = excluded.value"}},
+        std::pair{&s.erase_value, std::string_view{"DELETE FROM data WHERE key = ?1"}},
+        std::pair{&s.get_session, std::string_view{"SELECT record FROM session WHERE id = ?1"}},
+        std::pair{&s.put_session,
+                  std::string_view{"INSERT INTO session (id, record) VALUES (?1, ?2) "
+                                   "ON CONFLICT (id) DO UPDATE SET record = excluded.record"}},
+        std::pair{&s.erase_session, std::string_view{"DELETE FROM session WHERE id = ?1"}},
+        std::pair{&s.vacuum_into, std::string_view{"VACUUM INTO ?1"}},
+    };
+    for (const auto& [target, sql] : list) {
+        auto prepared = prepare(db, sql);
+        if (!prepared) [[unlikely]] {
+            return std::unexpected(prepared.error());
+        }
+        *target = std::move(*prepared);
     }
-    return stat.ms_entries;
+    return s;
+}
+
+void reset_statements(statements& s) noexcept
+{
+    for (auto* const st : {&s.get_record, &s.get_entry, &s.get_entries_from, &s.get_last_entry, &s.get_value,
+                           &s.get_session}) {
+        sqlite3_reset(st->get());
+    }
+}
+
+int bind_bytes(sqlite3_stmt* s, const int position, const std::span<const std::byte> bytes) noexcept
+{
+    if (bytes.empty()) {
+        return sqlite3_bind_zeroblob(s, position, 0);
+    }
+    return sqlite3_bind_blob64(s, position, bytes.data(), bytes.size(), SQLITE_STATIC);
+}
+
+int bind_text(sqlite3_stmt* s, const int position, const std::string_view text) noexcept
+{
+    return sqlite3_bind_text64(s, position, text.data(), text.size(), SQLITE_STATIC, SQLITE_UTF8);
+}
+
+int bind_key(sqlite3_stmt* s, const int position, const std::uint64_t key) noexcept
+{
+    return sqlite3_bind_int64(s, position, static_cast<sqlite3_int64>(key));
+}
+
+std::span<const std::byte> column_bytes(sqlite3_stmt* s, const int column) noexcept
+{
+    const auto* const data = static_cast<const std::byte*>(sqlite3_column_blob(s, column));
+    return {data, static_cast<std::size_t>(sqlite3_column_bytes(s, column))};
+}
+
+std::uint64_t column_key(sqlite3_stmt* s, const int column) noexcept
+{
+    return static_cast<std::uint64_t>(sqlite3_column_int64(s, column));
+}
+
+struct link {
+    sqlite3* db;
+    statements* s;
+    std::optional<std::error_code>* failure;
+};
+
+void step_once(sqlite3_stmt* s) noexcept
+{
+    sqlite3_reset(s);
+    static_cast<void>(sqlite3_step(s));
+    sqlite3_reset(s);
+}
+
+void roll_back(sqlite3* db, statements& s) noexcept
+{
+    reset_statements(s);
+    if (sqlite3_get_autocommit(db) == 0) {
+        step_once(s.rollback.get());
+    }
+}
+
+void end_the_read(statements& s) noexcept
+{
+    reset_statements(s);
+    step_once(s.commit.get());
+}
+
+void roll_back_to_the_savepoint(statements& s) noexcept
+{
+    reset_statements(s);
+    step_once(s.rollback_to.get());
+    step_once(s.release.get());
+}
+
+std::error_code fail(const link& l, const int status)
+{
+    if (l.failure == nullptr) {
+        return error_code_or_throw(status, l.db, access::read);
+    }
+    roll_back(l.db, *l.s);
+    *l.failure = to_error_code(status, l.db);
+    return error_code_or_throw(status, l.db, access::write);
+}
+
+std::expected<void, std::error_code> refuse_after_a_failure(const link& l)
+{
+    if (l.failure != nullptr && *l.failure) [[unlikely]] {
+        return std::unexpected(**l.failure);
+    }
+    return {};
+}
+
+std::expected<void, std::error_code> run(const link& l, sqlite3_stmt* s)
+{
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        return std::unexpected(fail(l, status));
+    }
+    return {};
+}
+
+std::expected<std::optional<std::span<const std::byte>>, std::error_code> select_one(const link& l, sqlite3_stmt* s)
+{
+    const int status = sqlite3_step(s);
+    if (status == SQLITE_DONE) {
+        sqlite3_reset(s);
+        return std::nullopt;
+    }
+    if (status != SQLITE_ROW) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(fail(l, status));
+    }
+    return column_bytes(s, 0);
 }
 
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-get_checked(MDB_txn* txn, const MDB_dbi dbi, const std::string_view name, const std::size_t body_size)
+get_checked(const link& l, const std::string_view name, const std::size_t body_size)
 {
-    MDB_val key = value_of(name);
-    MDB_val data{};
-    const int status = mdb_get(txn, dbi, &key, &data);
-    if (status == MDB_NOTFOUND) {
-        return std::nullopt;
+    sqlite3_stmt* const s = l.s->get_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, name); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
     }
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    const auto value = select_one(l, s);
+    if (!value || !value->has_value()) {
+        return value;
     }
-    const auto value = as_bytes(data);
-    if (value.size() != body_size + crc_size) [[unlikely]] {
+    const auto bytes = value->value();
+    if (bytes.size() != body_size + crc_size) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
-    const auto body = value.first(body_size);
-    if (from_little_endian<std::uint32_t>(value.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+    const auto body = bytes.first(body_size);
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::crc_mismatch));
     }
     return body;
 }
 
-std::expected<void, std::error_code> put_checked(MDB_txn* txn, const MDB_dbi dbi, const std::string_view name,
-                                                 const std::span<const std::byte> body)
+template <std::size_t N>
+std::expected<void, std::error_code> put_checked(const link& l, const std::string_view name,
+                                                 const std::array<std::byte, N>& body)
 {
-    MDB_val key = value_of(name);
-    MDB_val data{body.size() + crc_size, nullptr};
-    const int status = mdb_put(txn, dbi, &key, &data, MDB_RESERVE);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    std::array<std::byte, N + crc_size> record{};
+    std::ranges::copy(to_little_endian(crc_of(body)), std::ranges::copy(body, record.begin()).out);
+    sqlite3_stmt* const s = l.s->put_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, name); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
     }
-    const auto out = as_writable_bytes(data);
-    std::ranges::copy(body, out.begin());
-    std::ranges::copy(to_little_endian(crc_of(body)), out.last(crc_size).begin());
-    return {};
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    return run(l, s);
 }
 
-std::expected<cursor, std::error_code> open_cursor(MDB_txn* txn, const MDB_dbi dbi)
+std::expected<meta_record, std::error_code> read_meta(const link& l)
 {
-    MDB_cursor* raw_cursor = nullptr;
-    const int opened = mdb_cursor_open(txn, dbi, &raw_cursor);
-    if (opened != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(opened));
-    }
-    return cursor{raw_cursor};
-}
-
-std::expected<meta_record, std::error_code> read_meta(const databases& d)
-{
-    const auto body = get_checked(d.txn, d.meta_dbi, meta_key, meta_record_size);
+    const auto body = get_checked(l, meta_key, meta_record_size);
     if (!body) [[unlikely]] {
         return std::unexpected(body.error());
     }
     if (!body->has_value()) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::missing_meta_record));
     }
-    return decode_meta(body->value().first<meta_record_size>());
+    const auto m = decode_meta(body->value().first<meta_record_size>());
+    sqlite3_reset(l.s->get_record.get());
+    return m;
 }
 
-std::expected<void, std::error_code> write_meta(const databases& d, const meta_record& m)
+std::expected<void, std::error_code> write_meta(const link& l, const meta_record& m)
 {
-    return put_checked(d.txn, d.meta_dbi, meta_key, encode_meta(m));
+    return put_checked(l, meta_key, encode_meta(m));
 }
 
-std::expected<std::vector<entry>, read_failure> read_entries_in(const databases& d, const std::uint64_t from,
+std::expected<std::vector<entry>, read_failure> read_entries_in(const link& l, const std::uint64_t from,
                                                                 const std::uint64_t to)
 {
     throw_if_from_after_to(from, to);
-    const auto c = open_cursor(d.txn, d.meta_dbi);
-    if (!c) [[unlikely]] {
-        return std::unexpected(read_failure{c.error(), from, 0, 0});
-    }
     std::vector<entry> entries;
-    const auto from_key = key_of(log_prefix, from);
-    MDB_val key = value_of(from_key);
-    MDB_val data{};
-    for (int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE); status != MDB_NOTFOUND;
-         status = mdb_cursor_get(c->get(), &key, &data, MDB_NEXT)) {
+    if (!key_fits_in_an_sqlite_integer(from)) [[unlikely]] {
+        return entries;
+    }
+    sqlite3_stmt* const s = l.s->get_entries_from.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, from); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(read_failure{fail(l, bound), from, 0, 0});
+    }
+    for (int status = sqlite3_step(s); status != SQLITE_DONE; status = sqlite3_step(s)) {
         const auto expected_index = from + entries.size();
-        if (status != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(read_failure{to_error_code(status), expected_index, 0, 0});
+        if (status != SQLITE_ROW) [[unlikely]] {
+            sqlite3_reset(s);
+            return std::unexpected(read_failure{fail(l, status), expected_index, 0, 0});
         }
-        if (!is_log_key(key)) [[unlikely]] {
-            return std::unexpected(read_failure{storage_errc::malformed_record, expected_index, 0, 0});
-        }
-        const auto index = index_of(key);
+        const auto index = column_key(s, 0);
         if (index >= to) {
             if (expected_index != to) [[unlikely]] {
+                sqlite3_reset(s);
                 return std::unexpected(read_failure{storage_errc::missing_entry, expected_index, 0, 0});
             }
             break;
         }
         if (index != expected_index) [[unlikely]] {
+            sqlite3_reset(s);
             return std::unexpected(read_failure{storage_errc::missing_entry, expected_index, 0, 0});
         }
-        const auto record = check_record(index, as_bytes(data));
+        const auto record = check_record(index, column_bytes(s, 1));
         if (!record) [[unlikely]] {
+            sqlite3_reset(s);
             return std::unexpected(record.error());
         }
         auto decoded = decode_entry(record->encoded);
         if (!decoded) [[unlikely]] {
+            sqlite3_reset(s);
             return std::unexpected(read_failure{storage_errc::malformed_record, index, 0, 0});
         }
         entries.push_back(std::move(*decoded));
     }
+    sqlite3_reset(s);
     return entries;
 }
 
-std::expected<std::optional<last_entry>, std::error_code> read_last_entry(const databases& d)
+std::expected<std::optional<last_entry>, std::error_code> read_last_entry(const link& l)
 {
-    const auto c = open_cursor(d.txn, d.meta_dbi);
-    if (!c) [[unlikely]] {
-        return std::unexpected(c.error());
-    }
-    MDB_val key{};
-    MDB_val data{};
-    const int status = mdb_cursor_get(c->get(), &key, &data, MDB_LAST);
-    if (status == MDB_NOTFOUND || (status == MDB_SUCCESS && !is_log_key(key))) {
+    sqlite3_stmt* const s = l.s->get_last_entry.get();
+    sqlite3_reset(s);
+    const int status = sqlite3_step(s);
+    if (status == SQLITE_DONE) {
+        sqlite3_reset(s);
         return std::nullopt;
     }
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    if (status != SQLITE_ROW) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(fail(l, status));
     }
-    const auto index = index_of(key);
-    const auto record = check_record(index, as_bytes(data));
+    const auto index = column_key(s, 0);
+    const auto record = check_record(index, column_bytes(s, 1));
+    sqlite3_reset(s);
     if (!record) [[unlikely]] {
         return std::unexpected(record.error().code);
     }
     return last_entry{index, record->entry_crc, record->chain_crc};
 }
 
-std::expected<std::optional<stored_record>, std::error_code> read_record(const databases& d, const std::uint64_t index)
+std::expected<std::optional<stored_record>, std::error_code> read_record(const link& l, const std::uint64_t index)
 {
-    const auto key_bytes = key_of(log_prefix, index);
-    MDB_val key = value_of(key_bytes);
-    MDB_val data{};
-    const int status = mdb_get(d.txn, d.meta_dbi, &key, &data);
-    if (status == MDB_NOTFOUND) {
+    if (!key_fits_in_an_sqlite_integer(index)) [[unlikely]] {
         return std::nullopt;
     }
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    sqlite3_stmt* const s = l.s->get_entry.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
     }
-    const auto record = check_record(index, as_bytes(data));
+    const auto value = select_one(l, s);
+    if (!value) [[unlikely]] {
+        return std::unexpected(value.error());
+    }
+    if (!value->has_value()) {
+        return std::nullopt;
+    }
+    const auto record = check_record(index, value->value());
     if (!record) [[unlikely]] {
         return std::unexpected(record.error().code);
     }
     return *record;
 }
 
-std::expected<std::optional<entry_state>, std::error_code> read_entry_state(const databases& d,
-                                                                            const std::uint64_t index)
+std::expected<std::optional<entry_state>, std::error_code> read_entry_state(const link& l, const std::uint64_t index)
 {
-    return read_record(d, index).transform([](const std::optional<stored_record>& r) {
-        return r.transform([](const stored_record& x) { return x.state; });
+    auto r = read_record(l, index).transform([](const std::optional<stored_record>& found) {
+        return found.transform([](const stored_record& x) { return x.state; });
     });
+    sqlite3_reset(l.s->get_entry.get());
+    return r;
 }
 
-std::expected<std::optional<std::uint32_t>, std::error_code> read_chain_crc(const databases& d,
-                                                                            const std::uint64_t index)
+std::expected<std::optional<std::uint32_t>, std::error_code> read_chain_crc(const link& l, const std::uint64_t index)
 {
-    return read_record(d, index).transform([](const std::optional<stored_record>& r) {
-        return r.transform([](const stored_record& x) { return x.chain_crc; });
+    auto r = read_record(l, index).transform([](const std::optional<stored_record>& found) {
+        return found.transform([](const stored_record& x) { return x.chain_crc; });
     });
+    sqlite3_reset(l.s->get_entry.get());
+    return r;
 }
 
-std::expected<void, std::error_code> put_entries(const databases& d, meta_record& m,
+std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, std::vector<std::byte>& record,
                                                  const std::span<const entry> entries)
 {
+    sqlite3_stmt* const s = l.s->append_entry.get();
     for (const auto& e : entries) {
         const auto index = m.log_len;
-        const auto key_bytes = key_of(log_prefix, index);
-        MDB_val key = value_of(key_bytes);
-        MDB_val data{encoded_size_of(e) + record_tail_size, nullptr};
-        const int status = mdb_put(d.txn, d.meta_dbi, &key, &data, MDB_APPEND | MDB_RESERVE);
-        if (status != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(status));
+        if (!key_fits_in_an_sqlite_integer(index)) [[unlikely]] {
+            return std::unexpected(std::make_error_code(std::errc::value_too_large));
         }
+        record.resize(encoded_size_of(e) + record_tail_size);
         const auto state = index < m.decided_idx ? entry_state::committed : entry_state::in_work;
-        m.last_chain_crc = encode_record(index, e, m.last_chain_crc, state, as_writable_bytes(data));
+        const auto chain = encode_record(index, e, m.last_chain_crc, state, record);
+        sqlite3_reset(s);
+        if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (auto r = run(l, s); !r) [[unlikely]] {
+            return r;
+        }
+        if (sqlite3_changes64(l.db) != 1) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::malformed_record));
+        }
+        m.last_chain_crc = chain;
         m.log_len = index + 1;
     }
     return {};
 }
 
-std::expected<void, std::error_code> delete_entries_from(const databases& d, const std::uint64_t from)
+std::expected<void, std::error_code> delete_entries_from(const link& l, const std::uint64_t from)
 {
-    const auto c = open_cursor(d.txn, d.meta_dbi);
-    if (!c) [[unlikely]] {
-        return std::unexpected(c.error());
+    if (!key_fits_in_an_sqlite_integer(from)) [[unlikely]] {
+        return {};
     }
-    const auto key_bytes = key_of(log_prefix, from);
-    MDB_val key = value_of(key_bytes);
-    MDB_val data{};
-    int status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
-    while (status == MDB_SUCCESS && is_log_key(key)) {
-        const int deleted = mdb_cursor_del(c->get(), 0);
-        if (deleted != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(deleted));
-        }
-        key = value_of(key_bytes);
-        status = mdb_cursor_get(c->get(), &key, &data, MDB_SET_RANGE);
+    sqlite3_stmt* const s = l.s->delete_entries_from.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, from); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
     }
-    if (status != MDB_NOTFOUND && status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    return run(l, s);
+}
+
+std::expected<void, std::error_code> delete_entries(const link& l, const std::uint64_t from, const std::uint64_t to)
+{
+    if (!key_fits_in_an_sqlite_integer(to)) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::value_too_large));
+    }
+    sqlite3_stmt* const s = l.s->delete_entries_between.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, from); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    if (const int bound = bind_key(s, 2, to); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    if (auto r = run(l, s); !r) [[unlikely]] {
+        return r;
+    }
+    if (static_cast<std::uint64_t>(sqlite3_changes64(l.db)) != to - from) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::missing_entry));
     }
     return {};
 }
 
-std::expected<void, std::error_code> delete_entries(const databases& d, const std::uint64_t from,
-                                                    const std::uint64_t to)
-{
-    for (const auto index : std::views::iota(from, to)) {
-        const auto key_bytes = key_of(log_prefix, index);
-        MDB_val key = value_of(key_bytes);
-        const int status = mdb_del(d.txn, d.meta_dbi, &key, nullptr);
-        if (status == MDB_NOTFOUND) [[unlikely]] {
-            return std::unexpected(make_error_code(storage_errc::missing_entry));
-        }
-        if (status != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(status));
-        }
-    }
-    return {};
-}
-
-std::expected<std::uint32_t, std::error_code> chain_crc_before(const databases& d, const std::uint64_t index)
+std::expected<std::uint32_t, std::error_code> chain_crc_before(const link& l, const std::uint64_t index)
 {
     if (index == 0) {
         return 0;
     }
-    const auto record = read_record(d, index - 1);
-    if (!record) [[unlikely]] {
-        return std::unexpected(record.error());
+    const auto chain = read_chain_crc(l, index - 1);
+    if (!chain) [[unlikely]] {
+        return std::unexpected(chain.error());
     }
-    if (!record->has_value()) [[unlikely]] {
+    if (!chain->has_value()) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::missing_entry));
     }
-    return record->value().chain_crc;
+    return chain->value();
 }
 
-std::expected<void, std::error_code> set_entry_states(const databases& d, std::vector<std::byte>& rewritten,
+std::expected<void, std::error_code> set_entry_states(const link& l, std::vector<std::byte>& rewritten,
                                                       const std::uint64_t from, const std::uint64_t to,
                                                       const std::uint64_t decided_idx)
 {
-    const auto c = open_cursor(d.txn, d.meta_dbi);
-    if (!c) [[unlikely]] {
-        return std::unexpected(c.error());
-    }
-    for (const auto index : std::views::iota(from, to)) {
-        const auto key_bytes = key_of(log_prefix, index);
-        MDB_val key = value_of(key_bytes);
-        MDB_val data{};
-        const int found = mdb_cursor_get(c->get(), &key, &data, MDB_SET);
-        if (found == MDB_NOTFOUND) [[unlikely]] {
+    sqlite3_stmt* const update = l.s->update_entry.get();
+    for (auto index = from; index < to; ++index) {
+        const auto record = read_record(l, index);
+        if (!record) [[unlikely]] {
+            return std::unexpected(record.error());
+        }
+        if (!record->has_value()) [[unlikely]] {
             return std::unexpected(make_error_code(storage_errc::missing_entry));
         }
-        if (found != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(found));
-        }
-        const auto record = check_record(index, as_bytes(data));
-        if (!record) [[unlikely]] {
-            return std::unexpected(record.error().code);
-        }
         const auto state = index < decided_idx ? entry_state::committed : entry_state::in_work;
-        if (record->state == state) {
+        if (record->value().state == state) {
+            sqlite3_reset(l.s->get_entry.get());
             continue;
         }
-        const auto stored = as_bytes(data);
+        const auto stored = record->value().bytes;
         rewritten.assign(stored.begin(), stored.end());
+        sqlite3_reset(l.s->get_entry.get());
         write_state(index, state, rewritten);
-        MDB_val replaced = value_of(std::span<const std::byte>(rewritten));
-        const int put = mdb_cursor_put(c->get(), &key, &replaced, MDB_CURRENT);
-        if (put != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(put));
+        sqlite3_reset(update);
+        if (const int bound = bind_key(update, 1, index); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (const int bound = bind_bytes(update, 2, rewritten); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (auto r = run(l, update); !r) [[unlikely]] {
+            return r;
         }
     }
     return {};
+}
+
+std::expected<std::optional<std::span<const std::byte>>, std::error_code>
+find_value(const link& l, const std::span<const std::byte> key)
+{
+    sqlite3_stmt* const s = l.s->get_value.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_bytes(s, 1, key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    return select_one(l, s);
+}
+
+std::expected<void, std::error_code> put_value(const link& l, const std::span<const std::byte> key,
+                                               const std::span<const std::byte> value)
+{
+    sqlite3_stmt* const s = l.s->put_value.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_bytes(s, 1, key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    if (const int bound = bind_bytes(s, 2, value); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    return run(l, s);
+}
+
+std::expected<bool, std::error_code> erase_value(const link& l, const std::span<const std::byte> key)
+{
+    sqlite3_stmt* const s = l.s->erase_value.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_bytes(s, 1, key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    return run(l, s).transform([&l] { return sqlite3_changes64(l.db) > 0; });
+}
+
+std::expected<std::optional<session_record>, std::error_code> find_session_in(const link& l,
+                                                                              const std::uint64_t session)
+{
+    if (!key_fits_in_an_sqlite_integer(session)) [[unlikely]] {
+        return std::nullopt;
+    }
+    sqlite3_stmt* const s = l.s->get_session.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, session); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    const auto value = select_one(l, s);
+    if (!value) [[unlikely]] {
+        return std::unexpected(value.error());
+    }
+    if (!value->has_value()) {
+        return std::nullopt;
+    }
+    const auto bytes = value->value();
+    if (bytes.size() < session_head_size + crc_size) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto body = bytes.first(bytes.size() - crc_size);
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    const auto reply = body.subspan(session_head_size);
+    session_record r{from_little_endian<std::uint64_t>(body.first<session_head_size>()), {reply.begin(), reply.end()}};
+    sqlite3_reset(s);
+    return r;
+}
+
+std::expected<void, std::error_code> put_session(const link& l, std::vector<std::byte>& record,
+                                                 const std::uint64_t session, const session_record& r)
+{
+    if (!key_fits_in_an_sqlite_integer(session)) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::value_too_large));
+    }
+    record.resize(session_head_size + r.reply.size() + crc_size);
+    std::ranges::copy(r.reply, std::ranges::copy(to_little_endian(r.request_number), record.begin()).out);
+    const auto body = std::span<const std::byte>(record).first(record.size() - crc_size);
+    std::ranges::copy(to_little_endian(crc_of(body)), std::span(record).last(crc_size).begin());
+    sqlite3_stmt* const s = l.s->put_session.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, session); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    return run(l, s);
+}
+
+std::expected<bool, std::error_code> erase_session_in(const link& l, const std::uint64_t session)
+{
+    if (!key_fits_in_an_sqlite_integer(session)) [[unlikely]] {
+        return false;
+    }
+    sqlite3_stmt* const s = l.s->erase_session.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, session); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    return run(l, s).transform([&l] { return sqlite3_changes64(l.db) > 0; });
 }
 
 void throw_if_no_environment(const void* const env)
@@ -667,9 +951,9 @@ void throw_if_no_environment(const void* const env)
     }
 }
 
-void throw_if_nested_is_open(const mdb_txn& nested)
+void throw_if_nested_is_open(const bool nested_open)
 {
-    if (nested) [[unlikely]] {
+    if (nested_open) [[unlikely]] {
         throw std::logic_error("konsens: a nested transaction is open, and its parent takes no operation");
     }
 }
@@ -681,147 +965,235 @@ void throw_if_an_entry_has_a_field_of_another_kind(const std::span<const entry> 
     }
 }
 
-std::expected<MDB_dbi, std::error_code> open_database(MDB_txn* txn, const char* name)
+std::string uri_of(const std::filesystem::path& file)
 {
-    MDB_dbi dbi = 0;
-    const int opened = mdb_dbi_open(txn, name, MDB_CREATE, &dbi);
-    if (opened != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(opened));
+    constexpr std::string_view unreserved =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/";
+    std::string uri = "file:";
+    for (const char c : file.string()) {
+        if (unreserved.contains(c)) {
+            uri.push_back(c);
+        } else {
+            uri += std::format("%{:02X}", static_cast<unsigned char>(c));
+        }
     }
-    return dbi;
+    uri += "?psow=0";
+    return uri;
 }
 
-std::expected<void, std::error_code> check_or_write_format(const databases& d)
+std::expected<void, std::error_code> create_with_file_mode(const std::filesystem::path& file)
 {
-    const auto format = get_checked(d.txn, d.meta_dbi, format_key, sizeof format_version);
+    const int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, file_mode);
+    if (fd == -1) [[unlikely]] {
+        return std::unexpected(std::error_code{errno, std::generic_category()});
+    }
+    ::close(fd);
+    return {};
+}
+
+std::expected<void, std::error_code> create_new_with_file_mode(const std::filesystem::path& file)
+{
+    const int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, file_mode);
+    if (fd == -1) [[unlikely]] {
+        return std::unexpected(std::error_code{errno, std::generic_category()});
+    }
+    ::close(fd);
+    return {};
+}
+
+std::expected<void, std::error_code> execute(sqlite3* db, const std::string_view sql)
+{
+    const int status = sqlite3_exec(db, std::string(sql).c_str(), nullptr, nullptr, nullptr);
+    if (status != SQLITE_OK) [[unlikely]] {
+        if ((status & 0xff) == SQLITE_BUSY) {
+            return std::unexpected(std::make_error_code(std::errc::device_or_resource_busy));
+        }
+        return std::unexpected(error_code_or_throw(status, db, access::write));
+    }
+    return {};
+}
+
+std::expected<std::int64_t, std::error_code> read_integer(sqlite3* db, const std::string_view sql)
+{
+    auto s = prepare(db, sql);
+    if (!s) [[unlikely]] {
+        return std::unexpected(to_error_code(s.error(), db));
+    }
+    const int status = sqlite3_step(s->get());
+    if (status != SQLITE_ROW) [[unlikely]] {
+        if ((status & 0xff) == SQLITE_BUSY) {
+            return std::unexpected(std::make_error_code(std::errc::device_or_resource_busy));
+        }
+        return std::unexpected(error_code_or_throw(status, db, access::read));
+    }
+    return sqlite3_column_int64(s->get(), 0);
+}
+
+std::expected<std::string, std::error_code> read_text(sqlite3* db, const std::string_view sql)
+{
+    auto s = prepare(db, sql);
+    if (!s) [[unlikely]] {
+        return std::unexpected(to_error_code(s.error(), db));
+    }
+    const int status = sqlite3_step(s->get());
+    if (status != SQLITE_ROW) [[unlikely]] {
+        if ((status & 0xff) == SQLITE_BUSY) {
+            return std::unexpected(std::make_error_code(std::errc::device_or_resource_busy));
+        }
+        return std::unexpected(error_code_or_throw(status, db, access::read));
+    }
+    return std::string{reinterpret_cast<const char*>(sqlite3_column_text(s->get(), 0))};
+}
+
+int count_frames(void* frames, sqlite3*, const char*, const int frame_count) noexcept
+{
+    *static_cast<int*>(frames) = frame_count;
+    return SQLITE_OK;
+}
+
+std::expected<connection, std::error_code> open_connection(const std::filesystem::path& file)
+{
+    sqlite3* raw = nullptr;
+    const int opened = sqlite3_open_v2(uri_of(file).c_str(), &raw, open_flags, nullptr);
+    connection db{raw};
+    if (opened != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(to_error_code(opened, db.get()));
+    }
+    int no_checkpoint_on_close = 0;
+    if (const int set = sqlite3_db_config(db.get(), SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, &no_checkpoint_on_close);
+        set != SQLITE_OK || no_checkpoint_on_close != 1) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::not_supported));
+    }
+    const auto journal_mode = read_text(db.get(), "PRAGMA journal_mode = WAL");
+    if (!journal_mode) [[unlikely]] {
+        return std::unexpected(journal_mode.error());
+    }
+    if (*journal_mode != "wal") [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::not_supported));
+    }
+    if (auto set = execute(db.get(), "PRAGMA synchronous = FULL"); !set) [[unlikely]] {
+        return std::unexpected(set.error());
+    }
+    const auto synchronous = read_integer(db.get(), "PRAGMA synchronous");
+    if (!synchronous) [[unlikely]] {
+        return std::unexpected(synchronous.error());
+    }
+    if (*synchronous != synchronous_full) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::not_supported));
+    }
+    if (auto set = execute(db.get(), "PRAGMA wal_autocheckpoint = 0"); !set) [[unlikely]] {
+        return std::unexpected(set.error());
+    }
+    return db;
+}
+
+std::expected<void, std::error_code> run_checkpoint(sqlite3* db)
+{
+    const int status = sqlite3_wal_checkpoint_v2(db, nullptr, SQLITE_CHECKPOINT_PASSIVE, nullptr, nullptr);
+    if (status == SQLITE_OK) {
+        return {};
+    }
+    if ((status & 0xff) == SQLITE_FULL) [[unlikely]] {
+        throw write_error(to_error_code(status, db), "konsens: the checkpoint of the storage found the disk full");
+    }
+    return std::unexpected(error_code_or_throw(status, db, access::write));
+}
+
+std::expected<void, std::error_code> set_max_page_count(sqlite3* db, const std::size_t max_size)
+{
+    const auto page_size = read_integer(db, "PRAGMA page_size");
+    if (!page_size) [[unlikely]] {
+        return std::unexpected(page_size.error());
+    }
+    const auto max_page_count = max_size / static_cast<std::size_t>(*page_size);
+    return execute(db, std::format("PRAGMA max_page_count = {}", max_page_count));
+}
+
+std::expected<void, std::error_code> create_the_schema_of_an_empty_file(sqlite3* db)
+{
+    const auto tables = read_integer(db, "SELECT count(*) FROM sqlite_schema");
+    if (!tables) [[unlikely]] {
+        return std::unexpected(tables.error());
+    }
+    if (*tables != 0) {
+        return {};
+    }
+    return execute(db, store_schema);
+}
+
+std::expected<void, std::error_code> check_or_write_format(const link& l)
+{
+    if (auto begun = run(l, l.s->begin_immediate.get()); !begun) [[unlikely]] {
+        return begun;
+    }
+    const auto format = get_checked(l, format_key, sizeof format_version);
     if (!format) [[unlikely]] {
         return std::unexpected(format.error());
     }
     if (format->has_value()) {
-        if (from_little_endian<std::uint32_t>(format->value().first<sizeof format_version>()) != format_version)
-            [[unlikely]] {
+        const auto version = from_little_endian<std::uint32_t>(format->value().first<sizeof format_version>());
+        roll_back(l.db, *l.s);
+        if (version != format_version) [[unlikely]] {
             return std::unexpected(make_error_code(storage_errc::unsupported_format));
         }
         return {};
     }
-    const auto meta_count = read_entry_count(d.txn, d.meta_dbi);
-    if (!meta_count) [[unlikely]] {
-        return std::unexpected(meta_count.error());
+    const auto rows = read_integer(l.db, "SELECT (SELECT count(*) FROM meta) + (SELECT count(*) FROM log) + "
+                                         "(SELECT count(*) FROM session) + (SELECT count(*) FROM data)");
+    if (!rows) [[unlikely]] {
+        return std::unexpected(rows.error());
     }
-    const auto data_count = read_entry_count(d.txn, d.data_dbi);
-    if (!data_count) [[unlikely]] {
-        return std::unexpected(data_count.error());
-    }
-    if (*meta_count != 0 || *data_count != 0) [[unlikely]] {
+    if (*rows != 0) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
-    if (auto put = put_checked(d.txn, d.meta_dbi, format_key, to_little_endian(format_version)); !put) [[unlikely]] {
+    if (auto put = put_checked(l, format_key, to_little_endian(format_version)); !put) [[unlikely]] {
         return put;
     }
-    return write_meta(d, meta_record{});
-}
-
-
-std::expected<std::optional<std::span<const std::byte>>, std::error_code>
-find_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key_bytes)
-{
-    MDB_val key = value_of(key_bytes);
-    MDB_val data{};
-    const int status = mdb_get(txn, dbi, &key, &data);
-    if (status == MDB_NOTFOUND) {
-        return std::nullopt;
+    if (auto put = write_meta(l, meta_record{}); !put) [[unlikely]] {
+        return put;
     }
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return as_bytes(data);
-}
-
-std::expected<void, std::error_code> put_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key,
-                                               const std::span<const std::byte> value)
-{
-    MDB_val k = value_of(key);
-    MDB_val v = value_of(value);
-    const int status = mdb_put(txn, dbi, &k, &v, 0);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return {};
-}
-
-std::expected<bool, std::error_code> erase_value(MDB_txn* txn, const MDB_dbi dbi, const std::span<const std::byte> key)
-{
-    MDB_val k = value_of(key);
-    const int status = mdb_del(txn, dbi, &k, nullptr);
-    if (status != MDB_SUCCESS && status != MDB_NOTFOUND) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    return status == MDB_SUCCESS;
-}
-
-std::expected<std::optional<session_record>, std::error_code> find_session_in(MDB_txn* txn, const MDB_dbi meta_dbi,
-                                                                              const std::uint64_t session)
-{
-    const auto key = key_of(session_prefix, session);
-    const auto value = find_value(txn, meta_dbi, key);
-    if (!value) [[unlikely]] {
-        return std::unexpected(value.error());
-    }
-    if (!value->has_value()) {
-        return std::nullopt;
-    }
-    const auto bytes = value->value();
-    if (bytes.size() < session_head_size + crc_size) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::malformed_record));
-    }
-    const auto body = bytes.first(bytes.size() - crc_size);
-    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
-    }
-    const auto reply = body.subspan(session_head_size);
-    return session_record{from_little_endian<std::uint64_t>(body.first<session_head_size>()),
-                          {reply.begin(), reply.end()}};
-}
-
-std::expected<void, std::error_code> put_session(MDB_txn* txn, const MDB_dbi meta_dbi, const std::uint64_t session,
-                                                 const session_record& record)
-{
-    const auto key = key_of(session_prefix, session);
-    MDB_val k = value_of(key);
-    MDB_val v{session_head_size + record.reply.size() + crc_size, nullptr};
-    const int status = mdb_put(txn, meta_dbi, &k, &v, MDB_RESERVE);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
-    }
-    const auto out = as_writable_bytes(v);
-    std::ranges::copy(record.reply,
-                      std::ranges::copy(to_little_endian(record.request_number), out.begin()).out);
-    const auto body = out.first(out.size() - crc_size);
-    std::ranges::copy(to_little_endian(crc_of(body)), out.last(crc_size).begin());
-    return {};
-}
-
-std::expected<bool, std::error_code> erase_session_in(MDB_txn* txn, const MDB_dbi meta_dbi, const std::uint64_t session)
-{
-    return erase_value(txn, meta_dbi, key_of(session_prefix, session));
+    reset_statements(*l.s);
+    return run(l, l.s->commit.get());
 }
 
 }
 
 struct persistent_storage::environment {
-    std::unique_ptr<MDB_env, env_close> handle;
-    MDB_dbi meta_dbi;
-    MDB_dbi data_dbi;
-    mdb_txn writer{};
-    mdb_txn nested{};
-    mdb_txn reader{};
-    bool reader_in_use{};
+    connection writer_db;
+    connection reader_db;
+    statements writer;
+    statements reader;
+    int frames{};
+    bool writer_open{};
+    bool nested_open{};
+    bool reader_open{};
     bool written{};
-    bool sync_outside{};
-    std::vector<std::byte> rewritten{};
+    std::optional<std::error_code> failure;
+    std::vector<std::byte> record{};
 
-    databases of_writer() const noexcept { return {writer.get(), meta_dbi, data_dbi}; }
-    databases of_reader() const noexcept { return {reader.get(), meta_dbi, data_dbi}; }
+    link of_writer() noexcept { return {writer_db.get(), &writer, &failure}; }
+    link of_reader() noexcept { return {reader_db.get(), &reader, nullptr}; }
+
+    void end_the_reader() noexcept
+    {
+        end_the_read(reader);
+        reader_open = false;
+    }
+
+    void roll_back_the_writer() noexcept
+    {
+        roll_back(writer_db.get(), writer);
+        nested_open = false;
+        writer_open = false;
+    }
+
+    void roll_back_the_nested() noexcept
+    {
+        if (!failure) {
+            roll_back_to_the_savepoint(writer);
+        }
+        nested_open = false;
+    }
 };
 
 const std::error_category& storage_category() noexcept
@@ -833,12 +1205,6 @@ const std::error_category& storage_category() noexcept
 std::error_code make_error_code(const storage_errc code) noexcept
 {
     return {static_cast<int>(code), storage_category()};
-}
-
-const std::error_category& lmdb_category() noexcept
-{
-    static const lmdb_error_category category;
-    return category;
 }
 
 std::string read_failure::message() const
@@ -864,8 +1230,7 @@ persistent_storage::read_only_transaction::operator=(read_only_transaction&& oth
 {
     if (this != &other) {
         if (env_ != nullptr) {
-            mdb_txn_reset(env_->reader.get());
-            env_->reader_in_use = false;
+            env_->end_the_reader();
         }
         env_ = std::exchange(other.env_, nullptr);
     }
@@ -875,8 +1240,7 @@ persistent_storage::read_only_transaction::operator=(read_only_transaction&& oth
 persistent_storage::read_only_transaction::~read_only_transaction()
 {
     if (env_ != nullptr) {
-        mdb_txn_reset(env_->reader.get());
-        env_->reader_in_use = false;
+        env_->end_the_reader();
     }
 }
 
@@ -924,14 +1288,14 @@ std::expected<std::optional<std::span<const std::byte>>, std::error_code>
 persistent_storage::read_only_transaction::find(const std::span<const std::byte> key) const
 {
     throw_if_no_environment(env_);
-    return find_value(env_->reader.get(), env_->data_dbi, key);
+    return find_value(env_->of_reader(), key);
 }
 
 std::expected<std::optional<session_record>, std::error_code>
 persistent_storage::read_only_transaction::find_session(const std::uint64_t session) const
 {
     throw_if_no_environment(env_);
-    return find_session_in(env_->reader.get(), env_->meta_dbi, session);
+    return find_session_in(env_->of_reader(), session);
 }
 
 persistent_storage::transaction::transaction(environment* const env) noexcept : env_{env}
@@ -946,8 +1310,7 @@ persistent_storage::transaction& persistent_storage::transaction::operator=(tran
 {
     if (this != &other) {
         if (env_ != nullptr) {
-            env_->nested.reset();
-            env_->writer.reset();
+            env_->roll_back_the_writer();
         }
         env_ = std::exchange(other.env_, nullptr);
     }
@@ -957,15 +1320,17 @@ persistent_storage::transaction& persistent_storage::transaction::operator=(tran
 persistent_storage::transaction::~transaction()
 {
     if (env_ != nullptr) {
-        env_->nested.reset();
-        env_->writer.reset();
+        env_->roll_back_the_writer();
     }
 }
 
 std::expected<meta_record, std::error_code> persistent_storage::transaction::get_meta() const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
     return read_meta(env_->of_writer());
 }
 
@@ -973,7 +1338,10 @@ std::expected<std::vector<entry>, read_failure>
 persistent_storage::transaction::read_entries(const std::uint64_t from, const std::uint64_t to) const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(read_failure{f.error(), from, 0, 0});
+    }
     return read_entries_in(env_->of_writer(), from, to);
 }
 
@@ -986,7 +1354,10 @@ persistent_storage::transaction::get_entries(const std::uint64_t from, const std
 std::expected<std::optional<last_entry>, std::error_code> persistent_storage::transaction::get_last_entry() const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
     return read_last_entry(env_->of_writer());
 }
 
@@ -994,7 +1365,10 @@ std::expected<std::optional<entry_state>, std::error_code>
 persistent_storage::transaction::get_entry_state(const std::uint64_t index) const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
     return read_entry_state(env_->of_writer(), index);
 }
 
@@ -1002,7 +1376,10 @@ std::expected<std::optional<std::uint32_t>, std::error_code>
 persistent_storage::transaction::get_chain_crc(const std::uint64_t index) const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
     return read_chain_crc(env_->of_writer(), index);
 }
 
@@ -1010,85 +1387,100 @@ std::expected<void, std::error_code>
 persistent_storage::transaction::append_entries(const std::span<const entry> entries)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
-    const auto d = env_->of_writer();
-    auto m = read_meta(d);
+    const auto l = env_->of_writer();
+    auto m = read_meta(l);
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
-    if (auto put = put_entries(d, *m, entries); !put) [[unlikely]] {
+    if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
         return put;
     }
-    return write_meta(d, *m);
+    return write_meta(l, *m);
 }
 
 std::expected<void, std::error_code>
 persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, const std::span<const entry> entries)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
-    const auto d = env_->of_writer();
-    auto m = read_meta(d);
+    const auto l = env_->of_writer();
+    auto m = read_meta(l);
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     const auto prefix_len = std::min(m->log_len, from_idx);
     if (prefix_len < m->log_len) {
-        if (auto deleted = delete_entries(d, prefix_len, m->log_len); !deleted) [[unlikely]] {
+        if (auto deleted = delete_entries(l, prefix_len, m->log_len); !deleted) [[unlikely]] {
             return deleted;
         }
-        const auto chain = chain_crc_before(d, prefix_len);
+        const auto chain = chain_crc_before(l, prefix_len);
         if (!chain) [[unlikely]] {
             return std::unexpected(chain.error());
         }
         m->log_len = prefix_len;
         m->last_chain_crc = *chain;
     }
-    if (auto put = put_entries(d, *m, entries); !put) [[unlikely]] {
+    if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
         return put;
     }
-    return write_meta(d, *m);
+    return write_meta(l, *m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_promise(const ballot promise)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
-    const auto d = env_->of_writer();
-    auto m = read_meta(d);
+    const auto l = env_->of_writer();
+    auto m = read_meta(l);
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     m->promise = promise;
-    return write_meta(d, *m);
+    return write_meta(l, *m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_accepted_round(const ballot accepted_round)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
-    const auto d = env_->of_writer();
-    auto m = read_meta(d);
+    const auto l = env_->of_writer();
+    auto m = read_meta(l);
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     m->accepted_round = accepted_round;
-    return write_meta(d, *m);
+    return write_meta(l, *m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_decided_index(const std::uint64_t decided_idx)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
-    const auto d = env_->of_writer();
-    auto m = read_meta(d);
+    const auto l = env_->of_writer();
+    auto m = read_meta(l);
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
@@ -1096,12 +1488,12 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
         return std::unexpected(make_error_code(storage_errc::missing_entry));
     }
     if (decided_idx > m->decided_idx) {
-        if (auto c = set_entry_states(d, env_->rewritten, m->decided_idx, decided_idx, decided_idx); !c) [[unlikely]] {
+        if (auto c = set_entry_states(l, env_->record, m->decided_idx, decided_idx, decided_idx); !c) [[unlikely]] {
             return c;
         }
     }
     m->decided_idx = decided_idx;
-    return write_meta(d, *m);
+    return write_meta(l, *m);
 }
 
 std::expected<void, std::error_code>
@@ -1110,45 +1502,54 @@ persistent_storage::transaction::write_repaired_log(const std::uint64_t from_idx
                                                     const std::uint64_t decided_idx)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
-    const auto d = env_->of_writer();
-    const auto old = read_meta(d);
+    const auto l = env_->of_writer();
+    const auto old = read_meta(l);
     if (!old) [[unlikely]] {
         return std::unexpected(old.error());
     }
-    if (auto deleted = delete_entries_from(d, from_idx); !deleted) [[unlikely]] {
+    if (auto deleted = delete_entries_from(l, from_idx); !deleted) [[unlikely]] {
         return deleted;
     }
-    if (auto states = set_entry_states(d, env_->rewritten, 0, from_idx, decided_idx); !states) [[unlikely]] {
+    if (auto states = set_entry_states(l, env_->record, 0, from_idx, decided_idx); !states) [[unlikely]] {
         return states;
     }
-    const auto chain = chain_crc_before(d, from_idx);
+    const auto chain = chain_crc_before(l, from_idx);
     if (!chain) [[unlikely]] {
         return std::unexpected(chain.error());
     }
     meta_record m{promise, accepted_round, decided_idx, from_idx, *chain, old->applied_idx, old->applied_chain_crc};
-    if (auto put = put_entries(d, m, entries); !put) [[unlikely]] {
+    if (auto put = put_entries(l, m, env_->record, entries); !put) [[unlikely]] {
         return put;
     }
-    return write_meta(d, m);
+    return write_meta(l, m);
 }
 
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
 persistent_storage::transaction::find(const std::span<const std::byte> key) const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    return find_value(env_->writer.get(), env_->data_dbi, key);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return find_value(env_->of_writer(), key);
 }
 
 std::expected<std::optional<session_record>, std::error_code>
 persistent_storage::transaction::find_session(const std::uint64_t session) const
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    return find_session_in(env_->writer.get(), env_->meta_dbi, session);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return find_session_in(env_->of_writer(), session);
 }
 
 std::expected<void, std::error_code>
@@ -1156,16 +1557,22 @@ persistent_storage::transaction::insert_or_assign(const std::span<const std::byt
                                                   const std::span<const std::byte> value)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
-    return put_value(env_->writer.get(), env_->data_dbi, key, value);
+    return put_value(env_->of_writer(), key, value);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::erase(const std::span<const std::byte> key)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    return erase_value(env_->writer.get(), env_->data_dbi, key).transform([this](const bool erased) {
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    return erase_value(env_->of_writer(), key).transform([this](const bool erased) {
         env_->written = env_->written || erased;
     });
 }
@@ -1174,16 +1581,22 @@ std::expected<void, std::error_code>
 persistent_storage::transaction::insert_or_assign_session(const std::uint64_t session, const session_record& record)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
-    return put_session(env_->writer.get(), env_->meta_dbi, session, record);
+    return put_session(env_->of_writer(), env_->record, session, record);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::erase_session(const std::uint64_t session)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    return erase_session_in(env_->writer.get(), env_->meta_dbi, session).transform([this](const bool erased) {
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    return erase_session_in(env_->of_writer(), session).transform([this](const bool erased) {
         env_->written = env_->written || erased;
     });
 }
@@ -1192,28 +1605,33 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_applie
                                                                                   const std::uint32_t applied_chain_crc)
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
     env_->written = true;
-    const auto d = env_->of_writer();
-    auto m = read_meta(d);
+    const auto l = env_->of_writer();
+    auto m = read_meta(l);
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     m->applied_idx = applied_idx;
     m->applied_chain_crc = applied_chain_crc;
-    return write_meta(d, *m);
+    return write_meta(l, *m);
 }
 
 std::expected<persistent_storage::nested_transaction, std::error_code> persistent_storage::transaction::begin_nested()
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    MDB_txn* txn = nullptr;
-    const int status = mdb_txn_begin(env_->handle.get(), env_->writer.get(), 0, &txn);
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(status));
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
     }
-    env_->nested.reset(txn);
+    reset_statements(env_->writer);
+    if (auto r = run(env_->of_writer(), env_->writer.savepoint.get()); !r) [[unlikely]] {
+        return std::unexpected(r.error());
+    }
+    env_->nested_open = true;
     return nested_transaction{env_};
 }
 
@@ -1226,69 +1644,21 @@ bool persistent_storage::transaction::has_writes() const
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&
 {
     throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    if (env_->sync_outside) [[unlikely]] {
-        throw std::logic_error("konsens: a transaction without sync ends with prepare");
+    throw_if_nested_is_open(env_->nested_open);
+    auto& env = *std::exchange(env_, nullptr);
+    env.writer_open = false;
+    if (env.failure) [[unlikely]] {
+        return std::unexpected(*env.failure);
     }
-    auto txn = std::move(std::exchange(env_, nullptr)->writer);
-    return commit_or_throw(std::move(txn));
-}
-
-std::expected<persistent_storage::prepared_transaction, std::error_code> persistent_storage::transaction::prepare() &&
-{
-    throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested);
-    if (!env_->sync_outside) [[unlikely]] {
-        throw std::logic_error("konsens: only a transaction without sync ends with prepare");
+    reset_statements(env.writer);
+    sqlite3_stmt* const s = env.writer.commit.get();
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        env.roll_back_the_writer();
+        return std::unexpected(error_code_or_throw(status, env.writer_db.get(), access::write));
     }
-    if (!env_->written) [[unlikely]] {
-        throw std::logic_error("konsens: a transaction without writes has nothing to prepare");
-    }
-    auto* const env = std::exchange(env_, nullptr);
-    const int status = mdb_txn_prepare(env->writer.get());
-    if (status != MDB_SUCCESS) [[unlikely]] {
-        static_cast<void>(env->writer.release());
-        if (status == MDB_MAP_FULL) {
-            return std::unexpected(to_error_code(status));
-        }
-        throw sync_error(to_error_code(status), "konsens: mdb_txn_prepare failed");
-    }
-    return prepared_transaction{env};
-}
-
-persistent_storage::prepared_transaction::prepared_transaction(environment* const env) noexcept : env_{env}
-{
-}
-
-persistent_storage::prepared_transaction::prepared_transaction(prepared_transaction&& other) noexcept
-    : env_{std::exchange(other.env_, nullptr)}
-{
-}
-
-persistent_storage::prepared_transaction&
-persistent_storage::prepared_transaction::operator=(prepared_transaction&& other) noexcept
-{
-    if (this != &other) {
-        if (env_ != nullptr) {
-            env_->writer.reset();
-        }
-        env_ = std::exchange(other.env_, nullptr);
-    }
-    return *this;
-}
-
-persistent_storage::prepared_transaction::~prepared_transaction()
-{
-    if (env_ != nullptr) {
-        env_->writer.reset();
-    }
-}
-
-std::expected<void, std::error_code> persistent_storage::prepared_transaction::commit() &&
-{
-    throw_if_no_environment(env_);
-    auto txn = std::move(std::exchange(env_, nullptr)->writer);
-    return commit_or_throw(std::move(txn));
+    return {};
 }
 
 persistent_storage::nested_transaction::nested_transaction(environment* const env) noexcept : env_{env}
@@ -1305,7 +1675,7 @@ persistent_storage::nested_transaction::operator=(nested_transaction&& other) no
 {
     if (this != &other) {
         if (env_ != nullptr) {
-            env_->nested.reset();
+            env_->roll_back_the_nested();
         }
         env_ = std::exchange(other.env_, nullptr);
     }
@@ -1315,7 +1685,7 @@ persistent_storage::nested_transaction::operator=(nested_transaction&& other) no
 persistent_storage::nested_transaction::~nested_transaction()
 {
     if (env_ != nullptr) {
-        env_->nested.reset();
+        env_->roll_back_the_nested();
     }
 }
 
@@ -1323,14 +1693,20 @@ std::expected<std::optional<std::span<const std::byte>>, std::error_code>
 persistent_storage::nested_transaction::find(const std::span<const std::byte> key) const
 {
     throw_if_no_environment(env_);
-    return find_value(env_->nested.get(), env_->data_dbi, key);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return find_value(env_->of_writer(), key);
 }
 
 std::expected<std::optional<session_record>, std::error_code>
 persistent_storage::nested_transaction::find_session(const std::uint64_t session) const
 {
     throw_if_no_environment(env_);
-    return find_session_in(env_->nested.get(), env_->meta_dbi, session);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return find_session_in(env_->of_writer(), session);
 }
 
 std::expected<void, std::error_code>
@@ -1338,13 +1714,19 @@ persistent_storage::nested_transaction::insert_or_assign(const std::span<const s
                                                          const std::span<const std::byte> value)
 {
     throw_if_no_environment(env_);
-    return put_value(env_->nested.get(), env_->data_dbi, key, value);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    return put_value(env_->of_writer(), key, value);
 }
 
 std::expected<void, std::error_code> persistent_storage::nested_transaction::erase(const std::span<const std::byte> key)
 {
     throw_if_no_environment(env_);
-    return erase_value(env_->nested.get(), env_->data_dbi, key).transform([](bool) {});
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    return erase_value(env_->of_writer(), key).transform([](bool) {});
 }
 
 std::expected<void, std::error_code>
@@ -1352,13 +1734,19 @@ persistent_storage::nested_transaction::insert_or_assign_session(const std::uint
                                                                  const session_record& record)
 {
     throw_if_no_environment(env_);
-    return put_session(env_->nested.get(), env_->meta_dbi, session, record);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    return put_session(env_->of_writer(), env_->record, session, record);
 }
 
 std::expected<void, std::error_code> persistent_storage::nested_transaction::erase_session(const std::uint64_t session)
 {
     throw_if_no_environment(env_);
-    return erase_session_in(env_->nested.get(), env_->meta_dbi, session).transform([](bool) {});
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    return erase_session_in(env_->of_writer(), session).transform([](bool) {});
 }
 
 persistent_storage::persistent_storage(persistent_storage&&) noexcept = default;
@@ -1366,7 +1754,7 @@ persistent_storage& persistent_storage::operator=(persistent_storage&&) noexcept
 
 persistent_storage::~persistent_storage()
 {
-    if (env_ && (env_->writer || env_->nested || env_->reader_in_use)) [[unlikely]] {
+    if (env_ && (env_->writer_open || env_->nested_open || env_->reader_open)) [[unlikely]] {
         std::terminate();
     }
 }
@@ -1378,133 +1766,121 @@ persistent_storage::persistent_storage(std::unique_ptr<environment> env) noexcep
 void persistent_storage::throw_if_moved_from() const
 {
     if (!env_) [[unlikely]] {
-        throw std::logic_error("The persistent_storage was moved from and has no LMDB environment");
+        throw std::logic_error("The persistent_storage was moved from and has no database");
     }
 }
 
 std::expected<persistent_storage, std::error_code> persistent_storage::open(const std::filesystem::path& directory,
-                                                                            const std::size_t map_size,
+                                                                            const std::size_t max_size,
                                                                             const uid_t effective_user_id)
 {
     if (effective_user_id == root_user_id) [[unlikely]] {
         return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
     }
-    MDB_env* raw_env = nullptr;
-    const int created = mdb_env_create(&raw_env);
-    if (created != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(created));
+    const auto file = directory / store_file_name;
+    if (auto created = create_with_file_mode(file); !created) [[unlikely]] {
+        return std::unexpected(created.error());
     }
-    std::unique_ptr<MDB_env, env_close> env{raw_env};
-    const int maxdbs_set = mdb_env_set_maxdbs(env.get(), named_database_count);
-    if (maxdbs_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(maxdbs_set));
+    auto writer_db = open_connection(file);
+    if (!writer_db) [[unlikely]] {
+        return std::unexpected(writer_db.error());
     }
-    const int mapsize_set = mdb_env_set_mapsize(env.get(), map_size);
-    if (mapsize_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(mapsize_set));
+    if (auto bound = set_max_page_count(writer_db->get(), max_size); !bound) [[unlikely]] {
+        return std::unexpected(bound.error());
     }
-    const int checksum_set = mdb_env_set_checksum(env.get(), compute_page_checksum, page_checksum_size);
-    if (checksum_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(checksum_set));
+    if (auto schema = create_the_schema_of_an_empty_file(writer_db->get()); !schema) [[unlikely]] {
+        return std::unexpected(schema.error());
     }
-    const int opened = mdb_env_open(env.get(), directory.c_str(), environment_flags, file_mode);
-    if (opened != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(opened));
+    auto writer = prepare_statements(writer_db->get());
+    if (!writer) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
-    auto txn = begin_transaction(env.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
+    auto reader_db = open_connection(file);
+    if (!reader_db) [[unlikely]] {
+        return std::unexpected(reader_db.error());
     }
-    const auto meta_dbi = open_database(txn->get(), meta_database_name);
-    if (!meta_dbi) [[unlikely]] {
-        return std::unexpected(meta_dbi.error());
+    auto reader = prepare_statements(reader_db->get());
+    if (!reader) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
-    const auto data_dbi = open_database(txn->get(), data_database_name);
-    if (!data_dbi) [[unlikely]] {
-        return std::unexpected(data_dbi.error());
-    }
-    if (auto format = check_or_write_format({txn->get(), *meta_dbi, *data_dbi}); !format) [[unlikely]] {
+    auto env = std::make_unique<environment>(std::move(*writer_db), std::move(*reader_db), std::move(*writer),
+                                             std::move(*reader));
+    sqlite3_wal_hook(env->writer_db.get(), count_frames, &env->frames);
+    if (auto format = check_or_write_format(env->of_writer()); !format) [[unlikely]] {
+        env->roll_back_the_writer();
         return std::unexpected(format.error());
     }
-    const auto committed = commit_or_throw(std::move(*txn));
-    if (!committed) [[unlikely]] {
-        return std::unexpected(committed.error());
-    }
-    return persistent_storage{std::make_unique<environment>(std::move(env), *meta_dbi, *data_dbi)};
+    env->failure.reset();
+    return persistent_storage{std::move(env)};
 }
 
 std::expected<persistent_storage::transaction, std::error_code> persistent_storage::begin()
 {
-    return begin_writer(false);
-}
-
-std::expected<persistent_storage::transaction, std::error_code> persistent_storage::begin_without_sync()
-{
-    return begin_writer(true);
-}
-
-std::expected<persistent_storage::transaction, std::error_code>
-persistent_storage::begin_writer(const bool sync_outside)
-{
     throw_if_moved_from();
-    if (env_->writer) [[unlikely]] {
+    if (env_->writer_open) [[unlikely]] {
         throw std::logic_error("konsens: a write transaction of this storage is open");
     }
-    auto txn = begin_transaction(env_->handle.get(), sync_outside ? MDB_NOSYNC : 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
+    env_->failure.reset();
+    if (env_->frames >= checkpoint_frames) {
+        if (auto c = run_checkpoint(env_->writer_db.get()); !c) [[unlikely]] {
+            return std::unexpected(c.error());
+        }
+        env_->frames = 0;
     }
-    env_->writer = std::move(*txn);
+    if (auto begun = run(env_->of_writer(), env_->writer.begin_immediate.get()); !begun) [[unlikely]] {
+        env_->failure.reset();
+        return std::unexpected(begun.error());
+    }
+    env_->writer_open = true;
     env_->written = false;
-    env_->sync_outside = sync_outside;
     return transaction{env_.get()};
-}
-
-int persistent_storage::file_descriptor() const
-{
-    throw_if_moved_from();
-    int fd = -1;
-    if (const int status = mdb_env_get_fd(env_->handle.get(), &fd); status != MDB_SUCCESS) [[unlikely]] {
-        throw std::logic_error("konsens: the storage has no file descriptor");
-    }
-    return fd;
 }
 
 std::expected<persistent_storage::read_only_transaction, std::error_code> persistent_storage::begin_read_only() const
 {
     throw_if_moved_from();
-    if (env_->reader_in_use) [[unlikely]] {
+    if (env_->reader_open) [[unlikely]] {
         throw std::logic_error("konsens: a read-only transaction of this storage is open");
     }
-    if (env_->reader) {
-        const int renewed = mdb_txn_renew(env_->reader.get());
-        if (renewed != MDB_SUCCESS) [[unlikely]] {
-            return std::unexpected(to_error_code(renewed));
-        }
-    } else {
-        auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
-        if (!txn) [[unlikely]] {
-            return std::unexpected(txn.error());
-        }
-        env_->reader = std::move(*txn);
+    const auto l = env_->of_reader();
+    if (auto begun = run(l, env_->reader.begin_deferred.get()); !begun) [[unlikely]] {
+        return std::unexpected(begun.error());
     }
-    env_->reader_in_use = true;
+    env_->reader_open = true;
+    const auto m = read_meta(l);
+    if (!m && m.error().category() != storage_category()) [[unlikely]] {
+        env_->end_the_reader();
+        return std::unexpected(m.error());
+    }
     return read_only_transaction{env_.get()};
 }
 
 std::expected<void, std::error_code> persistent_storage::copy(const std::filesystem::path& directory) const
 {
     throw_if_moved_from();
-    const int copied = mdb_env_copy2(env_->handle.get(), directory.c_str(), 0);
-    if (copied != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(copied));
+    if (env_->reader_open) [[unlikely]] {
+        throw std::logic_error("konsens: a read-only transaction of this storage is open");
     }
-    return {};
+    const auto file = directory / store_file_name;
+    if (auto created = create_new_with_file_mode(file); !created) [[unlikely]] {
+        return std::unexpected(created.error());
+    }
+    const auto name = file.string();
+    sqlite3_stmt* const s = env_->reader.vacuum_into.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, name); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->reader_db.get(), access::read));
+    }
+    return run(env_->of_reader(), s);
 }
 
 struct node_storage::environment {
-    std::unique_ptr<MDB_env, env_close> handle;
-    MDB_dbi dbi;
+    connection db;
+    statement begin_immediate;
+    statement commit;
+    statement rollback;
+    statement get_record;
+    statement put_record;
 };
 
 node_storage::node_storage(std::unique_ptr<environment> env) noexcept : env_{std::move(env)}
@@ -1518,7 +1894,7 @@ node_storage::~node_storage() = default;
 void node_storage::throw_if_moved_from() const
 {
     if (!env_) [[unlikely]] {
-        throw std::logic_error("The node_storage was moved from and has no LMDB environment");
+        throw std::logic_error("The node_storage was moved from and has no database");
     }
 }
 
@@ -1528,70 +1904,88 @@ std::expected<node_storage, std::error_code> node_storage::open(const std::files
     if (effective_user_id == root_user_id) [[unlikely]] {
         return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
     }
-    MDB_env* raw_env = nullptr;
-    const int created = mdb_env_create(&raw_env);
-    if (created != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(created));
+    const auto file = directory / node_file_name;
+    if (auto created = create_with_file_mode(file); !created) [[unlikely]] {
+        return std::unexpected(created.error());
     }
-    std::unique_ptr<MDB_env, env_close> env{raw_env};
-    const int maxdbs_set = mdb_env_set_maxdbs(env.get(), node_database_count);
-    if (maxdbs_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(maxdbs_set));
+    auto db = open_connection(file);
+    if (!db) [[unlikely]] {
+        return std::unexpected(db.error());
     }
-    const int mapsize_set = mdb_env_set_mapsize(env.get(), node_storage_map_size);
-    if (mapsize_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(mapsize_set));
+    if (auto schema = execute(db->get(), node_schema); !schema) [[unlikely]] {
+        return std::unexpected(schema.error());
     }
-    const int checksum_set = mdb_env_set_checksum(env.get(), compute_page_checksum, page_checksum_size);
-    if (checksum_set != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(checksum_set));
+    auto env = std::make_unique<environment>(std::move(*db));
+    const std::array list{
+        std::pair{&env->begin_immediate, std::string_view{"BEGIN IMMEDIATE"}},
+        std::pair{&env->commit, std::string_view{"COMMIT"}},
+        std::pair{&env->rollback, std::string_view{"ROLLBACK"}},
+        std::pair{&env->get_record, std::string_view{"SELECT record FROM meta WHERE name = ?1"}},
+        std::pair{&env->put_record,
+                  std::string_view{"INSERT INTO meta (name, record) VALUES (?1, ?2) "
+                                   "ON CONFLICT (name) DO UPDATE SET record = excluded.record"}},
+    };
+    for (const auto& [target, sql] : list) {
+        auto prepared = prepare(env->db.get(), sql);
+        if (!prepared) [[unlikely]] {
+            return std::unexpected(to_error_code(prepared.error(), env->db.get()));
+        }
+        *target = std::move(*prepared);
     }
-    const int opened = mdb_env_open(env.get(), directory.c_str(), environment_flags, file_mode);
-    if (opened != MDB_SUCCESS) [[unlikely]] {
-        return std::unexpected(to_error_code(opened));
-    }
-    auto txn = begin_transaction(env.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
-    }
-    const auto dbi = open_database(txn->get(), node_database_name);
-    if (!dbi) [[unlikely]] {
-        return std::unexpected(dbi.error());
-    }
-    const auto committed = commit_or_throw(std::move(*txn));
-    if (!committed) [[unlikely]] {
-        return std::unexpected(committed.error());
-    }
-    return node_storage{std::make_unique<environment>(std::move(env), *dbi)};
+    return node_storage{std::move(env)};
 }
 
 std::expected<repair_record, std::error_code> node_storage::get_repair_record() const
 {
     throw_if_moved_from();
-    auto txn = begin_transaction(env_->handle.get(), MDB_RDONLY);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
+    sqlite3_stmt* const s = env_->get_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, repair_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::read));
     }
-    const auto body = get_checked(txn->get(), env_->dbi, repair_key, repair_record_size);
-    if (!body) [[unlikely]] {
-        return std::unexpected(body.error());
-    }
-    if (!body->has_value()) {
+    const int status = sqlite3_step(s);
+    if (status == SQLITE_DONE) {
+        sqlite3_reset(s);
         return repair_record{0, std::nullopt, false, std::nullopt};
     }
-    return decode_repair_record(body->value().first<repair_record_size>());
+    if (status != SQLITE_ROW) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::read));
+    }
+    const auto bytes = column_bytes(s, 0);
+    if (bytes.size() != repair_record_size + crc_size) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto body = bytes.first<repair_record_size>();
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    auto r = decode_repair_record(body);
+    sqlite3_reset(s);
+    return r;
 }
 
 std::expected<void, std::error_code> node_storage::write_repair_record(const repair_record& r)
 {
-    auto txn = begin_transaction(env_->handle.get(), 0);
-    if (!txn) [[unlikely]] {
-        return std::unexpected(txn.error());
+    const auto body = encode_repair_record(r);
+    std::array<std::byte, repair_record_size + crc_size> record{};
+    std::ranges::copy(to_little_endian(crc_of(body)), std::ranges::copy(body, record.begin()).out);
+    sqlite3_stmt* const s = env_->put_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, repair_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
     }
-    if (auto put = put_checked(txn->get(), env_->dbi, repair_key, encode_repair_record(r)); !put) [[unlikely]] {
-        return put;
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
     }
-    return commit_or_throw(std::move(*txn));
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::write));
+    }
+    return {};
 }
 
 std::expected<void, std::error_code> node_storage::write_the_proof(const fault_proof& proof)

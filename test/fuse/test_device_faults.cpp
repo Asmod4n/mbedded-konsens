@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <array>
-#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -18,14 +17,13 @@
 #include <system_error>
 #include <vector>
 
-#include <sys/resource.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "konsens/persistent_storage.hpp"
 #include "mounted_error_fs.hpp"
 #include "node_cluster.hpp"
+#include "sqlite_damage.hpp"
 #include "temporary_directory.hpp"
 
 namespace {
@@ -35,9 +33,6 @@ constexpr uid_t non_root_user_id = 1000;
 constexpr std::size_t map_size = std::size_t{16} << 20;
 constexpr std::size_t large_entry_size = std::size_t{64} << 10;
 constexpr int pattern_period = 251;
-constexpr int open_failed = 1;
-constexpr int read_returned = 2;
-constexpr int write_failed = 3;
 
 std::vector<std::byte> bytes_of(const std::string_view text)
 {
@@ -63,7 +58,7 @@ void write_entries(const std::filesystem::path& directory, const std::vector<kon
 }
 
 // A payload that does not repeat inside one period, so that the test finds
-// it in data.mdb.
+// it in konsens.db.
 std::vector<std::byte> pattern_payload()
 {
     std::vector<std::byte> payload(large_entry_size);
@@ -78,9 +73,10 @@ struct byte_range {
     std::uint64_t length;
 };
 
-// The whole pages of the file that lie inside the payload. LMDB keeps a
-// large value on overflow pages of its own, so a read of these pages is a
-// read of this entry and of nothing else.
+// The whole pages of the file that lie inside the payload. SQLite keeps the
+// part of a large record that does not fit its leaf page on overflow pages
+// of its own, so a read of these pages is a read of this entry and of
+// nothing else.
 byte_range pages_inside(const std::filesystem::path& data_file, const std::vector<std::byte>& payload)
 {
     std::ifstream in(data_file, std::ios::binary);
@@ -115,8 +111,9 @@ struct mount_directories {
 // PostgreSQL in 2018: the page cache can drop the written pages, so a
 // second sync can report success for data that is gone. The owner decided
 // that a failed sync is raised as sync_error and that nothing syncs again.
-// LMDB writes the meta page only after the sync of the data pages, so the
-// disk keeps the last commit.
+// SQLite writes the frames of the commit into the WAL before its sync, so
+// the disk keeps the last commit, and it can keep the commit whose sync
+// failed. That commit was never confirmed to a client.
 TEST_CASE("a failed fsync at commit throws sync_error and keeps the last commit")
 {
     const mount_directories d;
@@ -153,18 +150,21 @@ TEST_CASE("a failed fsync at commit throws sync_error and keeps the last commit"
         REQUIRE(t.has_value());
         const auto m = t->get_meta();
         REQUIRE(m.has_value());
-        CHECK(m->log_len == written.size());
+        CHECK((m->log_len == written.size() || m->log_len == written.size() + 1));
         CHECK(t->get_entries(0, written.size()) == written);
     }
     clean.unmount();
 }
 
-// LMDB reads through its map, so a read error of the disk reaches the
-// process as SIGBUS and not as an error value. The owner decided that the
-// process ends then, and that recovery after the next start covers the
-// node. The test shows that the read of a bad entry ends the process and
-// that the open before it does not.
-TEST_CASE("a failed read of an entry ends the process with SIGBUS")
+// SQLite reads its file with pread, so a read error of the disk reaches the
+// storage as SQLITE_IOERR_READ. The storage raises it as read_error with
+// the error code of the disk (plan sqlite-storage 6.1). A read that the
+// kernel ends early gives SQLITE_IOERR_SHORT_READ, which SQLite fills with
+// zeros, and the B-tree check then gives SQLITE_CORRUPT. Both ends give
+// no entry and no crash. The open before the read meets no damaged page.
+// The test moves the WAL into the database file first, so that the read
+// of the entry is a read of konsens.db.
+TEST_CASE("a failed read of an entry throws read_error or gives corrupt")
 {
     const mount_directories d;
     const auto payload = pattern_payload();
@@ -175,43 +175,27 @@ TEST_CASE("a failed read of an entry ends the process with SIGBUS")
         write_entries(d.mount_point, written);
         clean.unmount();
     }
-    const auto range = pages_inside(d.backing / "data.mdb", payload);
+    sqlite_damage::move_the_wal_into_the_file(d.backing);
+    const auto range = pages_inside(d.backing / sqlite_damage::store_file_name, payload);
     mounted_error_fs failing(d.backing, d.mount_point,
                              "error_reads_offset=" + std::to_string(range.offset) +
                                  ",error_reads_length=" + std::to_string(range.length));
-    std::array<int, 2> opened{};
-    REQUIRE(pipe(opened.data()) == 0);
-    const pid_t child = fork();
-    REQUIRE(child != -1);
-    if (child == 0) {
-        static_cast<void>(std::signal(SIGBUS, SIG_DFL));
-        const rlimit no_core{0, 0};
-        static_cast<void>(setrlimit(RLIMIT_CORE, &no_core));
-        close(opened[0]);
-        auto storage = konsens::persistent_storage::open(d.mount_point, map_size, non_root_user_id);
-        if (!storage) {
-            _exit(open_failed);
+    {
+        const auto storage = open_storage(d.mount_point);
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        std::optional<std::error_code> failed;
+        try {
+            const auto read = t->get_entries(1, 2);
+            REQUIRE_FALSE(read.has_value());
+            CHECK(read.error() == make_error_code(konsens::storage_errc::corrupt));
+            failed = read.error();
+        } catch (const konsens::read_error& e) {
+            CHECK(e.code() == std::errc::io_error);
+            failed = e.code();
         }
-        const char byte = 1;
-        if (write(opened[1], &byte, 1) != 1) {
-            _exit(write_failed);
-        }
-        const auto t = storage->begin_read_only();
-        if (!t) {
-            _exit(open_failed);
-        }
-        static_cast<void>(t->get_entries(1, 2));
-        _exit(read_returned);
+        CHECK(failed);
     }
-    close(opened[1]);
-    char byte = 0;
-    const ssize_t got = read(opened[0], &byte, 1);
-    close(opened[0]);
-    int status = 0;
-    REQUIRE(waitpid(child, &status, 0) == child);
-    CHECK(got == 1);
-    REQUIRE(WIFSIGNALED(status));
-    CHECK(WTERMSIG(status) == SIGBUS);
     failing.unmount();
 }
 
@@ -230,14 +214,17 @@ node_cluster::cluster cluster_on(const std::filesystem::path& mount_point)
 
 }
 
-// The decision of the owner (2026-10-21) for a write that fails before the
-// LMDB commit: the commit throws write_error with the error code of the
-// disk. None of the messages and replies of the transaction leaves the
-// node, because each of them depends on the write that did not happen. The
+// The decision of the owner (2026-10-21) for a write that fails at the
+// commit: the commit throws write_error with the error code of the disk.
+// The leader writes nothing for a client request before the results of
+// Execute-Verify arrive, so the transaction also holds an append, which
+// the leader writes at once. None of the messages and replies of the
+// transaction leaves the node, because each of them depends on the write
+// that did not happen. The
 // program does not repeat the commit, so a later step is a wrong use. The
 // owner chose (2026-10-24) that the fault comes from the file system under
-// LMDB: error_fs fails each write of data.mdb with ENOSPC while the node
-// runs.
+// the storage: error_fs fails each write of konsens.db and of its WAL with
+// ENOSPC while the node runs. SQLite gives SQLITE_FULL for ENOSPC.
 TEST_CASE("a write that fails at the commit throws write_error and releases nothing")
 {
     using namespace node_cluster;
@@ -248,6 +235,7 @@ TEST_CASE("a write that fails at the commit throws write_error and releases noth
         const auto l = c.leader();
         const auto s = registered(c, l, client_a);
         auto t = value_of(c.nodes.at(l).client_request(client_a, s, 1, {}));
+        t += value_of(c.nodes.at(l).append(make_entry(1)));
         t += value_of(c.nodes.at(l).tick());
         fs.set_faults("error_writes");
         bool thrown = false;
@@ -267,10 +255,10 @@ TEST_CASE("a write that fails at the commit throws write_error and releases noth
     fs.unmount();
 }
 
-// The same decision for a sync that fails at the LMDB commit, which
+// The same decision for a sync that fails at the commit, which
 // persistent_storage raises as sync_error: nothing in the library catches
 // it, and nothing of the transaction leaves the node. error_fs fails each
-// fsync while the node runs.
+// fsync while the node runs. The append makes the leader write.
 TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
 {
     using namespace node_cluster;
@@ -280,7 +268,8 @@ TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
         auto c = elected(cluster_on(d.mount_point));
         const auto l = c.leader();
         const auto s = registered(c, l, client_a);
-        const auto t = value_of(c.nodes.at(l).client_request(client_a, s, 1, {}));
+        auto t = value_of(c.nodes.at(l).client_request(client_a, s, 1, {}));
+        t += value_of(c.nodes.at(l).append(make_entry(1)));
         fs.set_faults("error_fsync");
         CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(t)), konsens::sync_error);
         CHECK(c.nodes.at(l).take_outgoing_messages().empty());

@@ -84,22 +84,6 @@ public:
         environment* env_;
     };
 
-    class prepared_transaction {
-    public:
-        [[nodiscard]] std::expected<void, std::error_code> commit() &&;
-
-        prepared_transaction(prepared_transaction&& other) noexcept;
-        prepared_transaction& operator=(prepared_transaction&& other) noexcept;
-        ~prepared_transaction();
-
-    private:
-        friend class persistent_storage;
-
-        explicit prepared_transaction(environment* env) noexcept;
-
-        environment* env_;
-    };
-
     class transaction {
     public:
         [[nodiscard]] std::expected<meta_record, std::error_code> get_meta() const;
@@ -138,7 +122,6 @@ public:
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] bool has_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
-        [[nodiscard]] std::expected<prepared_transaction, std::error_code> prepare() &&;
 
         transaction(transaction&& other) noexcept;
         transaction& operator=(transaction&& other) noexcept;
@@ -153,11 +136,9 @@ public:
     };
 
     [[nodiscard]] static std::expected<persistent_storage, std::error_code>
-    open(const std::filesystem::path& directory, std::size_t map_size, uid_t effective_user_id);
+    open(const std::filesystem::path& directory, std::size_t max_size, uid_t effective_user_id);
 
     [[nodiscard]] std::expected<transaction, std::error_code> begin();
-    [[nodiscard]] std::expected<transaction, std::error_code> begin_without_sync();
-    [[nodiscard]] int file_descriptor() const;
     [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
     [[nodiscard]] std::expected<void, std::error_code> copy(const std::filesystem::path& directory) const;
 
@@ -169,7 +150,6 @@ private:
     explicit persistent_storage(std::unique_ptr<environment> env) noexcept;
 
     void throw_if_moved_from() const;
-    std::expected<transaction, std::error_code> begin_writer(bool sync_outside);
 
     std::unique_ptr<environment> env_;
 };

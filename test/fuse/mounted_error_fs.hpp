@@ -16,7 +16,7 @@
 
 #include <doctest/doctest.h>
 
-// A test that needs a fault of the file system under LMDB mounts error_fs
+// A test that needs a fault of the file system under SQLite mounts error_fs
 // on a backing directory. The constructor returns after the kernel has
 // sent FUSE_INIT: error_fs writes one byte to a pipe then, and the
 // constructor blocks on the read of that byte. error_fs runs in a process
@@ -80,7 +80,7 @@ public:
         REQUIRE(WEXITSTATUS(status) == 0);
     }
 
-    // The file /.error_fs of the mount sets the faults while LMDB keeps its
+    // The file /.error_fs of the mount sets the faults while SQLite keeps its
     // files open. The write returns after error_fs has set them.
     void set_faults(const std::string& faults) const
     {

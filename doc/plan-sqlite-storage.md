@@ -834,3 +834,22 @@ blocking, 9 others.
 | O7, the faults of the run of 10.2, psow | 10.2 |
 | O8, the node stops during the copy | 7.7 |
 | O9, two citations | section 2 |
+
+## 13. Changes during the build
+
+The build of the first step (2026-10-27) changed three points of this plan.
+
+1. The close (6.5). Each connection sets
+   `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, so `sqlite3_close` makes no
+   checkpoint and no sync. The library runs no checkpoint before the
+   close. A destructor raises nothing, so a checkpoint in it could not
+   give a failed sync to the caller. The WAL stays on the disk after the
+   close, and the next open reads it.
+2. The error codes (6.1). The store raises `write_error` for an
+   `SQLITE_IOERR_*` other than a failed sync on the writer, and
+   `read_error` for it on the reader. The code of the exception is the
+   errno that `sqlite3_system_errno` gives, in `std::generic_category`.
+   `SQLITE_FULL` stays an error value `no_space_on_device`, and the node
+   raises it as `write_error`, as it did for a full LMDB map.
+3. "done" before the commit of the leader (6.3) is not in the first
+   step. The node gives every message and every reply after its commit.

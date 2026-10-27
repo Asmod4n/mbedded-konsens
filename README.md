@@ -2,7 +2,7 @@
 
 A C++ library that replicates a log over a cluster of nodes. A majority
 of the nodes decides each entry, and an entry counts as decided only
-after a majority wrote it to disk with a synchronous LMDB commit. Each
+after a majority wrote it to disk with a synchronous SQLite commit. Each
 node applies the decided entries in order to a state machine that the
 program gives.
 
@@ -30,7 +30,7 @@ struct counter {
 
 for (const auto* d : {"node-1", "node-1-node"})
     std::filesystem::create_directories(d);
-auto storage = konsens::persistent_storage::open("node-1", map_size, geteuid()).value();
+auto storage = konsens::persistent_storage::open("node-1", max_size, geteuid()).value();
 auto own_storage = konsens::node_storage::open("node-1-node", geteuid()).value();
 auto node = konsens::node<konsens::persistent_storage, counter>::with(
     {.configuration_id = 1, .pid = 1, .peers = {2, 3}, .leader_priority = 0,
@@ -63,14 +63,14 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   `konsens::encode` and `konsens::decode` turn them into bytes.
 - **Errors as values.** Each call returns `std::expected`. A wrong use
   stops with `std::logic_error`. A write to the disk that fails throws
-  `konsens::write_error`, and an LMDB commit that fails throws
+  `konsens::write_error`, and a sync that fails throws
   `konsens::sync_error`. The messages and the replies of that commit
   stay in the node.
 - **Group commit.** Each call collects its writes and its messages, and
   returns a `konsens::transaction`. `commit()` takes the transaction and
-  writes all collected writes in one LMDB transaction without a sync.
-  The program syncs the file of the store and calls `synced()`. Only a
-  sync gives the messages and the replies to the program.
+  writes all collected writes in one SQLite transaction, which SQLite
+  syncs. Only the commit gives the messages and the replies to the
+  program.
 - **Execute-verify.** Every node runs every decided request on its own
   state and sends its result to the leader. The leader appends the
   result of a majority as a `results` entry. Each node checks that entry
@@ -122,7 +122,7 @@ entries after its own from that source.
 ## Performance
 
 Each part of a write, one at a time. Three nodes in one process, each
-with its own LMDB environment, each message through `encode` and
+with its own store, each message through `encode` and
 `decode`. In the serial form the nodes run one after the other; in the
 threaded form each node runs on its own thread. g++ 16 `-O2`, x86-64, a
 Firecracker VM with 4 cpus, ext4. ns or µs per operation, median of 7
@@ -131,17 +131,6 @@ rounds of 31 samples, payload 1 KiB:
 | Operation | Time |
 |---|---|
 | CRC32C | 34 ns |
-| LMDB alone, put and commit | 338 µs |
-| LMDB alone, get | 76 ns |
-| Write, serial | 1.9 ms |
-| Write, threaded | 1.6 ms |
-| 64 writes at once, threaded, per write | 49 µs |
-| Read, serial | 8.2 µs |
-| Read, threaded | 91 µs |
-
-A write makes 6 synchronous LMDB commits, two on each node. A read
-reads no LMDB: it answers from the state in memory after one read-index
-round.
 
 | Message | Encode | Decode | Handle |
 |---|---|---|---|
@@ -165,7 +154,7 @@ The cost of the checksum against a MAC:
 |---|---|
 | Compiler | g++ 16 |
 | System | Linux |
-| LMDB | the submodule `deps/lmdb`, LMDB 1.0.2, OpenLDAP Public License |
+| SQLite | the package of the distribution, `libsqlite3-dev` |
 | Boost | the headers |
 | mbedded-cbor | the submodule `deps/mbedded-cbor` |
 | crc32c | the submodule `deps/crc32c`, Google crc32c, BSD-3-Clause license |
@@ -173,29 +162,16 @@ The cost of the checksum against a MAC:
 
 The library runs as a user that is not root.
 
-LMDB 1.0 does not open a data file of LMDB 0.9. The file formats of the
-two versions differ. The build makes `mdb_dump-0.9` from LMDB 0.9.36 and
-`mdb_load` from LMDB 1.0.2 for the upgrade. Stop the node, then:
-
-```sh
-mkdir new
-mdb_dump-0.9 -a -f dump old
-mdb_load -f dump new
-```
-
-Start the node on `new` after it has opened and read the log. Then
-`new` replaces `old`. `mdb_load` opens at most two named databases;
-the storage of a node has two.
-
 ## Installation
 
 Ubuntu 26.10:
 
 ```sh
-sudo apt install g++-16 cmake doctest-dev libboost-dev git
+sudo apt install g++-16 cmake doctest-dev libboost-dev libsqlite3-dev git
 ```
 
-On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel`.
+On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel` and
+SQLite from `sqlite3-devel`.
 
 ```sh
 git clone https://github.com/Asmod4n/mbedded-konsens
@@ -225,28 +201,17 @@ for (auto& bytes : arrived)
     batch.push_back(konsens::decode(std::move(bytes)).value());
 t += node.handle_incoming(std::move(batch)).value();
 
-auto end = node.commit(t).value();
-while (end != konsens::step_end::nothing) {
-    const int fd = node.get_sequence_paxos().get_internal_storage().file_descriptor();
-    if (fdatasync(fd) != 0)
-        throw konsens::sync_error(std::error_code{errno, std::generic_category()}, "fdatasync failed");
-    end = node.synced().value();
-}
+node.commit(t).value();
 
 for (const auto& m : node.take_outgoing_messages())
     send(konsens::encode(m).value());
 ```
 
 Each call collects its writes and its messages and returns a
-transaction. `commit()` writes the collected writes in one LMDB
-transaction and makes no sync. It returns `step_end::commit` when the
-step wrote, `step_end::sync_only` when messages wait for a sync, and
-`step_end::nothing` when no sync is due. After `step_end::commit`, the
-next call begins only after the sync. The messages of a step leave after
-the sync that makes the whole step durable: the sync of the next step,
-or a sync of its own. After `with()`, the program reads `get_step_end()`
-and syncs in the same way. `take_outgoing_messages()` and
-`take_client_replies()` give what a sync released. The compiler refuses a transaction that the program
+transaction. `commit()` writes the collected writes in one SQLite
+transaction, and SQLite syncs it before `commit()` returns. The messages
+of a step leave after that commit. `take_outgoing_messages()` and
+`take_client_replies()` give what a commit released. The compiler refuses a transaction that the program
 drops. A commit of a transaction that is committed, or of a transaction
 of another node, throws `std::logic_error`. At most
 `konsens::max_batch_size` messages wait for one commit.
@@ -302,16 +267,16 @@ of the node reaches the read index.
 ## Testing
 
 The unit tests cover each message of Sequence Paxos and Ballot Leader
-Election, the LMDB store, the wire form and the clients. `test_simulation`,
+Election, the SQLite store, the wire form and the clients. `test_simulation`,
 `test_simulation_rollback` and `test_simulation_clients` run three nodes
-on LMDB for 2000 seeds with message loss, duplicate messages, a crash
+on SQLite for 2000 seeds with message loss, duplicate messages, a crash
 and a restart from an earlier copy of the store. They check the safety
 properties of the model after each step.
 `counter_stress` runs many clients against three nodes on a network
 that loses and repeats messages. The tests run with g++ 16, with
 AddressSanitizer and UndefinedBehaviorSanitizer.
 
-The tests open their LMDB environments in `TMPDIR`. The cache variable
+The tests open their stores in `TMPDIR`. The cache variable
 `KONSENS_TEST_TMPDIR` sets `TMPDIR` for each test, for example to a
 tmpfs:
 
@@ -322,9 +287,9 @@ cmake -S . -B build -DKONSENS_TEST_TMPDIR=/dev/shm
 All tests pass with a tmpfs of 64 MiB. A build with AddressSanitizer runs
 200 seeds of each simulation instead of 2000.
 
-`test_device_faults` runs LMDB on a FUSE file system that fails each
-fsync, each write of the data file, or the reads of one range of the
-data file. A storage and a cluster of three nodes run on it. It needs the packages
+`test_device_faults` runs SQLite on a FUSE file system that fails each
+fsync, each write of the database file and its WAL, or the reads of one
+range of the database file. A storage and a cluster of three nodes run on it. It needs the packages
 libfuse3-dev and fuse3, the device /dev/fuse and the right to mount. The
 option turns it on:
 

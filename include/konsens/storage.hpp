@@ -154,7 +154,14 @@ std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t 
 std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t from_idx,
                                 std::span<const entry> entries);
 
-enum class storage_errc { crc_mismatch = 1, malformed_record, missing_entry, missing_meta_record, unsupported_format };
+enum class storage_errc {
+    crc_mismatch = 1,
+    malformed_record,
+    missing_entry,
+    missing_meta_record,
+    unsupported_format,
+    corrupt
+};
 
 const std::error_category& storage_category() noexcept;
 std::error_code make_error_code(storage_errc code) noexcept;
@@ -202,9 +209,6 @@ template <typename T>
 using nested_transaction_of = typename decltype(std::declval<T&>().begin_nested())::value_type;
 
 template <typename T>
-using prepared_transaction_of = typename decltype(std::declval<T&&>().prepare())::value_type;
-
-template <typename T>
 concept storage_write = storage_read<T> && state_write<T> && state_write<nested_transaction_of<T>> &&
                         std::movable<T> &&
                         requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b,
@@ -225,21 +229,12 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             } -> std::same_as<std::expected<void, std::error_code>>;
                             { std::as_const(t).has_writes() } -> std::same_as<bool>;
                             { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
-                            {
-                                std::move(moved).prepare()
-                            } -> std::same_as<std::expected<prepared_transaction_of<T>, std::error_code>>;
-                            {
-                                std::declval<prepared_transaction_of<T>&&>().commit()
-                            } -> std::same_as<std::expected<void, std::error_code>>;
                         };
 
 template <typename S>
 concept storage = storage_write<typename S::transaction> && storage_read<typename S::read_only_transaction> &&
                   requires(S& s, const S& cs) {
                       { s.begin() } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
-                      {
-                          s.begin_without_sync()
-                      } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
                       {
                           cs.begin_read_only()
                       } -> std::same_as<std::expected<typename S::read_only_transaction, std::error_code>>;

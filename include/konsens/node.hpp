@@ -67,8 +67,6 @@ struct client_read {
     std::optional<std::uint64_t> read_index;
 };
 
-enum class step_end { nothing, commit, sync_only };
-
 class [[nodiscard]] transaction {
 public:
     transaction& operator+=(const transaction& other)
@@ -147,7 +145,7 @@ public:
                 return std::unexpected(r.error());
             }
         }
-        n.hold_until_durable();
+        n.release_the_output();
         return n;
     }
 
@@ -188,35 +186,7 @@ public:
         return keep_and_handle(std::move(batch));
     }
 
-    [[nodiscard]] std::expected<step_end, std::error_code> commit(const transaction t)
-    {
-        return end_the_step(t).transform([this] { return get_step_end(); });
-    }
-
-    [[nodiscard]] std::expected<step_end, std::error_code> synced()
-    {
-        release(std::exchange(waits_for_one_sync_, {}));
-        meta_committed_unsynced_ = seq_paxos_.is_prepared();
-        if (seq_paxos_.is_prepared()) {
-            seq_paxos_.synced();
-            waits_for_one_sync_ = std::exchange(waits_for_two_syncs_, {});
-            if (auto r = finish_the_step(); !r) [[unlikely]] {
-                return std::unexpected(r.error());
-            }
-        }
-        return get_step_end();
-    }
-
-    step_end get_step_end() const
-    {
-        if (seq_paxos_.is_prepared()) {
-            return step_end::commit;
-        }
-        if (!waits_for_one_sync_.empty()) {
-            return step_end::sync_only;
-        }
-        return step_end::nothing;
-    }
+    [[nodiscard]] result commit(const transaction t) { return end_the_step(t); }
 
 private:
     result end_the_step(const transaction t)
@@ -246,10 +216,6 @@ private:
                 drop_held_messages_and_replies();
                 return w;
             }
-            if (seq_paxos_.is_prepared()) {
-                hold_until_durable();
-                return {};
-            }
             return finish_the_step();
         });
     }
@@ -265,7 +231,7 @@ private:
                 static_cast<void>(check_the_applied_state());
             }
             if (!seq_paxos_.votes()) {
-                hold_until_durable();
+                release_the_output();
                 return {};
             }
             if (auto r = serve_reads(); !r) [[unlikely]] {
@@ -278,7 +244,7 @@ private:
                     return r;
                 }
             }
-            hold_until_durable();
+            release_the_output();
             return {};
         });
     }
@@ -509,17 +475,6 @@ private:
         std::vector<fault_proof> log_records;
         std::vector<received> received_batch;
         std::vector<message> message_batch;
-
-        bool empty() const { return messages.empty() && replies.empty() && log_records.empty(); }
-
-        void append(held_output&& other)
-        {
-            std::ranges::move(other.messages, std::back_inserter(messages));
-            std::ranges::move(other.replies, std::back_inserter(replies));
-            std::ranges::move(other.log_records, std::back_inserter(log_records));
-            std::ranges::move(other.received_batch, std::back_inserter(received_batch));
-            std::ranges::move(other.message_batch, std::back_inserter(message_batch));
-        }
     };
 
     held_output take_held_output()
@@ -540,20 +495,7 @@ private:
         return out;
     }
 
-    void hold_until_durable()
-    {
-        auto out = take_held_output();
-        if (out.empty()) {
-            return;
-        }
-        if (seq_paxos_.is_prepared()) {
-            waits_for_two_syncs_.append(std::move(out));
-        } else if (meta_committed_unsynced_) {
-            waits_for_one_sync_.append(std::move(out));
-        } else {
-            release(std::move(out));
-        }
-    }
+    void release_the_output() { release(take_held_output()); }
 
     void release(held_output&& out)
     {
@@ -773,7 +715,10 @@ private:
             seq_paxos_.txn_.reset();
             return std::unexpected(r.error());
         }
-        return seq_paxos_.commit();
+        if (auto r = seq_paxos_.commit(); !r) [[unlikely]] {
+            return r;
+        }
+        return finish_the_step();
     }
 
     result serve_reads()
@@ -854,6 +799,7 @@ private:
         if (refusal_ && refusal_->n != m->promise) {
             refusal_.reset();
         }
+        std::optional<std::vector<entry>> unapplied;
         for (;;) {
             const auto index = seq_paxos_.get_verified_idx() + 1;
             if (index > m->log_len || (refusal_ && refusal_->index == index)) {
@@ -861,12 +807,15 @@ private:
             }
             std::optional<refusal_reason> reason;
             if (index > m->decided_idx && index > m->applied_idx) {
-                const auto log = sequence_paxos<S>::read_range(*seq_paxos_.txn_, m->applied_idx, index);
-                if (!log) [[unlikely]] {
-                    return seq_paxos_.stop_voting(log.error());
+                if (!unapplied) {
+                    auto log = sequence_paxos<S>::read_range(*seq_paxos_.txn_, m->applied_idx, m->log_len);
+                    if (!log) [[unlikely]] {
+                        return seq_paxos_.stop_voting(log.error());
+                    }
+                    unapplied = std::move(*log);
                 }
-                reason = check_the_done_record({m->applied_idx, std::span<const entry>(*log).first(log->size() - 1)},
-                                               log->back());
+                const auto log = std::span<const entry>(*unapplied).first(index - m->applied_idx);
+                reason = check_the_done_record({m->applied_idx, log.first(log.size() - 1)}, log.back());
             }
             if (!reason) {
                 if (auto r = seq_paxos_.pass_the_checked_done_record(index); !r) [[unlikely]] {
@@ -1640,9 +1589,6 @@ private:
     std::vector<message> execute_verify_outgoing_;
     std::vector<entry> waiting_;
     bool resend_answer_{};
-    held_output waits_for_two_syncs_;
-    held_output waits_for_one_sync_;
-    bool meta_committed_unsynced_{};
 };
 
 }

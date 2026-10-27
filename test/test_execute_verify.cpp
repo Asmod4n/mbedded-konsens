@@ -644,7 +644,7 @@ std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change chang
             try {
                 const auto t = nodes[i].handle_incoming(std::move(inbox[i]));
                 if (t) {
-                    static_cast<void>(batches::commit_and_sync(nodes[i], *t));
+                    static_cast<void>(nodes[i].commit(*t));
                 }
             } catch (const konsens::node_fault&) {
                 faulted.insert(static_cast<node_id>(i + 1));
@@ -848,12 +848,10 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
     // Plan 3.3 to 3.5: the next start counts the proof and sets the open
     // mark at its index. The mark covers the index, so the node writes the
     // chosen bytes and does not run it again. The mark closes when the
-    // applied index passes it, after the sync of the start.
+    // applied index passes it, at the commit of the start.
     auto n = *node_t::with(config_of(1), lmdb_storage::open_in(directory),
                            lmdb_storage::open_node_storage_in(own_directory),
                            marked{'x'}, 2);
-    CHECK(n.get_repair_record() == konsens::repair_record{1, 2, false, std::nullopt});
-    batches::sync_after_the_start(n);
     CHECK(state_of(n) == bytes_of('a'));
     CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, false, std::nullopt});
 }
@@ -867,7 +865,6 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
         CAPTURE(out.front());
         auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed(out)),
                                lmdb_storage::open_new_node_storage(), marked{0}, 1);
-        batches::sync_after_the_start(n);
         CHECK(state_of(n) == bytes_of('a'));
         CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
     }
@@ -880,7 +877,6 @@ TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
 {
     auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed({1})),
                            lmdb_storage::open_new_node_storage(), marked{0}, 1);
-    batches::sync_after_the_start(n);
     const auto request = konsens::encode_result(
         {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     const auto crc = konsens::compute_result_crc(2, request);
