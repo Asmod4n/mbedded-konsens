@@ -55,12 +55,13 @@ Section 7 lists the findings of review 1 and what changed.
 
 ## 2. The form
 
-1. konsens.db gets a random store identity of 16 bytes when the store is
-   created; a store of format 5 without it gets one at its next open.
-   The mark is a row of node.db (`clean_stop`) that holds: the store
-   identity, the pid, the configuration_id, `mark_of(meta)` and the
-   `last_chain_crc` of the meta record. Each write of node.db syncs
-   before it returns.
+1. The mark is a row of node.db (`clean_stop`) that holds the pid, the
+   configuration_id and the whole meta record of konsens.db at the stop,
+   with a CRC32C over these bytes. Each write of node.db syncs before it
+   returns. The store has no own identity: the meta record holds
+   `last_chain_crc`, which names the log, and `applied_chain_crc`. A
+   konsens.db from an older copy, or of another node, has another meta
+   record (section 7, item 16).
 2. `node::stop()` (provisional name) is the clean stop:
    - it is a wrong use (`std::logic_error`) after a write or a sync of
      the store failed (`throw_if_a_write_did_not_finish`), after
@@ -73,8 +74,8 @@ Section 7 lists the findings of review 1 and what changed.
    releases any output, whatever the promise is. Then:
    - The caller states a first start (section 6, question 1). A first
      start on a store with promise `ballot{}` votes at once.
-   - A mark that agrees with the store (identity, pid,
-     configuration_id, `mark_of(meta)`, `last_chain_crc`): the node starts
+   - A mark that agrees with the store (pid, configuration_id and the
+     whole meta record): the node starts
      without the recovery in `{follower, recover}` and sends
      `prepare_req` to all peers, as after a recovery (fact 5). A node
      whose promise names its own pid takes a ballot above the promise
@@ -112,10 +113,8 @@ Section 7 lists the findings of review 1 and what changed.
 
 ## 4. Tests
 
-1. Storage: a new store has an identity, and an open keeps it; a store
-   without one gets one at its open; node.db has no mark at first; the
-   mark and its deletion each survive a close and an open; a copy of
-   konsens.db holds no mark.
+1. Storage: node.db has no mark at first; the mark and its deletion each
+   survive a close and an open; a copy of konsens.db holds no mark.
 2. A node that stops cleanly and starts again votes: it sends
    `prepare_req`, it answers a prepare, and the cluster decides with it
    while one other node is down. A leader that stops cleanly and starts
@@ -168,8 +167,8 @@ example of 4.9, then the full suite.
 
 1. A stale mark after a stop with promise `ballot{}`: every start
    deletes the mark (2.3).
-2. The mark was not tied to the store: it holds the store identity and
-   the meta values (2.1).
+2. The mark was not tied to the store: it holds the pid, the
+   configuration_id and the whole meta record (2.1, item 16).
 3. A lost first sync: question 1.
 4. `stop()` after a failed sync: a wrong use (2.2).
 5. A retired node that stops: a wrong use (2.2).
@@ -184,6 +183,11 @@ example of 4.9, then the full suite.
 13. A leader that restarts: `ballot_above_promise`, test 4.2.
 14. "Takes no action": "votes never" (fact 4).
 15. Wording of the replaced section 14: corrected.
+16. During the build: the random store identity of 2.1 is dropped. The
+    whole meta record with `last_chain_crc` already differs between two
+    stores that hold another log, and a store with the same log and the
+    same meta is the same state. The identity added a column and a
+    migration with no case that the meta record misses.
 
 ## 8. Data on the disk
 

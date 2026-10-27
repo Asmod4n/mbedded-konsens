@@ -32,6 +32,7 @@ constexpr std::string_view node_file_name = "node.db";
 constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
 constexpr std::string_view repair_key = "repair";
+constexpr std::string_view clean_stop_key = "clean_stop";
 constexpr std::string_view config_first_key = "config_first";
 constexpr std::uint32_t format_version = 5;
 constexpr int synchronous_full = 2;
@@ -86,6 +87,11 @@ constexpr std::size_t proof_ballot_offset = proof_index_offset + sizeof(fault_pr
 constexpr std::size_t proof_crc_offset = proof_ballot_offset + ballot_size;
 constexpr std::size_t proof_other_crc_offset = proof_crc_offset + sizeof(fault_proof::crc);
 constexpr std::size_t repair_record_size = proof_other_crc_offset + sizeof(fault_proof::other_crc);
+
+constexpr std::size_t mark_pid_offset = 0;
+constexpr std::size_t mark_configuration_id_offset = mark_pid_offset + sizeof(clean_stop_mark::pid);
+constexpr std::size_t mark_meta_offset = mark_configuration_id_offset + sizeof(clean_stop_mark::configuration_id);
+constexpr std::size_t clean_stop_mark_size = mark_meta_offset + meta_record_size;
 constexpr auto last_proof_kind = proof_kind::wrong_list;
 
 class storage_error_category final : public std::error_category {
@@ -1943,6 +1949,7 @@ struct node_storage::environment {
     statement rollback;
     statement get_record;
     statement put_record;
+    statement delete_record;
 };
 
 node_storage::node_storage(std::unique_ptr<environment> env) noexcept : env_{std::move(env)}
@@ -1986,6 +1993,7 @@ std::expected<node_storage, std::error_code> node_storage::open(const std::files
         std::pair{&env->put_record,
                   std::string_view{"INSERT INTO meta (name, record) VALUES (?1, ?2) "
                                    "ON CONFLICT (name) DO UPDATE SET record = excluded.record"}},
+        std::pair{&env->delete_record, std::string_view{"DELETE FROM meta WHERE name = ?1"}},
     };
     for (const auto& [target, sql] : list) {
         auto prepared = prepare(env->db.get(), sql);
@@ -2098,6 +2106,87 @@ std::expected<void, std::error_code> node_storage::allow_one_more_repair()
         return std::unexpected(r.error());
     }
     return write_repair_record({0, r->open_mark, r->mark_covered, r->proof});
+}
+
+}
+
+namespace konsens {
+
+std::expected<std::optional<clean_stop_mark>, std::error_code> node_storage::get_clean_stop_mark() const
+{
+    throw_if_moved_from();
+    sqlite3_stmt* const s = env_->get_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, clean_stop_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::read));
+    }
+    const int status = sqlite3_step(s);
+    if (status == SQLITE_DONE) {
+        sqlite3_reset(s);
+        return std::nullopt;
+    }
+    if (status != SQLITE_ROW) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::read));
+    }
+    const auto bytes = column_bytes(s, 0);
+    if (bytes.size() != clean_stop_mark_size + crc_size) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto body = bytes.first<clean_stop_mark_size>();
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    const clean_stop_mark mark{
+        from_little_endian<node_id>(body.subspan<mark_pid_offset, sizeof(clean_stop_mark::pid)>()),
+        from_little_endian<std::uint32_t>(
+            body.subspan<mark_configuration_id_offset, sizeof(clean_stop_mark::configuration_id)>()),
+        decode_meta(body.subspan<mark_meta_offset, meta_record_size>()),
+    };
+    sqlite3_reset(s);
+    return mark;
+}
+
+std::expected<void, std::error_code> node_storage::write_the_clean_stop_mark(const clean_stop_mark& mark)
+{
+    throw_if_moved_from();
+    std::array<std::byte, clean_stop_mark_size + crc_size> record{};
+    auto next = std::ranges::copy(to_little_endian(mark.pid), record.begin()).out;
+    next = std::ranges::copy(to_little_endian(mark.configuration_id), next).out;
+    next = std::ranges::copy(encode_meta(mark.meta), next).out;
+    std::ranges::copy(to_little_endian(crc_of(std::span(record).first<clean_stop_mark_size>())), next);
+    sqlite3_stmt* const s = env_->put_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, clean_stop_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::write));
+    }
+    return {};
+}
+
+std::expected<void, std::error_code> node_storage::delete_the_clean_stop_mark()
+{
+    throw_if_moved_from();
+    sqlite3_stmt* const s = env_->delete_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, clean_stop_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::write));
+    }
+    return {};
 }
 
 }

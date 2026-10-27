@@ -1232,6 +1232,49 @@ TEST_CASE("the store, its WAL and the node storage have the mode 0600")
     }
 }
 
+// Plan clean-stop 2.1 and 4.1: the mark lives in node.db only. A start
+// reads it once and deletes it, so the deletion must survive a close. A
+// copy of konsens.db is a backup, and a backup never carries the mark.
+TEST_CASE("the clean-stop mark survives a close, its deletion too, and a copy has none")
+{
+    const temporary_directory dir;
+    const temporary_directory copied;
+    const konsens::clean_stop_mark mark{
+        3, 2, konsens::meta_record{konsens::ballot{2, 7, 0, 3}, konsens::ballot{2, 7, 0, 3}, 4, 5, 0xabcdef01, 4, 0x1234},
+    };
+    {
+        auto storage = open_storage(dir.path());
+        auto node = konsens::node_storage::open(dir.path(), non_root_user_id);
+        REQUIRE(node.has_value());
+        const auto none = node->get_clean_stop_mark();
+        REQUIRE(none.has_value());
+        CHECK_FALSE(none->has_value());
+        REQUIRE(node->write_the_clean_stop_mark(mark).has_value());
+        REQUIRE(storage.copy(copied.path()).has_value());
+    }
+    {
+        auto node = konsens::node_storage::open(dir.path(), non_root_user_id);
+        REQUIRE(node.has_value());
+        const auto read = node->get_clean_stop_mark();
+        REQUIRE(read.has_value());
+        REQUIRE(read->has_value());
+        CHECK(**read == mark);
+        REQUIRE(node->delete_the_clean_stop_mark().has_value());
+    }
+    {
+        const auto node = konsens::node_storage::open(dir.path(), non_root_user_id);
+        REQUIRE(node.has_value());
+        const auto read = node->get_clean_stop_mark();
+        REQUIRE(read.has_value());
+        CHECK_FALSE(read->has_value());
+    }
+    const auto node = konsens::node_storage::open(copied.path(), non_root_user_id);
+    REQUIRE(node.has_value());
+    const auto read = node->get_clean_stop_mark();
+    REQUIRE(read.has_value());
+    CHECK_FALSE(read->has_value());
+}
+
 namespace {
 
 // The shell of SQLite runs as the operator runs it (plan sqlite-storage

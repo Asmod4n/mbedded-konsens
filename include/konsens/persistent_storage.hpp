@@ -185,6 +185,14 @@ struct repair_record {
     friend bool operator==(const repair_record&, const repair_record&) = default;
 };
 
+struct clean_stop_mark {
+    node_id pid;
+    std::uint32_t configuration_id;
+    meta_record meta;
+
+    friend bool operator==(const clean_stop_mark&, const clean_stop_mark&) = default;
+};
+
 class node_storage {
     struct environment;
 
@@ -198,6 +206,9 @@ public:
     [[nodiscard]] std::expected<void, std::error_code> count_a_repair(std::uint64_t open_mark);
     [[nodiscard]] std::expected<void, std::error_code> close_the_repair();
     [[nodiscard]] std::expected<void, std::error_code> allow_one_more_repair();
+    [[nodiscard]] std::expected<std::optional<clean_stop_mark>, std::error_code> get_clean_stop_mark() const;
+    [[nodiscard]] std::expected<void, std::error_code> write_the_clean_stop_mark(const clean_stop_mark& mark);
+    [[nodiscard]] std::expected<void, std::error_code> delete_the_clean_stop_mark();
 
     node_storage(node_storage&&) noexcept;
     node_storage& operator=(node_storage&&) noexcept;
