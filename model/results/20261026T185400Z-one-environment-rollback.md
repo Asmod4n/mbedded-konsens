@@ -93,4 +93,4 @@ prepare without the node. This is the rule of "Paxos Made Live"
 a lost disk does not vote until it has seen one instance that started
 after its rebuild. Viewstamped Replication Revisited (section 4.3) has
 the same form: the recovering replica takes its state from the primary
-of the latest view.
+of the latest view. Both section numbers are from memory and not checked in this session.
