@@ -159,6 +159,12 @@ The names of the commands are provisional (question 6.6).
    new cluster (owner, 2026-10-27: the tool sets up the cluster, and
    the first version has at least the part that finishes the config).
    The test starts the three-node example from these configs.
+   The format is the TOML config of `konsensd` in
+   doc/plan-node-binary.md part 2.2 (branch node-binary, c702fed, in
+   review): [cluster] name, configuration_id; [node] pid,
+   data_directory, peer_address, client_address; [[peers]] pid,
+   address. The first start is the flag `--first-start` of `konsensd`,
+   so `init` writes no field for it. The format follows that plan.
 2. The rest of the core and the CLI, with tests against the
    three-node example. The CLI is the level that a test can call.
 3. The mruby binding of the core, and the route handlers.
