@@ -799,34 +799,55 @@ private:
         if (refusal_ && refusal_->n != m->promise) {
             refusal_.reset();
         }
-        std::optional<std::vector<entry>> unapplied;
-        for (;;) {
-            const auto index = seq_paxos_.get_verified_idx() + 1;
-            if (index > m->log_len || (refusal_ && refusal_->index == index)) {
-                return {};
-            }
-            std::optional<refusal_reason> reason;
-            if (index > m->decided_idx && index > m->applied_idx) {
-                if (!unapplied) {
-                    auto log = sequence_paxos<S>::read_range(*seq_paxos_.txn_, m->applied_idx, m->log_len);
-                    if (!log) [[unlikely]] {
-                        return seq_paxos_.stop_voting(log.error());
-                    }
-                    unapplied = std::move(*log);
-                }
-                const auto log = std::span<const entry>(*unapplied).first(index - m->applied_idx);
-                reason = check_the_done_record({m->applied_idx, log.first(log.size() - 1)}, log.back());
-            }
-            if (!reason) {
-                if (auto r = seq_paxos_.pass_the_checked_done_record(index); !r) [[unlikely]] {
-                    return r;
-                }
-                continue;
-            }
-            refusal_ = refused{m->promise, index, *reason};
-            send_the_refusal(m->promise);
-            return {};
+        const auto first = std::min(seq_paxos_.get_verified_idx(), m->applied_idx);
+        const auto tail = sequence_paxos<S>::read_range(*seq_paxos_.txn_, std::min(first, m->log_len), m->log_len);
+        if (!tail) [[unlikely]] {
+            return seq_paxos_.stop_voting(tail.error());
         }
+        const auto at = [&tail, first](const std::uint64_t k) -> const entry& { return (*tail)[k - first - 1]; };
+        auto verified = seq_paxos_.get_verified_idx();
+        std::optional<std::uint64_t> passed;
+        std::optional<refusal_reason> reason;
+        std::optional<nested_transaction> base;
+        auto base_below = m->applied_idx + 1;
+        for (;;) {
+            const auto index = verified + 1;
+            if (index > m->log_len || (refusal_ && refusal_->index == index)) {
+                break;
+            }
+            if (index > m->decided_idx && index > m->applied_idx) {
+                const done_log b{m->applied_idx, std::span<const entry>(*tail).subspan(m->applied_idx - first,
+                                                                                      index - 1 - m->applied_idx)};
+                if (!base) {
+                    base.emplace(begin_the_nested_transaction());
+                }
+                write_the_done_results(b, base_below, index, *base);
+                base_below = index;
+                reason = check_the_done_record(b, at(index), *base);
+                if (reason) {
+                    break;
+                }
+            }
+            passed = index;
+            verified = m->log_len;
+            for (auto k = index + 1; k <= m->log_len; ++k) {
+                if (entry_is_a_request(at(k))) {
+                    verified = k - 1;
+                    break;
+                }
+            }
+        }
+        base.reset();
+        if (passed) {
+            if (auto r = seq_paxos_.pass_the_checked_done_record(*passed); !r) [[unlikely]] {
+                return r;
+            }
+        }
+        if (reason) {
+            refusal_ = refused{m->promise, verified + 1, *reason};
+            send_the_refusal(m->promise);
+        }
+        return {};
     }
 
     void send_the_refusal(const ballot promise)
@@ -864,7 +885,7 @@ private:
         return o->second.bytes;
     }
 
-    std::optional<refusal_reason> check_the_done_record(const done_log& b, const entry& e)
+    std::optional<refusal_reason> check_the_done_record(const done_log& b, const entry& e, nested_transaction& w)
     {
         if (!entry_is_a_request(e)) {
             return std::nullopt;
@@ -873,7 +894,6 @@ private:
         if (compute_result_crc(q, e.result) != e.result_crc) [[unlikely]] {
             return refusal_reason::crc_mismatch;
         }
-        auto w = begin_the_base(b, q);
         auto own = find_the_own_result_on(b, e);
         std::vector<std::byte> ran;
         if (own.empty()) {
@@ -1271,7 +1291,17 @@ private:
     nested_transaction begin_the_base(const done_log& b, const std::uint64_t below)
     {
         auto w = begin_the_nested_transaction();
-        for (auto k = b.applied_idx + 1; k <= b.log_len() && k < below; ++k) {
+        write_the_done_results(b, b.applied_idx + 1, below, w);
+        for (auto it = own_.upper_bound(b.log_len()); it != own_.end() && it->first < below; ++it) {
+            write_the_result(it->second.request, it->first, it->second.result, w);
+        }
+        return w;
+    }
+
+    static void write_the_done_results(const done_log& b, const std::uint64_t from, const std::uint64_t below,
+                                       nested_transaction& w)
+    {
+        for (auto k = from; k <= b.log_len() && k < below; ++k) {
             const auto& e = b.done[k - b.applied_idx - 1];
             if (!entry_is_a_request(e) || e.rejected) {
                 continue;
@@ -1280,10 +1310,6 @@ private:
                 write_the_result(e, k, *r, w);
             }
         }
-        for (auto it = own_.upper_bound(b.log_len()); it != own_.end() && it->first < below; ++it) {
-            write_the_result(it->second.request, it->first, it->second.result, w);
-        }
-        return w;
     }
 
     own_result run_on_the_base(const entry& e, const std::uint64_t index, nested_transaction& w) const
