@@ -382,8 +382,8 @@ time.
    write. It counts itself only after its `commit` returns. The model
    (`MC_oe_parallel_l1`) has no violation; the runs with the store
    rollback end at their limit. The model has no commit that fails;
-   what the leader does after a failed commit of "done" is a card
-   (review 2 B4).
+   a failed commit ends the process (owner, 2026-10-24; section 6.1),
+   so the leader proposes nothing after it (review 2 B4).
 4. The count of syncs: one sync of the WAL for each commit. A
    checkpoint adds one sync of the WAL and, when it reaches the end of
    the WAL, one sync of the database file.
@@ -398,12 +398,15 @@ time.
    inside `sqlite3_close` syncs the database file and does not raise a
    failure. `SQLITE_IOERR_FSYNC`
    from it throws `sync_error`, and nothing repeats it.
-   `SQLITE_FULL` from it is the "full" value. No C++ exception crosses
+   `SQLITE_FULL` from it throws `write_error` (section 6.1). No C++ exception crosses
    a callback that SQLite calls. The sync stays the work of SQLite.
 6. The bound of the store: `map_size` goes. `PRAGMA max_page_count`
    gives the bound in pages; the parameter of `open` gives it in bytes,
    and the library converts it. Over the bound, SQLite gives
-   `SQLITE_FULL`.
+   `SQLITE_FULL`. As with a full LMDB map (owner, 2026-10-24), the node
+   then ends; a switch of the binary, off by default, opens the store
+   again with twice the bound. The stop below X % of free space (owner,
+   2026-10-26 15:25) comes before that bound.
 7. Torn sectors (owner card 18:23): each database file opens with the
    URI parameter `psow=0`, so that SQLite pads the last frame of a
    commit to the sector. Measured in section 10.2.
@@ -414,7 +417,7 @@ The rule "An error goes to whoever can repair it" decides each row.
 
 | SQLite code | konsens |
 |---|---|
-| `SQLITE_FULL` | the "full" value (`std::errc::no_space_on_device`) |
+| `SQLITE_FULL` | `write_error`, and the node ends (owner, 2026-10-24: a failed commit and a full store end the process) |
 | `SQLITE_IOERR_FSYNC`, `SQLITE_IOERR_DIR_FSYNC` | `sync_error`, whatever `sqlite3_system_errno` says |
 | other `SQLITE_IOERR_*` on a write | `write_error` |
 | other `SQLITE_IOERR_*` on a read | `read_error` |
@@ -462,8 +465,9 @@ request enters, and gives an error value above the bound.
    above the highest promise of its answers (`RecoveryWaitsForLeader`).
    A recovering or rejoining node gives no answers and does not lead.
    Each start enters the recovery again, so the mark needs no store.
-   What happens when a majority starts at the same time is a card
-   (review 2 B3). Results:
+   When a majority starts at the same time, no node gets f + 1 answers;
+   the operator acts through the single-node mode, stages 1 and 2
+   (owner, 2026-10-24: the repair needs a living majority). Results:
    `model/results/20261026T185400Z-one-environment-rollback.md`.
 4. A checksum on each page needs `cksumvfs.c`, which is in no package
    (section 9).
@@ -523,7 +527,7 @@ request enters, and gives an error value above the bound.
    - a power cut during a checkpoint;
    - `SQLITE_FULL` inside a savepoint: no write of the step is in the
      file (section 5.1 item 3);
-   - `ENOSPC` from `fdatasync`: `sync_error`, not the "full" value;
+   - `ENOSPC` from `fdatasync`: `sync_error`, not `write_error`;
    - a failed sync in a checkpoint: `sync_error`, no second sync;
    - a reader keeps its snapshot while the writer commits a step;
    - a byte flipped in an early frame of a WAL with several commits,
@@ -791,8 +795,8 @@ blocking, 9 others.
 |---|---|
 | B1, a mixed state after a damaged WAL frame | 7.3; card (detection at start) |
 | B2, the rejoining node took an old accept sync | model 803da6d: only a ballot above its answers; 7.3 |
-| B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3; card |
-| B4, a failed commit of "done" at the leader | 6.3; card |
+| B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3: the single-node mode (owner, 2026-10-24) |
+| B4, a failed commit of "done" at the leader | 6.1: `SQLITE_FULL` ends the process (owner, 2026-10-24), so the leader proposes nothing after it |
 | B5, `SQLITE_FULL` rolls back only the statement | 5.1 item 3 |
 | B6, `CHECK(cbor_valid(x))` against `.recover` | card |
 | B7, text against owner decisions | 4.1, 4.2, 5.3, 6.3, 6.5, 6.7, 7.6, 9, tables |
