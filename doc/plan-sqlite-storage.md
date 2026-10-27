@@ -461,9 +461,14 @@ request enters, and gives an error value above the bound.
 8. The repair after a snapshot by a changeset of the session extension
    (owner, 17:35) has no mechanism yet: `sqlite3session_diff` needs
    both databases on one connection, and a session runs the preupdate
-   hook on each write. Proposal: the first version repairs by entries
-   and by the full copy; the changeset gets a plan of its own (card
-   open).
+   hook on each write. The changeset was tried (section 9.0) and
+   modelled (`model/tla/ChangesetRepair.tla`, results
+   `model/results/20261027T060500Z-changeset-repair.md`). A damage in
+   a row that the changeset does not touch stays after the repair,
+   because `sqlite3changeset_apply` checks only the rows it changes. So
+   after the changeset the node compares the digest of its whole state
+   with the digest of the peer at the same index, and a difference asks
+   for the full copy. With this check the model holds.
 
 ## 8. Build and tests
 
