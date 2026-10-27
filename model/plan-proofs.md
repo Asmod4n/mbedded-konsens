@@ -1,5 +1,7 @@
 # Plan: proofs and the open checks of the model
 
+Version 2, after review 1 (model/review-plan-proofs.md).
+
 The owner asked on 2026-10-27 (19:42) that the open checks of the model
 are finished: the proofs, run F6c, and liveness (model L). The owner
 allowed TLAPS for the proofs, from its origin and only for the model
@@ -16,21 +18,39 @@ allowed TLAPS for the proofs, from its origin and only for the model
      mode and of the witness lease, and every fault of the start
      checks, the store and Execute-Verify are checked only by
      simulation or by breadth-first runs that stopped.
-   - F6c expects a violation of S2. Four stopped breadth-first runs,
-     one simulation of 60 min and two Apalache runs found none.
-   - No spec has fairness, a temporal property or BLE. Model L does
-     not exist.
-   - No spec has an inductive invariant, a THEOREM or a proof step.
+   - No spec on this branch has an inductive invariant, a THEOREM or a
+     proof step.
    - The complete runs of 2026-10-16 to 2026-10-18 ran on older forms
      of SequencePaxos.tla. Only MC_base_monotone, MC_f and MC_F6b ran
      again later.
 2. model/tla/SequencePaxos.tla has 4075 lines and 141 definitions.
 3. TLAPS 1.6.0-pre (tlapm 5f5037f) runs here. A proof with SMT passes.
-4. tlaplus/Examples has `specifications/Paxos/Voting.tla` by Leslie
-   Lamport. It holds the TLAPS proof that each value that is chosen
-   is the same (`THEOREM Invariance == Spec => []Inv`, with
-   `Inv == TypeOK /\ VotesSafe /\ OneValuePerBallot`). It decides one
-   value, not a log.
+4. tlaplus/Examples (commit 53955cf, MIT licence):
+   - `specifications/Paxos/Voting.tla` states
+     `THEOREM Invariance == Spec => []Inv` with no proof steps
+     (Voting.tla:178). Only the refinement to Consensus is proved.
+   - `specifications/byzpaxos/VoteProof.tla` holds the voting
+     algorithm of Paxos with a full TLAPS proof (547 proof steps).
+     Whether tlapm 5f5037f proves all of it here: see 3.1 step 0.
+5. F6c is answered by the spec. A recovering node drops each message
+   except RecoveryResponse (SequencePaxos.tla:1554-1558). Recovery needs
+   answers from a majority of nodes that do not recover
+   (SequencePaxos.tla:758-762). When two of three nodes roll back, one
+   node can answer, so neither node votes again. S2 cannot break; the
+   cluster decides nothing more. The state file says this since
+   2026-10-17 (mbedded-konsens.md:621-624). The break that F6c expected
+   occurs in power-loss mode (run p_rollback2 violates S2b,
+   model/results/20261021T091016Z-power-loss-runs.md:12).
+6. Model L exists on branch ble-liveness (9bd962f): reviewed plan
+   doc/plan-ble-liveness.md, model/tla/BallotLeaderElection.tla with
+   weak fairness and a leads-to property, and 8 cfgs. It has no result
+   file yet.
+
+Wrong assumptions of version 1 (kept for the state file): version 1
+said Voting.tla holds the proof of `Invariance`; it holds none. It said
+model L does not exist; it exists on ble-liveness. It said F6c is
+open; the spec answers it (fact 5). It named a TraceStart form in
+tla/power-loss; that form was never kept in the tree.
 
 ## 2. Why bounds cannot finish the proof
 
@@ -44,108 +64,133 @@ and the tool that shows a fault breaks a property (mutations, run G).
 
 ### 3.1 Core: the voting of Sequence Paxos without bounds
 
-- A new module `SequencePaxosVoting.tla` states what Sequence Paxos
-  does in the words of Voting.tla: ballots, promises, accepted logs
-  per ballot, and decided prefixes. A node accepts a whole log at a
-  ballot, not one value. Faults that do not touch the durable state
-  (loss, duplicates, reordering) are absent there, because the voting
-  has no messages.
-- Properties as theorems: S1 (decided prefixes agree) and S2 (the
-  decided history only grows), for any number of nodes, ballots and
-  entries.
-- The inductive invariant follows Voting.tla: each accepted log at
-  ballot b extends every log that is chosen at a ballot below b
-  (`SafeAt` for logs), and one ballot has one log per prefix.
+- Step 0: tlapm proves VoteProof.tla of tlaplus/Examples here, in full.
+  If it does not, the failed obligations go to the owner before step 1.
+- A new module (provisional name: see question Q2) states what
+  Sequence Paxos does in the words of VoteProof.tla. A vote is a log,
+  not a value. At one ballot a node can hold several logs over time
+  (AcceptSync, then AcceptDecide appends), and a duplicate AcceptSync
+  can make the log shorter. So the abstract vote at ballot b is the set
+  of all logs that the node held at b. Each two of them are
+  prefix-compatible.
+- Properties as theorems, with the names of SequencePaxos.tla:
+  - S1 (SequencePaxos.tla, `S1`): decided prefixes of two nodes that
+    vote agree.
+  - S2 (`S2`): each decided prefix of a node that votes is compatible
+    with `decided_history`.
+  - S2Grows (`S2Grows`, SequencePaxos.tla:3648): `decided_history`
+    only grows.
+- The inductive invariant follows VoteProof.tla: each log that a node
+  votes for at ballot b extends every log that is chosen at a ballot
+  below b, and the logs of one ballot are prefix-compatible.
 - Steps:
   1. Write the module and the candidate invariant `Inv`.
-  2. TLC with `Init == Inv` and small bounds checks that `Inv` is
-     inductive, and that each mutation of the module breaks it.
-  3. Apalache checks `Init => Inv` and `Inv /\ Next => Inv'` for fixed
-     sizes (3 nodes, ballot 4, log 3).
-  4. TLAPS proves `Spec => []Inv` and `Inv => S1 /\ S2`.
+  2. Apalache checks `Init => Inv` and `Inv /\ Next => Inv'` for fixed
+     sizes (3 nodes, ballot 4, log 3). TLC draws states of `TypeOK`
+     with RandomSubset and checks `Inv /\ Next => Inv'` on them, as in
+     Lamport, "Using TLC to Check Inductive Invariance". TLC with
+     `Init == Inv` over all of `TypeOK` cannot end and is not run.
+  3. TLAPS proves `Spec => []Inv` and `Inv => S1 /\ S2`.
 
 ### 3.2 Refinement: the model implements the core
 
-- A refinement mapping from SequencePaxos.tla to
-  SequencePaxosVoting.tla: votes are the accepted logs that are
-  durable, promises are the durable promises, and the decided prefix
-  is decided_idx.
-- TLC checks `SequencePaxos!Spec => SequencePaxosVoting!Spec` under the
-  mapping as a property, with the bounds of the complete runs that
-  exist (MC_base, MC_a_F*, MC_F6b) and by simulation for the rest.
-- A fault that ends voting (F4, a rollback in F6) maps to a node that
-  leaves the voting and comes back under rule R or VR recovery. The
-  first version maps only the runs without F4 and F6. F4 and F6 come
-  next, as their own step.
-- This links the proof of 3.1 to the 4075 lines of the model. The
-  link is checked with bounds; the core is proved without bounds.
+- A wrapper module extends SequencePaxos.tla. It adds history
+  variables: the set of logs each node voted for at each ballot (only
+  grows), and the highest promise each node ever gave (only rises).
+  The model overwrites the log, n_accepted and, at a wipe, the
+  promise; the history variables keep what the abstract module needs.
+  The wrapper has no VIEW, or a VIEW that holds the history variables.
+- TLC checks the abstract `Spec` under the mapping as a property.
+- First scope: no F4, no F6, no ForceSingle, no read-only appends, no
+  reconfiguration. Configs are written new for this scope; the old
+  results of MC_a_F4 and MC_F6b do not count, because they ran on
+  older forms of the spec.
+- Then F4 and F6. They add one obligation: a node never accepts at a
+  ballot below the highest promise it ever gave, also after rule R or
+  VR recovery (a recovered node can hold a promise below the lost one,
+  SequencePaxos.tla:1350). This obligation is a property of its own,
+  checked before the mapping.
+- Reconfiguration, ForceSingle and read-only appends change the
+  quorum. They need their own plan after the first scope holds.
+- 3.2 runs at small bounds before step 3 of 3.1, so that a fault in the
+  abstraction shows before the proof is written.
 
 ### 3.3 F6c
 
-- F6c expects that S2 breaks when two of three nodes roll back. No run
-  found the break. A directed run starts TLC from a state that the
-  plan names (`TraceStart`, as in tla/power-loss): two nodes accepted
-  and decided entry 1, then both roll back before a third node saw
-  the decision.
-- If TLC finds the break, F6c is confirmed as the limit of the defence,
-  and the trace goes into the result file.
-- If TLC proves that no break is reachable from that state, that is a
-  finding about the model or about the expectation. It goes to the
-  owner.
+- A new invariant on MC_F6c.cfg: each node that rolled back stays
+  recovering (`\A k \in rolled_back : recovering[k]`), checked with the
+  existing bounds by simulation for 15 min and breadth-first to its
+  time limit.
+- The result goes to the owner as question Q1: F6c keeps S2 and loses
+  liveness.
 
-### 3.4 Model L (liveness)
+### 3.4 Model L
 
-- The form of plan.md section 3.2: model S plus BLE with priority in
-  the ballot, a flag `stable` (GST), weak fairness on delivery,
-  `hb_timeout` and `resend_message_timeout`.
-- L1 and L2 as in plan.md section 4, with TLC. Runs start at GST from
-  fixed initial states, with no symmetry. 5 nodes, one value, the
-  three sets of edges of L2.
-- TLAPS does not prove liveness in this plan.
+- This plan runs the reviewed plan of branch ble-liveness
+  (doc/plan-ble-liveness.md) and adds nothing to its model.
+- Two items of the state file are added to that plan as its section 4
+  (second step): the liveness of F6c (fact 5 says it is lost; model L
+  shows it as a counter-example), and the reuse of a ballot after a
+  rollback with BLE.
 
 ## 4. Mutations
 
-Each new property gets a mutation that must break it:
+Each mutation breaks a property in a run from `Init`, not only `Inv`:
 
-- 3.1: a node accepts at a ballot below its promise; a leader takes a
-  log that is not the longest of the highest accepted ballot; two logs
-  that differ at one prefix at one ballot. Each breaks `Inv` in TLC.
-- 3.2: the mapping with a node that accepts without a durable write.
-  It must break the refinement.
-- 3.4: BLE without priority in the ballot, and a timeout that fires
-  before replies arrive after GST. Each must break L1.
+- 3.1: a node accepts at a ballot below its promise (breaks S1); a
+  leader takes a log that is not the longest of the highest accepted
+  ballot (breaks S2); a quorum of f nodes instead of f+1 (breaks S1).
+- 3.2: the existing mutations PromiseWithoutAccepted, SyncIgnored and
+  SeqNumUnchecked each break the refinement.
+- 3.3: a rolled-back node that votes after an answer from one node
+  (breaks the invariant of 3.3).
 
 ## 5. Runs
 
-- TLC with 3 workers, one run at a time (the load rule). Each run has
-  a time limit of 2 h; a run that reaches it is written down as
-  stopped, with its bounds lowered for the next run.
+- TLC, Apalache and tlapm each with 3 threads, one of them at a time
+  (the load rule).
+- Each run has a time limit (question Q3). A run that reaches it is
+  written down as stopped. After three stopped runs on one question,
+  the question goes to the owner with the bounds that were tried.
 - One result file per run, as plan.md section 7 states.
 - TLAPS: each proof obligation proved or not, with the prover and its
   time. A proof file is checked again in full before each commit.
 
 ## 6. What this plan does not do
 
-- No change of SequencePaxos.tla, except the refinement mapping and the
-  TraceStart of F6c.
+- No change of SequencePaxos.tla. The wrapper of 3.2 extends it.
 - No proof of liveness with TLAPS.
 - No proof of Execute-Verify, the witness lease, the single-node mode
-  or the start checks without bounds. They get a plan of their own
-  after 3.1 and 3.2 hold.
+  or the start checks without bounds.
 - No Quint (stage 3 of plan.md stays open).
 
 ## 7. Order
 
-1. 3.3 F6c (small, settles an old open run).
-2. 3.1 core with TLC and Apalache, then TLAPS.
-3. 3.2 refinement without F4 and F6, then with them.
-4. 3.4 model L.
+1. 3.3 F6c (one invariant, one config).
+2. 3.1 step 0 (VoteProof.tla here), then steps 1 and 2.
+3. 3.2 first scope at small bounds.
+4. 3.1 step 3 (TLAPS).
+5. 3.2 with F4 and F6.
+6. 3.4 model L on branch ble-liveness.
 
-## 8. Data of this plan
+## 8. Questions to the owner
 
-- TLAPS in the session scratchpad (tlaps/dist), fetched again from
-  its origin if lost; sha256 in the state file.
-- Copies of Voting.tla, Paxos.tla and Consensus.tla in the scratchpad
-  (tla-examples). The repository keeps only a reference: the origin
-  URL and the commit.
-- Result files in model/results.
+- Q1: close F6c as "S2 holds, liveness is lost" (fact 5)? Proposal:
+  yes.
+- Q2: the name of the abstract module. Proposal: `MultiPaxosVoting`,
+  provisional, after "the voting algorithm" of VoteProof.tla and
+  Multi-Paxos, until a source names the voting on logs.
+- Q3: the time limit of one model run. The owner set 5 min for a
+  build and its tests (2026-10-27). Proposal: a model run is not a
+  build; 2 h per run as plan.md section 7 states.
+
+## 9. Data of this plan
+
+- TLAPS in the session scratchpad (tlaps/dist): made again by the
+  download in the state file (URL and sha256). Deleted after the plan.
+- Copies of tlaplus/Examples files in the scratchpad (tla-examples):
+  deleted after they are in the tree. The tree keeps the files that a
+  module uses verbatim in refs/tlaplus-examples/, with an ORIGIN file
+  (URL, commit 53955cf, MIT licence), in the commit of the first module
+  that uses them.
+- Result files in model/results: recorded in the state file.
