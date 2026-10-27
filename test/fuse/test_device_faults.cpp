@@ -48,6 +48,14 @@ konsens::persistent_storage open_storage(const std::filesystem::path& directory)
     return std::move(*opened);
 }
 
+void write_entries_to(konsens::persistent_storage& storage, const std::vector<konsens::entry>& entries)
+{
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    REQUIRE(t->append_entries(entries).has_value());
+    REQUIRE(std::move(*t).commit().has_value());
+}
+
 void write_entries(const std::filesystem::path& directory, const std::vector<konsens::entry>& entries)
 {
     auto storage = open_storage(directory);
@@ -66,6 +74,32 @@ std::vector<std::byte> pattern_payload()
         payload.at(i) = static_cast<std::byte>(i % pattern_period);
     }
     return payload;
+}
+
+// The plan of the storage sets a checkpoint after a commit when the WAL
+// holds this many frames (plan sqlite-storage 6.5).
+constexpr std::uint64_t checkpoint_frames = 1000;
+
+// Each commit of a large entry adds frames to the WAL until the next begin
+// runs the checkpoint.
+void write_until_a_checkpoint_is_due(konsens::persistent_storage& storage, const std::filesystem::path& backing)
+{
+    const std::vector<konsens::entry> large{{konsens::entry_kind::normal, pattern_payload()}};
+    while (sqlite_damage::wal_frames_of(backing) < checkpoint_frames) {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->append_entries(large).has_value());
+        REQUIRE(std::move(*t).commit().has_value());
+    }
+}
+
+konsens::meta_record meta_of(const konsens::persistent_storage& storage)
+{
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    return *m;
 }
 
 struct byte_range {
@@ -197,6 +231,120 @@ TEST_CASE("a failed read of an entry throws read_error or gives corrupt")
         CHECK(failed);
     }
     failing.unmount();
+}
+
+// Plan sqlite-storage 8.4: a sync that fails in a checkpoint is a failed
+// sync as at a commit. The begin that runs the checkpoint throws
+// sync_error, and the storage takes no later operation, so that nothing
+// syncs the same pages a second time (the rule on a failed sync).
+TEST_CASE("a failed sync in a checkpoint throws sync_error and the storage takes no later operation")
+{
+    const mount_directories d;
+    mounted_error_fs fs(d.backing, d.mount_point, "");
+    {
+        auto storage = open_storage(d.mount_point);
+        write_until_a_checkpoint_is_due(storage, d.backing);
+        fs.set_faults("error_fsync");
+        CHECK_THROWS_AS(static_cast<void>(storage.begin()), konsens::sync_error);
+        fs.set_faults("none");
+        CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
+    }
+    fs.unmount();
+}
+
+// Plan sqlite-storage 8.4: a file system that allocates at writeback can
+// fail a sync with ENOSPC. It is a failed sync, so the commit throws
+// sync_error, not write_error, and its code is the errno of the sync.
+TEST_CASE("ENOSPC from a sync throws sync_error with no_space_on_device")
+{
+    const mount_directories d;
+    mounted_error_fs fs(d.backing, d.mount_point, "");
+    {
+        auto storage = open_storage(d.mount_point);
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        const std::vector<konsens::entry> one{{konsens::entry_kind::normal, bytes_of("one")}};
+        REQUIRE(t->append_entries(one).has_value());
+        fs.set_faults("error_fsync_enospc");
+        std::optional<std::error_code> thrown;
+        try {
+            static_cast<void>(std::move(*t).commit());
+        } catch (const konsens::sync_error& e) {
+            thrown = e.code();
+        }
+        REQUIRE(thrown);
+        CHECK(*thrown == std::errc::no_space_on_device);
+        fs.set_faults("none");
+    }
+    fs.unmount();
+}
+
+// Plan sqlite-storage 8.4: a power cut during a commit, before its sync
+// returns. The disk drops the frames of the commit, and the store opens
+// whole with the commits before it.
+TEST_CASE("a power cut before the sync of a commit loses the commit and keeps the store whole")
+{
+    const mount_directories d;
+    const std::vector<konsens::entry> first{{konsens::entry_kind::normal, bytes_of("first")}};
+    {
+        mounted_error_fs fs(d.backing, d.mount_point, "keep_synced");
+        {
+            auto storage = open_storage(d.mount_point);
+            write_entries_to(storage, first);
+            auto t = storage.begin();
+            REQUIRE(t.has_value());
+            const std::vector<konsens::entry> later{{konsens::entry_kind::normal, bytes_of("later")}};
+            REQUIRE(t->append_entries(later).has_value());
+            fs.set_faults("error_fsync");
+            CHECK_THROWS_AS(static_cast<void>(std::move(*t).commit()), konsens::sync_error);
+            fs.set_faults("none");
+        }
+        fs.unmount();
+    }
+    put_back_the_synced_files(d.backing);
+    mounted_error_fs clean(d.backing, d.mount_point, "");
+    {
+        const auto storage = open_storage(d.mount_point);
+        CHECK(meta_of(storage).log_len == first.size());
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        CHECK(t->get_entries(0, first.size()) == first);
+    }
+    clean.unmount();
+}
+
+// Plan sqlite-storage 8.4: a power cut during a checkpoint. The checkpoint
+// has written pages into the database file, and the sync of that file
+// fails. The disk drops those pages, the WAL keeps every frame, and the
+// store opens with every commit.
+TEST_CASE("a power cut during a checkpoint keeps every commit")
+{
+    const mount_directories d;
+    std::uint64_t written = 0;
+    {
+        mounted_error_fs fs(d.backing, d.mount_point, "keep_synced");
+        {
+            auto storage = open_storage(d.mount_point);
+            write_until_a_checkpoint_is_due(storage, d.backing);
+            written = meta_of(storage).log_len;
+            fs.set_faults("error_fsync_of_the_database");
+            CHECK_THROWS_AS(static_cast<void>(storage.begin()), konsens::sync_error);
+            fs.set_faults("none");
+        }
+        fs.unmount();
+    }
+    put_back_the_synced_files(d.backing);
+    mounted_error_fs clean(d.backing, d.mount_point, "");
+    {
+        const auto storage = open_storage(d.mount_point);
+        CHECK(meta_of(storage).log_len == written);
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        const auto entries = t->get_entries(0, written);
+        REQUIRE(entries.has_value());
+        CHECK(std::ranges::all_of(*entries, [](const konsens::entry& e) { return e.payload == pattern_payload(); }));
+    }
+    clean.unmount();
 }
 
 namespace {

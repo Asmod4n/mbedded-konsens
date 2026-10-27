@@ -958,6 +958,14 @@ void throw_if_nested_is_open(const bool nested_open)
     }
 }
 
+void throw_if_a_write_did_not_finish(const bool write_unfinished)
+{
+    if (write_unfinished) [[unlikely]] {
+        throw std::logic_error(
+            "konsens: a commit or a checkpoint of this storage failed, and the storage takes no operation");
+    }
+}
+
 void throw_if_an_entry_has_a_field_of_another_kind(const std::span<const entry> entries)
 {
     for (const auto& e : entries) {
@@ -1168,6 +1176,7 @@ struct persistent_storage::environment {
     bool nested_open{};
     bool reader_open{};
     bool written{};
+    bool write_unfinished{};
     std::optional<std::error_code> failure;
     std::vector<std::byte> record{};
 
@@ -1652,12 +1661,16 @@ std::expected<void, std::error_code> persistent_storage::transaction::commit() &
     }
     reset_statements(env.writer);
     sqlite3_stmt* const s = env.writer.commit.get();
+    env.write_unfinished = true;
     const int status = sqlite3_step(s);
     sqlite3_reset(s);
     if (status != SQLITE_DONE) [[unlikely]] {
         env.roll_back_the_writer();
-        return std::unexpected(error_code_or_throw(status, env.writer_db.get(), access::write));
+        const auto e = error_code_or_throw(status, env.writer_db.get(), access::write);
+        env.write_unfinished = false;
+        return std::unexpected(e);
     }
+    env.write_unfinished = false;
     return {};
 }
 
@@ -1820,9 +1833,13 @@ std::expected<persistent_storage::transaction, std::error_code> persistent_stora
     if (env_->writer_open) [[unlikely]] {
         throw std::logic_error("konsens: a write transaction of this storage is open");
     }
+    throw_if_a_write_did_not_finish(env_->write_unfinished);
     env_->failure.reset();
     if (env_->frames >= checkpoint_frames) {
-        if (auto c = run_checkpoint(env_->writer_db.get()); !c) [[unlikely]] {
+        env_->write_unfinished = true;
+        const auto c = run_checkpoint(env_->writer_db.get());
+        env_->write_unfinished = false;
+        if (!c) [[unlikely]] {
             return std::unexpected(c.error());
         }
         env_->frames = 0;

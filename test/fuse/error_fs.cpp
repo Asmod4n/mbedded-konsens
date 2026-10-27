@@ -5,8 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -19,12 +21,21 @@
 // on it, so that a fault comes from a file system and not from a wrapper
 // of the storage. The faults:
 // - error_fsync: each fsync and fdatasync returns EIO.
+// - error_fsync_enospc: each fsync and fdatasync returns ENOSPC, as a
+//   sync of a file system that allocates at writeback can.
+// - error_fsync_of_the_database: each fsync and fdatasync of a konsens.db
+//   returns EIO, and a sync of its WAL succeeds. A checkpoint then fails
+//   after it has written the database file.
 // - error_writes: each write of a konsens.db or of its WAL returns ENOSPC.
 // - error_reads_offset and error_reads_length: each read of a konsens.db
 //   or of its WAL that touches the range returns EIO.
-// The first two are mount options, and a write of "error_fsync",
-// "error_writes" or "none" to the file /.error_fs of the mount sets them
-// while SQLite keeps its files open. The write returns after the change, so
+// The mount option keep_synced copies a konsens.db or its WAL to the same
+// name with ".synced" after each sync of it that succeeds. A test that
+// puts the copies back in place of the files after the unmount has the
+// files as a power cut leaves them on a disk that drops each write after
+// the last sync. The faults of the sync and error_writes are mount
+// options, and a write of their name or of "none" to the file /.error_fs
+// of the mount sets them while SQLite keeps its files open. The write returns after the change, so
 // the next operation of the test meets the new faults. error_fs writes one
 // byte to ready_fd when the kernel has sent FUSE_INIT, so that the test
 // waits for the mount without a loop.
@@ -35,6 +46,7 @@ struct options {
     char* backing = nullptr;
     int error_fsync = 0;
     int error_writes = 0;
+    int keep_synced = 0;
     std::uint64_t error_reads_offset = 0;
     std::uint64_t error_reads_length = 0;
     int ready_fd = -1;
@@ -43,6 +55,7 @@ struct options {
 const fuse_opt specs[] = {{"backing=%s", offsetof(options, backing), 0},
                           {"error_fsync", offsetof(options, error_fsync), 1},
                           {"error_writes", offsetof(options, error_writes), 1},
+                          {"keep_synced", offsetof(options, keep_synced), 1},
                           {"error_reads_offset=%lu", offsetof(options, error_reads_offset), 0},
                           {"error_reads_length=%lu", offsetof(options, error_reads_length), 0},
                           {"ready_fd=%d", offsetof(options, ready_fd), 0},
@@ -50,7 +63,8 @@ const fuse_opt specs[] = {{"backing=%s", offsetof(options, backing), 0},
 
 struct mount {
     options parsed;
-    std::atomic<bool> error_fsync;
+    std::atomic<int> fsync_errno;
+    std::atomic<bool> fsync_fails_for_the_database_only;
     std::atomic<bool> error_writes;
 };
 
@@ -72,6 +86,11 @@ std::string backing_path(const char* path)
 bool is_data_file(const std::string_view path)
 {
     return path.ends_with(data_file) || path.ends_with(wal_file);
+}
+
+std::string synced_copy_of(const std::string& backing)
+{
+    return backing + ".synced";
 }
 
 int status_of(const int result)
@@ -167,11 +186,18 @@ int set_faults(const std::string_view command)
     auto& m = this_mount();
     const auto word = command.substr(0, command.find_first_of("\n"));
     if (word == "error_fsync") {
-        m.error_fsync = true;
+        m.fsync_errno = EIO;
+        m.fsync_fails_for_the_database_only = false;
+    } else if (word == "error_fsync_enospc") {
+        m.fsync_errno = ENOSPC;
+        m.fsync_fails_for_the_database_only = false;
+    } else if (word == "error_fsync_of_the_database") {
+        m.fsync_errno = EIO;
+        m.fsync_fails_for_the_database_only = true;
     } else if (word == "error_writes") {
         m.error_writes = true;
     } else if (word == "none") {
-        m.error_fsync = false;
+        m.fsync_errno = 0;
         m.error_writes = false;
     } else {
         return -EINVAL;
@@ -192,12 +218,25 @@ int fs_write(const char* path, const char* buf, const std::size_t size, const of
     return r == -1 ? -errno : static_cast<int>(r);
 }
 
-int fs_fsync(const char*, const int datasync, fuse_file_info* fi)
+int fs_fsync(const char* path, const int datasync, fuse_file_info* fi)
 {
-    if (this_mount().error_fsync) {
-        return -EIO;
+    const auto& m = this_mount();
+    const std::string_view p = path;
+    if (m.fsync_errno != 0 && (!m.fsync_fails_for_the_database_only || p.ends_with(data_file))) {
+        return -m.fsync_errno;
     }
-    return status_of(datasync != 0 ? fdatasync(fd_of(fi)) : fsync(fd_of(fi)));
+    if (const int status = status_of(datasync != 0 ? fdatasync(fd_of(fi)) : fsync(fd_of(fi))); status != 0) {
+        return status;
+    }
+    if (m.parsed.keep_synced != 0 && is_data_file(p)) {
+        std::error_code e;
+        std::filesystem::copy_file(backing_path(path), synced_copy_of(backing_path(path)),
+                                   std::filesystem::copy_options::overwrite_existing, e);
+        if (e) [[unlikely]] {
+            return -e.value();
+        }
+    }
+    return 0;
 }
 
 int fs_release(const char*, fuse_file_info* fi)
@@ -218,6 +257,13 @@ int fs_truncate(const char* path, const off_t size, fuse_file_info* fi)
 
 int fs_unlink(const char* path)
 {
+    if (this_mount().parsed.keep_synced != 0 && is_data_file(path)) {
+        std::error_code e;
+        std::filesystem::remove(synced_copy_of(backing_path(path)), e);
+        if (e) [[unlikely]] {
+            return -e.value();
+        }
+    }
     return status_of(unlink(backing_path(path).c_str()));
 }
 
@@ -236,7 +282,7 @@ int main(int argc, char* argv[])
         m.parsed.ready_fd < 0) {
         return 2;
     }
-    m.error_fsync = m.parsed.error_fsync != 0;
+    m.fsync_errno = m.parsed.error_fsync != 0 ? EIO : 0;
     m.error_writes = m.parsed.error_writes != 0;
     fuse_operations ops{};
     ops.init = fs_init;

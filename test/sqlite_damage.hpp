@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -21,6 +23,7 @@
 namespace sqlite_damage {
 
 constexpr std::string_view store_file_name = "konsens.db";
+constexpr std::string_view wal_file_name = "konsens.db-wal";
 
 inline void change_with_sqlite(const std::filesystem::path& directory, const std::function<void(sqlite3*)>& f)
 {
@@ -168,4 +171,52 @@ inline void put_entry_record(sqlite3* db, const std::uint64_t index, const std::
     REQUIRE(sqlite3_changes(db) == 1);
 }
 
+// The WAL of SQLite (file format, section 4.1): a header of 32 bytes that
+// holds the page size at offset 8 in big-endian order, then frames, each a
+// header of 24 bytes and one page. A test reads the file itself, because a
+// connection of SQLite would run a recovery of the WAL first.
+constexpr std::size_t wal_header_bytes = 32;
+constexpr std::size_t wal_frame_header_bytes = 24;
+constexpr std::size_t wal_page_size_offset = 8;
+constexpr std::size_t wal_page_size_bytes = 4;
+
+inline std::vector<char> wal_of(const std::filesystem::path& directory)
+{
+    std::ifstream in(directory / wal_file_name, std::ios::binary);
+    REQUIRE(in.is_open());
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+inline std::uint64_t wal_page_size_of(const std::vector<char>& wal)
+{
+    REQUIRE(wal.size() >= wal_header_bytes);
+    std::uint64_t size = 0;
+    for (std::size_t i = 0; i < wal_page_size_bytes; ++i) {
+        size = (size << 8) | static_cast<unsigned char>(wal.at(wal_page_size_offset + i));
+    }
+    return size;
+}
+
+inline std::uint64_t wal_frames_of(const std::filesystem::path& directory)
+{
+    const auto wal = wal_of(directory);
+    if (wal.size() < wal_header_bytes) {
+        return 0;
+    }
+    return (wal.size() - wal_header_bytes) / (wal_frame_header_bytes + wal_page_size_of(wal));
+}
+
+inline void flip_a_byte_of_the_wal_frame(const std::filesystem::path& directory, const std::uint64_t frame)
+{
+    const auto wal = wal_of(directory);
+    const auto page_size = wal_page_size_of(wal);
+    const auto offset = wal_header_bytes + frame * (wal_frame_header_bytes + page_size) + wal_frame_header_bytes;
+    REQUIRE(offset < wal.size());
+    std::fstream f(directory / wal_file_name, std::ios::binary | std::ios::in | std::ios::out);
+    REQUIRE(f.is_open());
+    f.seekp(static_cast<std::streamoff>(offset));
+    f.put(static_cast<char>(wal.at(offset) ^ 0x01));
+    f.close();
+    REQUIRE_FALSE(f.fail());
+}
 }

@@ -23,7 +23,10 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
+#include <spawn.h>
 #include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
@@ -1128,4 +1131,214 @@ TEST_CASE("a transaction has writes after its first write and shows them after i
     REQUIRE(std::move(*w).commit());
     CHECK(meta_of(storage).log_len == 1u);
     CHECK(entries_of(storage, 0, 1) == written);
+}
+
+// Plan sqlite-storage 5.2: a reader sees one state from its begin to its
+// end. A step of the writer that commits while the reader is open does not
+// change what the reader reads.
+TEST_CASE("a reader keeps its state while the writer commits a step")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector first{normal_entry("first")};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(first)); });
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(r->get_meta()->log_len == 1u);
+    const std::vector second{normal_entry("second")};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(second)); });
+    CHECK(r->get_meta()->log_len == 1u);
+    CHECK(r->get_entries(0, 1) == first);
+}
+
+// Plan sqlite-storage 5.1 item 3: SQLite rolls back a whole transaction
+// after SQLITE_FULL in a savepoint, and later statements would then commit
+// alone. No write of the step may reach the file: not the write of the
+// parent, and not the write of the nested transaction.
+TEST_CASE("a full store in a nested transaction leaves no write of the step in the file")
+{
+    const temporary_directory dir;
+    {
+        auto opened = konsens::persistent_storage::open(dir.path(), tiny_max_size, non_root_user_id);
+        REQUIRE(opened.has_value());
+        auto& storage = *opened;
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        const auto parent_key = bytes_of("parent");
+        REQUIRE(t->insert_or_assign(parent_key, parent_key));
+        {
+            auto w = t->begin_nested();
+            REQUIRE(w.has_value());
+            const std::vector<std::byte> large(tiny_max_size, std::byte{0x5a});
+            const auto written = w->insert_or_assign(bytes_of("nested"), large);
+            REQUIRE_FALSE(written.has_value());
+            CHECK(written.error() == std::errc::no_space_on_device);
+            const auto after = w->insert_or_assign(bytes_of("after"), parent_key);
+            CHECK_FALSE(after.has_value());
+        }
+        const auto committed = std::move(*t).commit();
+        CHECK_FALSE(committed.has_value());
+    }
+    const auto storage = open_storage(dir.path());
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(finds_no_value(r->find(bytes_of("parent"))));
+    CHECK(finds_no_value(r->find(bytes_of("nested"))));
+    CHECK(finds_no_value(r->find(bytes_of("after"))));
+}
+
+// Plan sqlite-storage 7.3: a damaged frame in the middle of the WAL drops
+// its commit and every later commit without an error. The store then holds
+// the older state of the commits before the frame, and that state is whole.
+// The store closes without a checkpoint (plan section 13), so the frames
+// stay in the WAL across the close.
+TEST_CASE("a flipped byte in an early frame of the WAL gives the state before its commit")
+{
+    const temporary_directory dir;
+    const std::vector first{normal_entry("first")};
+    std::uint64_t frames_of_the_first_commit = 0;
+    {
+        auto storage = open_storage(dir.path());
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(first)); });
+        frames_of_the_first_commit = sqlite_damage::wal_frames_of(dir.path());
+        for (const auto* text : {"second", "third", "fourth"}) {
+            const std::vector later{normal_entry(text)};
+            write(storage, [&](auto& t) { REQUIRE(t.append_entries(later)); });
+        }
+        REQUIRE(sqlite_damage::wal_frames_of(dir.path()) > frames_of_the_first_commit);
+    }
+    sqlite_damage::flip_a_byte_of_the_wal_frame(dir.path(), frames_of_the_first_commit);
+    const auto storage = open_storage(dir.path());
+    CHECK(meta_of(storage).log_len == 1u);
+    CHECK(entries_of(storage, 0, 1) == first);
+}
+
+// Plan sqlite-storage 8.4: the files of the store and of the node storage
+// hold the log and the identity of the node, and no other user reads them.
+TEST_CASE("the store, its WAL and the node storage have the mode 0600")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector one{normal_entry("one")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
+        auto node = konsens::node_storage::open(dir.path(), non_root_user_id);
+        REQUIRE(node.has_value());
+        const auto owner_only = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
+        for (const auto* name : {"konsens.db", "konsens.db-wal", "node.db"}) {
+            INFO(name);
+            CHECK(std::filesystem::status(dir.path() / name).permissions() == owner_only);
+        }
+    }
+}
+
+namespace {
+
+// The shell of SQLite runs as the operator runs it (plan sqlite-storage
+// 7.7): its standard input and output are files.
+void run_the_sqlite_shell(const std::filesystem::path& database, const std::filesystem::path& input,
+                          const std::filesystem::path& output)
+{
+    posix_spawn_file_actions_t actions;
+    REQUIRE(posix_spawn_file_actions_init(&actions) == 0);
+    REQUIRE(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, input.c_str(), O_RDONLY, 0) == 0);
+    REQUIRE(posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, output.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                             S_IRUSR | S_IWUSR) == 0);
+    std::string program = KONSENS_SQLITE3_SHELL;
+    std::string file = database.string();
+    std::array<char*, 3> argv{program.data(), file.data(), nullptr};
+    std::array<char*, 1> envp{nullptr};
+    pid_t pid = 0;
+    const int spawned = posix_spawn(&pid, program.c_str(), &actions, nullptr, argv.data(), envp.data());
+    posix_spawn_file_actions_destroy(&actions);
+    REQUIRE(spawned == 0);
+    int status = 0;
+    REQUIRE(waitpid(pid, &status, 0) == pid);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
+
+std::vector<std::int64_t> root_pages_of(const std::filesystem::path& directory)
+{
+    std::vector<std::int64_t> roots;
+    sqlite3* db = nullptr;
+    const auto file = (directory / sqlite_damage::store_file_name).string();
+    REQUIRE(sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* s = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "SELECT rootpage FROM sqlite_schema", -1, &s, nullptr) == SQLITE_OK);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        roots.push_back(sqlite3_column_int64(s, 0));
+    }
+    sqlite3_finalize(s);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+    return roots;
+}
+
+}
+
+// Plan sqlite-storage 7.7: the operator repairs a damaged store with
+// .recover of the SQLite shell on a clone. Each record that .recover gives
+// back must still pass its CRC, and a record on the damaged page may be
+// lost. The test damages a leaf page of the log that is no root page: the
+// first byte of a B-tree page is its type, 13 is a leaf of a table
+// (fileformat2.html, section 1.6), and only the log has more than one page.
+// Page 1 starts with the header of the file, so its first byte is no type.
+TEST_CASE("recover on a damaged clone gives back records whose CRC holds")
+{
+    constexpr char table_leaf_page = 13;
+    constexpr char no_page_type = static_cast<char>(0xff);
+    constexpr std::uint64_t entry_count = 400;
+    const temporary_directory dir;
+    const auto clone = dir.path() / "clone";
+    const auto repaired = dir.path() / "repaired";
+    std::filesystem::create_directory(clone);
+    std::filesystem::create_directory(repaired);
+    std::vector<konsens::entry> written;
+    for (std::uint64_t i = 0; i < entry_count; ++i) {
+        written.push_back(normal_entry(std::string(100, static_cast<char>('a' + i % 26))));
+    }
+    {
+        auto storage = open_storage(dir.path());
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    sqlite_damage::move_the_wal_into_the_file(dir.path());
+    std::filesystem::copy_file(dir.path() / sqlite_damage::store_file_name, clone / sqlite_damage::store_file_name);
+    const auto page_size = sqlite_damage::page_size_and_root_page_of(clone, "log").first;
+    const auto roots = root_pages_of(clone);
+    const auto data_file = clone / sqlite_damage::store_file_name;
+    const auto pages = static_cast<std::int64_t>(std::filesystem::file_size(data_file)) / page_size;
+    std::vector<std::int64_t> leaves;
+    {
+        std::ifstream in{data_file, std::ios::binary};
+        for (std::int64_t page = 1; page <= pages; ++page) {
+            in.seekg(static_cast<std::streamoff>((page - 1) * page_size));
+            if (in.get() == table_leaf_page && !std::ranges::contains(roots, page)) {
+                leaves.push_back(page);
+            }
+        }
+    }
+    REQUIRE(leaves.size() > 2);
+    {
+        std::fstream file{data_file, std::ios::binary | std::ios::in | std::ios::out};
+        file.seekp(static_cast<std::streamoff>((leaves.at(leaves.size() / 2) - 1) * page_size));
+        file.put(no_page_type);
+    }
+    const auto commands = dir.path() / "recover.sql";
+    std::ofstream{dir.path() / "recover.in"} << ".recover\n";
+    run_the_sqlite_shell(data_file, dir.path() / "recover.in", commands);
+    run_the_sqlite_shell(repaired / sqlite_damage::store_file_name, commands, dir.path() / "load.out");
+    const auto storage = open_storage(repaired);
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    std::uint64_t kept = 0;
+    for (std::uint64_t i = 0; i < entry_count; ++i) {
+        const auto read = r->get_entries(i, i + 1);
+        if (read.has_value()) {
+            REQUIRE(read->size() == 1u);
+            CHECK(read->front() == written.at(i));
+            kept += 1;
+        }
+    }
+    CHECK(kept < entry_count);
+    CHECK(kept > entry_count / 2);
 }

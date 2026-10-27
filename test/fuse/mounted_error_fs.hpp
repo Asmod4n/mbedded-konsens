@@ -116,3 +116,29 @@ private:
     pid_t server_ = 0;
     bool mounted_ = false;
 };
+
+// A power cut on a disk that drops each write after the last sync of a file
+// leaves each file as it was at that sync. With the mount option
+// keep_synced, error_fs keeps that state of each konsens.db and of its WAL
+// as a copy, and this function puts the copies in place of the files after
+// the unmount. A file that was never synced is gone. The -shm file is a
+// mapping of memory that SQLite builds again from the WAL.
+inline void put_back_the_synced_files(const std::filesystem::path& backing)
+{
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::recursive_directory_iterator(backing)) {
+        const auto name = e.path().filename().string();
+        if (name == "konsens.db" || name == "konsens.db-wal" || name == "konsens.db-shm") {
+            files.push_back(e.path());
+        }
+    }
+    for (const auto& f : files) {
+        auto synced = f;
+        synced += ".synced";
+        if (std::filesystem::exists(synced)) {
+            std::filesystem::rename(synced, f);
+        } else {
+            std::filesystem::remove(f);
+        }
+    }
+}
