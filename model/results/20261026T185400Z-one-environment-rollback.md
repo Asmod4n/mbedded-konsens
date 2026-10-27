@@ -94,3 +94,19 @@ a lost disk does not vote until it has seen one instance that started
 after its rebuild. Viewstamped Replication Revisited (section 4.3) has
 the same form: the recovering replica takes its state from the primary
 of the latest view. Both section numbers are from memory and not checked in this session.
+
+## Run 6: the waiting recovery (model 72f0066)
+
+| config | exit | result |
+|---|---|---|
+| MC_rr_newleader_b3 | 124 | limit 3600 s, depth 23, 59,990,748 distinct states, no violation |
+| MC_rr_cover_rejoin_b2 | 12 | CoverRejoin violated, as expected: a node that fell back votes again |
+| MC_oe_rollback_waits_l1 | 124 | limit 1800 s, depth 29, 26,640,843 distinct states, no violation |
+| MC_oe_rollback_waits_parallel_l1 | 124 | limit 1800 s, depth 29, 26,996,862 distinct states, no violation |
+
+`RecoveryWaitsForLeader` in OneEnvironment: after the f + 1 answers the
+node is "rejoining". It sends promises with `rejoin = TRUE`. A leader
+counts such a promise only in its accept phase, and answers it with an
+accept sync. The node votes again after that accept sync. The run
+without the fix found its violation at depth 29; these runs reach
+depth 29 without one. Only MC_rr_newleader_b2 is a complete search.
