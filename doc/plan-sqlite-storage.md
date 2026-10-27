@@ -432,10 +432,17 @@ request enters, and gives an error value above the bound.
 3. A damaged frame in the middle of the WAL drops that commit and every
    later one without an error (section 1). The store then holds an
    older state that is whole in itself. With LMDB the page checksum
-   gave `MDB_BAD_CHECKSUM`. The rule that keeps Paxos safe here is the
-   vote after f + 1 answers after each start (plan-one-environment.md
-   8.1). Not checked: that it covers a lost promise. The model of
-   section 10.1 includes this fault.
+   gave `MDB_BAD_CHECKSUM`. The vote after f + 1 answers after each
+   start (plan-one-environment.md 8.1) does not keep Paxos safe here:
+   TLC found a decided entry that is lost (`OneEnvironment` with
+   `StoreRollback`, and `RecoveryRollback`). Taking the log of the
+   answers is not enough either, because an answer can be older than
+   an accept that is still on the way. The form that holds in the
+   models: after the f + 1 answers the node does not count in a
+   prepare. Its promise carries a mark, the leader counts it only in
+   its accept phase and sends it the accept sync, and the node votes
+   again after that accept sync (`RecoveryWaitsForLeader`). Results:
+   `model/results/20261026T185400Z-one-environment-rollback.md`.
 4. A checksum on each page needs `cksumvfs.c`, which is in no package
    (section 9).
 5. A full copy for repair and for a new node is `VACUUM INTO` a new
