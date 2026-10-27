@@ -10,7 +10,7 @@
 
 namespace konsens {
 
-enum class client_errc { recovering = 1, session_expired, stale_request, retry, rejected, reconfiguring };
+enum class client_errc { recovering = 1, session_expired, stale_request, retry, rejected, reconfiguring, retired, stopped };
 
 class client_error_category final : public std::error_category {
 public:
@@ -31,6 +31,10 @@ public:
             return "No result of the request has a majority; the request changed nothing";
         case client_errc::reconfiguring:
             return "The configuration of this node ends with a StopSign; send the call to the next configuration";
+        case client_errc::retired:
+            return "The node started without a clean stop and votes never again; send the call to another node";
+        case client_errc::stopped:
+            return "The node stopped before the call was decided; the call may still be decided";
         }
         return "Unknown client error";
     }

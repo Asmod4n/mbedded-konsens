@@ -424,6 +424,9 @@ C config_of(const konsens::node_id pid, const std::uint64_t in_flight)
     if constexpr (requires { c.max_in_flight; }) {
         c.max_in_flight = in_flight;
     }
+    if constexpr (requires { c.first_start; }) {
+        c.first_start = true;
+    }
     return c;
 }
 

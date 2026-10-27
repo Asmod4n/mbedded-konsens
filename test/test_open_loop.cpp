@@ -107,7 +107,7 @@ konsens::node_config config_of(const node_id pid)
             peers.push_back(p);
         }
     }
-    return {config_id, pid, peers, 0, election_ticks, resend_ticks};
+    return {config_id, pid, peers, 0, election_ticks, resend_ticks, {}, true};
 }
 
 std::optional<std::size_t> leader_of(const std::vector<node_t>& nodes)

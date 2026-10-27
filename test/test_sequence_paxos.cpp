@@ -77,9 +77,20 @@ std::vector<node_id> peers_of(node_id pid)
 
 constexpr std::uint64_t first_nonce = 1;
 
+// Plan clean-stop 2.5: the start does not queue a recovery any more. Many
+// tests here check the recovery of a node with a stored promise, so the
+// helper starts such a store as a clean start, drops its PrepareReq, and
+// starts the recovery itself.
 sp_t make(node_id pid, persistent_storage s = sqlite_storage::open_new(), std::uint64_t nonce = first_nonce)
 {
-    return *sp_t::with({1, pid, peers_of(pid)}, std::move(s), nonce);
+    const auto promise = s.begin_read_only().value().get_meta().value().promise;
+    if (promise == ballot{}) {
+        return *sp_t::with({1, pid, peers_of(pid)}, std::move(s), nonce);
+    }
+    auto sp = *sp_t::with({1, pid, peers_of(pid), {}, konsens::start_kind::clean}, std::move(s), nonce);
+    static_cast<void>(sp.take_outgoing_messages());
+    sp.start_recovery(nonce);
+    return sp;
 }
 
 entry make_entry(std::uint8_t v)
@@ -314,20 +325,53 @@ TEST_CASE("a new node is a follower in phase none")
 }
 
 // mod.rs:53-128 `with`: a node that finds a promise in storage restarts in
-// Phase::Recover. Restart in SequencePaxos.tla with Recovery: the node
-// first sends Recovery with the nonce of the caller to each peer, and sends
-// no PrepareReq until its recovery completes (VR Revisited 4.3).
-TEST_CASE("a node with a stored promise restarts in recover and sends recovery")
+// Phase::Recover and sends PrepareReq, the fail-recovery of Omni-Paxos.
+// Plan clean-stop 2.3: this holds for a clean start only, and a clean start
+// lost nothing, so it runs no recovery.
+TEST_CASE("a clean start is a follower in recover and sends prepare_req")
 {
-    auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
+    auto sp = *sp_t::with({1, 1, peers_of(1), {}, konsens::start_kind::clean},
+                          storage_with_promise(ballot_of(1, 2)), 7);
     CHECK(sp.get_state() == std::pair{role::follower, phase::recover});
-    CHECK(sp.recovering());
+    CHECK(!sp.recovering());
+    CHECK(sp.votes());
     const auto out = committed_messages_of(sp);
-    CHECK(messages_of<konsens::prepare_req>(out).empty());
-    const auto rs = messages_of<konsens::recovery>(out);
+    CHECK(messages_of<konsens::recovery>(out).empty());
+    const auto rs = messages_of<konsens::prepare_req>(out);
     REQUIRE(rs.size() == 2);
-    CHECK(rs[0].nonce == 7);
-    CHECK(rs[1].nonce == 7);
+    CHECK(rs[0].n == ballot_of(1, 2));
+}
+
+// Plan clean-stop 2.3: a first start on a store that holds a promise would
+// let the node promise twice, so the caller that states it uses the library
+// wrongly. A build start on a store that is no build, and the reverse, are
+// wrong uses too.
+TEST_CASE("a first start with a promise and a build start without a build are wrong uses")
+{
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, 1, peers_of(1)}, storage_with_promise(ballot_of(1, 2)), 7)),
+                    std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, 1, peers_of(1), {2}, konsens::start_kind::build},
+                                                 sqlite_storage::open_new(), 7)),
+                    std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({2, 1, peers_of(1), {2}}, sqlite_storage::open_new(), 7)),
+                    std::logic_error);
+}
+
+// Plan clean-stop 2.4 and fact 4: a retired node votes never. It sends
+// nothing at the start, drops each message, refuses each call, and sends
+// nothing at a timeout.
+TEST_CASE("a retired node sends nothing, drops each message and refuses each call")
+{
+    auto sp = *sp_t::with({1, 1, peers_of(1), {}, konsens::start_kind::retired},
+                          storage_with_promise(ballot_of(1, 2)), 7);
+    CHECK(sp.retired());
+    CHECK(!sp.votes());
+    CHECK(committed_messages_of(sp).empty());
+    REQUIRE(sp.handle({2, 1, konsens::prepare{ballot_of(2, 2), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery{9}}));
+    REQUIRE(sp.resend_message_timeout());
+    CHECK(committed_messages_of(sp).empty());
+    CHECK(sp.refuse_if_retired().error() == konsens::client_errc::retired);
 }
 
 // leader.rs:16-60 handle_leader: the elected node writes its promise and

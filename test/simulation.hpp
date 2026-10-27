@@ -131,7 +131,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true};
 }
 
 std::vector<std::byte> bytes_of(std::uint64_t v)

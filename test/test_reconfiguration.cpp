@@ -84,7 +84,7 @@ std::vector<node_id> others(const std::array<node_id, 3>& nodes, const node_id p
 konsens::node_config config_of(const node_id pid)
 {
     if (pid <= old_nodes.back()) {
-        return {1, pid, others(old_nodes, pid), 0, election_ticks, resend_ticks};
+        return {1, pid, others(old_nodes, pid), 0, election_ticks, resend_ticks, {}, true};
     }
     return {2, pid, others(new_nodes, pid), 0, election_ticks, resend_ticks, {1, 2, 3}};
 }

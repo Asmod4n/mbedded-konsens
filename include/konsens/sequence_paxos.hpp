@@ -260,11 +260,14 @@ struct indexed_read {
 
 inline constexpr std::size_t max_build_entries = 256;
 
+enum class start_kind : std::uint8_t { first, clean, build, retired };
+
 struct sequence_paxos_config {
     std::uint32_t configuration_id;
     node_id pid;
     std::vector<node_id> peers;
     std::vector<node_id> build_from{};
+    start_kind start{};
 };
 
 struct build_state {
@@ -364,7 +367,10 @@ public:
         if (!first) [[unlikely]] {
             return std::unexpected(first.error());
         }
-        if (!*first && config.configuration_id > 1) {
+        if ((!*first && config.configuration_id > 1) != (config.start == start_kind::build)) [[unlikely]] {
+            throw std::logic_error("konsens: a build start needs a store of a later configuration without its first index");
+        }
+        if (config.start == start_kind::build) {
             if (config.build_from.empty()) [[unlikely]] {
                 throw std::logic_error("konsens: a node of a later configuration needs build_from for its build");
             }
@@ -380,12 +386,36 @@ public:
         } else if (!r) [[unlikely]] {
             return std::unexpected(r.error());
         }
-        if (m->promise != ballot{}) {
+        switch (config.start) {
+        case start_kind::first:
+            if (m->promise != ballot{}) [[unlikely]] {
+                throw std::logic_error("konsens: a first start needs a store without a promise");
+            }
+            break;
+        case start_kind::clean:
             sp.state_ = {role::follower, phase::recover};
-            sp.recovering_ = true;
-            sp.send_recovery_to_all_peers();
+            sp.send_preparereq_to_all_peers(m->promise);
+            break;
+        case start_kind::retired:
+            sp.retired_ = true;
+            break;
+        case start_kind::build:
+            break;
         }
         return sp;
+    }
+
+    void start_recovery(const std::uint64_t nonce)
+    {
+        if (!votes() || txn_) [[unlikely]] {
+            throw std::logic_error("konsens: a recovery starts on a node that votes, between two steps");
+        }
+        nonce_ = nonce;
+        state_ = {role::follower, phase::recover};
+        recovering_ = true;
+        recovery_responses_.clear();
+        state_request_.reset();
+        send_recovery_to_all_peers();
     }
 
     result handle(paxos_message m)
@@ -483,6 +513,9 @@ private:
                 return r;
             }
             return handle_build_request(msg, from);
+        }
+        if (retired_) {
+            return {};
         }
         if (build_) {
             if constexpr (std::is_same_v<T, build_response> || std::is_same_v<T, build_refused>) {
@@ -659,6 +692,9 @@ public:
         if (build_) {
             return ask_again_for_the_build();
         }
+        if (retired_) {
+            return {};
+        }
         if (recovering_) {
             send_recovery_to_all_peers();
             if (state_request_) {
@@ -711,6 +747,14 @@ public:
     {
         return state_.first == role::leader &&
                (leader_state_.accepted_stop_sign || std::ranges::any_of(buffered_proposals_, entry_is_a_stop_sign));
+    }
+
+    result refuse_if_retired() const
+    {
+        if (retired_) [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::retired));
+        }
+        return {};
     }
 
     result refuse_if_recovering() const
@@ -863,7 +907,8 @@ public:
     }
     node_id get_pid() const { return pid_; }
     std::uint64_t get_verified_idx() const { return verified_idx_; }
-    bool votes() const { return !error_ && !repair_ && !build_; }
+    bool votes() const { return !error_ && !repair_ && !build_ && !retired_; }
+    bool retired() const { return retired_; }
     bool building() const { return build_.has_value(); }
     std::uint64_t get_config_first_idx() const { return config_first_idx_; }
     bool recovering() const { return recovering_; }
@@ -919,7 +964,7 @@ public:
         if (pid != pid_) {
             peers_seen_.at(node_index_of(pid)) = {};
         }
-        if (pid == pid_ || recovering_ || repair_) {
+        if (pid == pid_ || recovering_ || repair_ || retired_) {
             return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
@@ -2335,6 +2380,7 @@ private:
     bool write_unfinished_{};
     bool recovering_{};
     bool step_ended_{};
+    bool retired_{};
     std::uint64_t nonce_{};
     std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
     std::optional<std::pair<node_id, konsens::get_state>> state_request_;

@@ -182,7 +182,7 @@ inline konsens::node_config config_of(const node_id pid)
             peers.push_back(p);
         }
     }
-    return {config_id, pid, peers, 0, election_ticks, resend_ticks};
+    return {config_id, pid, peers, 0, election_ticks, resend_ticks, {}, true};
 }
 
 inline entry make_entry(const std::uint8_t v)
@@ -202,26 +202,45 @@ inline std::size_t once(const message&)
     return 1;
 }
 
+inline node_id pid_of(const std::size_t i)
+{
+    return static_cast<node_id>(i + 1);
+}
+
 struct cluster {
     std::array<std::shared_ptr<disk>, node_count> disks{new_disk(), new_disk(), new_disk()};
     std::array<std::filesystem::path, node_count> states{
         sqlite_storage::new_directory(), sqlite_storage::new_directory(), sqlite_storage::new_directory()};
+    std::array<bool, node_count> started{};
     std::vector<node_t> nodes;
     std::uint64_t next_nonce{1};
 
+    // The node storage of a node lives beside its disk, so that a clean
+    // stop leaves its mark for the next start. Only the first start of a
+    // node states that it is the first.
     node_t start(const std::size_t i)
     {
         next_nonce += 1;
-        return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, sqlite_storage::open_new_node_storage(),
+        auto config = config_of(pid_of(i));
+        config.first_start = !started.at(i);
+        started.at(i) = true;
+        return *node_t::with(config, disk_storage{disks.at(i)}, sqlite_storage::open_node_storage_in(states.at(i)),
                              counter{}, next_nonce);
     }
 
+    // A crash: the node ends without its stop, so its next start retires it.
     void restart(const std::size_t i)
     {
         {
             const auto ended = std::move(nodes.at(i));
         }
         nodes.at(i) = start(i);
+    }
+
+    void stop_and_start(const std::size_t i)
+    {
+        nodes.at(i).stop();
+        restart(i);
     }
 
     void run(const int count)
@@ -296,11 +315,6 @@ inline std::size_t first_follower(const std::size_t leader)
 inline std::size_t second_follower(const std::size_t leader)
 {
     return leader == 2 ? 1 : 2;
-}
-
-inline node_id pid_of(const std::size_t i)
-{
-    return static_cast<node_id>(i + 1);
 }
 
 template <typename T>

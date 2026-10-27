@@ -40,7 +40,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true};
 }
 
 konsens::entry make_entry(std::uint8_t v)
@@ -116,8 +116,10 @@ TEST_CASE("a tick timeout of 0 is a wrong use")
 // reads the message and not the number.
 TEST_CASE("each client error has its own message")
 {
-    const std::array codes{konsens::client_errc::recovering, konsens::client_errc::session_expired,
-                           konsens::client_errc::stale_request, konsens::client_errc::retry};
+    const std::array codes{konsens::client_errc::recovering,    konsens::client_errc::session_expired,
+                           konsens::client_errc::stale_request, konsens::client_errc::retry,
+                           konsens::client_errc::rejected,      konsens::client_errc::reconfiguring,
+                           konsens::client_errc::retired,       konsens::client_errc::stopped};
     std::vector<std::string> messages;
     for (const auto c : codes) {
         const std::error_code e = c;

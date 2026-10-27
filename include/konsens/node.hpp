@@ -44,7 +44,26 @@ struct node_config {
     std::uint64_t election_tick_timeout;
     std::uint64_t resend_message_tick_timeout;
     std::vector<node_id> build_from{};
+    bool first_start{};
 };
+
+inline start_kind kind_of_the_start(const node_config& config, const std::optional<clean_stop_mark>& mark,
+                                    const meta_record& m, const std::optional<std::uint64_t>& config_first_idx)
+{
+    if (!config_first_idx && config.configuration_id > 1) {
+        return start_kind::build;
+    }
+    if (mark && *mark == clean_stop_mark{config.pid, config.configuration_id, m}) {
+        return start_kind::clean;
+    }
+    if (config.first_start) {
+        if (m.promise != ballot{}) [[unlikely]] {
+            throw std::logic_error("konsens: a first start needs a store without a promise and without a clean-stop mark");
+        }
+        return start_kind::first;
+    }
+    return start_kind::retired;
+}
 
 struct logical_clock {
     std::uint64_t time;
@@ -109,8 +128,22 @@ public:
             config.resend_message_tick_timeout == 0) [[unlikely]] {
             throw std::logic_error("konsens: configuration_id and each tick timeout must not be 0");
         }
-        auto sp = sequence_paxos<S>::with({config.configuration_id, config.pid, config.peers, config.build_from},
-                                          std::move(internal_storage), nonce);
+        const auto mark = own_storage.get_clean_stop_mark();
+        if (!mark) [[unlikely]] {
+            return std::unexpected(mark.error());
+        }
+        if (*mark) {
+            if (auto d = own_storage.delete_the_clean_stop_mark(); !d) [[unlikely]] {
+                return std::unexpected(d.error());
+            }
+        }
+        const auto kind = read_the_kind_of_the_start(config, *mark, internal_storage);
+        if (!kind) [[unlikely]] {
+            return std::unexpected(kind.error());
+        }
+        auto sp = sequence_paxos<S>::with(
+            {config.configuration_id, config.pid, config.peers, config.build_from, *kind}, std::move(internal_storage),
+            nonce);
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
         }
@@ -140,9 +173,7 @@ public:
                 return std::unexpected(r.error());
             }
         }
-        if (auto r = n.count_the_fault_at_the_start(*record); !r) [[unlikely]] {
-            return std::unexpected(r.error());
-        }
+        n.retire_after_a_fault_at_the_start(*record);
         if (n.seq_paxos_.votes()) {
             if (auto r = n.apply_at_the_start(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -152,8 +183,28 @@ public:
         return n;
     }
 
+    void stop()
+    {
+        throw_if_stopped();
+        seq_paxos_.throw_if_a_write_did_not_finish();
+        seq_paxos_.throw_if_a_step_is_open();
+        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired()) [[unlikely]] {
+            throw std::logic_error("konsens: stop on a node after a fault, after an error of its storage, or in retirement");
+        }
+        drop_held_messages_and_replies();
+        reply_stopped_to_the_waiting_calls();
+        const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta()};
+        if (auto w = own_storage_.write_the_clean_stop_mark(mark); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the clean-stop mark");
+        }
+        stopped_ = true;
+    }
+
+    bool retired() const { return seq_paxos_.retired(); }
+
     [[nodiscard]] std::expected<transaction, std::error_code> tick()
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (election_clock_.tick_and_check_timeout() && seq_paxos_.votes()) {
                 const auto promise = seq_paxos_.get_promise();
@@ -189,7 +240,11 @@ public:
         return keep_and_handle(std::move(batch));
     }
 
-    [[nodiscard]] result commit(const transaction t) { return end_the_step(t); }
+    [[nodiscard]] result commit(const transaction t)
+    {
+        throw_if_stopped();
+        return end_the_step(t);
+    }
 
 private:
     result end_the_step(const transaction t)
@@ -259,6 +314,7 @@ private:
 public:
     [[nodiscard]] std::expected<transaction, std::error_code> reconfigure(const cluster_config& next)
     {
+        throw_if_stopped();
         validate_next_cluster(ble_config_.configuration_id, ble_config_.pid, ble_config_.peers, next);
         auto payload = encode(next);
         if (!payload) [[unlikely]] {
@@ -280,7 +336,11 @@ public:
 private:
     std::expected<transaction, std::error_code> append_an_entry(entry e)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -301,7 +361,11 @@ private:
 public:
     [[nodiscard]] std::expected<transaction, std::error_code> register_client(const std::uint64_t client_id)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -322,7 +386,11 @@ public:
                                                                              const std::uint64_t request_number,
                                                                              std::vector<std::byte> payload)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -344,7 +412,11 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> client_query(const std::uint64_t client_id,
                                                                            std::vector<std::byte> payload)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -368,7 +440,11 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> expire_session(const std::uint64_t client_id,
                                                                              const std::uint64_t session)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -441,6 +517,7 @@ public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.reconnected(pid); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -476,6 +553,7 @@ private:
     template <typename T>
     std::expected<transaction, std::error_code> keep_and_handle(std::vector<T> batch)
     {
+        throw_if_stopped();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             throw_if_batch_exceeds_max_batch_size(batch.size());
             auto& held = batch_of<T>();
@@ -496,6 +574,54 @@ private:
             throw std::logic_error("konsens: the node was moved from");
         }
         return {commit_count_.get(), *commit_count_};
+    }
+
+    void throw_if_stopped() const
+    {
+        if (stopped_) [[unlikely]] {
+            throw std::logic_error("konsens: a call of a node after its stop");
+        }
+    }
+
+    static std::expected<start_kind, std::error_code> read_the_kind_of_the_start(
+        const node_config& config, const std::optional<clean_stop_mark>& mark, const S& internal_storage)
+    {
+        const auto t = internal_storage.begin_read_only();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            if (error_is_a_damage(m.error())) {
+                return start_kind::retired;
+            }
+            return std::unexpected(m.error());
+        }
+        const auto first = t->get_config_first_idx();
+        if (!first) [[unlikely]] {
+            if (error_is_a_damage(first.error())) {
+                return start_kind::retired;
+            }
+            return std::unexpected(first.error());
+        }
+        return kind_of_the_start(config, mark, *m, *first);
+    }
+
+    void reply_stopped_to_the_waiting_calls()
+    {
+        const auto stopped = std::unexpected(make_error_code(client_errc::stopped));
+        for (const auto client_id : std::exchange(registrations_, {})) {
+            released_replies_.push_back({client_id, 0, stopped});
+        }
+        for (const auto& [request, client_id] : std::exchange(requests_, {})) {
+            released_replies_.push_back({client_id, request.first, stopped});
+        }
+        for (const auto& [session, client_id] : std::exchange(expirations_, {})) {
+            released_replies_.push_back({client_id, session, stopped});
+        }
+        for (const auto& [read, r] : std::exchange(reads_, {})) {
+            released_replies_.push_back({r.client_id, 0, stopped});
+        }
     }
 
     result handle_one(const received& r)
@@ -565,7 +691,7 @@ private:
         if constexpr (std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
                       std::is_same_v<T, work>) {
             if (to != seq_paxos_.get_pid() || !std::ranges::contains(seq_paxos_.peers_, from) ||
-                seq_paxos_.recovering() || seq_paxos_.building()) [[unlikely]] {
+                seq_paxos_.recovering() || seq_paxos_.building() || seq_paxos_.retired()) [[unlikely]] {
                 return {};
             }
             if constexpr (std::is_same_v<T, answer>) {
@@ -581,7 +707,7 @@ private:
         } else if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
             return seq_paxos_.handle(from, to, msg);
         } else {
-            if (seq_paxos_.recovering() || seq_paxos_.building()) {
+            if (seq_paxos_.recovering() || seq_paxos_.building() || seq_paxos_.retired()) {
                 return {};
             }
             ble_.handle(ble_message{from, to, heartbeat_msg{std::in_place_type<T>, msg}});
@@ -643,42 +769,15 @@ private:
         return {config.configuration_id, config.pid, config.peers, config.leader_priority};
     }
 
-    result count_the_fault_at_the_start(const repair_record& record)
+    void retire_after_a_fault_at_the_start(const repair_record& record)
     {
-        open_mark_ = record.open_mark;
         const auto e = seq_paxos_.get_error();
         if (e == make_error_code(storage_errc::missing_meta_record)) [[unlikely]] {
             waits_for_the_operator_ = true;
-            return {};
         }
-        const bool damaged = e && error_is_a_damage(*e);
-        const bool covered = record.proof && record.open_mark && record.proof->index <= *record.open_mark &&
-                             !record.mark_covered;
-        if (covered) {
-            if (auto c = own_storage_.cover_the_proof(); !c) [[unlikely]] {
-                return c;
-            }
-        } else if (record.proof || (damaged && !record.open_mark)) {
-            if (record.count >= auto_repair_count) {
-                waits_for_the_operator_ = true;
-                if (!damaged) {
-                    static_cast<void>(seq_paxos_.stop_voting(make_error_code(paxos_errc::result_differs)));
-                }
-                return {};
-            }
-            const auto index = record.proof ? record.proof->index : index_of_the_damage();
-            if (auto c = own_storage_.count_a_repair(index); !c) [[unlikely]] {
-                return c;
-            }
-            open_mark_ = index;
+        if (record.proof || (e && error_is_a_damage(*e))) [[unlikely]] {
+            seq_paxos_.retired_ = true;
         }
-        if (!damaged) {
-            return {};
-        }
-        nonce_ += 1;
-        repair_started_ = true;
-        forget_the_runs();
-        return seq_paxos_.start_repair(nonce_);
     }
 
     std::uint64_t index_of_the_damage() const
@@ -695,7 +794,7 @@ private:
     {
         auto r = step();
         const auto e = seq_paxos_.get_error();
-        if (e && error_is_a_damage(*e) && !waits_for_the_operator_) [[unlikely]] {
+        if (e && error_is_a_damage(*e) && !waits_for_the_operator_ && !seq_paxos_.retired()) [[unlikely]] {
             const auto fault = seq_paxos_.get_hardware_fault();
             const bool known = *e == make_error_code(paxos_errc::hardware_fault) && fault;
             write_the_proof_and_throw({proof_kind::damage, index_of_the_damage(), seq_paxos_.mark_.promise,
@@ -708,6 +807,7 @@ private:
     [[noreturn]] void write_the_proof_and_throw(const fault_proof& proof, const std::error_code e,
                                                 const char* const what)
     {
+        faulted_ = true;
         if (auto w = own_storage_.write_the_proof(proof); !w) [[unlikely]] {
             throw sync_error(w.error(), "konsens: the node storage failed to keep the proof of a fault");
         }
@@ -1714,6 +1814,8 @@ private:
     bool build_started_{};
     std::optional<std::uint64_t> open_mark_;
     bool waits_for_the_operator_{};
+    bool faulted_{};
+    bool stopped_{};
     std::vector<node_id> nodes_;
     std::map<std::uint64_t, own_result> own_;
     std::optional<std::pair<ballot, std::uint64_t>> answered_;
