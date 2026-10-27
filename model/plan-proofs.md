@@ -30,8 +30,10 @@ allowed TLAPS for the proofs, from its origin and only for the model
      `THEOREM Invariance == Spec => []Inv` with no proof steps
      (Voting.tla:178). Only the refinement to Consensus is proved.
    - `specifications/byzpaxos/VoteProof.tla` holds the voting
-     algorithm of Paxos with a full TLAPS proof (547 proof steps).
-     Whether tlapm 5f5037f proves all of it here: see 3.1 step 0.
+     algorithm of Paxos with a full TLAPS proof. With
+     `specifications/byzpaxos/Consensus.tla` beside it, tlapm 5f5037f
+     proves all 809 obligations here in 77 s of wall time
+     (`--threads 3`, session VM, 2026-10-27).
 5. F6c is answered by the spec. A recovering node drops each message
    except RecoveryResponse (SequencePaxos.tla:1554-1558). Recovery needs
    answers from a majority of nodes that do not recover
@@ -64,8 +66,8 @@ and the tool that shows a fault breaks a property (mutations, run G).
 
 ### 3.1 Core: the voting of Sequence Paxos without bounds
 
-- Step 0: tlapm proves VoteProof.tla of tlaplus/Examples here, in full.
-  If it does not, the failed obligations go to the owner before step 1.
+- Step 0 (done, fact 4): tlapm proves VoteProof.tla of tlaplus/Examples
+  here, in full.
 - A new module (provisional name: see question Q2) states what
   Sequence Paxos does in the words of VoteProof.tla. A vote is a log,
   not a value. At one ballot a node can hold several logs over time
@@ -167,7 +169,7 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 ## 7. Order
 
 1. 3.3 F6c (one invariant, one config).
-2. 3.1 step 0 (VoteProof.tla here), then steps 1 and 2.
+2. 3.1 steps 1 and 2.
 3. 3.2 first scope at small bounds.
 4. 3.1 step 3 (TLAPS).
 5. 3.2 with F4 and F6.
