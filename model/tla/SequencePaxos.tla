@@ -653,9 +653,12 @@ InFlightOk(i) ==
   IF ~ExecuteVerify \/ ~(role[i] = "Leader" /\ phase[i] = "Accept") THEN TRUE
   ELSE Cardinality({k \in DOMAIN own[i] : k > AppliedIdxOf(DecidedPrefix(i))}) < MaxInFlight
 \* Plan 2.3.6: a StopSign only when p covers every request entry.
-StopSignAllowed(i) ==
+StopSignAllowedOn(i, lg) ==
   IF ~ExecuteVerify THEN TRUE
-  ELSE \A k \in 1..Len(log[i]) : IsRequest(log[i][k]) => k <= V(DecidedPrefix(i)).p
+  ELSE \A k \in 1..Len(lg) : IsRequest(lg[k]) => k <= V(DecidedPrefix(i)).p
+StopSignAllowed(i) == StopSignAllowedOn(i, log[i])
+\* plan-reconfiguration.md 2.3: the leader checks every StopSign it appends.
+LeaderChecksStopSign(i, lg) == StopSignAllowedOn(i, lg) \/ Mutation = "StopSignUnchecked"
 
 \* The state of a decided prefix: one item for each index up to the applied
 \* index, with the chosen result of each request entry that is not void.
@@ -1068,7 +1071,7 @@ HandleMajorityPromises(i, ls1, c) ==
               ELSE sync[1].sync_idx + Len(sync[1].suffix)
       stop == i \in Nodes /\ HasStopSign(lg1)
       bp   == IF stop THEN <<>> ELSE buffered_proposals[i]
-      bss  == IF stop THEN <<>> ELSE buffered_stopsign[i]
+      bss  == IF stop \/ ~LeaderChecksStopSign(i, lg1 \o bp) THEN <<>> ELSE buffered_stopsign[i]
       lg2  == lg1 \o bp \o bss
       acc2 == acc1 + Len(bp) + Len(bss)
       dec  == IF VerifyPromise THEN MaxDecidedVerified(ls1, lg1, decided_idx[i])
@@ -1252,6 +1255,9 @@ HandleForwardStopSign(i, j, m, c) ==
   THEN /\ buffered_stopsign' = [buffered_stopsign EXCEPT ![i] = <<StopSignEntry>>]
        /\ chan' = c
        /\ UNCHANGED <<durable, volatile>>
+  ELSE IF role[i] = "Leader" /\ phase[i] = "Accept" /\ ~LeaderChecksStopSign(i, log[i])
+  THEN /\ chan' = c
+       /\ UNCHANGED <<durable, volatile, buffered_stopsign>>
   ELSE IF role[i] = "Leader" /\ phase[i] = "Accept"
   THEN /\ AcceptStopSignLeader(i, c)
        /\ UNCHANGED <<promise, n_accepted, decided_idx, role, phase, current_seq_num,
@@ -3491,7 +3497,7 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* of VerdictWhileOpen off (ChosenOnOwnBase), VerdictWhileOpen alone (none,
 \* the control of StaleVerdictTaken), RejectedUnchecked (RejectedHasNoMajority),
 \* AppliedIsPointer (the cover NoIdleRead holds).
-ASSUME Mutation \in {"none", "PromiseWithoutAccepted", "SyncIgnored",
+ASSUME Mutation \in {"none", "StopSignUnchecked", "PromiseWithoutAccepted", "SyncIgnored",
                      "LeaderReplacesValue", "SeqNumUnchecked",
                      "RequestNumberUnchecked", "LocalRead",
                      "AppendAfterStopSign", "BuildBeforeStopSignDecided",
