@@ -1,0 +1,17 @@
+[Unit]
+Description=konsensd, one node of a konsens cluster
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/podman rm --ignore konsensd
+ExecStart=/usr/bin/podman run --rm --name konsensd --network host \
+    -v konsensd-data:/var/lib/konsensd \
+    -v /etc/konsensd/konsensd.toml:/etc/konsensd/konsensd.toml:ro \
+    localhost/konsensd:latest
+ExecStop=/usr/bin/podman stop --time 300 konsensd
+Restart=on-failure
+TimeoutStopSec=330
+
+[Install]
+WantedBy=multi-user.target

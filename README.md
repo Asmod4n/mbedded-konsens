@@ -310,13 +310,43 @@ podman run --rm -it --network host -v konsensd-data:/var/lib/konsensd \
     localhost/konsensd --config /etc/konsensd/konsensd.toml --first-start
 ```
 
-Then the quadlet unit runs the node. Copy
+On macOS, `-p 7151:7151 -p 7161:7161` takes the place of
+`--network host`, and the config comes from
+`~/.config/konsensd/konsensd.toml`.
+
+Then a service runs the node. The form depends on the system.
+
+Linux with podman 4.4 or later (for example openSUSE Tumbleweed,
+Raspberry Pi OS 13): copy the quadlet unit
 [containers/konsensd/konsensd.container](containers/konsensd/konsensd.container)
 to `/etc/containers/systemd/`, and start it:
 
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl start konsensd
+```
+
+Linux with an older podman (for example Raspberry Pi OS 12): copy
+[containers/konsensd/konsensd.service](containers/konsensd/konsensd.service)
+to `/etc/systemd/system/`, then `sudo systemctl enable --now konsensd`.
+
+macOS: podman runs the image in its Linux machine
+(`podman machine init`, then `podman machine start`). The machine has
+its own network, so the node publishes its ports instead of using the
+host network. Copy
+[containers/konsensd/macos/konsensd.sh](containers/konsensd/macos/konsensd.sh)
+to `/usr/local/libexec/`, the config to
+`~/.config/konsensd/konsensd.toml`, and
+[the launchd agent](containers/konsensd/macos/io.github.asmod4n.konsensd.plist)
+to `~/Library/LaunchAgents/`, then
+`launchctl load ~/Library/LaunchAgents/io.github.asmod4n.konsensd.plist`.
+The agent sends SIGTERM to the node when launchd stops it.
+
+The image for arm64 (Mac mini, Raspberry Pi) builds on any arm64
+machine. One build is enough for both:
+
+```sh
+podman save localhost/konsensd | ssh pi podman load
 ```
 
 `systemctl stop` and a shutdown send SIGTERM. The node then stops

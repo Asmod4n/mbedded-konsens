@@ -144,8 +144,8 @@ if(KONSENS_PROGRAM)
               COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_arch_syscall.h
                       ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.h ${KONSENS_LIBURING_TREE}/src/
         CONFIGURE_COMMAND ./configure --prefix=${KONSENS_LIBURING_OUT} --cc=${CMAKE_C_COMPILER} --cxx=${CMAKE_CXX_COMPILER}
-        BUILD_COMMAND make -C src ENABLE_SHARED=0 liburing.a
-        INSTALL_COMMAND make -C src ENABLE_SHARED=0 install
+        BUILD_COMMAND make -C src ENABLE_SHARED=0 AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} liburing.a
+        INSTALL_COMMAND make -C src ENABLE_SHARED=0 AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} install
         BUILD_IN_SOURCE ON
         BUILD_BYPRODUCTS ${KONSENS_LIBURING_OUT}/lib/liburing.a)
     file(MAKE_DIRECTORY ${KONSENS_LIBURING_OUT}/include)
