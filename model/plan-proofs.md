@@ -151,7 +151,7 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 
 - TLC, Apalache and tlapm each with 3 threads, one of them at a time
   (the load rule).
-- By day a run ends within 5 min. At night a run has a time limit of
+- By day a run ends within 15 min. At night a run has a time limit of
   2 h (plan.md section 7), and the night runs start and end with no
   question to the owner (Q3). A run that reaches its limit is
   written down as stopped. After three stopped runs on one question,
@@ -184,7 +184,7 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 - Q2: the name of the abstract module. Decided: `MultiPaxosVoting`
   (owner card, 2026-10-27 20:10).
 - Q3: the time limit of one model run. Decided (owner, 2026-10-27
-  20:11): from 06:00 to 22:00 only runs that end fast; longer runs at
+  20:11, 20:12): from 06:00 to 22:00 only runs that end within 15 min; longer runs at
   night, with no question to the owner. The clock is the local time
   of the owner (assumed: Central European Time, UTC+1, so the night is
   21:00 to 05:00 UTC).
