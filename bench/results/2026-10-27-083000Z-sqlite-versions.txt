@@ -1,0 +1,162 @@
+# what: the same SQL (t.sql below) on six SQLite versions; the database file, the file after VACUUM, the logical content and the results of queries (q.sql below) are compared
+# versions: Ubuntu 22.04 package 3.37.2; 3.40.1 (tag version-3.40.1, the version of Debian oldstable; deb.debian.org is not reachable from this session, so built from the tag with ./configure and no flags); Ubuntu 24.04 package 3.45.1 (the library of the host of the session); 3.46.1 (tag, the version of Debian stable, built the same way); Ubuntu devel package 3.53.4; trunk 5d1ee88 (3.55.0) built the same way
+# containers in podman; builds with gcc of Ubuntu 24.04
+
+## t.sql
+pragma page_size=4096;
+pragma journal_mode=wal;
+create table log(idx integer primary key, record blob not null) strict;
+create table kv(k text primary key, i integer, r any, t text, b blob) strict, without rowid;
+with recursive n(x) as (select 1 union all select x+1 from n where x<2000)
+insert into log select x, cast(printf('%089d', x) as blob) from n;
+with recursive n(x) as (select 1 union all select x+1 from n where x<2000)
+insert into kv select 'k'||x, x*7, x/3.0, printf('%08d',x), zeroblob(16) from n;
+delete from kv where i % 5 = 0;
+update kv set r = r*1.1 where i % 3 = 0;
+create index kv_i on kv(i);
+pragma wal_checkpoint(truncate);
+
+## q.sql
+select 'sum', sum(r) from kv;
+select 'sum_ordered', sum(r order by k) from kv;
+select 'avg', avg(r) from kv;
+select 'total', total(r) from kv;
+select 'text', cast(1.0/3 as text), cast(0.1+0.2 as text), 1e300*10, cast(2.0/3*1e20 as text);
+select 'printf', printf('%.17g', 0.1+0.2), printf('%!.20g', 1.0/3);
+select 'round', round(2.5), round(-2.5), round(0.125, 2);
+select 'math', sin(1.0), pow(2.0, 0.5), exp(1.0), ln(10.0);
+select 'int', 9223372036854775807 + 1, -9223372036854775808 - 1, 7/2, -7/2, 7%-3;
+select 'json', json_object('a', 0.1, 'b', 1e100);
+select 'order_noorder', group_concat(k) from (select k from kv where i < 100);
+select 'like', 'Ä' like 'ä', upper('straße'), lower('ÄÖÜ'), length('😀'), unicode('😀');
+select 'count', count(*), sum(i) from kv;
+
+## sha256 (first 12 hex) of the database file; size
+f7229af25f61 344064 git-trunk-db.sqlite
+e18a45841a5e 344064 git-version-3.40.1-db.sqlite
+5be4610be875 344064 git-version-3.46.1-db.sqlite
+24fcfb7164f4 344064 u2204-db.sqlite
+717d215a4c33 344064 u2404-host-db.sqlite
+30ebe1069244 344064 udevel-db.sqlite
+
+## the same with bytes 96-99 (the SQLite version number in the header) set to 0
+0040d99fef42 git-trunk-db.sqlite
+df7e5a8824cb git-version-3.40.1-db.sqlite
+0040d99fef42 git-version-3.46.1-db.sqlite
+e533186b5a4b u2204-db.sqlite
+3e1f951f1b24 u2404-host-db.sqlite
+3e1f951f1b24 udevel-db.sqlite
+5c587724a7f2 git-trunk-vacuum.sqlite
+5c587724a7f2 git-version-3.40.1-vacuum.sqlite
+5c587724a7f2 git-version-3.46.1-vacuum.sqlite
+118e5e520a53 u2204-vacuum.sqlite
+f957916b34e5 u2404-host-vacuum.sqlite
+f957916b34e5 udevel-vacuum.sqlite
+
+## logical content: sha256 over every row of log and kv, each REAL as its 8 bytes
+f95b00b06903 git-trunk-db.sqlite
+f95b00b06903 git-version-3.40.1-db.sqlite
+f95b00b06903 git-version-3.46.1-db.sqlite
+f95b00b06903 u2204-db.sqlite
+f95b00b06903 u2404-host-db.sqlite
+f95b00b06903 udevel-db.sqlite
+
+## sha256 of .dump
+a959448c8954  git-trunk-dump.sql
+23ca0a86f19b  git-version-3.40.1-dump.sql
+6771a087a520  git-version-3.46.1-dump.sql
+23ca0a86f19b  u2204-dump.sql
+6771a087a520  u2404-host-dump.sql
+a959448c8954  udevel-dump.sql
+
+## queries u2204
+sum|551088.933333333
+Error: near line 2: in prepare, near "order": syntax error (1)
+avg|344.430583333333
+total|551088.933333333
+text|0.333333333333333|0.3|1.0e+301|6.66666666666667e+19
+printf|0.3|0.33333333333333331482
+round|3.0|-3.0|0.13
+math|0.841470984807897|1.4142135623731|2.71828182845905|2.30258509299405
+int|9.22337203685478e+18|-9.22337203685478e+18|3|-3|1
+json|{"a":0.1,"b":1.0e+100}
+order_noorder|k1,k2,k3,k4,k6,k7,k8,k9,k11,k12,k13,k14
+like|0|STRAßE|ÄÖÜ|1|128512
+count|1600|11200000
+
+## queries git-version-3.40.1
+sum|551088.933333333
+Parse error near line 2: near "order": syntax error
+  select 'sum_ordered', sum(r order by k) from kv;
+                error here ---^
+avg|344.430583333333
+total|551088.933333333
+text|0.333333333333333|0.3|1.0e+301|6.66666666666667e+19
+printf|0.3|0.33333333333333331482
+round|3.0|-3.0|0.13
+math|0.841470984807897|1.4142135623731|2.71828182845905|2.30258509299405
+int|9.22337203685478e+18|-9.22337203685478e+18|3|-3|1
+json|{"a":0.1,"b":1.0e+100}
+order_noorder|k1,k2,k3,k4,k6,k7,k8,k9,k11,k12,k13,k14
+like|0|STRAßE|ÄÖÜ|1|128512
+count|1600|11200000
+
+## queries u2404-host
+sum|551088.933333333
+sum_ordered|551088.933333333
+avg|344.430583333333
+total|551088.933333333
+text|0.333333333333333|0.3|1.0e+301|6.66666666666667e+19
+printf|0.3|0.333333333333333314
+round|3.0|-3.0|0.13
+math|0.841470984807897|1.4142135623731|2.71828182845905|2.30258509299405
+int|9.22337203685478e+18|-9.22337203685478e+18|3|-3|1
+json|{"a":0.1,"b":1.0e+100}
+order_noorder|k1,k2,k3,k4,k6,k7,k8,k9,k11,k12,k13,k14
+like|0|STRAßE|ÄÖÜ|1|128512
+count|1600|11200000
+
+## queries git-version-3.46.1
+sum|551088.933333333
+sum_ordered|551088.933333333
+avg|344.430583333333
+total|551088.933333333
+text|0.333333333333333|0.3|1.0e+301|6.66666666666667e+19
+printf|0.3|0.333333333333333314
+round|3.0|-3.0|0.13
+math|0.841470984807897|1.4142135623731|2.71828182845905|2.30258509299405
+int|9.22337203685478e+18|-9.22337203685478e+18|3|-3|1
+json|{"a":0.1,"b":1.0e+100}
+order_noorder|k1,k2,k3,k4,k6,k7,k8,k9,k11,k12,k13,k14
+like|0|STRAßE|ÄÖÜ|1|128512
+count|1600|11200000
+
+## queries udevel
+sum|551088.93333333335
+sum_ordered|551088.93333333335
+avg|344.43058333333335
+total|551088.93333333335
+text|0.33333333333333332|0.30000000000000004|1.0e+301|6.6666666666666664e+19
+printf|0.3|0.333333333333333315
+round|3.0|-3.0|0.13
+math|0.84147098480789651|1.4142135623730952|2.7182818284590451|2.3025850929940459
+int|9.2233720368547758e+18|-9.2233720368547758e+18|3|-3|1
+json|{"a":0.1,"b":1.0e+100}
+order_noorder|k1,k2,k3,k4,k6,k7,k8,k9,k11,k12,k13,k14
+like|0|STRAßE|ÄÖÜ|1|128512
+count|1600|11200000
+
+## queries git-trunk
+sum|551088.93333333335
+sum_ordered|551088.93333333335
+avg|344.43058333333335
+total|551088.93333333335
+text|0.33333333333333332|0.30000000000000004|1.0e+301|6.6666666666666664e+19
+printf|0.3|0.333333333333333315
+round|3.0|-3.0|0.13
+math|0.84147098480789651|1.4142135623730952|2.7182818284590451|2.3025850929940459
+int|9.2233720368547758e+18|-9.2233720368547758e+18|3|-3|1
+json|{"a":0.1,"b":1.0e+100}
+order_noorder|k1,k2,k3,k4,k6,k7,k8,k9,k11,k12,k13,k14
+like|0|STRAßE|ÄÖÜ|1|128512
+count|1600|11200000
