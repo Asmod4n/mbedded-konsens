@@ -16,6 +16,7 @@ inline constexpr std::uint64_t default_resend_ticks = 3;
 inline constexpr std::uint64_t default_tick_milliseconds = 100;
 inline constexpr std::uint64_t default_max_frame_bytes = std::uint64_t{1} << 30;
 inline constexpr std::uint64_t default_max_body_bytes = std::uint64_t{1} << 20;
+inline constexpr std::uint64_t default_max_store_bytes = std::uint64_t{1} << 36;
 
 struct peer {
     konsens::node_id pid;
@@ -37,6 +38,7 @@ struct config {
     std::uint64_t tick_milliseconds;
     std::uint64_t max_frame_bytes;
     std::uint64_t max_body_bytes;
+    std::uint64_t max_store_bytes;
     std::vector<konsens::node_id> build_from;
     std::vector<peer> peers;
 

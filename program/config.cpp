@@ -26,6 +26,7 @@ constexpr std::array node_keys{std::string_view{"pid"},
                                std::string_view{"tick_milliseconds"},
                                std::string_view{"max_frame_bytes"},
                                std::string_view{"max_body_bytes"},
+                               std::string_view{"max_store_bytes"},
                                std::string_view{"build_from"}};
 constexpr std::array peer_keys{std::string_view{"pid"}, std::string_view{"address"}};
 constexpr std::array top_keys{std::string_view{"cluster"}, std::string_view{"node"}, std::string_view{"peers"}};
@@ -228,6 +229,10 @@ std::expected<config, config_error> parse_config(const std::string_view text)
     if (!max_body_bytes) [[unlikely]] {
         return std::unexpected(max_body_bytes.error());
     }
+    const auto max_store_bytes = number_in<std::uint64_t>(n, "max_store_bytes", default_max_store_bytes, 1);
+    if (!max_store_bytes) [[unlikely]] {
+        return std::unexpected(max_store_bytes.error());
+    }
     auto build_from = pids_in(n, "build_from");
     if (!build_from) [[unlikely]] {
         return std::unexpected(build_from.error());
@@ -251,6 +256,7 @@ std::expected<config, config_error> parse_config(const std::string_view text)
                   *tick_milliseconds,
                   *max_frame_bytes,
                   *max_body_bytes,
+                  *max_store_bytes,
                   std::move(*build_from),
                   std::move(*peers)};
 }

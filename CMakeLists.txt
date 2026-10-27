@@ -152,7 +152,7 @@ if(KONSENS_PROGRAM)
     file(GLOB KONSENS_SLIPSTREAM_ENGINE ${KONSENS_SLIPSTREAM}/src/engine_*.c)
     add_library(slipstream STATIC ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.c ${KONSENS_SLIPSTREAM}/src/slipstream_engine.c
                                   ${KONSENS_SLIPSTREAM}/src/slipstream_signal.c ${KONSENS_SLIPSTREAM_ENGINE})
-    target_include_directories(slipstream PUBLIC ${KONSENS_SLIPSTREAM}/src ${KONSENS_LIBURING_OUT}/include)
+    target_include_directories(slipstream SYSTEM PUBLIC ${KONSENS_SLIPSTREAM}/src ${KONSENS_LIBURING_OUT}/include)
     add_dependencies(slipstream carried_liburing)
     target_link_libraries(slipstream PUBLIC Threads::Threads)
 
@@ -161,7 +161,7 @@ if(KONSENS_PROGRAM)
     add_library(konsensd_parts STATIC ${KONSENS_PROGRAM_SOURCES})
     target_include_directories(konsensd_parts PUBLIC ${PROJECT_SOURCE_DIR}/program)
     target_include_directories(konsensd_parts SYSTEM PUBLIC ${PROJECT_SOURCE_DIR}/deps/mruby-webmachine/src)
-    target_link_libraries(konsensd_parts PUBLIC konsens ada::ada
+    target_link_libraries(konsensd_parts PUBLIC konsens mbedded-cbor ada::ada
                                                 ${KONSENS_LIBURING_OUT}/lib/liburing.a slipstream)
     target_compile_options(konsensd_parts PRIVATE ${KONSENS_WARNINGS})
     add_executable(konsensd ${PROJECT_SOURCE_DIR}/program/main.cpp)

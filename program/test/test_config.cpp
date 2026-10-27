@@ -26,6 +26,7 @@ resend_ticks = 2
 tick_milliseconds = 50
 max_frame_bytes = 4096
 max_body_bytes = 512
+max_store_bytes = 8192
 build_from = [5, 6]
 
 [[peers]]
@@ -89,6 +90,7 @@ TEST_CASE("each field of a whole config is read")
     CHECK(c->tick_milliseconds == 50);
     CHECK(c->max_frame_bytes == 4096);
     CHECK(c->max_body_bytes == 512);
+    CHECK(c->max_store_bytes == 8192);
     CHECK(c->build_from == std::vector<konsens::node_id>{5, 6});
     CHECK(c->peers == std::vector<konsensd::peer>{{2, "192.0.2.2:7151"}, {3, "192.0.2.3:7151"}});
     const auto n = konsensd::node_config_of(*c, true);
@@ -114,6 +116,7 @@ TEST_CASE("the optional fields take their defaults")
     CHECK(c->tick_milliseconds == konsensd::default_tick_milliseconds);
     CHECK(c->max_frame_bytes == konsensd::default_max_frame_bytes);
     CHECK(c->max_body_bytes == konsensd::default_max_body_bytes);
+    CHECK(c->max_store_bytes == konsensd::default_max_store_bytes);
     CHECK(c->build_from.empty());
     CHECK(!konsensd::node_config_of(*c, false).first_start);
 }
