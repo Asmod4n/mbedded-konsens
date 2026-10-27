@@ -143,8 +143,7 @@ Read only:
 
 Changes:
 
-- `allow-repair`: the operator allows the next automatic repair on
-  one node.
+- `repair`: the one repair after a power loss (part 10).
 - `init`: writes the configs of a new cluster (seed list, node IDs,
   leader priority).
 - `connect`: sets the target node in the stored config of the tool.
@@ -394,3 +393,26 @@ Open:
   Proposal: first version, after `status` and `watch`.
 - 10.2 The name of the action. Proposal: `repair`, until the
   architecture thread names the operation.
+
+### 10.3 The interface of the node (branch clean-stop, 7a20c63)
+
+Read on that branch, `include/konsens/node.hpp`:
+
+- `node::retired()` is true for a retired node. Such a node sends
+  nothing, and a client gets `client_errc::retired`.
+- `node::get_fault_proof()` gives
+  `std::expected<std::optional<fault_proof>, std::error_code>`.
+  `findings` shows it.
+- `node::reconfigure(cluster_config)` is the repair when a minority
+  retired. The retired nodes get new pids, and the new nodes start
+  with build_from and an empty store.
+- When a majority retired, the repair is stage 2 (ForceSingle). It is
+  not built yet, so `repair` refuses this case and says so until it
+  exists.
+- A clean stop is `node::stop()`. A first start sets
+  `node_config::first_start`.
+
+The repair of a damaged log is removed on that branch. So the command
+`allow-repair` of part 3 is gone, and the requirement of 2026-10-24
+(the operator allows the next automatic repair) has no function behind
+it any more.
