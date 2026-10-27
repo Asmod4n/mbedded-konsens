@@ -57,10 +57,10 @@ builds the program that runs one node from that config.
 1. Clients speak HTTP/1.1 (card, 18:12), as REST, so that every
    client talks to the cluster directly (owner, 18:18). The API
    expresses what the clients speak among themselves, CoAP over TCP
-   (owner, 18:16). Everything is plain REST; the one addition is the
-   method QUERY (IETF httpbis, "The HTTP QUERY Method"; status not
-   checked here), whose body is a read in SQL (owner, 18:19).
-   mruby-webmachine knows QUERY (src/http.hpp:230).
+   (owner, 18:16). Everything is plain REST, with the method QUERY
+   (IETF httpbis, "The HTTP QUERY Method"; status not checked here)
+   for a read with a body (owner, 18:19). Clients speak no SQL (owner,
+   18:22). mruby-webmachine knows QUERY (src/http.hpp:230).
 2. HTTP comes from mruby-webmachine, which is renamed to
    embedded-webmachine later (owner, 18:13). It is a submodule.
 3. io_uring comes from slipstreamIO, a submodule that builds liburing
@@ -134,19 +134,8 @@ builds the program that runs one node from that config.
      percent-encoded in the path.
    - A body longer than `max_body_bytes` gets 413. The body buffer
      grows with the bytes read, never with Content-Length.
-   - `QUERY /sql` with an SQL statement as body (media type
-     `application/sql`, RFC 6922) is a read at the read index. It comes
-     after the key-value form, as its own step: the state machine must
-     first keep its state in tables that SQL can read (open, see the
-     SQL form of the owner, 2026-10-26).
-   - Every error that the SQL of a client can cause is refused at once
-     with a 4xx status and a problem detail (owner, 18:21): each
-     primary result code of SQLite that a statement can give gets its
-     status, for example a syntax or name error 400, a write in a
-     QUERY 403 (QUERY is safe), a constraint 409, a value too big 413.
-     A fault of the machine (I/O, a full disk, a failed sync) is not a
-     client error and keeps the rules of the library. The test checks
-     every primary result code (the whole set of sqlite3.h).
+   - Clients speak no SQL (owner, 18:22). The body of a QUERY is open
+     (question 6.4).
    - Any node takes a call. A follower forwards writes and asks the
      leader for the read index, as the library does now.
 7. Status of each result (every value of `client_errc` and the rest):
@@ -234,6 +223,7 @@ image in its Linux machine.
    (a): it follows the owner rule "the end of a session is a log
    entry", and a removed pid holds no connection.
 3. The three machines and their systems.
+4. What the body of a QUERY holds, now that clients speak no SQL.
 
 ## 7. Tests
 

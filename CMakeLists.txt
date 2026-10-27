@@ -128,3 +128,52 @@ if(KONSENS_TEST_TMPDIR)
     set_tests_properties(${konsens_all_tests} PROPERTIES ENVIRONMENT "TMPDIR=${KONSENS_TEST_TMPDIR}")
 endif()
 
+
+option(KONSENS_PROGRAM "Build konsensd, the program that runs one node over TCP and HTTP" OFF)
+if(KONSENS_PROGRAM)
+    include(ExternalProject)
+    find_package(tomlplusplus REQUIRED)
+    find_package(ada REQUIRED)
+    set(KONSENS_SLIPSTREAM ${PROJECT_SOURCE_DIR}/deps/slipstreamIO)
+    set(KONSENS_LIBURING_TREE ${CMAKE_BINARY_DIR}/liburing)
+    set(KONSENS_LIBURING_OUT ${CMAKE_BINARY_DIR}/liburing-out)
+    ExternalProject_Add(carried_liburing
+        SOURCE_DIR ${KONSENS_LIBURING_TREE}
+        DOWNLOAD_COMMAND ${CMAKE_COMMAND} -E copy_directory ${KONSENS_SLIPSTREAM}/deps/liburing ${KONSENS_LIBURING_TREE}
+        PATCH_COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_syscall.h ${KONSENS_LIBURING_TREE}/src/syscall.h
+              COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_arch_syscall.h
+                      ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.h ${KONSENS_LIBURING_TREE}/src/
+        CONFIGURE_COMMAND ./configure --prefix=${KONSENS_LIBURING_OUT} --cc=${CMAKE_C_COMPILER} --cxx=${CMAKE_CXX_COMPILER}
+        BUILD_COMMAND make -C src ENABLE_SHARED=0 liburing.a
+        INSTALL_COMMAND make -C src ENABLE_SHARED=0 install
+        BUILD_IN_SOURCE ON
+        BUILD_BYPRODUCTS ${KONSENS_LIBURING_OUT}/lib/liburing.a)
+    file(MAKE_DIRECTORY ${KONSENS_LIBURING_OUT}/include)
+    file(GLOB KONSENS_SLIPSTREAM_ENGINE ${KONSENS_SLIPSTREAM}/src/engine_*.c)
+    add_library(slipstream STATIC ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.c ${KONSENS_SLIPSTREAM}/src/slipstream_engine.c
+                                  ${KONSENS_SLIPSTREAM}/src/slipstream_signal.c ${KONSENS_SLIPSTREAM_ENGINE})
+    target_include_directories(slipstream PUBLIC ${KONSENS_SLIPSTREAM}/src ${KONSENS_LIBURING_OUT}/include)
+    add_dependencies(slipstream carried_liburing)
+    target_link_libraries(slipstream PUBLIC Threads::Threads)
+
+    file(GLOB KONSENS_PROGRAM_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/program/*.cpp)
+    list(FILTER KONSENS_PROGRAM_SOURCES EXCLUDE REGEX "/main\\.cpp$")
+    add_library(konsensd_parts STATIC ${KONSENS_PROGRAM_SOURCES})
+    target_include_directories(konsensd_parts PUBLIC ${PROJECT_SOURCE_DIR}/program)
+    target_include_directories(konsensd_parts SYSTEM PUBLIC ${PROJECT_SOURCE_DIR}/deps/mruby-webmachine/src)
+    target_link_libraries(konsensd_parts PUBLIC konsens tomlplusplus::tomlplusplus ada::ada
+                                                ${KONSENS_LIBURING_OUT}/lib/liburing.a slipstream)
+    target_compile_options(konsensd_parts PRIVATE ${KONSENS_WARNINGS})
+    add_executable(konsensd ${PROJECT_SOURCE_DIR}/program/main.cpp)
+    target_link_libraries(konsensd PRIVATE konsensd_parts)
+    target_compile_options(konsensd PRIVATE ${KONSENS_WARNINGS})
+
+    file(GLOB KONSENS_PROGRAM_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/program/test/*.cpp)
+    foreach(test_source ${KONSENS_PROGRAM_TESTS})
+        get_filename_component(test_name ${test_source} NAME_WE)
+        add_executable(${test_name} ${test_source})
+        target_link_libraries(${test_name} PRIVATE konsensd_parts doctest::doctest)
+        target_compile_options(${test_name} PRIVATE ${KONSENS_WARNINGS})
+        add_test(NAME ${test_name} COMMAND ${test_name})
+    endforeach()
+endif()
