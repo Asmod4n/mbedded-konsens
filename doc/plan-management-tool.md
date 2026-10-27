@@ -143,12 +143,12 @@ Read only:
 
 Changes:
 
-- `repair`: the one repair after a power loss (part 10).
 - `init`: writes the configs of a new cluster (seed list, node IDs,
   leader priority).
 - `connect`: sets the target node in the stored config of the tool.
 
-Not in the first version: a reconfiguration, a stage change, an
+Not in the first version: `repair` (part 10, the first task after
+it), any other reconfiguration, a stage change, an
 action on application data, Web Push. Each comes as a task of its own.
 
 The names of the commands are provisional (question 6.6).
@@ -392,15 +392,14 @@ What the tool does:
 The action is the same in the CLI, the TUI and the web level. The CLI
 takes the confirmation as a flag, so that a script can call it.
 
-This moves one form of reconfiguration into the first version (part 3
-said: no reconfiguration). The steps of the reconfiguration, the
+The steps of the reconfiguration, the
 operator command and its warning come from the architecture thread.
 The tool waits for that design before the action is built.
 
 Open:
 
-- 10.1 Is `repair` in the first version, or the first task after it?
-  Proposal: first version, after `status` and `watch`.
+- 10.1 Answered (owner, 2026-10-27): `repair` is the first task after
+  the first version.
 - 10.2 The name of the action. Proposal: `repair`, until the
   architecture thread names the operation.
 
