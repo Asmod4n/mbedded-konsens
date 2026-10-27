@@ -673,6 +673,13 @@ and 1024, the cost of a checkpoint, the copy in `find`, the log as a
 default. Each build of the rules, with priority. No number stands here
 before the run.
 
+### 10.1 The model
+
+OneEnvironment.tla gets: the sync inside the commit; "done" sent
+before the commit of the leader, which counts itself after its commit;
+a store that goes back to an older whole state at a start (section
+7.3). The runs come before the code.
+
 ### 10.2 Measured: the form of the log table (2026-10-27)
 
 File: `bench/results/2026-10-27-071421Z-sqlite-layout.txt`. One writer,
@@ -713,13 +720,6 @@ fastest or equal for the commit. Columns cost 7 % to 34 % on the
 lookup. The three points of section 4.2.1 (one statement for a query
 by session) are not measured; a query by session needs its own index
 in both forms.
-
-### 10.1 The model
-
-OneEnvironment.tla gets: the sync inside the commit; "done" sent
-before the commit of the leader, which counts itself after its commit;
-a store that goes back to an older whole state at a start (section
-7.3). The runs come before the code.
 
 ## 11. Review 1 and changes
 
