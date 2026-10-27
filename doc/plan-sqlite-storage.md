@@ -853,3 +853,39 @@ The build of the first step (2026-10-27) changed three points of this plan.
    raises it as `write_error`, as it did for a full LMDB map.
 3. "done" before the commit of the leader (6.3) is not in the first
    step. The node gives every message and every reply after its commit.
+
+## 14. The build of the rejoin (section 7.3)
+
+The models check the rejoin for safety. They do not say which node raises
+the ballot above the promises of the answers. This section gives the form
+of the code. Item 7 is provisional and waits on the owner.
+
+1. `complete_recovery` keeps the highest promise of the answers and of
+   the store as `rejoin_above` in RAM. No store holds it: each start
+   enters the recovery again (section 7.3).
+2. While `rejoin_above` is set, the node does not lead: `handle_leader`
+   does nothing. Its answer to a recovery says `recovering`, so that it
+   does not count as a normal answer. A client request gets
+   `client_errc::recovering`.
+3. The node answers a prepare as now. Its promise carries the new field
+   `rejoin_above`, an optional ballot (model `OneEnvironment.tla`, field
+   `rejoin` of the promise). The wire format of the promise changes.
+4. A leader in its prepare phase does not count a promise that carries
+   `rejoin_above` (model `HandlePromise`, `m.rejoin => phase = accept`).
+   A leader in its accept phase takes it and sends the accept sync, as
+   now.
+5. The node takes an accept sync only when its ballot is above
+   `rejoin_above` (model `HandleAcceptSync`). After that accept sync it
+   clears `rejoin_above` and votes as any follower.
+6. Every other message reaches a rejoining node as now. The node stays
+   in the phase `recover` until the accept sync, so it accepts and
+   decides nothing before it.
+7. Provisional: a leader in its accept phase that gets a promise whose
+   `rejoin_above` is not below its own ballot starts a new ballot above
+   `rejoin_above`, with its own pid, in the same step. Without this, a
+   node that restarts under a leader that stays never votes again.
+8. Tests: the TLC trace of `StoreRollback` (a decided entry lost) as a
+   test of `sequence_paxos` that fails without items 4 and 5; a restart
+   under a stable leader that votes again after item 7; a rejoining node
+   that gets a prepare and an accept sync of the same ballot as its
+   answers and stays out.
