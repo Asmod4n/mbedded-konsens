@@ -70,17 +70,22 @@ lists the findings of review 1 and what changed.
    buffered StopSign apart from the buffered proposals and appends it
    with the accept sync. A follower forwards it to the leader.
 3. The leader checks `StopSignAllowed` for every StopSign it appends:
-   its own, a forwarded one, and a buffered one at the accept sync.
-   Where the check fails, the StopSign is dropped and the proposer gets
-   `client_errc::retry`. The model gets the same check, and a run with
+   its own, a forwarded one, and a buffered one. The check of a
+   buffered StopSign runs where the buffer is flushed, in the accept
+   sync and in the accept phase, on the log plus the buffered proposals
+   before the StopSign (model `lg1 \o bp`). Where the check fails, the
+   StopSign is dropped. A local proposer gets `client_errc::retry`. A
+   remote proposer gets no message, as for any forwarded proposal
+   today (sequence_paxos.hpp:1949); its client asks again after its
+   timeout. The model gets the same check, and a run with
    Execute-Verify, client sessions and a reconfiguration checks it
    before the build (section 4.1).
 4. After a node holds a StopSign at the end of the log of its
    configuration, `append` and `reconfigure` give the error
    `client_errc::reconfiguring` (provisional name, card 2). When the
    leader flushes its buffer, it cuts every proposal after a StopSign
-   and every second StopSign, and the proposers of the cut entries get
-   the same error.
+   and every second StopSign. A local proposer of a cut entry gets the
+   same error; a remote one gets no message (item 3).
 5. A StopSign that is not decided can be removed by an accept sync of a
    new leader, as any entry that is not decided. Then `append` works
    again. Only a decided StopSign ends the configuration.
@@ -113,8 +118,14 @@ lists the findings of review 1 and what changed.
      the default ballot of the next configuration, and the meta field
      `config_first_idx` = log length + 1. Then it syncs, and only then
      takes part in Sequence Paxos and in Ballot Leader Election.
-   - A start with a store whose `config_first_idx` is not set continues
-     the build from the end of its log.
+   - A start with a store whose `config_first_idx` is not set and with
+     `configuration_id > 1` continues the build from the end of its
+     log. A start of configuration 1 writes `config_first_idx = 1`,
+     also when it opens a store written before this change.
+   - A start whose `configuration_id` differs from the `config_id` of
+     the ballots in the store, or that is above 1 while the store holds
+     no decided StopSign before `config_first_idx`, is a wrong use
+     (`std::logic_error`).
 8. `config_first_idx` defines the scope of 2.4: only a StopSign at an
    index at or above it ends the current configuration. The indexes of
    the next configuration continue the old log. The state that
@@ -140,7 +151,9 @@ lists the findings of review 1 and what changed.
    NextConfigNodes {6, 7, 8}, MaxReconfigure 1) with the invariant
    `StopSignCoversRequests` (EVReconfigure.tla), first without the
    check (expected: violated), then with it (expected: no error); the
-   cover `CoverReconfigured` (expected: violated).
+   cover `CoverReconfigured` (expected: violated). Done:
+   results/20261027T132108Z-ev-reconfigure.md. The run with the check
+   is a simulation of 15 min, not a full search.
 2. Unit tests of `sequence_paxos`: a StopSign appended by a leader in
    the accept phase; buffered in the prepare phase; forwarded by a
    follower; refused when the leader holds a request in work, for its
@@ -161,8 +174,10 @@ lists the findings of review 1 and what changed.
    node without a decided StopSign, from a node that does not vote, to
    a node that the StopSign does not list; never an entry above the
    decided index.
-6. A crash of the new node during the build, then a start that
-   continues; a damaged record in a part (CRC) gives a request to the
+6. A seed node of configuration 1 and a store written before this
+   change open with `config_first_idx = 1`; a start with a wrong
+   `configuration_id` is a wrong use; a crash of the new node during
+   the build, then a start that continues; a damaged record in a part (CRC) gives a request to the
    next source; a node of configuration 2 that restarts with the
    StopSign in the middle of its log.
 7. A new user calls `reconfigure` with the same configuration id, with
@@ -197,6 +212,10 @@ to 2.9 with 4.4 to 4.6.
 10. An old node restarts after the decide: card 3 (2.9).
 11. Reads across the decide: dropped with an error (2.6).
 12. The same pid in two configurations: excluded by 2.1.
+
+Review 2 approved the plan with four fixes: the reply to a remote
+proposer (2.3), the check at each flush (2.3), `config_first_idx` of
+configuration 1 (2.7), and the wrong-use check at the start (2.7).
 
 ## 7. Data on the disk
 
