@@ -68,7 +68,7 @@ and the tool that shows a fault breaks a property (mutations, run G).
 
 - Step 0 (done, fact 4): tlapm proves VoteProof.tla of tlaplus/Examples
   here, in full.
-- A new module (provisional name: see question Q2) states what
+- A new module `MultiPaxosVoting.tla` states what
   Sequence Paxos does in the words of VoteProof.tla. A vote is a log,
   not a value. At one ballot a node can hold several logs over time
   (AcceptSync, then AcceptDecide appends), and a duplicate AcceptSync
@@ -151,7 +151,9 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 
 - TLC, Apalache and tlapm each with 3 threads, one of them at a time
   (the load rule).
-- Each run has a time limit (question Q3). A run that reaches it is
+- By day a run ends within 5 min. At night a run has a time limit of
+  2 h (plan.md section 7), and the night runs start and end with no
+  question to the owner (Q3). A run that reaches its limit is
   written down as stopped. After three stopped runs on one question,
   the question goes to the owner with the bounds that were tried.
 - One result file per run, as plan.md section 7 states.
@@ -177,14 +179,15 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 
 ## 8. Questions to the owner
 
-- Q1: close F6c as "S2 holds, liveness is lost" (fact 5)? Proposal:
-  yes.
-- Q2: the name of the abstract module. Proposal: `MultiPaxosVoting`,
-  provisional, after "the voting algorithm" of VoteProof.tla and
-  Multi-Paxos, until a source names the voting on logs.
-- Q3: the time limit of one model run. The owner set 5 min for a
-  build and its tests (2026-10-27). Proposal: a model run is not a
-  build; 2 h per run as plan.md section 7 states.
+- Q1: close F6c as "S2 holds, liveness is lost" (fact 5)? Decided:
+  yes (owner card, 2026-10-27 20:10).
+- Q2: the name of the abstract module. Decided: `MultiPaxosVoting`
+  (owner card, 2026-10-27 20:10).
+- Q3: the time limit of one model run. Decided (owner, 2026-10-27
+  20:11): from 06:00 to 22:00 only runs that end fast; longer runs at
+  night, with no question to the owner. The clock is the local time
+  of the owner (assumed: Central European Time, UTC+1, so the night is
+  21:00 to 05:00 UTC).
 
 ## 9. Data of this plan
 
