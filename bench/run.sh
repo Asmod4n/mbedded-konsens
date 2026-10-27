@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=localhost/cxx-matrix-fuse
+image=localhost/cxx-matrix-sqlite
 compiler=g++-16
 c_compiler=gcc-16
 build_jobs=2
@@ -19,6 +19,7 @@ usage() {
     echo "<prefixes>: a comma-separated list, or 'all'. Only a case whose name starts with one of them runs." >&2
     echo "<arm commit>: a commit of this repository. Its tree is built as one more arm, konsens_bench_<commit>." >&2
     echo "When bench/arms/<commit>.patch exists, the arm keeps its own bench with that patch applied;" >&2
+    echo "an empty patch keeps its own bench as it is;" >&2
     echo "otherwise the arm takes bench/konsens_bench.cpp of the working tree." >&2
     exit 1
 }
@@ -57,11 +58,20 @@ prepare_arm() {
     rm -rf "$directory"
     mkdir -p "$directory/src"
     git -C "$repo" archive "$arm" | tar -x -C "$directory/src"
-    tar -C "$repo" --exclude=.git -c deps | tar -x -C "$directory/src"
+    git -C "$repo" ls-tree -r "$arm" | awk '$2 == "commit" {print $3, $4}' | while read -r sha path; do
+        if [[ -d $repo/$path ]] && [[ $(git -C "$repo/$path" rev-parse HEAD) == "$sha" ]]; then
+            tar -C "$repo" --exclude=.git -c "$path" | tar -x -C "$directory/src"
+        else
+            mkdir -p "$directory/src/$path"
+            git -C "$(git -C "$repo" rev-parse --git-common-dir)/modules/$path" archive "$sha" | tar -x -C "$directory/src/$path"
+        fi
+    done
     patch=$repo/bench/arms/$arm.patch
-    if [[ -f $patch ]]; then
+    if [[ -s $patch ]]; then
         (cd "$directory/src" && patch -p1 --quiet < "$patch")
         echo "its own bench/konsens_bench.cpp with bench/arms/$arm.patch" > "$directory/bench-source.txt"
+    elif [[ -f $patch ]]; then
+        echo "its own bench/konsens_bench.cpp" > "$directory/bench-source.txt"
     else
         cp "$repo/bench/konsens_bench.cpp" "$directory/src/bench/konsens_bench.cpp"
         echo "bench/konsens_bench.cpp of the working tree" > "$directory/bench-source.txt"
@@ -103,7 +113,7 @@ context() {
     echo "# build type Release, CMAKE_CXX_FLAGS_RELEASE $(grep -E '^CMAKE_CXX_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# build type Release, CMAKE_C_FLAGS_RELEASE $(grep -E '^CMAKE_C_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/bench/konsens_bench.cpp')"
-    echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/deps/lmdb/libraries/liblmdb/mdb.c')"
+    echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/src/persistent_storage.cpp')"
     echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
     for b in "${binaries[@]}"; do
@@ -112,7 +122,7 @@ context() {
     done
     echo "# libraries $(ldd /work/build/$main_binary | awk '{printf "%s %s; ", $1, $3}')"
     echo "# packages $(dpkg-query -W -f='${Package} ${Version}; ' libstdc++6 libc6 || true)"
-    echo "# lmdb $(grep -E '^#define MDB_VERSION_(MAJOR|MINOR|PATCH)' /src/deps/lmdb/libraries/liblmdb/lmdb.h | awk '{printf "%s ", $3}')from the submodule deps/lmdb"
+    echo "# sqlite $(dpkg-query -W -f='${Package} ${Version}' libsqlite3-0) of the distribution"
     echo "# kernel $(uname -r) $(uname -v)"
     if [[ -r /sys/kernel/sched_ext/state ]]; then
         echo "# scheduler sched_ext $(cat /sys/kernel/sched_ext/state)"
@@ -316,9 +326,10 @@ Cases of 06a52bf, with the same names, inputs and operations:
 - write_batch_size_lmdb (new; the arm 06a52bf has it through
   bench/arms/06a52bf.patch): as write_batch_lmdb with a payload of 1024 B,
   at the batch size of the argument (1, 16 or 256).
-- lmdb_put, lmdb_put_like_storage, lmdb_get: LMDB alone, env flags 0, as
-  at 06a52bf. get_entries_lmdb: get_entries(0, 1) of one entry in a read
-  transaction.
+- get_entries_lmdb: get_entries(0, 1) of one entry in a read transaction.
+A case whose name holds lmdb runs on the store of its binary: SQLite from
+the commit sqlite-storage on, LMDB in an arm before it. The names stay
+until the two stores are compared.
 - write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
   same operations with each node on its own thread, no tick.
 Removed at the branch: handle_accept_decide and handle_decide. They ran
