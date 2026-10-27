@@ -11,7 +11,8 @@ CONSTANTS Nodes, Values, MaxBallot, MaxLog, MaxCrash,
           Recovery            \* "promise": the highest promise of f + 1 answers;
                               \* "answerlog": also the log of the answer with the highest acc;
                               \* "newleader": the node votes again at the first accept of a
-                              \* ballot above every promise of f + 1 answers, and takes its log
+                              \* ballot above every promise of f + 1 answers, and takes its log;
+                              \* "newid": the node never acts again under its identity
 
 VARIABLES st, prev, status, lead, msgs, answers, crashes
 
@@ -113,7 +114,7 @@ RollbackCrash(n) ==
     /\ st[n] # prev[n]
     /\ crashes' = crashes + 1
     /\ st' = [st EXCEPT ![n] = prev[n]]
-    /\ status' = [status EXCEPT ![n] = "recovering"]
+    /\ status' = [status EXCEPT ![n] = IF Recovery = "newid" THEN "retired" ELSE "recovering"]
     /\ lead' = [lead EXCEPT ![n] = NoLead]
     /\ answers' = [answers EXCEPT ![n] = {}]
     /\ UNCHANGED <<prev, msgs>>
@@ -160,5 +161,12 @@ ChosenOnce == \A c, d \in Chosen : c[1] = d[1] => c[2] = d[2]
 
 \* Cover: a node that fell back votes again. TLC must find this violated.
 CoverRejoin == ~(crashes = 1 /\ \A n \in Nodes : status[n] = "running")
+
+\* Cover: a leader counts the promise of a retired node. TLC must find this violated.
+CoverRetired == ~\E l, r \in Nodes : /\ status[r] = "retired"
+                                     /\ lead[l].phase = "accept"
+                                     /\ r \in {p.from : p \in lead[l].promises}
+
+ValueSymmetry == Permutations(Values)
 
 =============================================================================
