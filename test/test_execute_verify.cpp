@@ -23,7 +23,7 @@
 #include "konsens/node.hpp"
 #include "konsens/selection.hpp"
 #include "konsens/verdict.hpp"
-#include "lmdb_storage.hpp"
+#include "sqlite_storage.hpp"
 
 // Tests of Execute-Verify (doc/plan-execute-verify.md, with the changes of
 // doc/plan-one-environment.md 7): the work, the answers, the selection of
@@ -364,9 +364,8 @@ cluster elected(const std::array<std::uint8_t, 3> marks)
 {
     cluster c;
     for (const auto p : three_nodes) {
-        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(),
-                                        lmdb_storage::open_new_node_storage(),
-                                        marked{marks.at(p - 1)}, p));
+        c.nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(),
+                                        sqlite_storage::open_new_node_storage(), marked{marks.at(p - 1)}, p));
     }
     c.run(rounds, once);
     static_cast<void>(c.leader());
@@ -524,9 +523,9 @@ TEST_CASE("a done record from the user is a wrong use")
 // node would give.
 TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
 {
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     {
-        auto storage = lmdb_storage::open_in(directory);
+        auto storage = sqlite_storage::open_in(directory);
         auto w = storage.begin();
         REQUIRE(w.has_value());
         const auto bytes = konsens::encode_result({0, {}, {}});
@@ -541,23 +540,23 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
         REQUIRE(w->set_decided_index(log.size()));
         REQUIRE(std::move(*w).commit());
     }
-    const auto own_directory = lmdb_storage::new_directory();
+    const auto own_directory = sqlite_storage::new_directory();
     const auto start = [&] {
-        static_cast<void>(node_t::with(config_of(1), lmdb_storage::open_in(directory),
-                                       lmdb_storage::open_node_storage_in(own_directory), marked{0}, 1));
+        static_cast<void>(node_t::with(config_of(1), sqlite_storage::open_in(directory),
+                                       sqlite_storage::open_node_storage_in(own_directory), marked{0}, 1));
     };
     CHECK_THROWS_AS(start(), konsens::node_fault);
     // Plan 3.1: the proof is durable before the throw.
     const auto bytes = konsens::encode_result({0, {}, {}});
     const auto crc = konsens::compute_result_crc(1, bytes);
     const konsens::fault_proof proof{konsens::proof_kind::result_crc, 1, leader_ballot, crc + 1, crc};
-    CHECK(lmdb_storage::open_node_storage_in(own_directory).get_repair_record() ==
+    CHECK(sqlite_storage::open_node_storage_in(own_directory).get_repair_record() ==
           konsens::repair_record{0, std::nullopt, false, proof});
     // Plan 3.3: the next start counts the proof and sets the open mark at
     // its index. The CRC in this log stays wrong, so the start throws
     // again, with a proof that the open mark covers.
     CHECK_THROWS_AS(start(), konsens::node_fault);
-    CHECK(lmdb_storage::open_node_storage_in(own_directory).get_repair_record() ==
+    CHECK(sqlite_storage::open_node_storage_in(own_directory).get_repair_record() ==
           konsens::repair_record{1, 1, false, proof});
 }
 
@@ -568,9 +567,9 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
 // does not restart without end.
 TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
 {
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     {
-        auto storage = lmdb_storage::open_in(directory);
+        auto storage = sqlite_storage::open_in(directory);
         auto w = storage.begin();
         REQUIRE(w.has_value());
         const auto bytes = konsens::encode_result({0, {}, {}});
@@ -585,13 +584,12 @@ TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
         REQUIRE(w->set_decided_index(log.size()));
         REQUIRE(std::move(*w).commit());
     }
-    const auto own_directory = lmdb_storage::new_directory();
+    const auto own_directory = sqlite_storage::new_directory();
     const auto start = [&] {
-        return node_t::with(config_of(1), lmdb_storage::open_in(directory),
-                            lmdb_storage::open_node_storage_in(own_directory),
-                            marked{0}, 1);
+        return node_t::with(config_of(1), sqlite_storage::open_in(directory),
+                            sqlite_storage::open_node_storage_in(own_directory), marked{0}, 1);
     };
-    const auto record = [&] { return lmdb_storage::open_node_storage_in(own_directory).get_repair_record(); };
+    const auto record = [&] { return sqlite_storage::open_node_storage_in(own_directory).get_repair_record(); };
     CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
     CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
     REQUIRE(record().has_value());
@@ -783,8 +781,9 @@ TEST_CASE("after a start the verified index is the decided index and the entries
     c.run(rounds, once);
     const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
     REQUIRE(log_len.has_value());
-    auto n = *node_t::with(config_of(1), lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
-                           lmdb_storage::open_new_node_storage(), marked{0}, 9);
+    auto n =
+        *node_t::with(config_of(1), sqlite_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
+                      sqlite_storage::open_new_node_storage(), marked{0}, 9);
     CHECK(n.get_sequence_paxos().get_verified_idx() == *log_len);
 }
 
@@ -797,8 +796,8 @@ const std::array<std::byte, 1> value_key{std::byte{'v'}};
 // as the nodes that did not agree with its chosen result.
 std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
 {
-    const auto directory = lmdb_storage::new_directory();
-    auto storage = lmdb_storage::open_in(directory);
+    const auto directory = sqlite_storage::new_directory();
+    auto storage = sqlite_storage::open_in(directory);
     auto w = storage.begin();
     REQUIRE(w.has_value());
     const auto registration = konsens::encode_result({0, {}, {}});
@@ -834,11 +833,12 @@ std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
 TEST_CASE("a listed node whose result still differs throws at the apply")
 {
     const auto directory = decided_log_with_a_listed({1});
-    const auto own_directory = lmdb_storage::new_directory();
-    CHECK_THROWS_AS(static_cast<void>(node_t::with(config_of(1), lmdb_storage::open_in(directory),
-                                                   lmdb_storage::open_node_storage_in(own_directory), marked{'x'}, 1)),
-                    konsens::node_fault);
-    const auto record = lmdb_storage::open_node_storage_in(own_directory).get_repair_record();
+    const auto own_directory = sqlite_storage::new_directory();
+    CHECK_THROWS_AS(
+        static_cast<void>(node_t::with(config_of(1), sqlite_storage::open_in(directory),
+                                       sqlite_storage::open_node_storage_in(own_directory), marked{'x'}, 1)),
+        konsens::node_fault);
+    const auto record = sqlite_storage::open_node_storage_in(own_directory).get_repair_record();
     REQUIRE(record.has_value());
     REQUIRE(record->proof.has_value());
     CHECK(record->proof->kind == konsens::proof_kind::listed_result_differs);
@@ -849,9 +849,8 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
     // mark at its index. The mark covers the index, so the node writes the
     // chosen bytes and does not run it again. The mark closes when the
     // applied index passes it, at the commit of the start.
-    auto n = *node_t::with(config_of(1), lmdb_storage::open_in(directory),
-                           lmdb_storage::open_node_storage_in(own_directory),
-                           marked{'x'}, 2);
+    auto n = *node_t::with(config_of(1), sqlite_storage::open_in(directory),
+                           sqlite_storage::open_node_storage_in(own_directory), marked{'x'}, 2);
     CHECK(state_of(n) == bytes_of('a'));
     CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, false, std::nullopt});
 }
@@ -863,8 +862,8 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 {
     for (const auto& out : {std::vector<node_id>{1}, std::vector<node_id>{2}}) {
         CAPTURE(out.front());
-        auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed(out)),
-                               lmdb_storage::open_new_node_storage(), marked{0}, 1);
+        auto n = *node_t::with(config_of(1), sqlite_storage::open_in(decided_log_with_a_listed(out)),
+                               sqlite_storage::open_new_node_storage(), marked{0}, 1);
         CHECK(state_of(n) == bytes_of('a'));
         CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
     }
@@ -875,8 +874,8 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 // message to another node.
 TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
 {
-    auto n = *node_t::with(config_of(1), lmdb_storage::open_in(decided_log_with_a_listed({1})),
-                           lmdb_storage::open_new_node_storage(), marked{0}, 1);
+    auto n = *node_t::with(config_of(1), sqlite_storage::open_in(decided_log_with_a_listed({1})),
+                           sqlite_storage::open_new_node_storage(), marked{0}, 1);
     const auto request = konsens::encode_result(
         {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     const auto crc = konsens::compute_result_crc(2, request);
@@ -979,8 +978,8 @@ std::vector<floating_node> floating_cluster(const std::array<floating, 3>& machi
 {
     std::vector<floating_node> nodes;
     for (const auto p : three_nodes) {
-        nodes.push_back(*floating_node::with(config_of(p), lmdb_storage::open_new(),
-                                             lmdb_storage::open_new_node_storage(), machines.at(p - 1), p));
+        nodes.push_back(*floating_node::with(config_of(p), sqlite_storage::open_new(),
+                                             sqlite_storage::open_new_node_storage(), machines.at(p - 1), p));
     }
     return nodes;
 }

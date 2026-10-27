@@ -58,7 +58,7 @@ struct counter {
 
 using node_t = konsens::node<konsens::persistent_storage, counter>;
 
-constexpr std::size_t map_size = std::size_t{1} << 24;
+constexpr std::size_t max_size = std::size_t{1} << 24;
 constexpr std::uint64_t client_id = 7;
 constexpr int round_limit = 200;
 
@@ -80,7 +80,7 @@ node_t start(const konsens::node_id pid, const std::filesystem::path& dir)
             peers.push_back(p);
         }
     }
-    auto storage = konsens::persistent_storage::open(dir, map_size, non_root_user_id).value();
+    auto storage = konsens::persistent_storage::open(dir, max_size, non_root_user_id).value();
     const std::filesystem::path node_dir{dir.string() + "-node"};
     std::filesystem::create_directories(node_dir);
     auto own_storage = konsens::node_storage::open(node_dir, non_root_user_id).value();
@@ -150,7 +150,7 @@ struct cluster {
 }
 
 // The README shows these calls as the way to run a node, write through a
-// session and read. This test makes the same calls on three nodes on LMDB,
+// session and read. This test makes the same calls on three nodes on SQLite,
 // with the network of the README: on each tick, decode the messages that
 // arrived, handle them as one batch, commit the transaction, then encode
 // and send what the commit released.

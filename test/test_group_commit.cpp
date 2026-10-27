@@ -111,14 +111,14 @@ TEST_CASE("a crash between the batch and the commit sends nothing, and the retry
         }
     }
     REQUIRE(std::ranges::any_of(accepted, holds<konsens::accepted>));
-    const auto decided_on_disk = lmdb_storage::meta_of(c.disks.at(l)->store).decided_idx;
+    const auto decided_on_disk = sqlite_storage::meta_of(c.disks.at(l)->store).decided_idx;
     const auto uncommitted = c.nodes.at(l).handle_incoming(messages_to(accepted, pid_of(l)));
     REQUIRE(uncommitted);
     REQUIRE(value_of(c.nodes.at(l).get_sequence_paxos().get_decided_idx()) > decided_on_disk);
     CHECK(c.nodes.at(l).take_outgoing_messages().empty());
     CHECK(c.nodes.at(l).take_client_replies().empty());
     c.restart(l);
-    CHECK(lmdb_storage::meta_of(c.disks.at(l)->store).decided_idx == decided_on_disk);
+    CHECK(sqlite_storage::meta_of(c.disks.at(l)->store).decided_idx == decided_on_disk);
     c.run(rounds);
     CHECK(c.replies_of_all().empty());
     const auto at = first_follower(l);
@@ -143,13 +143,13 @@ TEST_CASE("a follower that ends before its commit sends no Accepted")
     const auto f = first_follower(l);
     batches::commit(c.nodes.at(l), c.nodes.at(l).append(make_entry(1)));
     auto out = c.nodes.at(l).take_outgoing_messages();
-    const auto log_on_disk = lmdb_storage::meta_of(c.disks.at(f)->store).log_len;
+    const auto log_on_disk = sqlite_storage::meta_of(c.disks.at(f)->store).log_len;
     const auto uncommitted = c.nodes.at(f).handle_incoming(messages_to(out, pid_of(f)));
     REQUIRE(uncommitted);
     REQUIRE(c.nodes.at(f).get_sequence_paxos().get_accepted_idx() == log_on_disk + 1);
     CHECK(c.nodes.at(f).take_outgoing_messages().empty());
     c.restart(f);
-    CHECK(lmdb_storage::meta_of(c.disks.at(f)->store).log_len == log_on_disk);
+    CHECK(sqlite_storage::meta_of(c.disks.at(f)->store).log_len == log_on_disk);
 }
 
 // AcceptDecide and the Decide of its entries can arrive in one batch. The
@@ -303,7 +303,7 @@ TEST_CASE("a storage read from outside while ops wait is a wrong use")
     CHECK_THROWS_AS(static_cast<void>(c.nodes.at(f).get_sequence_paxos().get_internal_storage()), std::logic_error);
     REQUIRE(c.nodes.at(f).commit(t));
     CHECK(c.nodes.at(f).read_decided_suffix(0));
-    CHECK(lmdb_storage::meta_of(c.disks.at(f)->store).log_len == 1u);
+    CHECK(sqlite_storage::meta_of(c.disks.at(f)->store).log_len == 1u);
 }
 
 // R6 of the review: the messages that wait for a commit have one limit,

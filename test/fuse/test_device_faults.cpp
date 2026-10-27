@@ -30,7 +30,7 @@ namespace {
 
 // The session that runs these tests runs as root, and open refuses root.
 constexpr uid_t non_root_user_id = 1000;
-constexpr std::size_t map_size = std::size_t{16} << 20;
+constexpr std::size_t max_size = std::size_t{16} << 20;
 constexpr std::size_t large_entry_size = std::size_t{64} << 10;
 constexpr int pattern_period = 251;
 
@@ -43,7 +43,7 @@ std::vector<std::byte> bytes_of(const std::string_view text)
 
 konsens::persistent_storage open_storage(const std::filesystem::path& directory)
 {
-    auto opened = konsens::persistent_storage::open(directory, map_size, non_root_user_id);
+    auto opened = konsens::persistent_storage::open(directory, max_size, non_root_user_id);
     REQUIRE(opened.has_value());
     return std::move(*opened);
 }

@@ -24,12 +24,12 @@
 
 #include "batches.hpp"
 #include "konsens/node.hpp"
-#include "lmdb_storage.hpp"
+#include "sqlite_storage.hpp"
 
 // The simulation runs on each storage. A Cluster gives the storage type,
 // start(i, kept) gives the storage of node i, and stop(node) gives what a
 // crash keeps. A crash destroys the node before start, so that a storage
-// that holds a file, as LMDB does, is closed before it is opened again.
+// that holds a file, as SQLite does, is closed before it is opened again.
 // With rollback::one and a Cluster that can keep(i, storage) and
 // restore(i, kept), one node restarts from an earlier copy of its storage
 // (a lost fsync or a backup), as
@@ -541,8 +541,8 @@ struct world {
             return cluster.stop(stopped);
         }();
         nonce += 1;
-        nodes[i] =
-            *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
+        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)),
+                                 sqlite_storage::open_new_node_storage(), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
     }
@@ -564,8 +564,8 @@ struct world {
         note([&] { return std::string("roll back " + std::to_string(i + 1)); });
         const auto len_before = read_value(nodes[i].get_sequence_paxos().get_accepted_idx());
         nonce += 1;
-        nodes[i] =
-            *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
+        nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second),
+                                 sqlite_storage::open_new_node_storage(), concatenation{}, nonce);
         if (read_value(nodes[i].get_sequence_paxos().get_accepted_idx()) < len_before) {
             counts.rollbacks += 1;
         }
@@ -917,7 +917,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
         w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}),
-                                                  lmdb_storage::open_new_node_storage(), concatenation{}, w.nonce));
+                                                  sqlite_storage::open_new_node_storage(), concatenation{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);

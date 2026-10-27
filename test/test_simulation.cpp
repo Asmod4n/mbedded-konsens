@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include "lmdb_cluster.hpp"
+#include "sqlite_cluster.hpp"
 
 // The proof of v0 in the plan: S1, S2, S2b, S3, S5 and S7 of
 // SequencePaxos.tla hold in each state of a run with the faults that the
@@ -15,7 +15,7 @@
 // so a message leaves only after the commit of the batch that made it.
 TEST_CASE("simulation with FIFO channels keeps the safety properties")
 {
-    simulation::run_seeds<lmdb_cluster>(simulation::delivery::fifo, seed_count);
+    simulation::run_seeds<sqlite_cluster>(simulation::delivery::fifo, seed_count);
 }
 
 // The same run, but each delivery takes any message in flight. The model
@@ -28,8 +28,8 @@ TEST_CASE("simulation with FIFO channels keeps the safety properties")
 // each batch, so the steps of seed 57 stay the steps that broke S1.
 TEST_CASE("a follower refuses the stale AcceptSync of seed 57")
 {
-    const auto o = simulation::run<lmdb_cluster>(57, simulation::delivery::reorder, false, simulation::rollback::none,
-                                                 simulation::clients::none, simulation::batches::single);
+    const auto o = simulation::run<sqlite_cluster>(57, simulation::delivery::reorder, false, simulation::rollback::none,
+                                                   simulation::clients::none, simulation::batches::single);
     CHECK_FALSE(o.violation);
 }
 
@@ -38,5 +38,5 @@ TEST_CASE("a follower refuses the stale AcceptSync of seed 57")
 // It stays to show what the requirement protects.
 TEST_CASE("simulation with reordered messages keeps the safety properties" * doctest::skip())
 {
-    simulation::run_seeds<lmdb_cluster>(simulation::delivery::reorder, seed_count);
+    simulation::run_seeds<sqlite_cluster>(simulation::delivery::reorder, seed_count);
 }

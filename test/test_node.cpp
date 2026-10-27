@@ -19,8 +19,8 @@
 #include "batches.hpp"
 #include "echo.hpp"
 #include "konsens/node.hpp"
-#include "lmdb_storage.hpp"
 #include "sqlite_damage.hpp"
+#include "sqlite_storage.hpp"
 
 namespace {
 
@@ -72,7 +72,8 @@ TEST_CASE("three nodes elect, decide and survive the loss of the leader")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(),
+                                      echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -106,7 +107,8 @@ TEST_CASE("a tick timeout of 0 is a wrong use")
 {
     auto c = config_of(1);
     c.election_tick_timeout = 0;
-    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0)),
+    CHECK_THROWS_AS(static_cast<void>(node_t::with(c, sqlite_storage::open_new(),
+                                                   sqlite_storage::open_new_node_storage(), echo{}, 0)),
                     std::logic_error);
 }
 
@@ -139,7 +141,8 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(),
+                                      echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -150,8 +153,8 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
         step(nodes, all);
     }
     REQUIRE(nodes[2].get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept});
-    auto kept = lmdb_storage::open_copy_of(nodes[2].get_sequence_paxos().get_internal_storage());
-    nodes[2] = *node_t::with(config_of(3), std::move(kept), lmdb_storage::open_new_node_storage(), echo{}, 1);
+    auto kept = sqlite_storage::open_copy_of(nodes[2].get_sequence_paxos().get_internal_storage());
+    nodes[2] = *node_t::with(config_of(3), std::move(kept), sqlite_storage::open_new_node_storage(), echo{}, 1);
     REQUIRE(nodes[2].get_sequence_paxos().recovering());
     static_cast<void>(nodes[2].take_outgoing_messages());
     std::vector<konsens::message> heartbeat;
@@ -228,7 +231,8 @@ std::vector<node_t> elect_three()
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(),
+                                      echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -258,7 +262,7 @@ void check_caught_up(const std::vector<node_t>& nodes)
     const auto& l = nodes[elected - 1].get_sequence_paxos();
     CHECK(f.get_decided_idx() == l.get_decided_idx());
     CHECK(*nodes[behind - 1].read_decided_suffix(0) == *nodes[elected - 1].read_decided_suffix(0));
-    CHECK(lmdb_storage::log_of(f.get_internal_storage()) == lmdb_storage::log_of(l.get_internal_storage()));
+    CHECK(sqlite_storage::log_of(f.get_internal_storage()) == sqlite_storage::log_of(l.get_internal_storage()));
 }
 
 void check_resynced(const std::vector<konsens::paxos_message>& seen)
@@ -420,9 +424,9 @@ TEST_CASE("a decoded AcceptDecide reaches the storage with no copy")
     std::array<std::vector<const konsens::entry*>, 3> appended;
     std::vector<recording_node> nodes;
     for (node_id p = 1; p <= 3; ++p) {
-        nodes.push_back(*recording_node::with(
-            config_of(p), recording_storage{lmdb_storage::open_new(), &appended.at(p - 1)},
-            lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*recording_node::with(config_of(p),
+                                              recording_storage{sqlite_storage::open_new(), &appended.at(p - 1)},
+                                              sqlite_storage::open_new_node_storage(), echo{}, 0));
     }
     const auto deliver = [&nodes] {
         batches::deliver(nodes, [](const konsens::message&) -> std::size_t { return 1; });
@@ -487,14 +491,15 @@ void stop(node_t& n)
 // can allow one more repair.
 TEST_CASE("a damage that the start checks find counts toward the automatic repair")
 {
-    const auto log_directory = lmdb_storage::new_directory();
-    const auto own_directory = lmdb_storage::new_directory();
+    const auto log_directory = sqlite_storage::new_directory();
+    const auto own_directory = sqlite_storage::new_directory();
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 2; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(),
+                                      echo{}, 0));
     }
-    nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, 0));
+    nodes.push_back(*node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+                                  sqlite_storage::open_node_storage_in(own_directory), echo{}, 0));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -508,8 +513,8 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
         if (damaged) {
             lose_the_last_entry_in(log_directory);
         }
-        nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                 lmdb_storage::open_node_storage_in(own_directory), echo{}, nonce);
+        nodes[2] = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+                                 sqlite_storage::open_node_storage_in(own_directory), echo{}, nonce);
     };
 
     restart(10, true);
@@ -549,25 +554,24 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
 // second count.
 TEST_CASE("a restart during a repair does not count again")
 {
-    const auto own_directory = lmdb_storage::new_directory();
+    const auto own_directory = sqlite_storage::new_directory();
     {
-        auto own = lmdb_storage::open_node_storage_in(own_directory);
+        auto own = sqlite_storage::open_node_storage_in(own_directory);
         REQUIRE(own.count_a_repair(0));
         CHECK(own.get_repair_record() == konsens::repair_record{1, 0, false, std::nullopt});
     }
-    const auto log_directory = lmdb_storage::new_directory();
+    const auto log_directory = sqlite_storage::new_directory();
     {
-        auto s = lmdb_storage::open_in(log_directory);
-        lmdb_storage::write(s, [](auto& t) {
+        auto s = sqlite_storage::open_in(log_directory);
+        sqlite_storage::write(s, [](auto& t) {
             REQUIRE(t.set_promise({1, 1, 0, 2}));
             REQUIRE(t.set_accepted_round({1, 1, 0, 2}));
             REQUIRE(t.append_entries(std::vector{make_entry(1)}));
         });
     }
     lose_the_last_entry_in(log_directory);
-    auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                           lmdb_storage::open_node_storage_in(own_directory),
-                           echo{}, 5);
+    auto n = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+                           sqlite_storage::open_node_storage_in(own_directory), echo{}, 5);
     CHECK(n.get_sequence_paxos().repairing());
     CHECK(n.get_repair_count() == 1);
     CHECK_FALSE(n.waits_for_the_operator());
@@ -579,15 +583,15 @@ TEST_CASE("a restart during a repair does not count again")
 // operator, counts no repair and does not vote.
 TEST_CASE("a start without a meta record waits for the operator")
 {
-    const auto log_directory = lmdb_storage::new_directory();
-    const auto own_directory = lmdb_storage::new_directory();
+    const auto log_directory = sqlite_storage::new_directory();
+    const auto own_directory = sqlite_storage::new_directory();
     {
-        auto s = lmdb_storage::open_in(log_directory);
-        lmdb_storage::write(s, [](auto& t) { REQUIRE(t.set_promise({1, 1, 0, 2})); });
+        auto s = sqlite_storage::open_in(log_directory);
+        sqlite_storage::write(s, [](auto& t) { REQUIRE(t.set_promise({1, 1, 0, 2})); });
     }
     sqlite_damage::change_with_sqlite(log_directory, [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
-    auto n = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                           lmdb_storage::open_node_storage_in(own_directory), echo{}, 5);
+    auto n = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+                           sqlite_storage::open_node_storage_in(own_directory), echo{}, 5);
     CHECK(n.waits_for_the_operator());
     CHECK_FALSE(n.get_sequence_paxos().votes());
     CHECK_FALSE(n.get_sequence_paxos().repairing());
@@ -601,14 +605,14 @@ TEST_CASE("a start without a meta record waits for the operator")
 // members keep the fields that they do not name.
 TEST_CASE("the repair record keeps the proof and the open mark")
 {
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     const konsens::fault_proof proof{konsens::proof_kind::listed_result_differs, 7, {1, 2, 0, 3}, 11, 12};
     {
-        auto own = lmdb_storage::open_node_storage_in(directory);
+        auto own = sqlite_storage::open_node_storage_in(directory);
         CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
         REQUIRE(own.write_the_proof(proof));
     }
-    auto own = lmdb_storage::open_node_storage_in(directory);
+    auto own = sqlite_storage::open_node_storage_in(directory);
     CHECK(own.get_repair_record() == konsens::repair_record{0, std::nullopt, false, proof});
     REQUIRE(own.count_a_repair(proof.index));
     CHECK(own.get_repair_record() == konsens::repair_record{1, 7, false, std::nullopt});
@@ -627,14 +631,15 @@ TEST_CASE("the repair record keeps the proof and the open mark")
 // automatic repair, and the repair brings the entry back from a peer.
 TEST_CASE("the start scan finds an entry that is missing in the middle of the log")
 {
-    const auto log_directory = lmdb_storage::new_directory();
-    const auto own_directory = lmdb_storage::new_directory();
+    const auto log_directory = sqlite_storage::new_directory();
+    const auto own_directory = sqlite_storage::new_directory();
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 2; ++p) {
-        nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), echo{}, 0));
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(),
+                                      echo{}, 0));
     }
-    nodes.push_back(*node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                                  lmdb_storage::open_node_storage_in(own_directory), echo{}, 0));
+    nodes.push_back(*node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+                                  sqlite_storage::open_node_storage_in(own_directory), echo{}, 0));
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
@@ -649,9 +654,8 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
     REQUIRE(*nodes[2].read_decided_suffix(0) == entries);
     stop(nodes[2]);
     sqlite_damage::change_with_sqlite(log_directory, [](sqlite3* db) { sqlite_damage::delete_entry(db, 1); });
-    nodes[2] = *node_t::with(config_of(3), lmdb_storage::open_in(log_directory),
-                             lmdb_storage::open_node_storage_in(own_directory),
-                             echo{}, 10);
+    nodes[2] = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+                             sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
     CHECK(nodes[2].get_sequence_paxos().repairing());
     CHECK(nodes[2].get_repair_count() == 1);
     for (int i = 0; i < rounds; ++i) {

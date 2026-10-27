@@ -84,7 +84,7 @@ constexpr std::uint64_t final_read_round_limit = 1000;
 constexpr int usage_exit_code = 2;
 constexpr std::size_t words_of_a_flag = 2;
 constexpr std::size_t mebibyte = std::size_t{1} << 20;
-constexpr std::size_t map_size = 64 * mebibyte;
+constexpr std::size_t max_size = 64 * mebibyte;
 
 constexpr std::uint64_t default_clients = 4;
 constexpr std::uint64_t default_increments = 1000;
@@ -203,7 +203,7 @@ std::uint64_t value_of(const std::span<const std::byte> bytes)
     return std::bit_cast<std::uint64_t>(b);
 }
 
-struct lmdb_cluster {
+struct sqlite_cluster {
     using storage_type = konsens::persistent_storage;
 
     std::array<std::filesystem::path, node_count> directories;
@@ -213,7 +213,7 @@ struct lmdb_cluster {
 
     std::expected<konsens::persistent_storage, std::error_code> start(const std::size_t i, const std::monostate) const
     {
-        return konsens::persistent_storage::open(directories.at(i), map_size, effective_user_id);
+        return konsens::persistent_storage::open(directories.at(i), max_size, effective_user_id);
     }
 
     std::expected<konsens::node_storage, std::error_code> start_node_storage(const std::size_t i) const
@@ -226,7 +226,6 @@ struct lmdb_cluster {
         }
         return konsens::node_storage::open(directory, effective_user_id);
     }
-
 };
 
 konsens::node_config config_of(const konsens::node_id pid)
@@ -1092,7 +1091,7 @@ int run(const options& given, Cluster storage)
     return EXIT_SUCCESS;
 }
 
-int run_on_lmdb(const options& given)
+int run_on_sqlite(const options& given)
 {
     const auto user_id = choose_the_user_id(geteuid(), given.allow_root_for_test);
     if (!user_id) [[unlikely]] {
@@ -1100,7 +1099,7 @@ int run_on_lmdb(const options& given)
         return exit_refused_root;
     }
     temporary_directories temporary;
-    lmdb_cluster storage{{}, *user_id};
+    sqlite_cluster storage{{}, *user_id};
     for (auto& d : storage.directories) {
         d = temporary.create();
     }
@@ -1123,7 +1122,7 @@ int main(const int argc, char** const argv)
             std::cerr << std::format("{}.\n{}", given.error(), usage) << '\n';
             return usage_exit_code;
         }
-        return run_on_lmdb(*given);
+        return run_on_sqlite(*given);
     } catch (const std::exception& e) {
         std::cerr << std::format("The program ended with an exception: {}", e.what()) << '\n';
         return EXIT_FAILURE;

@@ -18,7 +18,7 @@
 #include "batches.hpp"
 #include "konsens/client.hpp"
 #include "konsens/node.hpp"
-#include "lmdb_storage.hpp"
+#include "sqlite_storage.hpp"
 
 namespace {
 
@@ -161,7 +161,8 @@ cluster elected()
 {
     cluster c;
     for (node_id p = 1; p <= node_count; ++p) {
-        c.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(), lmdb_storage::open_new_node_storage(), concatenation{}, 0));
+        c.nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(),
+                                        sqlite_storage::open_new_node_storage(), concatenation{}, 0));
     }
     c.run(rounds, once);
     REQUIRE(c.at(3).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
@@ -190,9 +191,9 @@ TEST_CASE("a start applies the decided log from index 0")
     const auto s = registered(c, 3, client_a);
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
-    auto kept = lmdb_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
+    auto kept = sqlite_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
     REQUIRE(c.at(1).get_applied_idx() == request_done);
-    auto n = *node_t::with(config_of(1), std::move(kept), lmdb_storage::open_new_node_storage(), concatenation{}, 0);
+    auto n = *node_t::with(config_of(1), std::move(kept), sqlite_storage::open_new_node_storage(), concatenation{}, 0);
     CHECK(n.get_applied_idx() == request_done);
     CHECK(concatenation_of(n) == bytes_of("a"));
     CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of("a")});
@@ -479,7 +480,7 @@ std::filesystem::path decided_log_of_two_entries(cluster& c)
     batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
     c.deliver(once);
     REQUIRE(c.at(1).get_applied_idx() == request_done);
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     REQUIRE(c.at(1).get_sequence_paxos().get_internal_storage().copy(directory));
     return directory;
 }
@@ -494,8 +495,8 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
     auto c = elected();
     const auto log_directory = decided_log_of_two_entries(c);
     for (std::uint64_t nonce = 1; nonce <= 2; ++nonce) {
-        const auto n =
-            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(), concatenation{}, nonce);
+        const auto n = *node_t::with(config_of(1), sqlite_storage::open_in(log_directory),
+                                     sqlite_storage::open_new_node_storage(), concatenation{}, nonce);
         CHECK(n.get_sequence_paxos().votes());
         CHECK(n.get_applied_idx() == request_done);
         CHECK(concatenation_of(n) == bytes_of("a"));
@@ -521,20 +522,20 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
         std::uint32_t crc;
     };
     for (const auto applied : {applied_point{2, *own + 1}, applied_point{*log_len + 1, *own}}) {
-        const auto log_directory = lmdb_storage::new_directory();
+        const auto log_directory = sqlite_storage::new_directory();
         {
-            auto storage = lmdb_storage::open_in(decided);
+            auto storage = sqlite_storage::open_in(decided);
             REQUIRE(storage.copy(log_directory));
         }
         {
-            auto storage = lmdb_storage::open_in(log_directory);
+            auto storage = sqlite_storage::open_in(log_directory);
             auto w = storage.begin();
             REQUIRE(w.has_value());
             REQUIRE(w->set_applied(applied.index, applied.crc));
             REQUIRE(std::move(*w).commit());
         }
-        const auto n =
-            *node_t::with(config_of(1), lmdb_storage::open_in(log_directory), lmdb_storage::open_new_node_storage(), concatenation{}, 1);
+        const auto n = *node_t::with(config_of(1), sqlite_storage::open_in(log_directory),
+                                     sqlite_storage::open_new_node_storage(), concatenation{}, 1);
         CHECK(n.get_sequence_paxos().get_error() == differs);
         CHECK_FALSE(n.get_sequence_paxos().repairing());
         CHECK_FALSE(n.waits_for_the_operator());

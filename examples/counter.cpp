@@ -63,7 +63,7 @@ constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
 constexpr int round_limit = 200;
 constexpr std::uint64_t increment_count = 5;
-constexpr std::size_t map_size = std::size_t{16} << 20;
+constexpr std::size_t max_size = std::size_t{16} << 20;
 
 std::uint64_t value_of(const std::span<const std::byte> bytes)
 {
@@ -221,7 +221,7 @@ int run(const std::span<const std::string_view> args)
     temporary_directories temporary;
     cluster c{};
     for (std::size_t i = 0; i < node_count; ++i) {
-        auto storage = konsens::persistent_storage::open(temporary.create(), map_size, *user_id);
+        auto storage = konsens::persistent_storage::open(temporary.create(), max_size, *user_id);
         if (!storage) [[unlikely]] {
             return fail("open the storages", storage.error());
         }

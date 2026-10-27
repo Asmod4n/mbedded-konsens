@@ -19,11 +19,11 @@
 #include <variant>
 #include <vector>
 
-#include <sys/resource.h>
 #include "batches.hpp"
 #include "konsens/sequence_paxos.hpp"
-#include "lmdb_storage.hpp"
 #include "sqlite_damage.hpp"
+#include "sqlite_storage.hpp"
+#include <sys/resource.h>
 
 namespace {
 
@@ -77,7 +77,7 @@ std::vector<node_id> peers_of(node_id pid)
 
 constexpr std::uint64_t first_nonce = 1;
 
-sp_t make(node_id pid, persistent_storage s = lmdb_storage::open_new(), std::uint64_t nonce = first_nonce)
+sp_t make(node_id pid, persistent_storage s = sqlite_storage::open_new(), std::uint64_t nonce = first_nonce)
 {
     return *sp_t::with({pid, peers_of(pid)}, std::move(s), nonce);
 }
@@ -119,8 +119,8 @@ void deliver_all(std::array<sp_t*, 3> nodes)
 
 persistent_storage storage_with_promise(const ballot b)
 {
-    auto s = lmdb_storage::open_new();
-    lmdb_storage::write(s, [&](auto& t) { REQUIRE(t.set_promise(b)); });
+    auto s = sqlite_storage::open_new();
+    sqlite_storage::write(s, [&](auto& t) { REQUIRE(t.set_promise(b)); });
     return s;
 }
 
@@ -160,8 +160,8 @@ bool compatible(const std::vector<entry>& a, const std::vector<entry>& b)
 persistent_storage storage_of(const ballot promise, const ballot n_accepted, const std::vector<entry>& log,
                               const std::uint64_t decided_idx)
 {
-    auto s = lmdb_storage::open_new();
-    lmdb_storage::write(s, [&](auto& t) {
+    auto s = sqlite_storage::open_new();
+    sqlite_storage::write(s, [&](auto& t) {
         REQUIRE(t.append_entries(log));
         REQUIRE(t.set_promise(promise));
         REQUIRE(t.set_accepted_round(n_accepted));
@@ -208,7 +208,7 @@ konsens::new_state new_state_of(const std::uint64_t nonce, const ballot promise,
 
 std::vector<entry> log_of(sp_t& sp)
 {
-    return lmdb_storage::log_of(committed_storage_of(sp));
+    return sqlite_storage::log_of(committed_storage_of(sp));
 }
 
 // The limit of the file size holds for the test program while the object
@@ -243,18 +243,18 @@ constexpr std::size_t largest_map_pages = 64;
 // directory, because a try that fails leaves a file. So the next write
 // that needs a new page gives SQLITE_FULL, which the storage gives as
 // no_space_on_device. The fault comes from SQLite and not from a wrapper.
-persistent_storage storage_with_full_map()
+persistent_storage storage_at_its_max_size()
 {
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
     for (std::size_t pages = 1; pages <= largest_map_pages; ++pages) {
         auto opened =
-            persistent_storage::open(lmdb_storage::new_directory(), pages * page, lmdb_storage::non_root_user_id);
+            persistent_storage::open(sqlite_storage::new_directory(), pages * page, sqlite_storage::non_root_user_id);
         if (opened) {
             return std::move(*opened);
         }
     }
     FAIL("no bound of up to largest_map_pages pages holds the tables");
-    return lmdb_storage::open_new();
+    return sqlite_storage::open_new();
 }
 
 constexpr std::size_t large_entry_size = 3000;
@@ -273,11 +273,11 @@ entry large_entry_of(const std::uint8_t fill)
 persistent_storage storage_with_flipped_middle_entry(const ballot b)
 {
     constexpr std::uint8_t middle_fill = 0x5a;
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     {
-        auto storage = lmdb_storage::open_in(directory);
+        auto storage = sqlite_storage::open_in(directory);
         const std::vector written{large_entry_of(0x11), large_entry_of(middle_fill), large_entry_of(0x22)};
-        lmdb_storage::write(storage, [&](auto& t) {
+        sqlite_storage::write(storage, [&](auto& t) {
             REQUIRE(t.append_entries(written));
             REQUIRE(t.set_promise(b));
             REQUIRE(t.set_accepted_round(b));
@@ -298,7 +298,7 @@ persistent_storage storage_with_flipped_middle_entry(const ballot b)
         std::ofstream out{data_file, std::ios::binary | std::ios::trunc};
         out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     }
-    return lmdb_storage::open_in(directory);
+    return sqlite_storage::open_in(directory);
 }
 
 }
@@ -337,7 +337,7 @@ TEST_CASE("handle_leader with the own ballot sends prepare")
     auto sp = make(3);
     REQUIRE(sp.handle_leader(ballot_of(1, 3)));
     CHECK(sp.get_state() == std::pair{role::leader, phase::prepare});
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(1, 3));
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(1, 3));
     CHECK(messages_of<konsens::prepare>(committed_messages_of(sp)).size() == 2);
     REQUIRE(sp.handle_leader(ballot_of(1, 2)));
     CHECK(committed_messages_of(sp).empty());
@@ -350,7 +350,7 @@ TEST_CASE("handle_prepare promises only a higher ballot")
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     CHECK(sp.get_state() == std::pair{role::follower, phase::prepare});
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(1, 3));
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(1, 3));
     const auto out = committed_messages_of(sp);
     REQUIRE(out.size() == 1);
     CHECK(out[0].to == 3);
@@ -388,7 +388,7 @@ TEST_CASE("a majority of promises moves the leader to accept")
     CHECK(sp.get_state() == std::pair{role::leader, phase::accept});
     const auto out = committed_messages_of(sp);
     CHECK(sp.get_accepted_idx() == 1);
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).accepted_round == ballot_of(1, 3));
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).accepted_round == ballot_of(1, 3));
     const auto syncs = messages_of<konsens::accept_sync>(out);
     REQUIRE(syncs.size() == 1);
     CHECK(syncs[0].log_sync.suffix.empty());
@@ -415,7 +415,7 @@ TEST_CASE("accept_sync keeps the higher decided_idx")
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 2, ballot_of(1, 3), 2}}));
     REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(2, 3), {1, 1}, 1, {{}, 2}, 0}}));
     CHECK(sp.get_decided_idx() == 2);
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).decided_idx == 2);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).decided_idx == 2);
 }
 
 // follower.rs:230-238 handle_sequence_num: a gap in the sequence numbers
@@ -489,7 +489,7 @@ TEST_CASE("update_decided caps the decided_idx at the accepted_idx")
 // commit is a wrong use, and no message of the step leaves.
 TEST_CASE("a failed write inside a step throws write_error, and a later commit is a wrong use")
 {
-    auto sp = make(1, storage_with_full_map());
+    auto sp = make(1, storage_at_its_max_size());
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     committed_messages_of(sp);
     const std::vector large{large_entry_of(0x11), large_entry_of(0x22), large_entry_of(0x33)};
@@ -510,8 +510,8 @@ TEST_CASE("a failed write inside a step throws write_error, and a later commit i
 // second commit is a wrong use.
 TEST_CASE("a failed commit throws write_error and sends nothing")
 {
-    const auto directory = lmdb_storage::new_directory();
-    auto sp = make(1, lmdb_storage::open_in(directory));
+    const auto directory = sqlite_storage::new_directory();
+    auto sp = make(1, sqlite_storage::open_in(directory));
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
     const auto file_size = std::filesystem::file_size(directory / "konsens.db-wal");
     {
@@ -531,11 +531,11 @@ TEST_CASE("a failed commit throws write_error and sends nothing")
 // a wrong use and must fail loudly.
 TEST_CASE("a pid of 0 is a wrong use")
 {
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({0, {1, 2}}, lmdb_storage::open_new(), first_nonce)),
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({0, {1, 2}}, sqlite_storage::open_new(), first_nonce)),
                     std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {1, 2}}, lmdb_storage::open_new(), first_nonce)),
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {1, 2}}, sqlite_storage::open_new(), first_nonce)),
                     std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {2, 2}}, lmdb_storage::open_new(), first_nonce)),
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {2, 2}}, sqlite_storage::open_new(), first_nonce)),
                     std::logic_error);
 }
 
@@ -585,7 +585,7 @@ TEST_CASE("a recovering node drops messages, refuses proposals and resends recov
     committed_messages_of(sp);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 0, ballot{}, 0}}));
     CHECK(committed_messages_of(sp).empty());
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(1, 2));
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(1, 2));
     REQUIRE(sp.handle_leader(ballot_of(5, 1)));
     CHECK(sp.get_state() == std::pair{role::follower, phase::recover});
     CHECK(committed_messages_of(sp).empty());
@@ -609,7 +609,7 @@ TEST_CASE("a recovering node answers recovery and changes no state")
 {
     persistent_storage s = storage_with_promise(ballot_of(3, 1));
     const std::vector two{make_entry(1), make_entry(2)};
-    lmdb_storage::write(s, [&](auto& t) {
+    sqlite_storage::write(s, [&](auto& t) {
         REQUIRE(t.append_entries(two));
         REQUIRE(t.set_accepted_round(ballot_of(2, 2)));
         REQUIRE(t.set_decided_index(1));
@@ -628,7 +628,7 @@ TEST_CASE("a recovering node answers recovery and changes no state")
     CHECK(sp.get_promise() == ballot_of(3, 1));
     CHECK(sp.get_accepted_idx() == 2);
     CHECK(sp.get_decided_idx() == 1);
-    CHECK(lmdb_storage::log_of(committed_storage_of(sp)) == two);
+    CHECK(sqlite_storage::log_of(committed_storage_of(sp)) == two);
 }
 
 // Run 3 of model/results/20261021T081623Z-power-loss-rollback-S2.md, steps
@@ -642,7 +642,7 @@ TEST_CASE("the answer of a recovering node does not count in the normal recovery
 {
     persistent_storage s = storage_with_promise(ballot_of(3, 3));
     const std::vector v1{make_entry(1)};
-    lmdb_storage::write(s, [&](auto& t) {
+    sqlite_storage::write(s, [&](auto& t) {
         REQUIRE(t.append_entries(v1));
         REQUIRE(t.set_accepted_round(ballot_of(3, 3)));
         REQUIRE(t.set_decided_index(1));
@@ -807,7 +807,7 @@ TEST_CASE("handle_recovery_response: the node takes the state of the primary")
 {
     persistent_storage s = storage_with_promise(ballot_of(3, 1));
     const std::vector nines{make_entry(9), make_entry(9)};
-    lmdb_storage::write(s, [&](auto& t) {
+    sqlite_storage::write(s, [&](auto& t) {
         REQUIRE(t.append_entries(nines));
         REQUIRE(t.set_accepted_round(ballot_of(1, 1)));
     });
@@ -844,10 +844,10 @@ TEST_CASE("handle_recovery_response: the node takes the state of the primary")
     CHECK(sp.get_accepted_idx() == 2);
     CHECK(sp.get_decided_idx() == 1);
     const auto& st = committed_storage_of(sp);
-    CHECK(lmdb_storage::meta_of(st).promise == ballot_of(3, 1));
-    CHECK(lmdb_storage::meta_of(st).accepted_round == ballot_of(2, 3));
-    CHECK(lmdb_storage::meta_of(st).decided_idx == 1);
-    CHECK(lmdb_storage::log_of(st) == std::vector{make_entry(1), make_entry(2)});
+    CHECK(sqlite_storage::meta_of(st).promise == ballot_of(3, 1));
+    CHECK(sqlite_storage::meta_of(st).accepted_round == ballot_of(2, 3));
+    CHECK(sqlite_storage::meta_of(st).decided_idx == 1);
+    CHECK(sqlite_storage::log_of(st) == std::vector{make_entry(1), make_entry(2)});
     const auto reqs = messages_of<konsens::prepare_req>(committed_messages_of(sp));
     REQUIRE(reqs.size() == 2);
     CHECK(reqs[0].n == ballot_of(3, 1));
@@ -865,7 +865,7 @@ TEST_CASE("handle_recovery_response: the node takes a higher promise of the prim
     REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(4, 2), false, ballot{}, {}, 0, false, 0, 0, 0}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_promise() == ballot_of(4, 2));
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(4, 2));
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(4, 2));
 }
 
 // S7 of SequencePaxos.tla: the decided index never falls. A primary in
@@ -880,7 +880,7 @@ TEST_CASE("handle_recovery_response: the decided index does not fall")
 {
     persistent_storage s = storage_with_promise(ballot_of(1, 3));
     const std::vector written{make_entry(1), make_entry(2)};
-    lmdb_storage::write(s, [&](auto& t) {
+    sqlite_storage::write(s, [&](auto& t) {
         REQUIRE(t.append_entries(written));
         REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
         REQUIRE(t.set_decided_index(2));
@@ -901,7 +901,7 @@ TEST_CASE("handle_recovery_response: the decided index does not fall")
     REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 2), false, ballot{}, {}, 0, false, 0, 0, 0}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_decided_idx() == 2);
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).decided_idx == 2);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).decided_idx == 2);
     CHECK(sp.get_accepted_idx() == 3);
 }
 
@@ -947,7 +947,7 @@ TEST_CASE("a node that ties with the highest answer is its own source")
     REQUIRE(sp.handle({3, 1, answer_of(7, ballot_of(5, 3), ballot_of(1, 1), {make_entry(1)}, 0)}));
     CHECK(!sp.recovering());
     CHECK(sp.get_promise() == ballot_of(5, 3));
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(5, 3));
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(5, 3));
     CHECK(log_of(sp) == one_two);
     CHECK(sp.get_accepted_round() == ballot_of(2, 2));
     const auto out = committed_messages_of(sp);
@@ -998,9 +998,9 @@ TEST_CASE("get_state starts at decided_idx with a lower round, and new_state com
     CHECK(sp.get_decided_idx() == 2);
     CHECK(sp.get_promise() == ballot_of(4, 1));
     const auto& st = committed_storage_of(sp);
-    CHECK(lmdb_storage::meta_of(st).accepted_round == ballot_of(2, 2));
-    CHECK(lmdb_storage::meta_of(st).decided_idx == 2);
-    CHECK(lmdb_storage::meta_of(st).promise == ballot_of(4, 1));
+    CHECK(sqlite_storage::meta_of(st).accepted_round == ballot_of(2, 2));
+    CHECK(sqlite_storage::meta_of(st).decided_idx == 2);
+    CHECK(sqlite_storage::meta_of(st).promise == ballot_of(4, 1));
     CHECK(messages_of<konsens::prepare_req>(committed_messages_of(sp)).size() == 2);
 }
 
@@ -1279,7 +1279,7 @@ TEST_CASE("one node restarts while no peer is a primary, and the power-loss path
     deliver_all(nodes);
     REQUIRE(c.append(make_entry(1)));
     deliver_all(nodes);
-    c = make(3, lmdb_storage::open_copy_of(committed_storage_of(c)), 2);
+    c = make(3, sqlite_storage::open_copy_of(committed_storage_of(c)), 2);
     REQUIRE(c.recovering());
     deliver_all(nodes);
     CHECK(!c.recovering());
@@ -1313,7 +1313,7 @@ TEST_CASE("recovery after a rollback keeps S1")
     const std::array<sp_t*, 3> nodes{&a, &b, &c};
     REQUIRE(c.handle_leader(ballot_of(1, 3)));
     deliver_all(nodes);
-    auto before = lmdb_storage::open_copy_of(committed_storage_of(b));
+    auto before = sqlite_storage::open_copy_of(committed_storage_of(b));
     REQUIRE(c.append(make_entry(1)));
     deliver_among(nodes, {false, true, true});
     REQUIRE(decided_of(c) == std::vector{make_entry(1)});
@@ -1361,14 +1361,14 @@ const std::vector<entry> one_two{make_entry(1), make_entry(2)};
 sp_t running_node_in(const std::filesystem::path& directory)
 {
     {
-        auto s = lmdb_storage::open_in(directory);
-        lmdb_storage::write(s, [](auto& t) {
+        auto s = sqlite_storage::open_in(directory);
+        sqlite_storage::write(s, [](auto& t) {
             REQUIRE(t.append_entries(one_two));
             REQUIRE(t.set_promise(ballot_of(1, 3)));
             REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
         });
     }
-    auto sp = make(1, lmdb_storage::open_in(directory), 7);
+    auto sp = make(1, sqlite_storage::open_in(directory), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1, konsens::recovery{4}}));
     REQUIRE(sp.commit());
@@ -1397,7 +1397,7 @@ std::vector<std::byte> meta_value_in(const std::filesystem::path& directory)
 // node runs is found at the next step, and the node stops voting.
 TEST_CASE("a key lost while the node runs is found at the next step")
 {
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     auto sp = running_node_in(directory);
     sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_meta_record(db); });
     check_stops_voting(sp, make_error_code(konsens::storage_errc::missing_meta_record));
@@ -1407,7 +1407,7 @@ TEST_CASE("a key lost while the node runs is found at the next step")
 // last entry. A lost last entry leaves a log that ends one entry early.
 TEST_CASE("a last entry lost while the node runs is found by the chain check")
 {
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     auto sp = running_node_in(directory);
     sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_entry(db, 1); });
     check_stops_voting(sp, make_error_code(konsens::storage_errc::missing_entry));
@@ -1420,16 +1420,16 @@ TEST_CASE("a last entry lost while the node runs is found by the chain check")
 // and its chain CRC are valid.
 TEST_CASE("a promise lost while the node runs is found at the next step")
 {
-    const auto lost = lmdb_storage::new_directory();
+    const auto lost = sqlite_storage::new_directory();
     {
-        auto s = lmdb_storage::open_in(lost);
-        lmdb_storage::write(s, [](auto& t) {
+        auto s = sqlite_storage::open_in(lost);
+        sqlite_storage::write(s, [](auto& t) {
             REQUIRE(t.append_entries(one_two));
             REQUIRE(t.set_accepted_round(ballot_of(1, 3)));
         });
     }
     auto value = meta_value_in(lost);
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     auto sp = running_node_in(directory);
     sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
     check_stops_voting(sp, make_error_code(konsens::paxos_errc::inconsistent_storage));
@@ -1441,10 +1441,10 @@ TEST_CASE("a promise lost while the node runs is found at the next step")
 // (plan 2.1 item 3), so no value of the old record leaves the node.
 TEST_CASE("a value below the mark stops the vote, and a getter between two steps runs the step check")
 {
-    const auto directory = lmdb_storage::new_directory();
-    auto sp = make(1, lmdb_storage::open_in(directory));
+    const auto directory = sqlite_storage::new_directory();
+    auto sp = make(1, sqlite_storage::open_in(directory));
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    const auto older = lmdb_storage::new_directory();
+    const auto older = sqlite_storage::new_directory();
     REQUIRE(committed_storage_of(sp).copy(older));
     auto value = meta_value_in(older);
     REQUIRE(sp.handle({2, 1, konsens::prepare{ballot_of(2, 2), 0, ballot{}, 0}}));
@@ -1640,7 +1640,7 @@ TEST_CASE("a decide with another chain CRC stops the vote")
     CHECK(sp.get_hardware_fault()->crc == last_crc_of(one_two));
     CHECK(sp.get_hardware_fault()->other_pid == 3);
     CHECK(sp.get_hardware_fault()->other_crc == other);
-    CHECK(lmdb_storage::meta_of(committed_storage_of(sp)).decided_idx == 0);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).decided_idx == 0);
 }
 
 // Plan 2.5 item 4: the leader takes the decided index of a promise only
@@ -1658,8 +1658,8 @@ TEST_CASE("the majority of promises does not decide on another chain CRC")
                                         last_crc_of(one_two)}}));
     CHECK(sp.get_state() == std::pair{role::leader, phase::accept});
     const auto& st = committed_storage_of(sp);
-    CHECK(lmdb_storage::log_of(st) == one_two);
-    CHECK(lmdb_storage::meta_of(st).decided_idx == 0);
+    CHECK(sqlite_storage::log_of(st) == one_two);
+    CHECK(sqlite_storage::meta_of(st).decided_idx == 0);
     CHECK(states_of(st) == committed_below(0, 2));
 }
 
@@ -1754,8 +1754,8 @@ std::vector<entry> numbered_log(const std::size_t length, const std::uint8_t fir
 void write_log_in(const std::filesystem::path& directory, const std::vector<entry>& log,
                   const std::uint64_t decided_idx, const bool promise)
 {
-    auto s = lmdb_storage::open_in(directory);
-    lmdb_storage::write(s, [&](auto& t) {
+    auto s = sqlite_storage::open_in(directory);
+    sqlite_storage::write(s, [&](auto& t) {
         REQUIRE(t.append_entries(log));
         if (promise) {
             REQUIRE(t.set_promise(ballot_of(1, 3)));
@@ -1772,7 +1772,7 @@ void write_log_in(const std::filesystem::path& directory, const std::vector<entr
 void lose_the_promise_in(const std::filesystem::path& directory, const std::vector<entry>& log,
                          const std::uint64_t decided_idx)
 {
-    const auto twin = lmdb_storage::new_directory();
+    const auto twin = sqlite_storage::new_directory();
     write_log_in(twin, log, decided_idx, false);
     const auto value = meta_value_in(twin);
     sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
@@ -1782,10 +1782,10 @@ void lose_the_promise_in(const std::filesystem::path& directory, const std::vect
 // stopped voting with the damage.
 sp_t damaged_node_with(const std::vector<entry>& log, const std::uint64_t decided_idx)
 {
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     write_log_in(directory, log, decided_idx, true);
     lose_the_promise_in(directory, log, decided_idx);
-    auto sp = make(1, lmdb_storage::open_in(directory), 7);
+    auto sp = make(1, sqlite_storage::open_in(directory), 7);
     REQUIRE(sp.get_error() == make_error_code(konsens::paxos_errc::inconsistent_storage));
     REQUIRE_FALSE(sp.votes());
     return sp;
@@ -1868,11 +1868,11 @@ TEST_CASE("the repair search finds the first index that differs")
 TEST_CASE("a repair takes only the entries that differ, and sets the mark")
 {
     const auto source = numbered_log(20, 0);
-    const auto directory = lmdb_storage::new_directory();
+    const auto directory = sqlite_storage::new_directory();
     write_log_in(directory, source, 18, true);
     lose_the_promise_in(directory, source, 18);
     sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { flip_chain_crc(db, 12); });
-    auto sp = make(1, lmdb_storage::open_in(directory), 7);
+    auto sp = make(1, sqlite_storage::open_in(directory), 7);
     REQUIRE(sp.get_error() == make_error_code(konsens::paxos_errc::inconsistent_storage));
     REQUIRE(sp.start_repair(9));
     CHECK(search_against(sp, source) == 12);
@@ -1952,8 +1952,8 @@ TEST_CASE("only a peer that votes answers a probe")
 // log of the cluster.
 TEST_CASE("a follower that found a damage repairs from the cluster and votes again")
 {
-    const auto directory = lmdb_storage::new_directory();
-    auto a = make(1, lmdb_storage::open_in(directory));
+    const auto directory = sqlite_storage::new_directory();
+    auto a = make(1, sqlite_storage::open_in(directory));
     auto b = make(2);
     auto c = make(3);
     const std::array<sp_t*, 3> nodes{&a, &b, &c};

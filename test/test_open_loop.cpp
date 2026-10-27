@@ -20,7 +20,7 @@
 #include "batches.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
-#include "lmdb_storage.hpp"
+#include "sqlite_storage.hpp"
 
 // Plan-execute-verify 2.4.4 under an open loop: requests arrive at a fixed
 // rate, whatever the cluster answers, and each message takes a fixed delay.
@@ -225,8 +225,8 @@ TEST_CASE("under an open loop every request gets its reply and the leader stays"
     {
         world w{};
         for (node_id p = 1; p <= node_count; ++p) {
-            w.nodes.push_back(*node_t::with(config_of(p), lmdb_storage::open_new(),
-                                            lmdb_storage::open_new_node_storage(), counter{}, p));
+            w.nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(),
+                                            sqlite_storage::open_new_node_storage(), counter{}, p));
         }
         w.run_until(election_time);
         const auto l = leader_of(w.nodes);

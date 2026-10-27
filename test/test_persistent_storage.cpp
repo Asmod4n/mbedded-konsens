@@ -42,8 +42,8 @@ namespace {
 // that the refusal of root does not hold.
 constexpr uid_t non_root_user_id = 1000;
 constexpr uid_t root_user_id = 0;
-constexpr std::size_t map_size = std::size_t{16} << 20;
-constexpr std::size_t tiny_map_size = std::size_t{64} << 10;
+constexpr std::size_t max_size = std::size_t{16} << 20;
+constexpr std::size_t tiny_max_size = std::size_t{64} << 10;
 constexpr std::size_t large_entry_size = std::size_t{64} << 10;
 
 std::vector<std::byte> bytes_of(const std::string_view text)
@@ -60,7 +60,7 @@ konsens::entry normal_entry(const std::string_view text)
 
 konsens::persistent_storage open_storage(const std::filesystem::path& directory)
 {
-    auto opened = konsens::persistent_storage::open(directory, map_size, non_root_user_id);
+    auto opened = konsens::persistent_storage::open(directory, max_size, non_root_user_id);
     REQUIRE(opened.has_value());
     return std::move(*opened);
 }
@@ -464,11 +464,11 @@ TEST_CASE("open refuses another format and a store with data and no format")
         }
         sqlite_damage::put_record(db, "format", value);
     });
-    const auto other = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
+    const auto other = konsens::persistent_storage::open(dir.path(), max_size, non_root_user_id);
     REQUIRE_FALSE(other.has_value());
     CHECK(other.error() == konsens::storage_errc::unsupported_format);
     change_with_sqlite(dir.path(), [](sqlite3* db) { sqlite_damage::delete_record(db, "format"); });
-    const auto none = konsens::persistent_storage::open(dir.path(), map_size, non_root_user_id);
+    const auto none = konsens::persistent_storage::open(dir.path(), max_size, non_root_user_id);
     REQUIRE_FALSE(none.has_value());
     CHECK(none.error() == konsens::storage_errc::unsupported_format);
 }
@@ -633,7 +633,7 @@ TEST_CASE("an entry written below the decided index is committed")
 TEST_CASE("a full store gives no_space_on_device and writes nothing")
 {
     const temporary_directory dir;
-    auto opened = konsens::persistent_storage::open(dir.path(), tiny_map_size, non_root_user_id);
+    auto opened = konsens::persistent_storage::open(dir.path(), tiny_max_size, non_root_user_id);
     REQUIRE(opened.has_value());
     auto& storage = *opened;
     std::vector<konsens::entry> large;
@@ -697,7 +697,7 @@ TEST_CASE("a failed write of a commit throws write_error and writes nothing")
 TEST_CASE("open refuses the root user")
 {
     const temporary_directory dir;
-    const auto opened = konsens::persistent_storage::open(dir.path(), map_size, root_user_id);
+    const auto opened = konsens::persistent_storage::open(dir.path(), max_size, root_user_id);
     REQUIRE_FALSE(opened.has_value());
     CHECK(opened.error() == std::errc::operation_not_permitted);
 }
@@ -707,7 +707,7 @@ TEST_CASE("open refuses the root user")
 TEST_CASE("open of a missing directory gives no_such_file_or_directory")
 {
     const temporary_directory dir;
-    const auto opened = konsens::persistent_storage::open(dir.path() / "missing", map_size, non_root_user_id);
+    const auto opened = konsens::persistent_storage::open(dir.path() / "missing", max_size, non_root_user_id);
     REQUIRE_FALSE(opened.has_value());
     CHECK(opened.error() == std::errc::no_such_file_or_directory);
 }

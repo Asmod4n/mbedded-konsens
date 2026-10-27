@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include "lmdb_cluster.hpp"
+#include "sqlite_cluster.hpp"
 
 // Plan v0.1 section 3 and F16: the run of all parts. Two clients register,
 // send requests, send a call again after a timeout and read, while a
@@ -11,8 +11,8 @@
 // read across a change of leader.
 TEST_CASE("simulation with two clients and one rollback keeps the safety properties")
 {
-    const auto c = simulation::run_seeds<lmdb_cluster>(simulation::delivery::fifo, seed_count,
-                                                       simulation::rollback::one, simulation::clients::two);
+    const auto c = simulation::run_seeds<sqlite_cluster>(simulation::delivery::fifo, seed_count,
+                                                         simulation::rollback::one, simulation::clients::two);
     CHECK(c.rollbacks > 0);
     CHECK(c.sessions > 0);
     CHECK(c.replies > 0);

@@ -58,7 +58,7 @@ using node_t = konsens::node<konsens::persistent_storage, concatenation>;
 constexpr std::size_t node_count = 3;
 constexpr std::size_t stopped_node = 2;
 constexpr std::size_t mebibyte = std::size_t{1} << 20;
-constexpr std::size_t map_size = 64 * mebibyte;
+constexpr std::size_t max_size = 64 * mebibyte;
 constexpr std::uint64_t election_ticks = 5;
 constexpr std::uint64_t resend_ticks = 3;
 constexpr int round_limit = 200;
@@ -134,7 +134,7 @@ struct cluster {
 
     std::expected<void, std::error_code> start(const std::size_t i)
     {
-        auto storage = konsens::persistent_storage::open(directories.at(i), map_size, effective_user_id);
+        auto storage = konsens::persistent_storage::open(directories.at(i), max_size, effective_user_id);
         if (!storage) [[unlikely]] {
             return std::unexpected(storage.error());
         }
@@ -458,7 +458,7 @@ int run(const std::span<const std::string_view> args)
         }
     }
     c.stop(stopped_node);
-    std::cout << std::format("Node {} is stopped. Its LMDB environment is closed.", stopped_node + 1) << '\n';
+    std::cout << std::format("Node {} is stopped. Its SQLite store is closed.", stopped_node + 1) << '\n';
     if (auto r = run_until(c, [&c] { return c.leader().has_value(); }); !r) [[unlikely]] {
         return fail("elect a leader of two nodes", r.error());
     }

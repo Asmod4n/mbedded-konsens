@@ -73,11 +73,11 @@ constexpr konsens::ballot wire_ballot{configuration_id, first_ballot_number, 0, 
 constexpr konsens::sequence_number wire_sequence_number{1, 1};
 constexpr std::uint64_t wire_decided_idx = 1;
 constexpr std::uint32_t wire_decided_chain_crc = 0;
-constexpr std::size_t lmdb_page_bytes = 4096;
-constexpr std::size_t lmdb_record_overhead_bytes = 64;
-constexpr std::size_t lmdb_copies_of_each_page = 2;
-constexpr std::size_t lmdb_base_map_bytes = std::size_t{64} << 20;
-constexpr std::size_t state_map_bytes = std::size_t{256} << 20;
+constexpr std::size_t sqlite_page_bytes = 4096;
+constexpr std::size_t sqlite_record_overhead_bytes = 64;
+constexpr std::size_t sqlite_copies_of_each_page = 2;
+constexpr std::size_t sqlite_base_bytes = std::size_t{64} << 20;
+constexpr std::size_t state_max_bytes = std::size_t{256} << 20;
 constexpr std::uint64_t setup_entries = 16;
 constexpr std::uint64_t stored_key = 0;
 constexpr std::chrono::seconds reply_timeout{20};
@@ -153,10 +153,10 @@ double per_op(const std::chrono::nanoseconds spent, const run_settings& s)
     return std::chrono::duration<double, std::nano>(spent).count() / ops_of_all_samples(s);
 }
 
-std::size_t map_bytes_for(const std::uint64_t entry_count, const std::size_t payload_bytes)
+std::size_t max_bytes_for(const std::uint64_t entry_count, const std::size_t payload_bytes)
 {
-    const std::size_t pages_per_entry = (payload_bytes + lmdb_record_overhead_bytes) / lmdb_page_bytes + 1;
-    return lmdb_base_map_bytes + entry_count * pages_per_entry * lmdb_page_bytes * lmdb_copies_of_each_page;
+    const std::size_t pages_per_entry = (payload_bytes + sqlite_record_overhead_bytes) / sqlite_page_bytes + 1;
+    return sqlite_base_bytes + entry_count * pages_per_entry * sqlite_page_bytes * sqlite_copies_of_each_page;
 }
 
 double quantile_of(std::vector<double> values, const double q)
@@ -808,10 +808,10 @@ case_outcome measure_decode_decide(const run_settings& s)
 }
 
 std::expected<konsens::persistent_storage, failure> open_log(const std::filesystem::path& directory,
-                                                             const std::size_t map_bytes, const uid_t user_id)
+                                                             const std::size_t max_bytes, const uid_t user_id)
 {
     std::filesystem::create_directories(directory);
-    auto store = konsens::persistent_storage::open(directory, map_bytes, user_id);
+    auto store = konsens::persistent_storage::open(directory, max_bytes, user_id);
     if (!store) [[unlikely]] {
         return std::unexpected(failure{"open a log store", store.error()});
     }
@@ -869,8 +869,8 @@ case_outcome measure_commit_lmdb(const run_settings& s)
 {
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
-        auto store = open_log(s.directory / std::format("sample-{}", sample), map_bytes_for(s.ops, s.payload_bytes),
-                              s.user_id);
+        auto store =
+            open_log(s.directory / std::format("sample-{}", sample), max_bytes_for(s.ops, s.payload_bytes), s.user_id);
         if (!store) [[unlikely]] {
             return std::unexpected(store.error());
         }
@@ -895,7 +895,7 @@ case_outcome measure_commit_lmdb(const run_settings& s)
 
 case_outcome measure_get_entries_lmdb(const run_settings& s)
 {
-    auto store = open_log(s.directory / "store", map_bytes_for(1, s.payload_bytes), s.user_id);
+    auto store = open_log(s.directory / "store", max_bytes_for(1, s.payload_bytes), s.user_id);
     if (!store) [[unlikely]] {
         return std::unexpected(store.error());
     }
@@ -929,15 +929,16 @@ case_outcome measure_get_entries_lmdb(const run_settings& s)
 }
 
 template <typename M>
-auto lmdb_nodes(const run_settings& s, const std::uint64_t entries_per_op, const std::uint64_t in_flight,
-                const auto& machine_of)
+auto sqlite_nodes(const run_settings& s, const std::uint64_t entries_per_op, const std::uint64_t in_flight,
+                  const auto& machine_of)
 {
-    const auto map_bytes =
-        map_bytes_for((warm_up_samples + s.samples) * s.ops * entries_per_op + setup_entries, s.payload_bytes) +
-        state_map_bytes;
-    return [map_bytes, &s, in_flight, &machine_of](const konsens::node_id pid) -> std::expected<bench_node<M>, failure> {
+    const auto max_bytes =
+        max_bytes_for((warm_up_samples + s.samples) * s.ops * entries_per_op + setup_entries, s.payload_bytes) +
+        state_max_bytes;
+    return [max_bytes, &s, in_flight,
+            &machine_of](const konsens::node_id pid) -> std::expected<bench_node<M>, failure> {
         const auto directory = s.directory / std::format("node-{}", pid);
-        auto log = open_log(directory / "log", map_bytes, s.user_id);
+        auto log = open_log(directory / "log", max_bytes, s.user_id);
         if (!log) [[unlikely]] {
             return std::unexpected(log.error());
         }
@@ -1577,7 +1578,7 @@ case_outcome measure_cluster(const run_settings& s, const std::uint64_t entries_
                              const std::uint64_t writes_before, const auto& time)
 {
     const auto machine_of = counter_of_node(new_run_count());
-    auto p = start_client_cluster<counter>(lmdb_nodes<counter>(s, entries_per_op, max_in_flight, machine_of),
+    auto p = start_client_cluster<counter>(sqlite_nodes<counter>(s, entries_per_op, max_in_flight, machine_of),
                                            writes_before, false);
     if (!p) [[unlikely]] {
         return std::unexpected(p.error());
@@ -1594,7 +1595,7 @@ case_outcome measure_threaded_cluster(const run_settings& s, const std::uint64_t
                                       const std::uint64_t writes_before, const auto& time)
 {
     const auto machine_of = counter_of_node(new_run_count());
-    auto p = start_client_cluster<counter>(lmdb_nodes<counter>(s, entries_per_op, max_in_flight, machine_of),
+    auto p = start_client_cluster<counter>(sqlite_nodes<counter>(s, entries_per_op, max_in_flight, machine_of),
                                            writes_before, false);
     if (!p) [[unlikely]] {
         return std::unexpected(p.error());
@@ -1747,7 +1748,7 @@ case_outcome measure_open_loop(const run_settings& s, const std::uint64_t in_fli
                                const std::chrono::milliseconds delay, const std::uint64_t rate_per_s,
                                const auto& machine_of, const run_count& runs)
 {
-    auto p = start_client_cluster<M>(lmdb_nodes<M>(s, 1, in_flight, machine_of), 0, true);
+    auto p = start_client_cluster<M>(sqlite_nodes<M>(s, 1, in_flight, machine_of), 0, true);
     if (!p) [[unlikely]] {
         return std::unexpected(p.error());
     }
@@ -1885,8 +1886,8 @@ struct key_value_machine {
 std::expected<void, failure> check_the_copy_after_a_step(const run_settings& s)
 {
     const auto machine_of = [&s](const konsens::node_id) { return key_value_machine{s.payload_bytes}; };
-    auto p = start_client_cluster<key_value_machine>(lmdb_nodes<key_value_machine>(s, 1, max_in_flight, machine_of), 0,
-                                                     false);
+    auto p = start_client_cluster<key_value_machine>(sqlite_nodes<key_value_machine>(s, 1, max_in_flight, machine_of),
+                                                     0, false);
     if (!p) [[unlikely]] {
         return std::unexpected(p.error());
     }
@@ -1919,7 +1920,7 @@ case_outcome measure_read_back(const run_settings& s)
     if (auto checked = check_the_copy_after_a_step(s); !checked) [[unlikely]] {
         return std::unexpected(checked.error());
     }
-    auto state = open_log(s.directory / "state-alone", state_map_bytes, s.user_id);
+    auto state = open_log(s.directory / "state-alone", state_max_bytes, s.user_id);
     if (!state) [[unlikely]] {
         return std::unexpected(state.error());
     }
@@ -1957,7 +1958,7 @@ template <typename S>
 case_outcome measure_scan_the_whole_log_on([[maybe_unused]] const run_settings& s)
 {
     if constexpr (has_scan_the_whole_log<S>) {
-        auto store = open_log(s.directory / "log", map_bytes_for(s.parameter, scan_entry_bytes), s.user_id);
+        auto store = open_log(s.directory / "log", max_bytes_for(s.parameter, scan_entry_bytes), s.user_id);
         if (!store) [[unlikely]] {
             return std::unexpected(store.error());
         }

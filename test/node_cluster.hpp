@@ -22,7 +22,7 @@
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "konsens/sequence_paxos.hpp"
-#include "lmdb_storage.hpp"
+#include "sqlite_storage.hpp"
 
 // Three nodes on disks that outlive them, for the tests of group commit
 // and of the faults of a disk under a node.
@@ -45,7 +45,7 @@ constexpr std::uint32_t config_id = 1;
 // The disk of a node outlives the node, so a test can end a node between a
 // call and its commit, as a crash does, and start it again on the same
 // disk. The disk counts the commits of write transactions and the entries
-// of each append_entries. Its store is LMDB.
+// of each append_entries. Its store is SQLite.
 struct disk {
     konsens::persistent_storage store;
     std::uint64_t commits;
@@ -122,12 +122,12 @@ struct disk_storage {
 
 inline std::shared_ptr<disk> disk_in(const std::filesystem::path& directory)
 {
-    return std::make_shared<disk>(lmdb_storage::open_in(directory));
+    return std::make_shared<disk>(sqlite_storage::open_in(directory));
 }
 
 inline std::shared_ptr<disk> new_disk()
 {
-    return disk_in(lmdb_storage::new_directory());
+    return disk_in(sqlite_storage::new_directory());
 }
 
 static_assert(konsens::storage<disk_storage>);
@@ -202,15 +202,16 @@ inline std::size_t once(const message&)
 
 struct cluster {
     std::array<std::shared_ptr<disk>, node_count> disks{new_disk(), new_disk(), new_disk()};
-    std::array<std::filesystem::path, node_count> states{lmdb_storage::new_directory(), lmdb_storage::new_directory(),
-                                                         lmdb_storage::new_directory()};
+    std::array<std::filesystem::path, node_count> states{
+        sqlite_storage::new_directory(), sqlite_storage::new_directory(), sqlite_storage::new_directory()};
     std::vector<node_t> nodes;
     std::uint64_t next_nonce{1};
 
     node_t start(const std::size_t i)
     {
         next_nonce += 1;
-        return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, lmdb_storage::open_new_node_storage(), counter{}, next_nonce);
+        return *node_t::with(config_of(i + 1), disk_storage{disks.at(i)}, sqlite_storage::open_new_node_storage(),
+                             counter{}, next_nonce);
     }
 
     void restart(const std::size_t i)

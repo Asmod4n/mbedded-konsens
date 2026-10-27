@@ -6,7 +6,7 @@
 #include <string>
 #include <system_error>
 
-// Each test that opens an LMDB environment needs a directory of its own,
+// Each test that opens a SQLite store needs a directory of its own,
 // and the directory must go when the test ends, also when a check fails.
 class temporary_directory {
 public:

@@ -29,15 +29,15 @@ constexpr std::uint64_t seed_count = 2000;
 // The session that runs these tests runs as root, and open refuses root.
 // The tests give a user id that the refusal does not hold.
 constexpr uid_t non_root_user_id = 1000;
-constexpr std::size_t map_size = std::size_t{16} << 20;
+constexpr std::size_t max_size = std::size_t{16} << 20;
 
-// The simulation runs on the storage of production, LMDB. A crash keeps
-// nothing in memory: the node and its LMDB environment are closed, and
-// start opens the environment again from the files. This is the durable
-// state that Crash in SequencePaxos.tla keeps. A rollback restores a
-// copy that the library made of the environment while the node
+// The simulation runs on the storage of production, SQLite. A crash keeps
+// nothing in memory: the node and its SQLite store are closed, and start
+// opens the store again from the files. This is the durable state that
+// Crash in SequencePaxos.tla keeps. A rollback restores a copy that the
+// library made of the store while the node
 // ran: the state after its last commit, as a lost fsync or a backup.
-struct lmdb_cluster {
+struct sqlite_cluster {
     using storage_type = konsens::persistent_storage;
     using earlier_type = std::filesystem::path;
 
@@ -53,7 +53,7 @@ struct lmdb_cluster {
 
     konsens::persistent_storage start(const std::size_t i, std::monostate) const
     {
-        auto opened = konsens::persistent_storage::open(paths.at(i), map_size, non_root_user_id);
+        auto opened = konsens::persistent_storage::open(paths.at(i), max_size, non_root_user_id);
         REQUIRE(opened.has_value());
         return std::move(*opened);
     }
