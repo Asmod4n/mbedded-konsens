@@ -57,7 +57,10 @@ builds the program that runs one node from that config.
 1. Clients speak HTTP/1.1 (card, 18:12), as REST, so that every
    client talks to the cluster directly (owner, 18:18). The API
    expresses what the clients speak among themselves, CoAP over TCP
-   (owner, 18:16).
+   (owner, 18:16). Everything is plain REST; the one addition is the
+   method QUERY (IETF httpbis, "The HTTP QUERY Method"; status not
+   checked here), whose body is a read in SQL (owner, 18:19).
+   mruby-webmachine knows QUERY (src/http.hpp:230).
 2. HTTP comes from mruby-webmachine, which is renamed to
    embedded-webmachine later (owner, 18:13). It is a submodule.
 3. io_uring comes from slipstreamIO, a submodule that builds liburing
@@ -131,6 +134,11 @@ builds the program that runs one node from that config.
      percent-encoded in the path.
    - A body longer than `max_body_bytes` gets 413. The body buffer
      grows with the bytes read, never with Content-Length.
+   - `QUERY /sql` with an SQL statement as body (media type
+     `application/sql`, RFC 6922) is a read at the read index. It comes
+     after the key-value form, as its own step: the state machine must
+     first keep its state in tables that SQL can read (open, see the
+     SQL form of the owner, 2026-10-26).
    - Any node takes a call. A follower forwards writes and asks the
      leader for the read index, as the library does now.
 7. Status of each result (every value of `client_errc` and the rest):
