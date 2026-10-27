@@ -26,6 +26,7 @@
 #include "address.hpp"
 #include "frame.hpp"
 #include "key_value.hpp"
+#include "rest.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
 #include "konsens/wire.hpp"
@@ -60,6 +61,18 @@ enum class link : std::uint8_t {
     client,
 };
 
+enum class awaited : std::uint8_t {
+    nothing,
+    registration,
+    write,
+    read,
+};
+
+struct call_in_flight {
+    awaited what;
+    std::optional<std::uint64_t> session;
+};
+
 struct connection {
     int fd;
     link kind;
@@ -73,6 +86,12 @@ struct connection {
     std::size_t out_offset;
     std::uint64_t queued_bytes;
     bool sending;
+    std::string http_in;
+    std::optional<rest_request> call;
+    awaited waits_for;
+    std::optional<std::uint64_t> session;
+    std::uint64_t request_number;
+    bool closes_after_the_send;
 };
 
 struct loop {
@@ -92,6 +111,8 @@ struct loop {
     bool stop_requested;
     std::pair<konsens::role, konsens::phase> last_state;
     std::vector<io_uring_cqe> ready;
+    std::unordered_map<std::uint64_t, call_in_flight> closed_calls;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> expiries;
 };
 
 std::uint64_t user_data_of(const op o, const std::uint64_t id)
@@ -180,6 +201,12 @@ void finish_the_close(loop& l, const std::uint64_t id)
         if (const auto i = l.incoming.find(c.pid); i != l.incoming.end() && i->second == id) {
             l.incoming.erase(i);
         }
+    } else if (c.kind == link::client) {
+        if (c.waits_for != awaited::nothing) {
+            l.closed_calls.emplace(id, call_in_flight{c.waits_for, c.session});
+        } else if (c.session) {
+            l.expiries.emplace_back(id, *c.session);
+        }
     }
     l.connections.erase(it);
 }
@@ -210,6 +237,164 @@ void queue_on(connection& c, std::string bytes)
     c.out.push_back(std::move(bytes));
 }
 
+void take_the_requests_of(loop& l, std::uint64_t id, connection& c);
+
+void answer(loop& l, const std::uint64_t id, connection& c, std::string response, const bool closes)
+{
+    queue_on(c, std::move(response));
+    c.call.reset();
+    c.waits_for = awaited::nothing;
+    if (closes) {
+        c.closes_after_the_send = true;
+        return;
+    }
+    take_the_requests_of(l, id, c);
+}
+
+void answer_with(loop& l, const std::uint64_t id, connection& c, const problem& p)
+{
+    const bool closes = c.call ? c.call->closes : true;
+    answer(l, id, c, problem_response_of(p, closes), closes);
+}
+
+void send_the_write(loop& l, const std::uint64_t id, connection& c)
+{
+    const auto op = c.call->method == rest_method::put ? key_value_op::put : key_value_op::erase;
+    const auto number = c.request_number + 1;
+    auto t = l.node.client_request(id, *c.session, number, encode_write({op, c.call->key, c.call->body}));
+    if (!t) [[unlikely]] {
+        answer_with(l, id, c, problem_of(t.error()));
+        return;
+    }
+    l.step = *t;
+    c.request_number = number;
+    c.waits_for = awaited::write;
+}
+
+void start_the_call(loop& l, const std::uint64_t id, connection& c)
+{
+    if (c.call->method == rest_method::get) {
+        auto t = l.node.client_query(id, c.call->key);
+        if (!t) [[unlikely]] {
+            answer_with(l, id, c, problem_of(t.error()));
+            return;
+        }
+        l.step = *t;
+        c.waits_for = awaited::read;
+        return;
+    }
+    if (c.session) {
+        send_the_write(l, id, c);
+        return;
+    }
+    auto t = l.node.register_client(id);
+    if (!t) [[unlikely]] {
+        answer_with(l, id, c, problem_of(t.error()));
+        return;
+    }
+    l.step = *t;
+    c.waits_for = awaited::registration;
+}
+
+void take_the_requests_of(loop& l, const std::uint64_t id, connection& c)
+{
+    if (c.call || c.closes_after_the_send || c.closing) {
+        return;
+    }
+    auto r = take_request(c.http_in, l.c.max_body_bytes);
+    if (!r) [[unlikely]] {
+        c.http_in.clear();
+        answer(l, id, c, problem_response_of(r.error(), true), true);
+        return;
+    }
+    if (!*r) {
+        return;
+    }
+    c.http_in.erase(0, (*r)->bytes);
+    c.call = std::move(**r);
+    start_the_call(l, id, c);
+}
+
+void take_a_reply_after_the_close(loop& l, const konsens::client_reply& r)
+{
+    const auto it = l.closed_calls.find(r.client_id);
+    if (it == l.closed_calls.end()) {
+        return;
+    }
+    const auto [what, session] = it->second;
+    l.closed_calls.erase(it);
+    if (what == awaited::registration && r.response) {
+        l.expiries.emplace_back(r.client_id, r.session);
+    } else if (what == awaited::write && session) {
+        l.expiries.emplace_back(r.client_id, *session);
+    }
+}
+
+void take_a_reply(loop& l, const konsens::client_reply& r)
+{
+    const auto it = l.connections.find(r.client_id);
+    if (it == l.connections.end() || it->second->kind != link::client) {
+        take_a_reply_after_the_close(l, r);
+        return;
+    }
+    connection& c = *it->second;
+    if (c.waits_for == awaited::nothing) [[unlikely]] {
+        return;
+    }
+    if (!r.response) [[unlikely]] {
+        answer_with(l, r.client_id, c, problem_of(r.response.error()));
+        return;
+    }
+    switch (c.waits_for) {
+    case awaited::registration:
+        c.session = r.session;
+        c.request_number = 0;
+        send_the_write(l, r.client_id, c);
+        return;
+    case awaited::write:
+        answer(l, r.client_id, c, response_of(status_no_content, {}, {}, c.call->closes), c.call->closes);
+        return;
+    case awaited::read: {
+        const auto read = decode_read(*r.response);
+        if (!read) [[unlikely]] {
+            answer_with(l, r.client_id, c, problem_of({}));
+            return;
+        }
+        if (!read->found) {
+            answer_with(l, r.client_id, c, {status_not_found, "the key is not there", false});
+            return;
+        }
+        answer(l, r.client_id, c, response_of(status_ok, "application/octet-stream", read->value, c.call->closes),
+               c.call->closes);
+        return;
+    }
+    case awaited::nothing:
+        return;
+    }
+}
+
+void answer_the_calls_after_a_failed_commit(loop& l, const std::error_code& e)
+{
+    for (auto& [id, c] : l.connections) {
+        if (c->kind == link::client && c->waits_for != awaited::nothing && !c->closing) {
+            c->call->closes = true;
+            answer_with(l, id, *c, problem_of(e));
+        }
+    }
+}
+
+void expire_the_closed_sessions(loop& l)
+{
+    std::erase_if(l.expiries, [&l](const auto& x) {
+        auto t = l.node.expire_session(x.first, x.second);
+        if (t) {
+            l.step = *t;
+            return true;
+        }
+        return t.error() == konsens::client_errc::session_expired;
+    });
+}
+
 void release_the_output(loop& l)
 {
     for (const auto& m : l.node.take_outgoing_messages()) {
@@ -228,7 +413,9 @@ void release_the_output(loop& l)
         }
         queue_on(c, frame_of(*bytes));
     }
-    static_cast<void>(l.node.take_client_replies());
+    for (const auto& r : l.node.take_client_replies()) {
+        take_a_reply(l, r);
+    }
 }
 
 void log_a_change_of_state(loop& l)
@@ -249,6 +436,7 @@ void commit_the_step(loop& l)
         const auto t = *std::exchange(l.step, std::nullopt);
         if (auto r = l.node.commit(t); !r) [[unlikely]] {
             std::println(std::cerr, "konsensd: the commit gave the error {}", r.error().message());
+            answer_the_calls_after_a_failed_commit(l, r.error());
         }
     }
     release_the_output(l);
@@ -317,18 +505,27 @@ void take_the_frames_of(loop& l, const std::uint64_t id, connection& c)
     }
 }
 
+std::uint64_t most_client_bytes(const config& c)
+{
+    return std::uint64_t{most_request_head_bytes} + c.max_body_bytes;
+}
+
 void handle_a_receive(loop& l, const std::uint64_t id, connection& c, const int res)
 {
     if (res <= 0 || c.closing || c.kind == link::outgoing_peer) {
         begin_the_close(l, id, c);
         return;
     }
-    c.frames.bytes.append(c.in.data(), static_cast<std::size_t>(res));
     if (c.kind == link::incoming_peer) {
+        c.frames.bytes.append(c.in.data(), static_cast<std::size_t>(res));
         take_the_frames_of(l, id, c);
     } else {
-        begin_the_close(l, id, c);
-        return;
+        c.http_in.append(c.in.data(), static_cast<std::size_t>(res));
+        if (c.http_in.size() > most_client_bytes(l.c)) [[unlikely]] {
+            begin_the_close(l, id, c);
+            return;
+        }
+        take_the_requests_of(l, id, c);
     }
     if (!c.closing) {
         arm_receive(l, id, c);
@@ -347,6 +544,9 @@ void handle_a_send(loop& l, const std::uint64_t id, connection& c, const int res
         c.queued_bytes -= c.out.front().size();
         c.out.pop_front();
         c.out_offset = 0;
+    }
+    if (c.out.empty() && c.closes_after_the_send) {
+        begin_the_close(l, id, c);
     }
 }
 
@@ -499,7 +699,7 @@ int serve(const config& c, const start_options options)
         return exit_failed;
     }
     std::println(std::cerr, "konsensd: node {} started{}", c.pid, n->retired() ? " retired" : "");
-    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}};
+    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}};
     for (const auto& p : c.peers) {
         const auto a = resolve(p.address);
         if (!a) [[unlikely]] {
@@ -527,7 +727,7 @@ int serve(const config& c, const start_options options)
     const auto tick = std::chrono::milliseconds{c.tick_milliseconds};
     auto next_tick = clock::now();
     while (!l.stop_requested) {
-        const auto wait = std::max(clock::duration::zero(), next_tick - clock::now());
+        const auto wait = l.step ? clock::duration::zero() : std::max(clock::duration::zero(), next_tick - clock::now());
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count();
         __kernel_timespec ts{ns / 1'000'000'000, ns % 1'000'000'000};
         io_uring_cqe* first = nullptr;
@@ -549,6 +749,7 @@ int serve(const config& c, const start_options options)
         if (now >= next_tick) {
             connect_the_missing_peers(l);
             keep_the_step(l, l.node.tick(), "tick");
+            expire_the_closed_sessions(l);
             next_tick += tick;
             if (next_tick < now) {
                 next_tick = now + tick;

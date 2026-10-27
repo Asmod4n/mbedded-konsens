@@ -150,9 +150,10 @@ builds the program that runs one node from that config.
    - WebSocket (RFC 6455) is offered too (owner, 18:38). It comes
      after the key-value form, as its own step. The mruby-webmachine
      tree holds RFC 6455 in refs/, and no code for it yet. Over a WebSocket, a client speaks CoAP
-     of RFC 8323 (subprotocol `coap`; owner card, 18:39): the same
-     messages as CoAP over TCP, Observe of RFC 7641 for the watch of
-     a key, CBOR payloads and problem details of RFC 9290.
+     of RFC 8323 (subprotocol `coap`; owner card, 18:39). The WebSocket
+     offers only what REST cannot do (owner, 18:39): the watch of a
+     key with Observe of RFC 7641, with CBOR payloads and problem
+     details of RFC 9290.
    - Any node takes a call. A follower forwards writes and asks the
      leader for the read index, as the library does now.
 7. Status of each result (every value of `client_errc` and the rest):
