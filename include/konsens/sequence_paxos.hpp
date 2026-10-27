@@ -21,6 +21,7 @@
 #include "konsens/message.hpp"
 #include "konsens/state_machine.hpp"
 #include "konsens/storage.hpp"
+#include "konsens/wire.hpp"
 
 namespace konsens {
 
@@ -257,9 +258,19 @@ struct indexed_read {
     konsens::ballot ballot;
 };
 
+inline constexpr std::size_t max_build_entries = 256;
+
 struct sequence_paxos_config {
+    std::uint32_t configuration_id;
     node_id pid;
     std::vector<node_id> peers;
+    std::vector<node_id> build_from{};
+};
+
+struct build_state {
+    std::vector<node_id> sources;
+    std::size_t source;
+    bool answered;
 };
 
 struct decided_update {
@@ -304,6 +315,14 @@ constexpr high_water_mark raise_mark(const high_water_mark& h, const high_water_
             pair_raised ? m.log_len : h.log_len, std::max(h.decided_idx, m.decided_idx)};
 }
 
+inline std::expected<cluster_config, std::error_code> next_configuration_of(const entry& e)
+{
+    if (!entry_is_a_stop_sign(e)) {
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    return decode_cluster_config(e.payload);
+}
+
 template <storage S>
 class sequence_paxos {
 public:
@@ -313,6 +332,9 @@ public:
                                                                const std::uint64_t nonce)
     {
         validate_cluster(config.pid, config.peers);
+        if (config.configuration_id == 0) [[unlikely]] {
+            throw std::logic_error("konsens: configuration_id must not be 0");
+        }
         sequence_paxos sp(config, std::move(internal_storage));
         const auto m = sp.read_meta_between_steps();
         if (!m && error_is_a_damage(m.error())) [[unlikely]] {
@@ -323,6 +345,9 @@ public:
         if (!m) [[unlikely]] {
             return std::unexpected(m.error());
         }
+        if (m->promise != ballot{} && m->promise.config_id != config.configuration_id) [[unlikely]] {
+            throw std::logic_error("konsens: the configuration_id differs from the configuration of the store");
+        }
         sp.mark_ = mark_of(*m);
         sp.leader_state_ = leader_state::with(m->promise, sp.nodes_);
         sp.nonce_ = nonce;
@@ -331,6 +356,30 @@ public:
             return std::unexpected(t.error());
         }
         sp.verified_idx_ = find_the_verified_idx(*t, m->decided_idx, m->log_len).value_or(m->decided_idx);
+        const auto first = t->get_config_first_idx();
+        if (!first && error_is_a_damage(first.error())) [[unlikely]] {
+            sp.error_ = first.error();
+            return sp;
+        }
+        if (!first) [[unlikely]] {
+            return std::unexpected(first.error());
+        }
+        if (!*first && config.configuration_id > 1) {
+            if (config.build_from.empty()) [[unlikely]] {
+                throw std::logic_error("konsens: a node of a later configuration needs build_from for its build");
+            }
+            sp.build_ = build_state{config.build_from, 0, false};
+            sp.send_build_request(m->log_len);
+            return sp;
+        }
+        sp.config_first_idx_ = first->value_or(0);
+        if (auto r = check_the_start_of_the_configuration(*t, config.configuration_id, sp.config_first_idx_, *m);
+            !r && error_is_a_damage(r.error())) [[unlikely]] {
+            sp.error_ = r.error();
+            return sp;
+        } else if (!r) [[unlikely]] {
+            return std::unexpected(r.error());
+        }
         if (m->promise != ballot{}) {
             sp.state_ = {role::follower, phase::recover};
             sp.recovering_ = true;
@@ -426,6 +475,33 @@ private:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
+        if constexpr (std::is_same_v<T, build_request>) {
+            if (to != pid_ || from == pid_ || repair_ || build_) {
+                return {};
+            }
+            if (auto r = begin_step(); !r) [[unlikely]] {
+                return r;
+            }
+            return handle_build_request(msg, from);
+        }
+        if (build_) {
+            if constexpr (std::is_same_v<T, build_response> || std::is_same_v<T, build_refused>) {
+                if (to != pid_ || from != build_->sources[build_->source] || msg.nonce != nonce_) {
+                    return {};
+                }
+                if (auto r = begin_step(); !r) [[unlikely]] {
+                    return r;
+                }
+                build_->answered = true;
+                if constexpr (std::is_same_v<T, build_response>) {
+                    return handle_build_response(msg);
+                } else {
+                    take_the_next_build_source();
+                    return {};
+                }
+            }
+            return {};
+        }
         if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) [[unlikely]] {
             return {};
         }
@@ -494,8 +570,9 @@ private:
         } else if constexpr (std::is_same_v<T, get_repair_entries>) {
             return handle_get_repair_entries(msg, from);
         } else if constexpr (std::is_same_v<T, repair_response> || std::is_same_v<T, repair_entries> ||
-                             std::is_same_v<T, answer> || std::is_same_v<T, try_again> ||
-                             std::is_same_v<T, refused> || std::is_same_v<T, work>) {
+                             std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
+                             std::is_same_v<T, work> || std::is_same_v<T, build_request> ||
+                             std::is_same_v<T, build_response> || std::is_same_v<T, build_refused>) {
             return {};
         } else {
             static_assert(std::is_same_v<T, proposal_forward>);
@@ -579,6 +656,9 @@ public:
             restart_repair_search();
             return {};
         }
+        if (build_) {
+            return ask_again_for_the_build();
+        }
         if (recovering_) {
             send_recovery_to_all_peers();
             if (state_request_) {
@@ -635,7 +715,7 @@ public:
 
     result refuse_if_recovering() const
     {
-        if (recovering_ || repair_) [[unlikely]] {
+        if (recovering_ || repair_ || build_) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::recovering));
         }
         return {};
@@ -783,7 +863,9 @@ public:
     }
     node_id get_pid() const { return pid_; }
     std::uint64_t get_verified_idx() const { return verified_idx_; }
-    bool votes() const { return !error_ && !repair_; }
+    bool votes() const { return !error_ && !repair_ && !build_; }
+    bool building() const { return build_.has_value(); }
+    std::uint64_t get_config_first_idx() const { return config_first_idx_; }
     bool recovering() const { return recovering_; }
     bool repairing() const { return repair_.has_value(); }
 
@@ -853,7 +935,8 @@ public:
 
 private:
     sequence_paxos(const sequence_paxos_config& config, S internal_storage)
-        : pid_(config.pid), peers_(config.peers), internal_storage_(std::move(internal_storage))
+        : configuration_id_(config.configuration_id), pid_(config.pid), peers_(config.peers),
+          internal_storage_(std::move(internal_storage))
     {
         nodes_ = peers_;
         peers_seen_.assign(peers_.size() + 1, peer_seen{});
@@ -872,6 +955,27 @@ private:
         }
         const auto done = std::ranges::find_if(*entries, entry_is_a_request);
         return first + static_cast<std::uint64_t>(std::distance(entries->begin(), done));
+    }
+
+    template <typename T>
+    static result check_the_start_of_the_configuration(const T& t, const std::uint32_t configuration_id,
+                                                       const std::uint64_t config_first_idx, const meta_record& m)
+    {
+        if (configuration_id == 1 && config_first_idx == 0) {
+            return {};
+        }
+        if (configuration_id == 1 || config_first_idx == 0 || m.decided_idx < config_first_idx) [[unlikely]] {
+            throw std::logic_error("konsens: the store holds no decided StopSign that starts this configuration");
+        }
+        const auto last = read_range(t, config_first_idx - 1, config_first_idx);
+        if (!last) [[unlikely]] {
+            return std::unexpected(last.error());
+        }
+        const auto next = next_configuration_of(last->front());
+        if (!next || next->configuration_id != configuration_id) [[unlikely]] {
+            throw std::logic_error("konsens: the store holds no decided StopSign that starts this configuration");
+        }
+        return {};
     }
 
     result extend_the_verified_idx(const std::uint64_t from)
@@ -1372,7 +1476,8 @@ private:
         if (!last) [[unlikely]] {
             return stop_voting(last.error());
         }
-        leader_state_.accepted_stop_sign = std::ranges::any_of(*last, entry_is_a_stop_sign);
+        leader_state_.accepted_stop_sign =
+            after->log_len > config_first_idx_ && std::ranges::any_of(*last, entry_is_a_stop_sign);
         state_ = {role::leader, phase::accept};
         leader_state_.set_accepted_idx(pid_, bound_by_the_verified_idx(after->log_len));
         for (const auto f : leader_state_.get_promised_followers()) {
@@ -1974,6 +2079,123 @@ private:
         return {};
     }
 
+    void send_build_request(const std::uint64_t from_idx)
+    {
+        outgoing_.push_back({pid_, build_->sources[build_->source], build_request{nonce_, from_idx}});
+    }
+
+    void take_the_next_build_source() { build_->source = (build_->source + 1) % build_->sources.size(); }
+
+    result ask_again_for_the_build()
+    {
+        if (auto r = begin_step(); !r) [[unlikely]] {
+            return r;
+        }
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        if (!build_->answered) {
+            take_the_next_build_source();
+        }
+        build_->answered = false;
+        send_build_request(m->log_len);
+        return {};
+    }
+
+    result handle_build_request(const build_request& req, const node_id from)
+    {
+        const auto refuse = [&]() -> result {
+            outgoing_.push_back({pid_, from, build_refused{req.nonce}});
+            return {};
+        };
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        if (m->decided_idx <= config_first_idx_ || req.from_idx > m->decided_idx) {
+            return refuse();
+        }
+        const auto last = read_range(*txn_, m->decided_idx - 1, m->decided_idx);
+        if (!last) [[unlikely]] {
+            return stop_voting(last.error());
+        }
+        const auto next = next_configuration_of(last->front());
+        if (!next) {
+            return refuse();
+        }
+        if (!std::ranges::contains(next->nodes, from)) [[unlikely]] {
+            return {};
+        }
+        const auto to = std::min(m->decided_idx, req.from_idx + max_build_entries);
+        auto entries = read_range(*txn_, req.from_idx, to);
+        if (!entries) [[unlikely]] {
+            return stop_voting(entries.error());
+        }
+        const auto chain = read_prefix_chain_crc(to);
+        if (!chain) [[unlikely]] {
+            return stop_voting(chain.error());
+        }
+        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
+        }
+        outgoing_.push_back(
+            {pid_, from,
+             build_response{req.nonce, req.from_idx, std::move(*entries), *chain, m->decided_idx, *decided_chain}});
+        return {};
+    }
+
+    result handle_build_response(const build_response& resp)
+    {
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        if (resp.from_idx != m->log_len) {
+            return {};
+        }
+        const auto length = resp.from_idx + resp.entries.size();
+        if (resp.entries.empty() || length > resp.decided_idx) [[unlikely]] {
+            take_the_next_build_source();
+            return {};
+        }
+        const auto before = read_prefix_chain_crc(resp.from_idx);
+        if (!before) [[unlikely]] {
+            return stop_voting(before.error());
+        }
+        const auto chain = compute_chain_crc(*before, resp.from_idx, resp.entries);
+        if (chain != resp.last_chain_crc || (length == resp.decided_idx && chain != resp.decided_chain_crc))
+            [[unlikely]] {
+            take_the_next_build_source();
+            return {};
+        }
+        const ballot start{configuration_id_, 0, 0, 0};
+        if (m->promise != start) {
+            write_or_throw(txn_->set_promise(start));
+            write_or_throw(txn_->set_accepted_round(start));
+        }
+        write_or_throw(txn_->append_entries(resp.entries));
+        write_or_throw(txn_->set_decided_index(length));
+        if (length < resp.decided_idx) {
+            send_build_request(length);
+            return {};
+        }
+        const auto& last = resp.entries.back();
+        const auto next = next_configuration_of(last);
+        if (!next || next->configuration_id != configuration_id_ || !std::ranges::contains(next->nodes, pid_) ||
+            !std::ranges::all_of(peers_, [&next](const node_id p) { return std::ranges::contains(next->nodes, p); }) ||
+            next->nodes.size() != nodes_.size()) [[unlikely]] {
+            throw std::logic_error("konsens: the decided StopSign of the build names another configuration");
+        }
+        write_or_throw(txn_->set_config_first_idx(length));
+        config_first_idx_ = length;
+        verified_idx_ = length;
+        leader_state_ = leader_state::with(start, nodes_);
+        build_.reset();
+        return {};
+    }
+
     void handle_notaccepted(const not_accepted& not_acc, const node_id from)
     {
         if (state_.first == role::leader && leader_state_.n_leader < not_acc.n) {
@@ -2088,6 +2310,9 @@ private:
         return {};
     }
 
+    std::uint32_t configuration_id_;
+    std::uint64_t config_first_idx_{};
+    std::optional<build_state> build_;
     node_id pid_;
     std::vector<node_id> peers_;
     std::vector<node_id> nodes_;

@@ -79,7 +79,7 @@ constexpr std::uint64_t first_nonce = 1;
 
 sp_t make(node_id pid, persistent_storage s = sqlite_storage::open_new(), std::uint64_t nonce = first_nonce)
 {
-    return *sp_t::with({pid, peers_of(pid)}, std::move(s), nonce);
+    return *sp_t::with({1, pid, peers_of(pid)}, std::move(s), nonce);
 }
 
 entry make_entry(std::uint8_t v)
@@ -531,11 +531,11 @@ TEST_CASE("a failed commit throws write_error and sends nothing")
 // a wrong use and must fail loudly.
 TEST_CASE("a pid of 0 is a wrong use")
 {
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({0, {1, 2}}, sqlite_storage::open_new(), first_nonce)),
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, 0, {1, 2}}, sqlite_storage::open_new(), first_nonce)),
                     std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {1, 2}}, sqlite_storage::open_new(), first_nonce)),
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, 1, {1, 2}}, sqlite_storage::open_new(), first_nonce)),
                     std::logic_error);
-    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, {2, 2}}, sqlite_storage::open_new(), first_nonce)),
+    CHECK_THROWS_AS(static_cast<void>(sp_t::with({1, 1, {2, 2}}, sqlite_storage::open_new(), first_nonce)),
                     std::logic_error);
 }
 

@@ -208,6 +208,7 @@ concept storage_read = state_read<T> && requires(const T& t, std::uint64_t from,
     { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
     { t.get_entry_state(index) } -> std::same_as<std::expected<std::optional<entry_state>, std::error_code>>;
     { t.get_chain_crc(index) } -> std::same_as<std::expected<std::optional<std::uint32_t>, std::error_code>>;
+    { t.get_config_first_idx() } -> std::same_as<std::expected<std::optional<std::uint64_t>, std::error_code>>;
 };
 
 template <typename T>
@@ -229,6 +230,7 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             { t.set_promise(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_accepted_round(b) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_decided_index(index) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.set_config_first_idx(index) } -> std::same_as<std::expected<void, std::error_code>>;
                             {
                                 t.write_repaired_log(index, entries, b, b, index)
                             } -> std::same_as<std::expected<void, std::error_code>>;

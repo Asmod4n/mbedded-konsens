@@ -218,6 +218,35 @@ Review 2 approved the plan with four fixes: the reply to a remote
 proposer (2.3), the check at each flush (2.3), `config_first_idx` of
 configuration 1 (2.7), and the wrong-use check at the start (2.7).
 
-## 7. Data on the disk
+## 7. Changes during the build
+
+1. `config_first_idx` is a 0-based index: the index of the first entry of
+   the configuration. The store keeps it in its own meta row, so that a
+   store of format 5 without the row opens. A node of configuration 1
+   reads a missing row as 0 and does not write it.
+2. `build_response` also carries `last_chain_crc`, the chain CRC after
+   its entries. The new node checks each part with it, and the last part
+   with `decided_chain_crc` too.
+3. After `build_refused` or a part that fails its check, the new node
+   takes the next source and asks at its next resend timeout, not at
+   once. A source that gives no answer until the timeout is also
+   replaced.
+4. After the build, the node starts a new Ballot Leader Election without
+   a recovered leader. The promise of the build has the pid 0 and is not
+   a leader.
+5. The three new message kinds stand at the end of `paxos_msg`. The kind
+   bytes of `heartbeat_request` and `heartbeat_reply` move from 25 and 26
+   to 28 and 29.
+6. A forwarded StopSign becomes a task of Execute-Verify behind the
+   requests in work. Only a leader refuses its own StopSign while it
+   holds a request in work.
+7. A leader that holds a StopSign starts no new read round and drops the
+   reads that wait for a round. A round that already started finishes,
+   because its read index is below the StopSign.
+8. Not built: a next configuration of one node (`validate_cluster` needs
+   a peer), and a check for a duplicate node in a decoded `cluster_config`
+   (`reconfigure` checks it before the StopSign is proposed).
+
+## 8. Data on the disk
 
 Listed at the end of the build.

@@ -190,7 +190,7 @@ TEST_CASE("a Prepare after an AcceptDecide in one batch reads the entry of the A
 {
     using sp_t = konsens::sequence_paxos<disk_storage>;
     const auto d = new_disk();
-    auto sp = *sp_t::with({1, {2, 3}}, disk_storage{d}, 1);
+    auto sp = *sp_t::with({1, 1, {2, 3}}, disk_storage{d}, 1);
     const ballot first{config_id, 1, 0, 3};
     const ballot second{config_id, 2, 0, 2};
     REQUIRE(sp.handle({3, 1, konsens::prepare{first, 0, ballot{}, 0}}));

@@ -103,6 +103,11 @@ std::error_code check_entries_of(const repair_entries& r) noexcept
     return check_entries(r.entries);
 }
 
+std::error_code check_entries_of(const build_response& b) noexcept
+{
+    return check_entries(b.entries);
+}
+
 std::error_code check_entries_of(const work& w) noexcept
 {
     if (entry_is_done(w.request)) [[unlikely]] {

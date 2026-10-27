@@ -32,6 +32,7 @@ constexpr std::string_view node_file_name = "node.db";
 constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
 constexpr std::string_view repair_key = "repair";
+constexpr std::string_view config_first_key = "config_first";
 constexpr std::uint32_t format_version = 5;
 constexpr int synchronous_full = 2;
 constexpr int checkpoint_frames = 1000;
@@ -611,6 +612,20 @@ std::expected<meta_record, std::error_code> read_meta(const link& l)
 std::expected<void, std::error_code> write_meta(const link& l, const meta_record& m)
 {
     return put_checked(l, meta_key, encode_meta(m));
+}
+
+std::expected<std::optional<std::uint64_t>, std::error_code> read_config_first_idx(const link& l)
+{
+    const auto body = get_checked(l, config_first_key, sizeof(std::uint64_t));
+    if (!body) [[unlikely]] {
+        return std::unexpected(body.error());
+    }
+    if (!body->has_value()) {
+        return std::nullopt;
+    }
+    const auto index = from_little_endian<std::uint64_t>(body->value().first<sizeof(std::uint64_t)>());
+    sqlite3_reset(l.s->get_record.get());
+    return index;
 }
 
 std::expected<std::vector<entry>, read_failure> read_entries_in(const link& l, const std::uint64_t from,
@@ -1293,6 +1308,13 @@ persistent_storage::read_only_transaction::get_chain_crc(const std::uint64_t ind
     return read_chain_crc(env_->of_reader(), index);
 }
 
+std::expected<std::optional<std::uint64_t>, std::error_code>
+persistent_storage::read_only_transaction::get_config_first_idx() const
+{
+    throw_if_no_environment(env_);
+    return read_config_first_idx(env_->of_reader());
+}
+
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
 persistent_storage::read_only_transaction::find(const std::span<const std::byte> key) const
 {
@@ -1390,6 +1412,17 @@ persistent_storage::transaction::get_chain_crc(const std::uint64_t index) const
         return std::unexpected(f.error());
     }
     return read_chain_crc(env_->of_writer(), index);
+}
+
+std::expected<std::optional<std::uint64_t>, std::error_code>
+persistent_storage::transaction::get_config_first_idx() const
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return read_config_first_idx(env_->of_writer());
 }
 
 std::expected<void, std::error_code>
@@ -1503,6 +1536,18 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
     }
     m->decided_idx = decided_idx;
     return write_meta(l, *m);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::transaction::set_config_first_idx(const std::uint64_t config_first_idx)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    env_->written = true;
+    return put_checked(env_->of_writer(), config_first_key, to_little_endian(config_first_idx));
 }
 
 std::expected<void, std::error_code>

@@ -43,6 +43,7 @@ struct node_config {
     std::uint32_t leader_priority;
     std::uint64_t election_tick_timeout;
     std::uint64_t resend_message_tick_timeout;
+    std::vector<node_id> build_from{};
 };
 
 struct logical_clock {
@@ -108,7 +109,8 @@ public:
             config.resend_message_tick_timeout == 0) [[unlikely]] {
             throw std::logic_error("konsens: configuration_id and each tick timeout must not be 0");
         }
-        auto sp = sequence_paxos<S>::with({config.pid, config.peers}, std::move(internal_storage), nonce);
+        auto sp = sequence_paxos<S>::with({config.configuration_id, config.pid, config.peers, config.build_from},
+                                          std::move(internal_storage), nonce);
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
         }
@@ -130,6 +132,7 @@ public:
         }
         auto ble = ballot_leader_election::with(ble_config_of(config), *promise);
         node n(config, std::move(*sp), std::move(own_storage), std::move(ble), std::move(machine), nonce);
+        n.build_started_ = n.seq_paxos_.building();
         if (n.seq_paxos_.votes()) {
             if (auto r = n.check_the_applied_state();
                 !r && r.error() != make_error_code(paxos_errc::state_differs_from_log) && !error_is_a_damage(r.error()))
@@ -223,6 +226,9 @@ private:
     result finish_the_step()
     {
         return throw_on_a_damage([&]() -> result {
+            if (build_started_ && !seq_paxos_.building() && seq_paxos_.votes()) {
+                start_the_election_after_the_build();
+            }
             if (repair_started_ && !seq_paxos_.repairing() && seq_paxos_.votes()) {
                 if (auto r = close_the_repair(); !r) [[unlikely]] {
                     drop_held_messages_and_replies();
@@ -559,7 +565,7 @@ private:
         if constexpr (std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
                       std::is_same_v<T, work>) {
             if (to != seq_paxos_.get_pid() || !std::ranges::contains(seq_paxos_.peers_, from) ||
-                seq_paxos_.recovering()) [[unlikely]] {
+                seq_paxos_.recovering() || seq_paxos_.building()) [[unlikely]] {
                 return {};
             }
             if constexpr (std::is_same_v<T, answer>) {
@@ -575,7 +581,7 @@ private:
         } else if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
             return seq_paxos_.handle(from, to, msg);
         } else {
-            if (seq_paxos_.recovering()) {
+            if (seq_paxos_.recovering() || seq_paxos_.building()) {
                 return {};
             }
             ble_.handle(ble_message{from, to, heartbeat_msg{std::in_place_type<T>, msg}});
@@ -728,6 +734,12 @@ private:
         return {};
     }
 
+    void start_the_election_after_the_build()
+    {
+        build_started_ = false;
+        ble_ = ballot_leader_election::with(ble_config_, ballot{});
+    }
+
     ballot ballot_above_promise(const ballot elected, const ballot promise) const
     {
         if (elected.pid != seq_paxos_.get_pid() || elected > promise || seq_paxos_.get_state().first == role::leader) {
@@ -774,7 +786,8 @@ private:
         if (!last) [[unlikely]] {
             return seq_paxos_.stop_voting(last.error());
         }
-        if (!last->empty() && entry_is_a_stop_sign(last->front())) [[unlikely]] {
+        if (!last->empty() && entry_is_a_stop_sign(last->front()) && m->applied_idx > seq_paxos_.get_config_first_idx())
+            [[unlikely]] {
             next_config_ = read_the_next_configuration(last->front());
         }
         return {};
@@ -1183,7 +1196,7 @@ private:
         }
         for (auto k = m->applied_idx + 1; k <= m->decided_idx; ++k) {
             const auto& e = (*entries)[k - m->applied_idx - 1];
-            if (entry_is_a_stop_sign(e)) [[unlikely]] {
+            if (entry_is_a_stop_sign(e) && k > seq_paxos_.get_config_first_idx()) [[unlikely]] {
                 next_config_ = read_the_next_configuration(e);
             }
             if (!entry_is_a_request(e)) {
@@ -1698,6 +1711,7 @@ private:
     std::unique_ptr<std::uint64_t> commit_count_ = std::make_unique<std::uint64_t>();
     std::uint64_t nonce_;
     bool repair_started_{};
+    bool build_started_{};
     std::optional<std::uint64_t> open_mark_;
     bool waits_for_the_operator_{};
     std::vector<node_id> nodes_;

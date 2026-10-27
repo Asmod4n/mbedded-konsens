@@ -1342,3 +1342,28 @@ TEST_CASE("recover on a damaged clone gives back records whose CRC holds")
     CHECK(kept < entry_count);
     CHECK(kept > entry_count / 2);
 }
+
+// Plan reconfiguration 2.7: config_first_idx is absent in a new store and in
+// a store of the format before it, and a write keeps it across a new open.
+TEST_CASE("config_first_idx is absent until a transaction sets it, and an open keeps it")
+{
+    const temporary_directory dir;
+    {
+        const auto storage = open_storage(dir.path());
+        const auto t = storage.begin_read_only();
+        REQUIRE(t.has_value());
+        const auto first = t->get_config_first_idx();
+        REQUIRE(first.has_value());
+        CHECK_FALSE(first->has_value());
+    }
+    {
+        auto storage = open_storage(dir.path());
+        write(storage, [](auto& t) { REQUIRE(t.set_config_first_idx(12)); });
+    }
+    const auto storage = open_storage(dir.path());
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto first = t->get_config_first_idx();
+    REQUIRE(first.has_value());
+    CHECK(*first == std::optional<std::uint64_t>{12});
+}

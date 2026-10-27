@@ -64,6 +64,7 @@ struct disk_storage {
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
+        auto get_config_first_idx() const { return t_.get_config_first_idx(); }
         auto find(const std::span<const std::byte> key) const { return t_.find(key); }
         auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
         auto insert_or_assign(const std::span<const std::byte> key, const std::span<const std::byte> value)
@@ -94,6 +95,7 @@ struct disk_storage {
         auto set_promise(const ballot b) { return t_.set_promise(b); }
         auto set_accepted_round(const ballot b) { return t_.set_accepted_round(b); }
         auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
+        auto set_config_first_idx(const std::uint64_t index) { return t_.set_config_first_idx(index); }
         auto write_repaired_log(const std::uint64_t from_idx, const std::span<const entry> entries,
                                 const ballot promise, const ballot accepted_round, const std::uint64_t decided_idx)
         {

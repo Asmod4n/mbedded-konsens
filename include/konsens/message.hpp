@@ -275,11 +275,32 @@ struct work {
     friend bool operator==(const work&, const work&) = default;
 };
 
+struct build_request {
+    std::uint64_t nonce;
+    std::uint64_t from_idx;
+    friend bool operator==(const build_request&, const build_request&) = default;
+};
+
+struct build_response {
+    std::uint64_t nonce;
+    std::uint64_t from_idx;
+    std::vector<entry> entries;
+    std::uint32_t last_chain_crc;
+    std::uint64_t decided_idx;
+    std::uint32_t decided_chain_crc;
+    friend bool operator==(const build_response&, const build_response&) = default;
+};
+
+struct build_refused {
+    std::uint64_t nonce;
+    friend bool operator==(const build_refused&, const build_refused&) = default;
+};
+
 using paxos_msg =
     std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide, not_accepted,
                  proposal_forward, recovery, recovery_response, get_state, new_state, read_index_request, heartbeat,
                  heartbeat_ack, read_index_reply, repair_request, repair_response, get_repair_entries, repair_entries,
-                 answer, try_again, refused, work>;
+                 answer, try_again, refused, work, build_request, build_response, build_refused>;
 
 struct paxos_message {
     node_id from;

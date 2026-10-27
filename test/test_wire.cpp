@@ -305,6 +305,9 @@ std::vector<message> every_kind()
                                        .out = {56, 57},
                                        .rejected = true}},
                                      0}),
+        paxos(konsens::build_request{10, 20}),
+        paxos(konsens::build_response{10, 20, five_entries(), 30, 40, 50}),
+        paxos(konsens::build_refused{10}),
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
@@ -399,8 +402,11 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::try_again{ballot_from(10), 20}), 22},
         {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 23},
         {paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::normal}, 21}), 24},
-        {ble(konsens::heartbeat_request{10}), 25},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 26},
+        {paxos(konsens::build_request{10, 20}), 25},
+        {paxos(konsens::build_response{10, 20, {}, 30, 40, 50}), 26},
+        {paxos(konsens::build_refused{10}), 27},
+        {ble(konsens::heartbeat_request{10}), 28},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 29},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -453,7 +459,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 26;
+    constexpr std::uint64_t heartbeat_reply_kind = 29;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
@@ -676,4 +682,15 @@ TEST_CASE("a cluster_config passes the payload of a StopSign, and a broken paylo
     auto longer = *payload;
     longer.push_back(std::byte{0});
     CHECK_FALSE(konsens::decode_cluster_config(longer).has_value());
+}
+
+// Plan reconfiguration 2.7: a build_response carries entries of another
+// node, so decode checks them as it checks the entries of new_state.
+TEST_CASE("a build_response with an entry of a foreign field gives entry_field_of_another_kind")
+{
+    const auto m =
+        paxos(konsens::build_response{10, 20, {entry{.kind = entry_kind::normal, .session = 1}}, 30, 40, 50});
+    const auto bytes = konsens::encode(m);
+    REQUIRE(bytes.has_value());
+    CHECK(error_of(*bytes) == wire_errc::entry_field_of_another_kind);
 }

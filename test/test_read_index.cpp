@@ -57,7 +57,7 @@ constexpr std::uint64_t first_nonce = 1;
 
 sp_t make(const node_id pid, const node_id count = three)
 {
-    return *sp_t::with({pid, peers_of(pid, count)}, sqlite_storage::open_new(), first_nonce);
+    return *sp_t::with({1, pid, peers_of(pid, count)}, sqlite_storage::open_new(), first_nonce);
 }
 
 entry make_entry(const std::uint8_t v)

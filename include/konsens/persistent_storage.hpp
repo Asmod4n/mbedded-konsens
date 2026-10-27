@@ -42,6 +42,7 @@ public:
         get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
         get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
         [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
         find(std::span<const std::byte> key) const;
         [[nodiscard]] std::expected<std::optional<session_record>, std::error_code>
@@ -96,6 +97,7 @@ public:
         get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
         get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
 
         [[nodiscard]] std::expected<void, std::error_code> append_entries(std::span<const entry> entries);
         [[nodiscard]] std::expected<void, std::error_code> append_on_prefix(std::uint64_t from_idx,
@@ -103,6 +105,7 @@ public:
         [[nodiscard]] std::expected<void, std::error_code> set_promise(ballot promise);
         [[nodiscard]] std::expected<void, std::error_code> set_accepted_round(ballot accepted_round);
         [[nodiscard]] std::expected<void, std::error_code> set_decided_index(std::uint64_t decided_idx);
+        [[nodiscard]] std::expected<void, std::error_code> set_config_first_idx(std::uint64_t config_first_idx);
         [[nodiscard]] std::expected<void, std::error_code> write_repaired_log(std::uint64_t from_idx,
                                                                               std::span<const entry> entries,
                                                                               ballot promise, ballot accepted_round,
