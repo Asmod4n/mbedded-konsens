@@ -27,6 +27,33 @@ inline void validate_cluster(node_id pid, std::span<const node_id> peers)
     }
 }
 
+struct cluster_config {
+    std::uint32_t configuration_id;
+    std::vector<node_id> nodes;
+    friend bool operator==(const cluster_config&, const cluster_config&) = default;
+};
+
+inline void validate_next_cluster(const std::uint32_t configuration_id, const node_id pid,
+                                  const std::span<const node_id> peers, const cluster_config& next)
+{
+    if (next.configuration_id != configuration_id + 1) [[unlikely]] {
+        throw std::logic_error("konsens: the next configuration id is not the current one plus one");
+    }
+    if (next.nodes.empty() || std::ranges::contains(next.nodes, node_id{0})) [[unlikely]] {
+        throw std::logic_error("konsens: the next configuration is empty or contains the pid 0");
+    }
+    if (std::ranges::contains(next.nodes, pid) ||
+        std::ranges::any_of(peers, [&next](const node_id p) { return std::ranges::contains(next.nodes, p); }))
+        [[unlikely]] {
+        throw std::logic_error("konsens: the next configuration contains a pid of the current configuration");
+    }
+    std::vector<node_id> sorted = next.nodes;
+    std::ranges::sort(sorted);
+    if (std::ranges::adjacent_find(sorted) != sorted.end()) [[unlikely]] {
+        throw std::logic_error("konsens: the next configuration contains a pid twice");
+    }
+}
+
 enum class message_status : std::uint8_t { expected, dropped_preceding, outdated };
 
 struct sequence_number {

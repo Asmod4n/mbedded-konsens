@@ -63,7 +63,7 @@ lists the findings of review 1 and what changed.
    nodes}` in its payload, as packed CBOR. The next `configuration_id`
    is the current one plus one. `nodes` is not empty and holds no
    duplicate and no zero. It shares no pid with the current
-   configuration (model 3543; provisional, card 1). Any other value is a
+   configuration (model 3543; owner 2026-10-27 13:43). Any other value is a
    wrong use (`std::logic_error`).
 2. The StopSign is the last entry of a configuration. A leader in the
    accept phase appends it. A leader in the prepare phase holds one
@@ -82,7 +82,7 @@ lists the findings of review 1 and what changed.
    before the build (section 4.1).
 4. After a node holds a StopSign at the end of the log of its
    configuration, `append` and `reconfigure` give the error
-   `client_errc::reconfiguring` (provisional name, card 2). When the
+   `client_errc::reconfiguring` (owner 2026-10-27 13:43). When the
    leader flushes its buffer, it cuts every proposal after a StopSign
    and every second StopSign. A local proposer of a cut entry gets the
    same error; a remote one gets no message (item 3).
@@ -97,7 +97,7 @@ lists the findings of review 1 and what changed.
    - keeps its store. The caller deletes the store of an old node after
      every node of the next configuration has started.
 7. The build of a node of the next configuration (model
-   `BuildForServer`; message names provisional, card 2):
+   `BuildForServer`; names: owner 2026-10-27 13:43):
    - The node starts with `node_config{next.configuration_id, pid,
      peers}` and an empty store in its own directory. A new field
      `build_from` lists the nodes of the old configuration.
@@ -141,7 +141,7 @@ lists the findings of review 1 and what changed.
   doc/plan-sqlite-storage.md).
 - No compaction and no snapshot. A new node copies the whole log.
 - No joint consensus and no change of one node at a time.
-- No pid shared by two configurations (card 1).
+- No pid shared by two configurations (owner 2026-10-27 13:43).
 
 ## 4. Model and tests
 
@@ -195,14 +195,14 @@ to 2.9 with 4.4 to 4.6.
 ## 6. Review 1 and changes
 
 1. Shared nodes are not in the model: the configurations are disjoint
-   now (2.1, card 1).
+   now (2.1; owner 2026-10-27 13:43).
 2. No run had Execute-Verify with a reconfiguration, and a forwarded
    StopSign is not checked: 2.3 and 4.1.
 3. A new node's messages are dropped, and the recovery path does not
    fit: a separate build path (2.7).
 4. `get_state` sends one message and the accepted log: the build sends
    bounded parts of the decided prefix (2.7).
-5. `try_again` has a meaning: new names, provisional (card 2).
+5. `try_again` has a meaning: new names (owner 2026-10-27 13:43).
 6. At least three nodes and the own pid: removed; any non-empty set
    (2.1).
 7. The StopSign in the general buffer: a separate buffer and cut

@@ -1976,3 +1976,98 @@ TEST_CASE("a follower that found a damage repairs from the cluster and votes aga
     deliver_all(nodes);
     CHECK(a.get_decided_idx() == 101);
 }
+
+namespace {
+
+entry stop_sign_entry()
+{
+    return {konsens::entry_kind::stop_sign, {}};
+}
+
+}
+
+// Plan reconfiguration 2.2 and 2.4: the StopSign is the last entry of a
+// configuration. After the leader holds one, it refuses a local append
+// and cuts a forwarded entry, as leader.rs:264-274 drops the proposals.
+TEST_CASE("a leader appends no entry after its StopSign")
+{
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(make_entry(1)));
+    REQUIRE(c.append(stop_sign_entry()));
+    CHECK(c.append(make_entry(2)).error() == konsens::client_errc::reconfiguring);
+    deliver_all(nodes);
+    REQUIRE(a.append(make_entry(3)));
+    deliver_all(nodes);
+    for (auto* n : nodes) {
+        CHECK(decided_of(*n) == std::vector{make_entry(1), stop_sign_entry()});
+    }
+    CHECK(c.append(make_entry(4)).error() == konsens::client_errc::reconfiguring);
+}
+
+// A leader in its prepare phase buffers what a follower forwards. At the
+// flush it keeps the entries up to the first StopSign and cuts the rest.
+TEST_CASE("a leader cuts the forwarded entries after a StopSign at the flush")
+{
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    REQUIRE(c.handle({1, 3, konsens::proposal_forward{{make_entry(1), stop_sign_entry(), make_entry(2),
+                                                       stop_sign_entry()}}}));
+    deliver_all(nodes);
+    for (auto* n : nodes) {
+        CHECK(decided_of(*n) == std::vector{make_entry(1), stop_sign_entry()});
+    }
+}
+
+// A new leader reads the end of its synced log. A StopSign there ends the
+// configuration for the new leader too.
+TEST_CASE("a new leader that syncs a StopSign appends nothing after it")
+{
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(stop_sign_entry()));
+    deliver_all(nodes);
+    REQUIRE(b.handle_leader(ballot_of(2, 2)));
+    deliver_all(nodes);
+    REQUIRE(b.get_state() == std::pair{role::leader, phase::accept});
+    CHECK(b.append(make_entry(1)).error() == konsens::client_errc::reconfiguring);
+    REQUIRE(a.append(make_entry(2)));
+    deliver_all(nodes);
+    for (auto* n : nodes) {
+        CHECK(decided_of(*n) == std::vector{stop_sign_entry()});
+    }
+}
+
+// Plan reconfiguration 2.5: a StopSign that no majority accepted is an
+// entry like any other. A new leader without it removes it by its accept
+// sync, and the configuration goes on.
+TEST_CASE("a StopSign that is not decided is removed by a new leader")
+{
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(stop_sign_entry()));
+    deliver_among(nodes, {false, false, true});
+    REQUIRE(b.handle_leader(ballot_of(2, 2)));
+    deliver_among(nodes, {true, true, false});
+    REQUIRE(b.get_state() == std::pair{role::leader, phase::accept});
+    REQUIRE(b.append(make_entry(1)));
+    deliver_all(nodes);
+    for (auto* n : nodes) {
+        CHECK(decided_of(*n) == std::vector{make_entry(1)});
+    }
+}

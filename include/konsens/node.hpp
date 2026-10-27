@@ -234,6 +234,7 @@ private:
                 release_the_output();
                 return {};
             }
+            drop_the_reads_for_the_stop_sign();
             if (auto r = serve_reads(); !r) [[unlikely]] {
                 drop_held_messages_and_replies();
                 return r;
@@ -251,9 +252,33 @@ private:
 
 public:
 
+    [[nodiscard]] std::expected<transaction, std::error_code> reconfigure(const cluster_config& next)
+    {
+        validate_next_cluster(ble_config_.configuration_id, ble_config_.pid, ble_config_.peers, next);
+        auto payload = encode(next);
+        if (!payload) [[unlikely]] {
+            return std::unexpected(payload.error());
+        }
+        return append_an_entry({entry_kind::stop_sign, std::move(*payload)});
+    }
+
+    const std::optional<cluster_config>& reconfigured() const { return next_config_; }
+
     [[nodiscard]] std::expected<transaction, std::error_code> append(entry e)
     {
+        if (entry_is_a_stop_sign(e)) [[unlikely]] {
+            throw std::logic_error("konsens: a StopSign comes from reconfigure, not from append");
+        }
+        return append_an_entry(std::move(e));
+    }
+
+private:
+    std::expected<transaction, std::error_code> append_an_entry(entry e)
+    {
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (entry_is_done(e)) [[unlikely]] {
                 throw std::logic_error("konsens: only the leader appends a done record");
             }
@@ -267,10 +292,14 @@ public:
         });
     }
 
+public:
     [[nodiscard]] std::expected<transaction, std::error_code> register_client(const std::uint64_t client_id)
     {
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = propose_a_request({entry_kind::register_client, {}, 0, 0, client_id, seq_paxos_.get_pid()}); !r)
@@ -289,6 +318,9 @@ public:
     {
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (request_number == 0) [[unlikely]] {
@@ -310,6 +342,9 @@ public:
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
+            if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             const auto read = last_read_ + 1;
             if (auto r = seq_paxos_.start_read(read); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -329,6 +364,9 @@ public:
     {
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) [[unlikely]] {
@@ -711,6 +749,10 @@ private:
         if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
             return r;
         }
+        if (auto r = read_the_applied_stop_sign(); !r) [[unlikely]] {
+            seq_paxos_.txn_.reset();
+            return r;
+        }
         if (auto r = apply_the_done_records(); !r) [[unlikely]] {
             seq_paxos_.txn_.reset();
             return std::unexpected(r.error());
@@ -719,6 +761,23 @@ private:
             return r;
         }
         return finish_the_step();
+    }
+
+    result read_the_applied_stop_sign()
+    {
+        const auto m = seq_paxos_.read_meta();
+        if (!m) [[unlikely]] {
+            return seq_paxos_.stop_voting(m.error());
+        }
+        const auto last = sequence_paxos<S>::read_range(*seq_paxos_.txn_, m->applied_idx - std::min(m->applied_idx, std::uint64_t{1}),
+                                                        m->applied_idx);
+        if (!last) [[unlikely]] {
+            return seq_paxos_.stop_voting(last.error());
+        }
+        if (!last->empty() && entry_is_a_stop_sign(last->front())) [[unlikely]] {
+            next_config_ = read_the_next_configuration(last->front());
+        }
+        return {};
     }
 
     result serve_reads()
@@ -754,6 +813,29 @@ private:
             return {};
         }
         return seq_paxos_.append(std::move(e));
+    }
+
+    result refuse_if_reconfiguring() const
+    {
+        if (next_config_ || seq_paxos_.holds_a_stop_sign() || std::ranges::any_of(waiting_, entry_is_a_stop_sign) ||
+            std::ranges::any_of(tasks_, [](const auto& t) { return entry_is_a_stop_sign(t.second); })) [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::reconfiguring));
+        }
+        return {};
+    }
+
+    void drop_the_reads_for_the_stop_sign()
+    {
+        if (!refuse_if_reconfiguring()) [[unlikely]] {
+            std::erase_if(reads_, [this](const auto& r) {
+                if (r.second.read_index) {
+                    return false;
+                }
+                client_replies_.push_back(
+                    {r.second.client_id, 0, std::unexpected(make_error_code(client_errc::reconfiguring))});
+                return true;
+            });
+        }
     }
 
     bool holds_a_request_in_work() const
@@ -1002,6 +1084,12 @@ private:
         auto proposals = std::exchange(seq_paxos_.buffered_proposals_, {});
         std::ranges::move(std::exchange(waiting_, {}), std::back_inserter(proposals));
         for (auto& e : proposals) {
+            if (!refuse_if_reconfiguring()) [[unlikely]] {
+                break;
+            }
+            if (entry_is_a_stop_sign(e) && !decode_cluster_config(e.payload)) [[unlikely]] {
+                continue;
+            }
             auto request = request_of(std::move(e));
             send_work(next, request, std::nullopt);
             tasks_.emplace(next, std::move(request));
@@ -1095,6 +1183,9 @@ private:
         }
         for (auto k = m->applied_idx + 1; k <= m->decided_idx; ++k) {
             const auto& e = (*entries)[k - m->applied_idx - 1];
+            if (entry_is_a_stop_sign(e)) [[unlikely]] {
+                next_config_ = read_the_next_configuration(e);
+            }
             if (!entry_is_a_request(e)) {
                 continue;
             }
@@ -1193,6 +1284,15 @@ private:
         case entry_kind::stop_sign:
             break;
         }
+    }
+
+    static cluster_config read_the_next_configuration(const entry& stop_sign)
+    {
+        auto next = decode_cluster_config(stop_sign.payload);
+        if (!next) [[unlikely]] {
+            throw std::logic_error("konsens: a decided StopSign carries no cluster_config");
+        }
+        return std::move(*next);
     }
 
     static std::optional<float_rule> float_rule_of(const M& m)
@@ -1615,6 +1715,7 @@ private:
     std::vector<message> execute_verify_outgoing_;
     std::vector<entry> waiting_;
     bool resend_answer_{};
+    std::optional<cluster_config> next_config_;
 };
 
 }

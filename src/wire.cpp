@@ -221,4 +221,33 @@ std::expected<received, std::error_code> decode(std::string bytes)
     return decode_body_of_kind(owner, body, h, std::make_index_sequence<kind_count>{});
 }
 
+std::expected<std::vector<std::byte>, std::error_code> encode(const cluster_config& c)
+{
+    const auto out = cbor::structs<cluster_config>::encode(c);
+    if (!out) [[unlikely]] {
+        return std::unexpected(out.error());
+    }
+    const auto bytes = std::as_bytes(std::span(*out));
+    return std::vector<std::byte>(bytes.begin(), bytes.end());
+}
+
+std::expected<cluster_config, std::error_code> decode_cluster_config(const std::span<const std::byte> payload)
+{
+    std::string bytes(payload.size(), '\0');
+    std::ranges::transform(payload, bytes.begin(), [](const std::byte b) { return static_cast<char>(b); });
+    const auto owner = std::make_shared<const std::string>(std::move(bytes));
+    const auto size = cbor::item_size(*owner);
+    if (!size) [[unlikely]] {
+        return std::unexpected(size.error());
+    }
+    if (*size != owner->size()) [[unlikely]] {
+        return std::unexpected(wire_errc::extraneous_data);
+    }
+    const auto decoded = cbor::structs<cluster_config>::decode(owner, *owner);
+    if (!decoded) [[unlikely]] {
+        return std::unexpected(decoded.error());
+    }
+    return **decoded;
+}
+
 }

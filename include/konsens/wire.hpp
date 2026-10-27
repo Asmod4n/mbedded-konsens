@@ -4,10 +4,12 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <span>
 #include <string>
 #include <system_error>
 #include <type_traits>
 #include <variant>
+#include <vector>
 
 #include <cbor/ref.hpp>
 
@@ -54,6 +56,9 @@ std::uint8_t kind_of(const received& r) noexcept;
 
 [[nodiscard]] std::expected<std::string, std::error_code> encode(const message& m);
 [[nodiscard]] std::expected<received, std::error_code> decode(std::string bytes);
+
+[[nodiscard]] std::expected<std::vector<std::byte>, std::error_code> encode(const cluster_config& c);
+[[nodiscard]] std::expected<cluster_config, std::error_code> decode_cluster_config(std::span<const std::byte> payload);
 
 }
 

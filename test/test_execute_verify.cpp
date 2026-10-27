@@ -301,6 +301,8 @@ constexpr std::uint64_t resend_ticks = 2;
 constexpr int rounds = 40;
 constexpr std::uint64_t client_a = 10;
 
+const konsens::cluster_config next_cluster{2, {4, 5, 6}};
+
 konsens::node_config config_of(const node_id pid)
 {
     std::vector<node_id> peers;
@@ -494,11 +496,75 @@ TEST_CASE("a stop sign waits while a request is in work")
     const auto s = registered(c, l);
     batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
     batches::deliver(c.nodes, [](const message& m) -> std::size_t { return holds<answer>(m) ? 0 : 1; });
-    const auto refused = c.at(l).append({entry_kind::stop_sign, {}});
+    const auto refused = c.at(l).reconfigure(next_cluster);
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error() == client_errc::retry);
     c.run(rounds, once);
-    batches::commit(c.at(l), c.at(l).append({entry_kind::stop_sign, {}}));
+    batches::commit(c.at(l), c.at(l).reconfigure(next_cluster));
+}
+
+// Plan reconfiguration 2.1, 2.4 and 2.6: a decided StopSign gives every
+// node the next configuration, and after it no node takes a client call.
+TEST_CASE("a decided StopSign ends the configuration on every node")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).reconfigure(next_cluster));
+    c.run(rounds, once);
+    for (const auto& n : c.nodes) {
+        REQUIRE(n.reconfigured().has_value());
+        CHECK(*n.reconfigured() == next_cluster);
+    }
+    for (const auto p : three_nodes) {
+        CHECK(c.at(p).client_request(client_a, s, 1, bytes_of('a')).error() == client_errc::reconfiguring);
+        CHECK(c.at(p).client_query(client_a, {}).error() == client_errc::reconfiguring);
+        CHECK(c.at(p).register_client(client_a).error() == client_errc::reconfiguring);
+        CHECK(c.at(p).append({entry_kind::normal, {}}).error() == client_errc::reconfiguring);
+    }
+    CHECK(c.decided_log(l).back().kind == entry_kind::stop_sign);
+}
+
+// Plan reconfiguration 2.3: a StopSign that a follower forwards becomes a
+// task behind the request that the leader holds in work. The leader
+// appends it after the done record of the request, so the request gets its
+// reply in the old configuration.
+TEST_CASE("a forwarded StopSign waits behind a request in work")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const node_id f = l == 1 ? 2 : 1;
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    batches::deliver(c.nodes, [](const message& m) -> std::size_t { return holds<answer>(m) ? 0 : 1; });
+    batches::commit(c.at(f), c.at(f).reconfigure(next_cluster));
+    c.run(rounds, once);
+    const auto replies = c.at(l).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].response == bytes_of('a'));
+    const auto log = c.decided_log(l);
+    REQUIRE(log.size() == 3);
+    CHECK(log[1].kind == entry_kind::client_request);
+    CHECK(log[2].kind == entry_kind::stop_sign);
+    for (const auto& n : c.nodes) {
+        CHECK(n.reconfigured() == next_cluster);
+    }
+}
+
+// Plan reconfiguration 4.7: the calls that a new user tries first with a
+// wrong configuration. Each is a wrong use.
+TEST_CASE("a wrong next configuration is a wrong use")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const std::vector<konsens::cluster_config> wrong{
+        {1, {4, 5, 6}}, {3, {4, 5, 6}}, {2, {}}, {2, {4, 0}}, {2, {4, 4}}, {2, {4, l}}, {2, {4, l == 1 ? 2u : 1u}},
+    };
+    for (const auto& w : wrong) {
+        CAPTURE(w.configuration_id);
+        CHECK_THROWS_AS((void)c.at(l).reconfigure(w), std::logic_error);
+    }
+    CHECK_THROWS_AS((void)c.at(l).append({entry_kind::stop_sign, {}}), std::logic_error);
 }
 
 // Plan-one-environment 3.3: only the leader writes a done record. A done

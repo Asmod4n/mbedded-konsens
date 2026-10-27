@@ -144,6 +144,7 @@ struct leader_state {
     std::vector<std::uint64_t> accepted_indexes;
     promise_meta_data max_promise_meta;
     std::optional<konsens::log_sync> max_promise_sync;
+    bool accepted_stop_sign;
 
     static leader_state with(ballot n_leader, std::span<const node_id> nodes)
     {
@@ -153,7 +154,8 @@ struct leader_state {
                 std::vector<sequence_number>(nodes.size(), sequence_number{}),
                 std::vector<std::uint64_t>(nodes.size(), 0),
                 promise_meta_data{},
-                std::nullopt};
+                std::nullopt,
+                false};
     }
 
     std::size_t pid_to_idx(node_id pid) const
@@ -365,6 +367,7 @@ public:
             return r;
         }
         if (state_ == std::pair{role::leader, phase::accept}) {
+            cut_the_buffer_after_a_stop_sign();
             if (auto r = accept_entries_leader(buffered_proposals_); !r) [[unlikely]] {
                 drop_incoming_and_outgoing();
                 return r;
@@ -548,6 +551,9 @@ public:
             return r;
         }
         if (state_ == std::pair{role::leader, phase::prepare} || state_ == std::pair{role::leader, phase::accept}) {
+            if (holds_a_stop_sign()) [[unlikely]] {
+                return std::unexpected(make_error_code(client_errc::reconfiguring));
+            }
             buffered_proposals_.push_back(std::move(e));
             return {};
         }
@@ -619,6 +625,12 @@ public:
             send_preparereq_to_all_peers(m->promise);
         }
         return {};
+    }
+
+    bool holds_a_stop_sign() const
+    {
+        return state_.first == role::leader &&
+               (leader_state_.accepted_stop_sign || std::ranges::any_of(buffered_proposals_, entry_is_a_stop_sign));
     }
 
     result refuse_if_recovering() const
@@ -1227,12 +1239,29 @@ private:
         }
     }
 
+    void cut_the_buffer_after_a_stop_sign()
+    {
+        if (leader_state_.accepted_stop_sign) [[unlikely]] {
+            buffered_proposals_.clear();
+            return;
+        }
+        if (const auto s = std::ranges::find_if(buffered_proposals_, entry_is_a_stop_sign);
+            s != buffered_proposals_.end()) [[unlikely]] {
+            buffered_proposals_.erase(std::next(s), buffered_proposals_.end());
+        }
+    }
+
     result accept_entries_leader(const std::span<const entry> entries)
     {
         if (entries.empty()) {
             return {};
         }
+        const auto s = std::ranges::find_if(entries, entry_is_a_stop_sign);
+        if (leader_state_.accepted_stop_sign || (s != entries.end() && std::next(s) != entries.end())) [[unlikely]] {
+            throw std::logic_error("konsens: the leader appends an entry after a StopSign");
+        }
         write_or_throw(txn_->append_entries(entries));
+        leader_state_.accepted_stop_sign = s != entries.end();
         if (auto r = extend_the_verified_idx(verified_idx_); !r) [[unlikely]] {
             return r;
         }
@@ -1338,6 +1367,11 @@ private:
         if (!after) [[unlikely]] {
             return stop_voting(after.error());
         }
+        const auto last = read_range(*txn_, after->log_len - std::min(after->log_len, std::uint64_t{1}), after->log_len);
+        if (!last) [[unlikely]] {
+            return stop_voting(last.error());
+        }
+        leader_state_.accepted_stop_sign = std::ranges::any_of(*last, entry_is_a_stop_sign);
         state_ = {role::leader, phase::accept};
         leader_state_.set_accepted_idx(pid_, bound_by_the_verified_idx(after->log_len));
         for (const auto f : leader_state_.get_promised_followers()) {
@@ -1962,6 +1996,10 @@ private:
 
     result start_read_round()
     {
+        if (holds_a_stop_sign()) [[unlikely]] {
+            read_pending_.clear();
+            return {};
+        }
         if (state_ != std::pair{role::leader, phase::accept} || read_pending_.empty() ||
             (!read_round_.reads.empty() && read_round_.n == leader_state_.n_leader)) {
             return {};

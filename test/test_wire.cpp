@@ -657,3 +657,23 @@ TEST_CASE("work with a done record gives entry_field_of_another_kind")
     CHECK(error_of(work_bytes({"\x01", 0, "", false})) == wire_errc::entry_field_of_another_kind);
     CHECK(error_of(work_bytes({"", 0, "", true})) == wire_errc::entry_field_of_another_kind);
 }
+
+// Plan reconfiguration 2.1 and 4.3: a StopSign carries the next
+// configuration as CBOR in its payload. A payload that is cut short or
+// that has bytes after the item fails as a value.
+TEST_CASE("a cluster_config passes the payload of a StopSign, and a broken payload fails as a value")
+{
+    const konsens::cluster_config next{2, {4, 5, 6}};
+    const auto payload = konsens::encode(next);
+    REQUIRE(payload.has_value());
+    const auto decoded = konsens::decode_cluster_config(*payload);
+    REQUIRE(decoded.has_value());
+    CHECK(*decoded == next);
+    for (std::size_t n = 0; n < payload->size(); ++n) {
+        CAPTURE(n);
+        CHECK_FALSE(konsens::decode_cluster_config(std::span(*payload).first(n)).has_value());
+    }
+    auto longer = *payload;
+    longer.push_back(std::byte{0});
+    CHECK_FALSE(konsens::decode_cluster_config(longer).has_value());
+}

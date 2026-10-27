@@ -70,6 +70,11 @@ constexpr bool entry_is_a_request(const entry& e) noexcept
            e.kind == entry_kind::expire_session;
 }
 
+constexpr bool entry_is_a_stop_sign(const entry& e) noexcept
+{
+    return e.kind == entry_kind::stop_sign;
+}
+
 constexpr bool entry_is_done(const entry& e) noexcept
 {
     return e.rejected || !e.result.empty();
