@@ -193,7 +193,8 @@ TEST_CASE("a start applies the decided log from index 0")
     c.deliver(once);
     auto kept = sqlite_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
     REQUIRE(c.at(1).get_applied_idx() == request_done);
-    auto n = *node_t::with(config_of(1), std::move(kept), sqlite_storage::open_new_node_storage(), concatenation{}, 0);
+    auto own = sqlite_storage::open_node_storage_stopped_cleanly(kept, 1);
+    auto n = *node_t::with(config_of(1), std::move(kept), std::move(own), concatenation{}, 0);
     CHECK(n.get_applied_idx() == request_done);
     CHECK(concatenation_of(n) == bytes_of("a"));
     CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of("a")});
@@ -495,8 +496,9 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
     auto c = elected();
     const auto log_directory = decided_log_of_two_entries(c);
     for (std::uint64_t nonce = 1; nonce <= 2; ++nonce) {
-        const auto n = *node_t::with(config_of(1), sqlite_storage::open_in(log_directory),
-                                     sqlite_storage::open_new_node_storage(), concatenation{}, nonce);
+        auto storage = sqlite_storage::open_in(log_directory);
+        auto own = sqlite_storage::open_node_storage_stopped_cleanly(storage, 1);
+        const auto n = *node_t::with(config_of(1), std::move(storage), std::move(own), concatenation{}, nonce);
         CHECK(n.get_sequence_paxos().votes());
         CHECK(n.get_applied_idx() == request_done);
         CHECK(concatenation_of(n) == bytes_of("a"));
@@ -534,8 +536,9 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
             REQUIRE(w->set_applied(applied.index, applied.crc));
             REQUIRE(std::move(*w).commit());
         }
-        const auto n = *node_t::with(config_of(1), sqlite_storage::open_in(log_directory),
-                                     sqlite_storage::open_new_node_storage(), concatenation{}, 1);
+        auto storage = sqlite_storage::open_in(log_directory);
+        auto stopped = sqlite_storage::open_node_storage_stopped_cleanly(storage, 1);
+        const auto n = *node_t::with(config_of(1), std::move(storage), std::move(stopped), concatenation{}, 1);
         CHECK(n.get_sequence_paxos().get_error() == differs);
         CHECK_FALSE(n.get_sequence_paxos().repairing());
         CHECK_FALSE(n.waits_for_the_operator());

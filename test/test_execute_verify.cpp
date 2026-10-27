@@ -582,99 +582,91 @@ TEST_CASE("a done record from the user is a wrong use")
                     std::logic_error);
 }
 
-// Plan 2.3.5: before a node writes a chosen result, it checks the CRC that
-// the node that ran it computed. A difference is a fault of the own node,
-// and the node throws node_fault. The log here holds a done record whose
-// CRC does not belong to its result, as a bit flip in the memory of this
-// node would give.
-TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
+namespace {
+
+// A log whose decided done record carries a CRC that does not belong to its
+// result, as a bit flip in the memory of the node that wrote it would give.
+std::filesystem::path decided_log_with_a_wrong_crc()
 {
     const auto directory = sqlite_storage::new_directory();
-    {
-        auto storage = sqlite_storage::open_in(directory);
-        auto w = storage.begin();
-        REQUIRE(w.has_value());
-        const auto bytes = konsens::encode_result({0, {}, {}});
-        const std::vector<entry> log{{.kind = entry_kind::register_client,
-                                      .client_id = client_a,
-                                      .pid = 1,
-                                      .result = bytes,
-                                      .result_crc = konsens::compute_result_crc(1, bytes) + 1}};
-        REQUIRE(w->set_promise(leader_ballot));
-        REQUIRE(w->set_accepted_round(leader_ballot));
-        REQUIRE(w->append_entries(log));
-        REQUIRE(w->set_decided_index(log.size()));
-        REQUIRE(std::move(*w).commit());
-    }
+    auto storage = sqlite_storage::open_in(directory);
+    auto w = storage.begin();
+    REQUIRE(w.has_value());
+    const auto bytes = konsens::encode_result({0, {}, {}});
+    const std::vector<entry> log{{.kind = entry_kind::register_client,
+                                  .client_id = client_a,
+                                  .pid = 1,
+                                  .result = bytes,
+                                  .result_crc = konsens::compute_result_crc(1, bytes) + 1}};
+    REQUIRE(w->set_promise(leader_ballot));
+    REQUIRE(w->set_accepted_round(leader_ballot));
+    REQUIRE(w->append_entries(log));
+    REQUIRE(w->set_decided_index(log.size()));
+    REQUIRE(std::move(*w).commit());
+    return directory;
+}
+
+// A start of node 1 on the store in `directory` after a clean stop: the
+// node storage in `own_directory` holds the mark of that store.
+template <typename Machine>
+std::expected<node_t, std::error_code> start_after_a_clean_stop(const std::filesystem::path& directory,
+                                                                const std::filesystem::path& own_directory,
+                                                                const Machine machine, const std::uint64_t nonce)
+{
+    auto storage = sqlite_storage::open_in(directory);
+    auto own = sqlite_storage::open_node_storage_stopped_cleanly(storage, 1, 1, own_directory);
+    return node_t::with(config_of(1), std::move(storage), std::move(own), machine, nonce);
+}
+
+std::expected<node_t, std::error_code> start_after_a_crash(const std::filesystem::path& directory,
+                                                           const std::filesystem::path& own_directory,
+                                                           const marked machine, const std::uint64_t nonce)
+{
+    auto config = config_of(1);
+    config.first_start = false;
+    return node_t::with(config, sqlite_storage::open_in(directory), sqlite_storage::open_node_storage_in(own_directory),
+                        machine, nonce);
+}
+
+}
+
+// Plan 2.3.5: before a node writes a chosen result, it checks the CRC that
+// the node that ran it computed. A difference is a fault of the own node,
+// and the node throws node_fault.
+TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
+{
+    const auto directory = decided_log_with_a_wrong_crc();
     const auto own_directory = sqlite_storage::new_directory();
-    const auto start = [&] {
-        static_cast<void>(node_t::with(config_of(1), sqlite_storage::open_in(directory),
-                                       sqlite_storage::open_node_storage_in(own_directory), marked{0}, 1));
-    };
-    CHECK_THROWS_AS(start(), konsens::node_fault);
+    CHECK_THROWS_AS(static_cast<void>(start_after_a_clean_stop(directory, own_directory, marked{0}, 1)),
+                    konsens::node_fault);
     // Plan 3.1: the proof is durable before the throw.
     const auto bytes = konsens::encode_result({0, {}, {}});
     const auto crc = konsens::compute_result_crc(1, bytes);
     const konsens::fault_proof proof{konsens::proof_kind::result_crc, 1, leader_ballot, crc + 1, crc};
     CHECK(sqlite_storage::open_node_storage_in(own_directory).get_repair_record() ==
           konsens::repair_record{0, std::nullopt, false, proof});
-    // Plan 3.3: the next start counts the proof and sets the open mark at
-    // its index. The CRC in this log stays wrong, so the start throws
-    // again, with a proof that the open mark covers.
-    CHECK_THROWS_AS(start(), konsens::node_fault);
-    CHECK(sqlite_storage::open_node_storage_in(own_directory).get_repair_record() ==
-          konsens::repair_record{1, 1, false, proof});
+    // Plan clean-stop 2.3: the start that threw deleted the mark, so the
+    // next start retires the node and does not throw again.
+    const auto n = start_after_a_crash(directory, own_directory, marked{0}, 2);
+    REQUIRE(n.has_value());
+    CHECK(n->retired());
 }
 
-// Plan 3.3 and model round 3 (mark_covered): an open mark covers a proof
-// once. A fault that stays on the disk throws at each start. The first
-// start counts the one automatic repair, the second is covered, and the
-// third counts again and reaches the wait for the operator. So the node
-// does not restart without end.
-TEST_CASE("a fault that stays on the disk reaches the wait for the operator")
+// Plan clean-stop 2.6: a node with a proof of a fault never votes again,
+// also when a mark agrees with its store. So a fault that stays on the disk
+// does not restart the node without end.
+TEST_CASE("a node with a proof of a fault retires at the start, with or without a mark")
 {
-    const auto directory = sqlite_storage::new_directory();
-    {
-        auto storage = sqlite_storage::open_in(directory);
-        auto w = storage.begin();
-        REQUIRE(w.has_value());
-        const auto bytes = konsens::encode_result({0, {}, {}});
-        const std::vector<entry> log{{.kind = entry_kind::register_client,
-                                      .client_id = client_a,
-                                      .pid = 1,
-                                      .result = bytes,
-                                      .result_crc = konsens::compute_result_crc(1, bytes) + 1}};
-        REQUIRE(w->set_promise(leader_ballot));
-        REQUIRE(w->set_accepted_round(leader_ballot));
-        REQUIRE(w->append_entries(log));
-        REQUIRE(w->set_decided_index(log.size()));
-        REQUIRE(std::move(*w).commit());
-    }
+    const auto directory = decided_log_with_a_wrong_crc();
     const auto own_directory = sqlite_storage::new_directory();
-    const auto start = [&] {
-        return node_t::with(config_of(1), sqlite_storage::open_in(directory),
-                            sqlite_storage::open_node_storage_in(own_directory), marked{0}, 1);
-    };
-    const auto record = [&] { return sqlite_storage::open_node_storage_in(own_directory).get_repair_record(); };
-    CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
-    CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
-    REQUIRE(record().has_value());
-    CHECK(record()->count == 1);
-    CHECK_FALSE(record()->mark_covered);
-    CHECK_THROWS_AS(static_cast<void>(start()), konsens::node_fault);
-    REQUIRE(record().has_value());
-    CHECK(record()->count == 1);
-    CHECK(record()->mark_covered);
-    REQUIRE(record()->proof.has_value());
-    for (int again = 0; again < 2; ++again) {
-        const auto n = start();
-        REQUIRE(n.has_value());
-        CHECK(n->waits_for_the_operator());
-        CHECK_FALSE(n->get_sequence_paxos().votes());
-        REQUIRE(record().has_value());
-        CHECK(record()->count == 1);
-        CHECK(record()->proof.has_value());
-    }
+    CHECK_THROWS_AS(static_cast<void>(start_after_a_clean_stop(directory, own_directory, marked{0}, 1)),
+                    konsens::node_fault);
+    const auto with_mark = start_after_a_clean_stop(directory, own_directory, marked{0}, 2);
+    REQUIRE(with_mark.has_value());
+    CHECK(with_mark->retired());
+    const auto without_mark = start_after_a_crash(directory, own_directory, marked{0}, 3);
+    REQUIRE(without_mark.has_value());
+    CHECK(without_mark->retired());
 }
 
 namespace {
@@ -847,9 +839,9 @@ TEST_CASE("after a start the verified index is the decided index and the entries
     c.run(rounds, once);
     const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
     REQUIRE(log_len.has_value());
-    auto n =
-        *node_t::with(config_of(1), sqlite_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage()),
-                      sqlite_storage::open_new_node_storage(), marked{0}, 9);
+    auto copy = sqlite_storage::open_copy_of(c.at(1).get_sequence_paxos().get_internal_storage());
+    auto own = sqlite_storage::open_node_storage_stopped_cleanly(copy, 1);
+    auto n = *node_t::with(config_of(1), std::move(copy), std::move(own), marked{0}, 9);
     CHECK(n.get_sequence_paxos().get_verified_idx() == *log_len);
 }
 
@@ -900,25 +892,14 @@ TEST_CASE("a listed node whose result still differs throws at the apply")
 {
     const auto directory = decided_log_with_a_listed({1});
     const auto own_directory = sqlite_storage::new_directory();
-    CHECK_THROWS_AS(
-        static_cast<void>(node_t::with(config_of(1), sqlite_storage::open_in(directory),
-                                       sqlite_storage::open_node_storage_in(own_directory), marked{'x'}, 1)),
-        konsens::node_fault);
+    CHECK_THROWS_AS(static_cast<void>(start_after_a_clean_stop(directory, own_directory, marked{'x'}, 1)),
+                    konsens::node_fault);
     const auto record = sqlite_storage::open_node_storage_in(own_directory).get_repair_record();
     REQUIRE(record.has_value());
     REQUIRE(record->proof.has_value());
     CHECK(record->proof->kind == konsens::proof_kind::listed_result_differs);
     CHECK(record->proof->index == 2);
     CHECK(record->proof->n == leader_ballot);
-
-    // Plan 3.3 to 3.5: the next start counts the proof and sets the open
-    // mark at its index. The mark covers the index, so the node writes the
-    // chosen bytes and does not run it again. The mark closes when the
-    // applied index passes it, at the commit of the start.
-    auto n = *node_t::with(config_of(1), sqlite_storage::open_in(directory),
-                           sqlite_storage::open_node_storage_in(own_directory), marked{'x'}, 2);
-    CHECK(state_of(n) == bytes_of('a'));
-    CHECK(n.get_repair_record() == konsens::repair_record{1, std::nullopt, false, std::nullopt});
 }
 
 // Plan 2.8.1 and 2.8.2: a listed node whose second run agrees does not
@@ -928,8 +909,7 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 {
     for (const auto& out : {std::vector<node_id>{1}, std::vector<node_id>{2}}) {
         CAPTURE(out.front());
-        auto n = *node_t::with(config_of(1), sqlite_storage::open_in(decided_log_with_a_listed(out)),
-                               sqlite_storage::open_new_node_storage(), marked{0}, 1);
+        auto n = *start_after_a_clean_stop(decided_log_with_a_listed(out), sqlite_storage::new_directory(), marked{0}, 1);
         CHECK(state_of(n) == bytes_of('a'));
         CHECK(n.get_repair_record() == konsens::repair_record{0, std::nullopt, false, std::nullopt});
     }
@@ -940,8 +920,7 @@ TEST_CASE("a listed node whose result agrees and a node that is not listed do no
 // message to another node.
 TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
 {
-    auto n = *node_t::with(config_of(1), sqlite_storage::open_in(decided_log_with_a_listed({1})),
-                           sqlite_storage::open_new_node_storage(), marked{0}, 1);
+    auto n = *start_after_a_clean_stop(decided_log_with_a_listed({1}), sqlite_storage::new_directory(), marked{0}, 1);
     const auto request = konsens::encode_result(
         {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     const auto crc = konsens::compute_result_crc(2, request);

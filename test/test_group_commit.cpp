@@ -87,9 +87,9 @@ TEST_CASE("64 requests make one commit of the storage on each node in each pass"
 // writes the done record, and it handles the Accepted messages that decide
 // the request. It ends before its commit. Neither the Decide
 // nor the reply left the node, and the disk holds no new decided index.
-// After the restart the client sends the request again with the same
-// request number. The session executes it once and gives one reply to the
-// call that is still open.
+// The crash retires the leader (plan clean-stop 2.3). The client sends the
+// request again to a follower with the same request number. The session
+// executes it once and gives one reply to the call that is still open.
 TEST_CASE("a crash between the batch and the commit sends nothing, and the retry executes once")
 {
     auto c = elected();
@@ -128,8 +128,11 @@ TEST_CASE("a crash between the batch and the commit sends nothing, and the retry
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].client_id == retry_call);
     CHECK(replies[0].response == counter::bytes_of(1));
+    CHECK(c.nodes.at(l).retired());
     for (const auto& n : c.nodes) {
-        CHECK(counter_of(n) == 1);
+        if (!n.retired()) {
+            CHECK(counter_of(n) == 1);
+        }
     }
 }
 
@@ -327,17 +330,17 @@ TEST_CASE("more messages than max_batch_size before a commit are a wrong use")
     batches::commit(c.nodes.at(f), c.nodes.at(f).handle_incoming(requests(1)));
 }
 
-// A node that starts after a crash asks every peer with Recovery before it
-// has a transaction to commit. Recovery carries only the nonce of the start
-// and depends on no write, so node::with releases it at once.
-TEST_CASE("a node releases the Recovery messages of its start with no commit")
+// A node that starts after a clean stop asks every peer with PrepareReq
+// before it has a transaction to commit. PrepareReq carries the promise
+// that the store already holds and depends on no write, so node::with
+// releases it at once.
+TEST_CASE("a node releases the PrepareReq messages of its clean start with no commit")
 {
     auto c = elected();
     const auto f = first_follower(c.leader());
-    c.restart(f);
-    REQUIRE(c.nodes.at(f).get_sequence_paxos().recovering());
+    c.stop_and_start(f);
     const auto out = c.nodes.at(f).take_outgoing_messages();
-    CHECK(std::ranges::count_if(out, holds<konsens::recovery>) == static_cast<std::ptrdiff_t>(node_count - 1));
+    CHECK(std::ranges::count_if(out, holds<konsens::prepare_req>) == static_cast<std::ptrdiff_t>(node_count - 1));
 }
 
 // Plan one-environment 3.4 item 2: a step that writes nothing aborts its

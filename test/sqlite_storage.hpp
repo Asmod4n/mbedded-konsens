@@ -92,6 +92,19 @@ inline konsens::meta_record meta_of(const konsens::persistent_storage& storage)
     return *m;
 }
 
+// Plan clean-stop 2.3: a node keeps its identity only after a clean stop.
+// A test that starts a node on a store that it prepared, or copied from a
+// running node, gives the node storage the mark of that stop.
+inline konsens::node_storage open_node_storage_stopped_cleanly(const konsens::persistent_storage& storage,
+                                                               const konsens::node_id pid,
+                                                               const std::uint32_t configuration_id = 1,
+                                                               const std::filesystem::path& directory = new_directory())
+{
+    auto node = open_node_storage_in(directory);
+    REQUIRE(node.write_the_clean_stop_mark({pid, configuration_id, meta_of(storage)}).has_value());
+    return node;
+}
+
 inline std::vector<konsens::entry> log_of(const konsens::persistent_storage& storage)
 {
     const auto t = storage.begin_read_only();

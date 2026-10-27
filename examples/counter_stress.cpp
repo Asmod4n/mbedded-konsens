@@ -93,6 +93,7 @@ constexpr std::uint64_t default_loss = 10;
 constexpr std::uint64_t default_duplicate = 10;
 constexpr std::uint64_t default_restart = 5;
 constexpr std::uint64_t default_power_loss = 2;
+constexpr std::uint64_t default_crash = 0;
 
 struct options {
     std::uint64_t clients{default_clients};
@@ -102,6 +103,7 @@ struct options {
     std::uint64_t duplicate{default_duplicate};
     std::uint64_t restart{default_restart};
     std::uint64_t power_loss{default_power_loss};
+    std::uint64_t crash{default_crash};
     bool calls_reconnected{true};
     bool cbor{false};
     bool allow_root_for_test{false};
@@ -120,13 +122,14 @@ constexpr std::array flags{
     flag{"--duplicate", &options::duplicate},
     flag{"--restart", &options::restart},
     flag{"--power-loss", &options::power_loss},
+    flag{"--crash", &options::crash},
 };
 
 constexpr std::string_view no_reconnected_flag = "--no-reconnected";
 constexpr std::string_view cbor_flag = "--cbor";
 
 constexpr std::string_view usage = "usage: counter_stress [--clients C] [--increments N] [--seed S] [--loss P] "
-                                   "[--duplicate P] [--restart R] [--power-loss L] [--no-reconnected] [--cbor] "
+                                   "[--duplicate P] [--restart R] [--power-loss L] [--crash C] [--no-reconnected] [--cbor] "
                                    "[--allow-root-for-test]";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
@@ -174,7 +177,8 @@ std::expected<options, std::string_view> options_of(const std::span<char* const>
         o.*(it->member) = *value;
         rest = rest.subspan(words_of_a_flag);
     }
-    if (o.loss > permille || o.duplicate > permille || o.restart > permille || o.power_loss > permille) [[unlikely]] {
+    if (o.loss > permille || o.duplicate > permille || o.restart > permille || o.power_loss > permille ||
+        o.crash > permille) [[unlikely]] {
         return std::unexpected("A chance is above 1000 permille");
     }
     if (o.clients == 0 || o.increments == 0) [[unlikely]] {
@@ -241,7 +245,8 @@ konsens::node_config config_of(const konsens::node_id pid)
 
 bool is_transient(const std::error_code& code)
 {
-    return code == konsens::client_errc::recovering || code == konsens::client_errc::retry;
+    return code == konsens::client_errc::recovering || code == konsens::client_errc::retry ||
+           code == konsens::client_errc::stopped || code == konsens::client_errc::retired;
 }
 
 using entry_fields =
@@ -271,6 +276,7 @@ struct tally {
     std::uint64_t duplicates;
     std::uint64_t restarts;
     std::uint64_t power_losses;
+    std::uint64_t crashes;
     std::uint64_t leader_changes;
 };
 
@@ -287,6 +293,7 @@ struct cluster {
 
     Cluster storage;
     std::array<std::optional<node_t>, node_count> nodes;
+    std::array<bool, node_count> started{};
     std::array<std::optional<konsens::transaction>, node_count> pending;
     std::array<std::deque<std::variant<konsens::message, std::string>>, channel_count> channels;
     std::vector<konsens::client_reply> replies;
@@ -419,8 +426,10 @@ struct cluster {
             return std::unexpected(own.error());
         }
         nonce += 1;
-        auto n =
-            node_t::with(config_of(i + 1), std::move(*opened), std::move(*own), counter{}, nonce);
+        auto config = config_of(static_cast<konsens::node_id>(i + 1));
+        config.first_start = !started.at(i);
+        started.at(i) = true;
+        auto n = node_t::with(config, std::move(*opened), std::move(*own), counter{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
@@ -432,8 +441,28 @@ struct cluster {
 
     std::expected<void, std::error_code> restart(const std::size_t i)
     {
-        auto kept = storage.stop(at(i));
+        if (const auto t = std::exchange(pending.at(i), std::nullopt)) {
+            if (auto committed = at(i).commit(*t); !committed) [[unlikely]] {
+                return committed;
+            }
+        }
+        if (!at(i).retired() && !at(i).get_sequence_paxos().get_error()) {
+            at(i).stop();
+            std::ranges::move(at(i).take_client_replies(), std::back_inserter(replies));
+        }
+        return start_again(i);
+    }
+
+    std::expected<void, std::error_code> crash(const std::size_t i)
+    {
         pending.at(i).reset();
+        counts.crashes += 1;
+        return start_again(i);
+    }
+
+    std::expected<void, std::error_code> start_again(const std::size_t i)
+    {
+        auto kept = storage.stop(at(i));
         nodes.at(i).reset();
         if (auto r = start(i, storage.start(i, std::move(kept))); !r) [[unlikely]] {
             return r;
@@ -876,6 +905,10 @@ struct stress {
                 if (auto r = net.lose_power(); !r) [[unlikely]] {
                     return std::unexpected(failure{"restart every node", r.error()});
                 }
+            } else if (net.counts.crashes == 0 && net.happens(given.crash)) {
+                if (auto r = net.crash(net.pick_node()); !r) [[unlikely]] {
+                    return std::unexpected(failure{"crash a node", r.error()});
+                }
             }
             if (auto s = send_due_calls(); !s) [[unlikely]] {
                 return s;
@@ -1077,9 +1110,9 @@ int run(const options& given, Cluster storage)
 
     const auto& t = s.net.counts;
     std::cout << std::format("Seed {}: {} rounds ({} with faults), {} messages, {} lost, {} duplicates, {} restarts, "
-                             "{} restarts of every node, {} changes of leader.",
+                             "{} restarts of every node, {} crashes, {} changes of leader.",
                              given.seed, t.rounds, load_rounds, t.messages, t.lost, t.duplicates, t.restarts,
-                             t.power_losses, t.leader_changes)
+                             t.power_losses, t.crashes, t.leader_changes)
               << '\n';
     if (given.cbor) {
         std::cout << "Messages through CBOR by kind:";

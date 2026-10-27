@@ -131,15 +131,11 @@ TEST_CASE("each client error has its own message")
     CHECK(std::ranges::find(messages, "Unknown client error") == messages.end());
 }
 
-// F4 of plan v0.1 at the node: a recovering node drops every message
-// except Recovery and RecoveryResponse, BLE heartbeats included, and
-// refuses each call with recovering. Simulation seed 134 shows why the
-// heartbeats count: the leader 3 restarted, still answered heartbeats, so
-// nodes 1 and 2 kept it as leader, no node was a primary, and recovery
-// waited forever. Since the power-loss path, the answers of both peers with
-// no primary also complete the recovery, so the test no longer checks which
-// node leads afterwards; it checks that the cluster decides again.
-TEST_CASE("a restarted leader answers no heartbeat while it recovers")
+// Plan clean-stop 2.4: a leader that starts after a crash retires. It
+// answers no BLE heartbeat, so the peers do not keep it as leader, it
+// refuses each call with retired, and the other two nodes elect a leader
+// and decide without it.
+TEST_CASE("a leader that starts after a crash retires and answers no heartbeat")
 {
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
@@ -156,14 +152,16 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
     }
     REQUIRE(nodes[2].get_sequence_paxos().get_state() == std::pair{konsens::role::leader, konsens::phase::accept});
     auto kept = sqlite_storage::open_copy_of(nodes[2].get_sequence_paxos().get_internal_storage());
-    nodes[2] = *node_t::with(config_of(3), std::move(kept), sqlite_storage::open_new_node_storage(), echo{}, 1);
-    REQUIRE(nodes[2].get_sequence_paxos().recovering());
-    static_cast<void>(nodes[2].take_outgoing_messages());
+    auto crashed = config_of(3);
+    crashed.first_start = false;
+    nodes[2] = *node_t::with(crashed, std::move(kept), sqlite_storage::open_new_node_storage(), echo{}, 1);
+    REQUIRE(nodes[2].retired());
+    CHECK(nodes[2].take_outgoing_messages().empty());
     std::vector<konsens::message> heartbeat;
     heartbeat.emplace_back(konsens::ble_message{1, 3, konsens::heartbeat_request{1}});
     batches::commit(nodes[2], nodes[2].handle_incoming(std::move(heartbeat)));
     CHECK(nodes[2].take_outgoing_messages().empty());
-    const auto refused = [](const auto& r) { return !r && r.error() == konsens::client_errc::recovering; };
+    const auto refused = [](const auto& r) { return !r && r.error() == konsens::client_errc::retired; };
     CHECK(refused(nodes[2].append(make_entry(2))));
     CHECK(refused(nodes[2].register_client(1)));
     CHECK(refused(nodes[2].client_request(1, 1, 1, {std::byte{1}})));
@@ -172,13 +170,12 @@ TEST_CASE("a restarted leader answers no heartbeat while it recovers")
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    CHECK(!nodes[2].get_sequence_paxos().recovering());
-    batches::commit(nodes[2], nodes[2].append(make_entry(2)));
+    batches::commit(nodes[0], nodes[0].append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    for (const auto& n : nodes) {
-        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    for (const auto i : {0, 1}) {
+        CHECK(*nodes.at(i).read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
 }
 
@@ -480,20 +477,18 @@ void lose_the_last_entry_in(const std::filesystem::path& directory)
     sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) { sqlite_damage::delete_the_last_entry(db); });
 }
 
-void stop(node_t& n)
+void end_without_stop(node_t& n)
 {
     const auto gone = std::move(n);
 }
 
 }
 
-// Plan lmdb-only-source 2.4 item 8 and the decision of the owner
-// (2026-10-25 03:54): with honest hardware a start finds no damage, so a
-// damage that the start checks find counts toward the one automatic
-// repair. The count stands in the node storage, which a repair does not
-// touch. At the limit the node waits for the operator, and the operator
-// can allow one more repair.
-TEST_CASE("a damage that the start checks find counts toward the automatic repair")
+// Plan clean-stop 2.6, decided 2026-10-27: a repair replaces promises
+// that the node sent, which is a rollback, so a damage that the start
+// checks find retires the node, also after a clean stop. The two other
+// nodes decide without it.
+TEST_CASE("a damage that the start checks find retires the node")
 {
     const auto log_directory = sqlite_storage::new_directory();
     const auto own_directory = sqlite_storage::new_directory();
@@ -512,73 +507,23 @@ TEST_CASE("a damage that the start checks find counts toward the automatic repai
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    const auto restart = [&](const std::uint64_t nonce, const bool damaged) {
-        stop(nodes[2]);
-        if (damaged) {
-            lose_the_last_entry_in(log_directory);
-        }
-        nodes[2] = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
-                                 sqlite_storage::open_node_storage_in(own_directory), echo{}, nonce);
-    };
-
-    restart(10, true);
-    CHECK(nodes[2].get_repair_count() == 1);
-    CHECK(nodes[2].get_sequence_paxos().repairing());
-    for (int i = 0; i < rounds; ++i) {
-        step(nodes, all);
-    }
-    CHECK(nodes[2].get_sequence_paxos().votes());
+    nodes[2].stop();
+    end_without_stop(nodes[2]);
+    lose_the_last_entry_in(log_directory);
+    auto later = config_of(3);
+    later.first_start = false;
+    nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
+                             sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
+    CHECK(nodes[2].retired());
+    CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
+    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
     batches::commit(nodes[0], nodes[0].append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    CHECK(*nodes[2].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
-
-    restart(20, true);
-    CHECK(nodes[2].get_repair_count() == 1);
-    CHECK(nodes[2].waits_for_the_operator());
-    CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
-    CHECK_FALSE(nodes[2].get_sequence_paxos().repairing());
-    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
-    REQUIRE(nodes[2].allow_one_more_repair());
-    CHECK(nodes[2].get_repair_count() == 0);
-
-    // The waiting node did not repair, so its log still lacks its last entry.
-    restart(30, false);
-    CHECK(nodes[2].get_repair_count() == 1);
-    for (int i = 0; i < rounds; ++i) {
-        step(nodes, all);
+    for (const auto i : {0, 1}) {
+        CHECK(*nodes.at(i).read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
-    CHECK(nodes[2].get_sequence_paxos().votes());
-    CHECK(*nodes[2].read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
-}
-
-// Plan repair-from-peer 4.1: a crash during a repair is no damage. The
-// mark of the open repair makes the next start continue it without a
-// second count.
-TEST_CASE("a restart during a repair does not count again")
-{
-    const auto own_directory = sqlite_storage::new_directory();
-    {
-        auto own = sqlite_storage::open_node_storage_in(own_directory);
-        REQUIRE(own.count_a_repair(0));
-        CHECK(own.get_repair_record() == konsens::repair_record{1, 0, false, std::nullopt});
-    }
-    const auto log_directory = sqlite_storage::new_directory();
-    {
-        auto s = sqlite_storage::open_in(log_directory);
-        sqlite_storage::write(s, [](auto& t) {
-            REQUIRE(t.set_promise({1, 1, 0, 2}));
-            REQUIRE(t.set_accepted_round({1, 1, 0, 2}));
-            REQUIRE(t.append_entries(std::vector{make_entry(1)}));
-        });
-    }
-    lose_the_last_entry_in(log_directory);
-    auto n = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
-                           sqlite_storage::open_node_storage_in(own_directory), echo{}, 5);
-    CHECK(n.get_sequence_paxos().repairing());
-    CHECK(n.get_repair_count() == 1);
-    CHECK_FALSE(n.waits_for_the_operator());
 }
 
 // Owner, 2026-10-26: the meta record and the log stand in one environment,
@@ -631,8 +576,8 @@ TEST_CASE("the repair record keeps the proof and the open mark")
 
 // Plan execute-verify 3.6: the start reads the whole log, so an entry that
 // is missing in the middle of the log is a damage at the start, though the
-// meta record and the last entry are whole. It counts toward the one
-// automatic repair, and the repair brings the entry back from a peer.
+// meta record and the last entry are whole. Since plan clean-stop 2.6 the
+// damage retires the node.
 TEST_CASE("the start scan finds an entry that is missing in the middle of the log")
 {
     const auto log_directory = sqlite_storage::new_directory();
@@ -656,18 +601,13 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
         }
     }
     REQUIRE(*nodes[2].read_decided_suffix(0) == entries);
-    stop(nodes[2]);
+    nodes[2].stop();
+    end_without_stop(nodes[2]);
     sqlite_damage::change_with_sqlite(log_directory, [](sqlite3* db) { sqlite_damage::delete_entry(db, 1); });
-    nodes[2] = *node_t::with(config_of(3), sqlite_storage::open_in(log_directory),
+    auto later = config_of(3);
+    later.first_start = false;
+    nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
                              sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
-    CHECK(nodes[2].get_sequence_paxos().repairing());
-    CHECK(nodes[2].get_repair_count() == 1);
-    for (int i = 0; i < rounds; ++i) {
-        step(nodes, all);
-    }
-    CHECK(nodes[2].get_sequence_paxos().votes());
-    CHECK(*nodes[2].read_decided_suffix(0) == entries);
-    const auto record = nodes[2].get_repair_record();
-    REQUIRE(record.has_value());
-    CHECK_FALSE(record->open_mark.has_value());
+    CHECK(nodes[2].retired());
+    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
 }

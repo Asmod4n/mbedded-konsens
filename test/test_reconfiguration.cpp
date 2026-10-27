@@ -107,22 +107,33 @@ const T* body_of(const message& m)
 
 // A slot of the cluster holds a node or nothing, so that a test starts the
 // nodes of the next configuration after the decide, and ends and starts a
-// node on its directories as a crash and a start do.
+// node on its directories as a crash, a clean stop and a start do. Only the
+// first start of a node states that it is the first.
 struct cluster {
     std::vector<std::optional<node_t>> nodes;
     std::vector<std::filesystem::path> logs;
     std::vector<std::filesystem::path> owns;
+    std::vector<bool> started;
 
     node_t& at(const node_id p) { return *nodes.at(p - 1); }
 
     void start(const node_id p)
     {
-        nodes.at(p - 1).emplace(*node_t::with(config_of(p), sqlite_storage::open_in(logs.at(p - 1)),
+        auto config = config_of(p);
+        config.first_start = !started.at(p - 1);
+        started.at(p - 1) = true;
+        nodes.at(p - 1).emplace(*node_t::with(config, sqlite_storage::open_in(logs.at(p - 1)),
                                               sqlite_storage::open_node_storage_in(owns.at(p - 1)), concatenation{},
                                               p));
     }
 
-    void stop(const node_id p) { nodes.at(p - 1).reset(); }
+    void crash(const node_id p) { nodes.at(p - 1).reset(); }
+
+    void stop_cleanly(const node_id p)
+    {
+        at(p).stop();
+        nodes.at(p - 1).reset();
+    }
 
     void deliver()
     {
@@ -180,6 +191,7 @@ cluster old_configuration()
         c.nodes.emplace_back();
         c.logs.push_back(sqlite_storage::new_directory());
         c.owns.push_back(sqlite_storage::new_directory());
+        c.started.push_back(false);
     }
     for (const auto p : old_nodes) {
         c.start(p);
@@ -336,17 +348,18 @@ TEST_CASE("an old node gives its decided prefix only to a listed node after the 
 }
 
 // Plan reconfiguration 2.9 (decided 2026-10-27 after the model run of
-// results/20261027T134426Z-build-from-recovering.md): an old node that
-// starts after the decide recovers, and it gives its decided prefix during
-// the recovery, because a decided StopSign fixes that prefix.
-TEST_CASE("an old node that recovers after the decide gives its decided prefix")
+// results/20261027T134426Z-build-from-recovering.md) and plan clean-stop
+// 4.7: an old node that starts after the decide without a clean stop
+// retires, and it still gives its decided prefix, because a decided
+// StopSign fixes that prefix.
+TEST_CASE("a retired old node gives its decided prefix after the decide")
 {
     auto c = old_configuration();
     reconfigure(c);
     const auto log = c.decided_log(1);
-    c.stop(1);
+    c.crash(1);
     c.start(1);
-    REQUIRE(c.at(1).get_sequence_paxos().recovering());
+    REQUIRE(c.at(1).retired());
     const auto answered = answers_to_a_build_request(c, 1, 4, 0);
     REQUIRE(answered.size() == 1);
     const auto* r = body_of<konsens::build_response>(answered[0]);
@@ -369,7 +382,7 @@ TEST_CASE("a new node that ends during its build continues from the end of its l
     hop(c, 1, 4);
     REQUIRE(c.at(4).get_sequence_paxos().building());
     CHECK(c.at(4).get_sequence_paxos().get_accepted_idx() == konsens::max_build_entries);
-    c.stop(4);
+    c.crash(4);
     c.start(4);
     REQUIRE(c.at(4).get_sequence_paxos().building());
     const auto sent = the_build_request_of(c, 4);
@@ -418,8 +431,8 @@ TEST_CASE("a start with a configuration_id that the store does not hold is a wro
         c.start(p);
     }
     c.run(rounds);
-    c.stop(1);
-    c.stop(4);
+    c.crash(1);
+    c.crash(4);
     auto wrong_old = config_of(1);
     wrong_old.configuration_id = 2;
     wrong_old.build_from = {7};
@@ -442,8 +455,8 @@ TEST_CASE("a start with a configuration_id that the store does not hold is a wro
 
 // Plan reconfiguration 2.8 and 4.6: in the log of configuration 2, the
 // StopSign of configuration 1 stands before config_first_idx. A node of
-// configuration 2 that starts again recovers, and that StopSign does not end
-// its configuration.
+// configuration 2 that stops cleanly and starts again votes, and that
+// StopSign does not end its configuration.
 TEST_CASE("a node of configuration 2 starts again with the old StopSign in its log")
 {
     auto c = old_configuration();
@@ -455,7 +468,7 @@ TEST_CASE("a node of configuration 2 starts again with the old StopSign in its l
     c.run(rounds);
     CHECK(request_and_reply(c, new_nodes, s, 1, "a") == bytes_of("a"));
     const auto first = c.at(4).get_sequence_paxos().get_config_first_idx();
-    c.stop(4);
+    c.stop_cleanly(4);
     c.start(4);
     c.run(rounds);
     CHECK(c.at(4).get_sequence_paxos().get_config_first_idx() == first);

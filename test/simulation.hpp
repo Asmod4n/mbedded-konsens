@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -30,10 +31,15 @@
 // start(i, kept) gives the storage of node i, and stop(node) gives what a
 // crash keeps. A crash destroys the node before start, so that a storage
 // that holds a file, as SQLite does, is closed before it is opened again.
+// Plan clean-stop 4.9: each crash is one of two kinds, drawn at random: a
+// clean stop with a start, after which the node votes, or a crash, after
+// which the node retires. The node storage of each node outlives it.
 // With rollback::one and a Cluster that can keep(i, storage) and
 // restore(i, kept), one node restarts from an earlier copy of its storage
 // (a lost fsync or a backup), as
-// Rollback in SequencePaxos.tla, run F6b. Only recovery repairs that node.
+// Rollback in SequencePaxos.tla, run F6b. The rolled back node retires.
+// When a majority retired, no marker can be decided, and the run checks
+// the safety properties only.
 // A crash or a rollback starts only while no node recovers: two nodes that
 // recover at once leave one voting node of three, no primary, and a
 // recovery that waits (plan v0.1 section 7). VR Revisited 4.3 also allows
@@ -418,6 +424,8 @@ struct world {
 
     Cluster cluster;
     std::vector<node_t> nodes;
+    std::array<std::filesystem::path, node_count> own_directories{
+        sqlite_storage::new_directory(), sqlite_storage::new_directory(), sqlite_storage::new_directory()};
     std::vector<message> network;
     std::set<entry_fields> proposed;
     std::vector<entry> decided_history;
@@ -524,7 +532,7 @@ struct world {
         note([&] { return std::string("append " + std::to_string(i + 1) + " value " + std::to_string(next_value)); });
         next_value += 1;
         const auto r = nodes[i].append(e);
-        REQUIRE((r || r.error() == konsens::client_errc::recovering));
+        REQUIRE((r || r.error() == konsens::client_errc::recovering || r.error() == konsens::client_errc::retired));
         if (r) {
             proposed.insert(fields_of(e));
             REQUIRE(nodes[i].commit(*r));
@@ -532,17 +540,30 @@ struct world {
         collect(i);
     }
 
-    void crash(std::size_t i)
+    static konsens::node_config later_config_of(const std::size_t i)
     {
-        note([&] { return std::string("crash " + std::to_string(i + 1)); });
+        auto config = config_of(static_cast<node_id>(i + 1));
+        config.first_start = false;
+        return config;
+    }
+
+    void crash(std::size_t i, const bool clean)
+    {
+        note([&] { return std::string(clean ? "stop and start " : "crash ") + std::to_string(i + 1); });
         const std::vector<entry> decided_before(views[i].decided_prefix().begin(), views[i].decided_prefix().end());
+        if (clean && !nodes[i].retired() && !nodes[i].get_sequence_paxos().get_error()) {
+            nodes[i].stop();
+            for (auto& r : nodes[i].take_client_replies()) {
+                receive(i, std::move(r));
+            }
+        }
         auto kept = [this, i] {
             const node_t stopped = std::move(nodes[i]);
             return cluster.stop(stopped);
         }();
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.start(i, std::move(kept)),
-                                 sqlite_storage::open_new_node_storage(), concatenation{}, nonce);
+        nodes[i] = *node_t::with(later_config_of(i), cluster.start(i, std::move(kept)),
+                                 sqlite_storage::open_node_storage_in(own_directories[i]), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
     }
@@ -564,8 +585,8 @@ struct world {
         note([&] { return std::string("roll back " + std::to_string(i + 1)); });
         const auto len_before = read_value(nodes[i].get_sequence_paxos().get_accepted_idx());
         nonce += 1;
-        nodes[i] = *node_t::with(config_of(i + 1), cluster.restore(i, earlier->second),
-                                 sqlite_storage::open_new_node_storage(), concatenation{}, nonce);
+        nodes[i] = *node_t::with(later_config_of(i), cluster.restore(i, earlier->second),
+                                 sqlite_storage::open_node_storage_in(own_directories[i]), concatenation{}, nonce);
         if (read_value(nodes[i].get_sequence_paxos().get_accepted_idx()) < len_before) {
             counts.rollbacks += 1;
         }
@@ -589,8 +610,14 @@ struct world {
             return false;
         }
         const auto promise = leader->get_sequence_paxos().get_promise();
-        return std::ranges::all_of(
-            nodes, [promise](const node_t& n) { return n.get_sequence_paxos().get_promise() == promise; });
+        return std::ranges::all_of(nodes, [promise](const node_t& n) {
+            return n.retired() || n.get_sequence_paxos().get_promise() == promise;
+        });
+    }
+
+    std::size_t retired_count() const
+    {
+        return static_cast<std::size_t>(std::ranges::count_if(nodes, [](const node_t& n) { return n.retired(); }));
     }
 
     ballot highest_promise() const
@@ -621,6 +648,13 @@ struct world {
         const auto k = std::move(it->second);
         calls.erase(it);
         auto& c = users[k.client];
+        if (!r.response && r.response.error() == konsens::client_errc::stopped) {
+            note([&] { return std::string("call " + std::to_string(id) + " stopped at node " + std::to_string(i + 1)); });
+            if (c.pending == id) {
+                c.pending.reset();
+            }
+            return;
+        }
         note([&] {
             return std::string("reply to call " + std::to_string(id) + " at node " + std::to_string(i + 1) +
                                (r.response ? "" : " error " + r.response.error().message()));
@@ -696,7 +730,7 @@ struct world {
         } else {
             const auto e = r.error();
             if (e != konsens::client_errc::recovering && e != konsens::client_errc::retry &&
-                e != konsens::client_errc::session_expired) {
+                e != konsens::client_errc::session_expired && e != konsens::client_errc::retired) {
                 fail_client("a call at node " + std::to_string(i + 1) + " gave the error " + e.message());
             }
             note([&] { return std::string("call " + std::to_string(id) + " refused: " + e.message()); });
@@ -903,6 +937,7 @@ struct outcome {
     bool all_decided;
     bool survived_crash;
     coverage counts;
+    bool majority_retired;
 };
 
 template <typename Cluster>
@@ -917,7 +952,8 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     w.batch_random.seed(seed + batch_seed_offset);
     for (std::size_t i = 0; i < node_count; ++i) {
         w.nodes.push_back(*node_of<Cluster>::with(config_of(i + 1), w.cluster.start(i, {}),
-                                                  sqlite_storage::open_new_node_storage(), concatenation{}, w.nonce));
+                                                  sqlite_storage::open_node_storage_in(w.own_directories[i]),
+                                                  concatenation{}, w.nonce));
     }
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);
@@ -926,7 +962,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
         for (std::size_t i = 0; i < node_count; ++i) {
             w.note([&] { return std::string(state_of(i + 1, w.views[i], w.nodes[i])); });
         }
-        return outcome{std::move(v), std::move(w.trace), false, false, w.survived_crash, w.counts};
+        return outcome{std::move(v), std::move(w.trace), false, false, w.survived_crash, w.counts, false};
     };
     for (int s = 0; s < random_steps; ++s) {
         const auto action = pick(100);
@@ -954,7 +990,8 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
             w.network.push_back(w.network[k]);
             w.duplicated = true;
         } else if (action == 98 && !w.crashed && !w.recovers()) {
-            w.crash(pick(node_count));
+            const auto i = pick(node_count);
+            w.crash(i, pick(2) == 0);
             w.crashed = true;
         } else if constexpr (requires { typename Cluster::earlier_type; }) {
             if (faults == rollback::one && action == 95 && !w.earlier) {
@@ -974,8 +1011,10 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     for (int r = 0; r < quiet_rounds; ++r) {
         if (markers.empty() && r >= marker_round && !w.recovers() && w.settled()) {
             for (std::size_t i = 0; i < node_count; ++i) {
-                markers.push_back(entry_of(w.next_value).payload);
-                w.append(i);
+                if (!w.nodes[i].retired()) {
+                    markers.push_back(entry_of(w.next_value).payload);
+                    w.append(i);
+                }
             }
         }
         if (people == clients::two) {
@@ -1012,9 +1051,10 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
             }
         }
         majority_decided = majority_decided && holders > node_count / 2;
-        all_decided = all_decided && holders == node_count;
+        all_decided = all_decided && holders == node_count - w.retired_count();
     }
-    return {std::nullopt, {}, majority_decided, all_decided, w.survived_crash, w.counts};
+    return {std::nullopt, {}, majority_decided, all_decided, w.survived_crash, w.counts,
+            w.retired_count() > node_count / 2};
 }
 
 template <typename Cluster>
@@ -1022,6 +1062,7 @@ coverage run_seeds(delivery mode, std::uint64_t seed_count, rollback faults = ro
                    clients people = clients::none)
 {
     std::uint64_t lagging = 0;
+    std::uint64_t majority_retired = 0;
     coverage total{};
     for (std::uint64_t seed = 1; seed <= seed_count; ++seed) {
         const auto o = run<Cluster>(seed, mode, false, faults, people);
@@ -1036,13 +1077,18 @@ coverage run_seeds(delivery mode, std::uint64_t seed_count, rollback faults = ro
             FAIL("seed " << seed << ": " << *o.violation << "\nlast steps:\n" << tail);
         }
         INFO("seed " << seed);
-        CHECK(o.majority_decided);
         CHECK(o.survived_crash);
+        if (o.majority_retired) {
+            majority_retired += 1;
+            continue;
+        }
+        CHECK(o.majority_decided);
         if (!o.all_decided) {
             lagging += 1;
         }
     }
-    MESSAGE(seed_count << " seeds, seeds where one node did not decide every marker: " << lagging);
+    MESSAGE(seed_count << " seeds, seeds where one node did not decide every marker: " << lagging
+                       << ", seeds where a majority retired: " << majority_retired);
     if (people == clients::two) {
         MESSAGE("sessions " << total.sessions << ", requests answered " << total.replies << ", calls sent again "
                             << total.resends << ", reads answered " << total.reads
