@@ -172,7 +172,9 @@ builds the program that runs one node from that config.
      the next request number. A write that waits blocks the next
      request of that connection, so the numbers of one session are
      decided in order.
-   - When the connection closes, the program expires the session. The
+   - When the connection closes, the program expires the session, and
+     proposes the expiry again after `resend_ticks` until its reply
+     comes. The
      library forwards `expire_session` from a follower to the leader,
      as it forwards a request (a change of node.hpp; the decided expiry
      of a session that is gone changes nothing).
@@ -263,7 +265,10 @@ image in its Linux machine.
      503, and the other two serve the clients;
    - SIGTERM to a retired node: it exits with 0;
    - SIGTERM to all three and a start again: the data is there;
-   - `--first-start` on a used store: the program ends with an error;
+   - `--first-start` after a clean stop: a clean start, because the
+     clean-stop mark decides; `--first-start` on the store of a killed
+     node: the program ends with an error (corrected after the first
+     run: the plan said that every used store ends with an error);
    - a loss of each direction of one TCP pair: the node calls
      `reconnected`, and the cluster decides again;
    - 1000 connections through a follower, each with one write: the
@@ -271,6 +276,9 @@ image in its Linux machine.
    - a follower that is stopped during 10000 writes catches up after
      its start;
    - a burst of more than `max_batch_size` frames in one step.
+   Not yet in program/test/three_nodes.sh: the loss of a TCP pair,
+   the burst of frames, and the check that each write is decided at
+   most once per request number.
 6. The image: the test of 7.5 runs inside it, with the default seccomp
    profile, so the slipstreamIO engine answers.
 

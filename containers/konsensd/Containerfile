@@ -1,0 +1,30 @@
+FROM docker.io/library/ubuntu:26.10 AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++-16 gcc-16 cmake ninja-build make doctest-dev libboost-dev \
+    libsqlite3-dev sqlite3 libtomlplusplus-dev libada-url-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY . /src
+RUN cmake -S /src -B /build -G Ninja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_C_COMPILER=gcc-16 -DKONSENS_PROGRAM=ON -DKONSENS_BENCH=OFF \
+ && cmake --build /build --target konsensd
+
+FROM docker.io/library/ubuntu:26.10 AS run
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libsqlite3-0 libada-url0-3 libstdc++6 \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --home-dir /var/lib/konsensd --create-home konsensd
+COPY --from=build /build/konsensd /usr/bin/konsensd
+USER konsensd
+VOLUME /var/lib/konsensd
+ENTRYPOINT ["/usr/bin/konsensd"]
+CMD ["--config", "/etc/konsensd/konsensd.toml"]
+
+FROM run AS test
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bash curl sqlite3 \
+ && rm -rf /var/lib/apt/lists/*
+COPY program/test/three_nodes.sh /usr/libexec/konsensd/three_nodes.sh
+USER konsensd
+ENTRYPOINT ["bash", "/usr/libexec/konsensd/three_nodes.sh", "/usr/bin/konsensd"]
+CMD []

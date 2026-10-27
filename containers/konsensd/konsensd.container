@@ -1,0 +1,19 @@
+[Unit]
+Description=konsensd, one node of a konsens cluster
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/konsensd:latest
+ContainerName=konsensd
+Network=host
+Volume=konsensd-data:/var/lib/konsensd
+Volume=/etc/konsensd/konsensd.toml:/etc/konsensd/konsensd.toml:ro
+StopTimeout=300
+
+[Service]
+Restart=on-failure
+TimeoutStopSec=330
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,17 @@
+[cluster]
+name = "example"
+configuration_id = 1
+
+[node]
+pid = 1
+data_directory = "/var/lib/konsensd"
+peer_address = "192.0.2.1:7151"
+client_address = "0.0.0.0:7161"
+
+[[peers]]
+pid = 2
+address = "192.0.2.2:7151"
+
+[[peers]]
+pid = 3
+address = "192.0.2.3:7151"

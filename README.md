@@ -262,6 +262,98 @@ of the node reaches the read index.
 | `stopped` | The node stopped before the call was decided. The call may still be decided. |
 | `rejected` | No result of the request got a majority. The request changed no state. |
 
+## The program konsensd
+
+`konsensd` runs one node of a cluster. It sends the messages of the
+library to the other nodes over TCP, and serves clients over HTTP/1.1.
+The CMake option `KONSENS_PROGRAM` builds it. It needs the packages
+libtomlplusplus-dev and libada-url-dev.
+
+### A cluster of three machines
+
+Each machine runs one node in podman. Build the image on each machine:
+
+```sh
+git clone --recursive https://github.com/Asmod4n/mbedded-konsens
+cd mbedded-konsens
+podman build -f containers/konsensd/Containerfile --target run -t localhost/konsensd .
+```
+
+Write `/etc/konsensd/konsensd.toml` on each machine. The file
+[containers/konsensd/konsensd.toml](containers/konsensd/konsensd.toml)
+shows node 1 of three. Each node has its own `pid` and `peer_address`;
+`[[peers]]` names the two other nodes.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `cluster.name` | The name of the cluster. A node refuses a peer with another name. | |
+| `cluster.configuration_id` | The number of the configuration. | |
+| `node.pid` | The number of this node. | |
+| `node.data_directory` | The directory of the store. | |
+| `node.peer_address` | The address where the other nodes connect. | |
+| `node.client_address` | The address where the clients connect. | |
+| `node.leader_priority` | Of two ballots in the same round, the node with the higher value wins. | 0 |
+| `node.election_ticks` | Ticks without a heartbeat before an election. | 5 |
+| `node.resend_ticks` | Ticks before a message is sent again. | 3 |
+| `node.tick_milliseconds` | The length of a tick. | 100 |
+| `node.max_frame_bytes` | The largest message between nodes. | 1 GiB |
+| `node.max_body_bytes` | The largest value of a client. | 1 MiB |
+| `node.max_store_bytes` | The largest store. | 64 GiB |
+| `peers.pid`, `peers.address` | Another node of the cluster. | |
+
+Start each node once with `--first-start`, on all three machines. Stop
+it with Ctrl-C when the three nodes have elected a leader:
+
+```sh
+podman run --rm -it --network host -v konsensd-data:/var/lib/konsensd \
+    -v /etc/konsensd/konsensd.toml:/etc/konsensd/konsensd.toml:ro \
+    localhost/konsensd --config /etc/konsensd/konsensd.toml --first-start
+```
+
+Then the quadlet unit runs the node. Copy
+[containers/konsensd/konsensd.container](containers/konsensd/konsensd.container)
+to `/etc/containers/systemd/`, and start it:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl start konsensd
+```
+
+`systemctl stop` and a shutdown send SIGTERM. The node then stops
+cleanly and keeps its vote. A node that ends without a clean stop
+(SIGKILL, a crash, a loss of power) starts retired: it answers 503 and
+takes no part in the cluster. The other two nodes serve the clients.
+
+### Clients
+
+Any node takes any call. A follower sends a write to the leader.
+
+```sh
+curl -X PUT --data-binary 'hello' http://node1:7161/kv/greeting
+curl http://node2:7161/kv/greeting
+curl -X DELETE http://node3:7161/kv/greeting
+```
+
+The key is percent-encoded in the path. A value is bytes.
+
+| Status | Case |
+|---|---|
+| 200 | The value of the key. |
+| 204 | The write or the delete is decided. |
+| 400 | The request does not parse. |
+| 404 | The key is not there, or the path is not `/kv/` and one key. |
+| 405 | The method is not GET, PUT or DELETE. |
+| 409 | The cluster rejected the write. |
+| 411 | A PUT without Content-Length. |
+| 413 | The value is larger than `max_body_bytes`. |
+| 503 with Retry-After | The node knows no leader, recovers, changes its configuration or is retired. Send the call again. |
+| 503 without Retry-After | The node stopped. The write may still be decided. |
+
+An error comes as problem details of RFC 9457
+(`application/problem+json`). Each connection is one client session:
+a write waits until it is decided before the next request of the same
+connection is read.
+
 ## Documentation
 
 - [doc/](doc/): the plan of each part of the library and its review.
