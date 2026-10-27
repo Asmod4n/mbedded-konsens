@@ -443,9 +443,6 @@ public:
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) [[unlikely]] {
-                return std::unexpected(make_error_code(client_errc::retry));
-            }
             const auto t = read_or_throw(seq_paxos_.internal_storage_.begin_read_only());
             if (!read_or_throw(t.find_session(session))) [[unlikely]] {
                 return std::unexpected(make_error_code(client_errc::session_expired));

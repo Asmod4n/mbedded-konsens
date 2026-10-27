@@ -147,6 +147,12 @@ builds the program that runs one node from that config.
      client may not use) is refused at once with 4xx (owner, 18:21).
      This comes after the key-value form, as its own step, because the
      library has no declared statements yet.
+   - WebSocket (RFC 6455) is offered too (owner, 18:38). It comes
+     after the key-value form, as its own step. The mruby-webmachine
+     tree holds RFC 6455 in refs/, and no code for it yet. Over a WebSocket, a client speaks CoAP
+     of RFC 8323 (subprotocol `coap`; owner card, 18:39): the same
+     messages as CoAP over TCP, Observe of RFC 7641 for the watch of
+     a key, CBOR payloads and problem details of RFC 9290.
    - Any node takes a call. A follower forwards writes and asks the
      leader for the read index, as the library does now.
 7. Status of each result (every value of `client_errc` and the rest):

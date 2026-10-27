@@ -297,17 +297,13 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
     }
 }
 
-// F14 and the model action ExpireSession: only the leader in Accept
-// appends ExpireSession, only for an open session, and only once. A
-// request of an expired session is not executed (Raft 6.3,
-// SESSION_EXPIRED).
+// F14 and the model action ExpireSession: the leader in Accept appends
+// ExpireSession only for an open session, and only once. A request of an
+// expired session is not executed (Raft 6.3, SESSION_EXPIRED).
 TEST_CASE("expire_session closes a session at the leader once")
 {
     auto c = elected();
     const auto s = registered(c, 2, client_b);
-    CHECK(failed_with(c.at(1).expire_session(client_b, s), client_errc::retry));
-    c.deliver(once);
-    CHECK(c.at(3).get_sequence_paxos().get_accepted_idx() == registration_done);
 
     batches::commit(c.at(3), c.at(3).expire_session(client_b, s));
     batches::commit(c.at(3), c.at(3).expire_session(client_b, s));
@@ -329,6 +325,26 @@ TEST_CASE("expire_session closes a session at the leader once")
     for (const auto& n : c.nodes) {
         CHECK(concatenation_of(n).empty());
     }
+}
+
+// A node program expires the session of a client connection at the node
+// that took the connection. A follower forwards the expiry to the leader as
+// it forwards a request, and answers when the expiry is decided.
+TEST_CASE("expire_session at a follower closes the session through the leader")
+{
+    auto c = elected();
+    const auto s = registered(c, 2, client_b);
+    batches::commit(c.at(1), c.at(1).expire_session(client_b, s));
+    c.deliver(once);
+    const auto log = *c.at(3).read_decided_suffix(0);
+    CHECK(std::ranges::count(log, entry_kind::expire_session, &konsens::entry::kind) == 1);
+    const auto replies = c.at(1).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].client_id == client_b);
+    CHECK(replies[0].session == s);
+    CHECK(replies[0].response);
+    CHECK(c.at(3).take_client_replies().empty());
+    CHECK(failed_with(c.at(1).expire_session(client_b, s), client_errc::session_expired));
 }
 
 // R1 across a change of leader (finding 1 of the review of plan v0.1).
