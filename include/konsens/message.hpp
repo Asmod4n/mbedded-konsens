@@ -42,9 +42,9 @@ inline void validate_next_cluster(const std::uint32_t configuration_id, const no
     if (next.nodes.empty() || std::ranges::contains(next.nodes, node_id{0})) [[unlikely]] {
         throw std::logic_error("konsens: the next configuration is empty or contains the pid 0");
     }
-    if (std::ranges::contains(next.nodes, pid) ||
-        std::ranges::any_of(peers, [&next](const node_id p) { return std::ranges::contains(next.nodes, p); }))
-        [[unlikely]] {
+    if (std::ranges::contains(next.nodes, pid) || std::ranges::any_of(peers, [&next](const node_id p) {
+            return std::ranges::contains(next.nodes, p);
+        })) [[unlikely]] {
         throw std::logic_error("konsens: the next configuration contains a pid of the current configuration");
     }
     std::vector<node_id> sorted = next.nodes;

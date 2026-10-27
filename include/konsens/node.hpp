@@ -251,7 +251,6 @@ private:
     }
 
 public:
-
     [[nodiscard]] std::expected<transaction, std::error_code> reconfigure(const cluster_config& next)
     {
         validate_next_cluster(ble_config_.configuration_id, ble_config_.pid, ble_config_.peers, next);
@@ -282,7 +281,8 @@ private:
             if (entry_is_done(e)) [[unlikely]] {
                 throw std::logic_error("konsens: only the leader appends a done record");
             }
-            if (e.kind == entry_kind::stop_sign && holds_a_request_in_work()) [[unlikely]] {
+            if (e.kind == entry_kind::stop_sign && seq_paxos_.get_state().first == role::leader &&
+                holds_a_request_in_work()) [[unlikely]] {
                 return std::unexpected(make_error_code(client_errc::retry));
             }
             if (auto r = seq_paxos_.append(std::move(e)); !r) [[unlikely]] {
@@ -769,8 +769,8 @@ private:
         if (!m) [[unlikely]] {
             return seq_paxos_.stop_voting(m.error());
         }
-        const auto last = sequence_paxos<S>::read_range(*seq_paxos_.txn_, m->applied_idx - std::min(m->applied_idx, std::uint64_t{1}),
-                                                        m->applied_idx);
+        const auto last = sequence_paxos<S>::read_range(
+            *seq_paxos_.txn_, m->applied_idx - std::min(m->applied_idx, std::uint64_t{1}), m->applied_idx);
         if (!last) [[unlikely]] {
             return seq_paxos_.stop_voting(last.error());
         }

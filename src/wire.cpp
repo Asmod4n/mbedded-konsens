@@ -243,11 +243,10 @@ std::expected<cluster_config, std::error_code> decode_cluster_config(const std::
     if (*size != owner->size()) [[unlikely]] {
         return std::unexpected(wire_errc::extraneous_data);
     }
-    const auto decoded = cbor::structs<cluster_config>::decode(owner, *owner);
+    const auto decoded = cbor::structs<cluster_config>::decode(owner);
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error());
     }
     return **decoded;
 }
-
 }

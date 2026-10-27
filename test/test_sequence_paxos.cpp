@@ -2018,8 +2018,8 @@ TEST_CASE("a leader cuts the forwarded entries after a StopSign at the flush")
     auto c = make(3);
     const std::array<sp_t*, 3> nodes{&a, &b, &c};
     REQUIRE(c.handle_leader(ballot_of(1, 3)));
-    REQUIRE(c.handle({1, 3, konsens::proposal_forward{{make_entry(1), stop_sign_entry(), make_entry(2),
-                                                       stop_sign_entry()}}}));
+    REQUIRE(c.handle(
+        {1, 3, konsens::proposal_forward{{make_entry(1), stop_sign_entry(), make_entry(2), stop_sign_entry()}}}));
     deliver_all(nodes);
     for (auto* n : nodes) {
         CHECK(decided_of(*n) == std::vector{make_entry(1), stop_sign_entry()});
@@ -2066,6 +2066,7 @@ TEST_CASE("a StopSign that is not decided is removed by a new leader")
     deliver_among(nodes, {true, true, false});
     REQUIRE(b.get_state() == std::pair{role::leader, phase::accept});
     REQUIRE(b.append(make_entry(1)));
+    REQUIRE(c.reconnected(2));
     deliver_all(nodes);
     for (auto* n : nodes) {
         CHECK(decided_of(*n) == std::vector{make_entry(1)});

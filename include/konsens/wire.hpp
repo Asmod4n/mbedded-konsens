@@ -59,7 +59,6 @@ std::uint8_t kind_of(const received& r) noexcept;
 
 [[nodiscard]] std::expected<std::vector<std::byte>, std::error_code> encode(const cluster_config& c);
 [[nodiscard]] std::expected<cluster_config, std::error_code> decode_cluster_config(std::span<const std::byte> payload);
-
 }
 
 template <>

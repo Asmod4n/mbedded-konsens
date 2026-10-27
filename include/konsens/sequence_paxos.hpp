@@ -1367,7 +1367,8 @@ private:
         if (!after) [[unlikely]] {
             return stop_voting(after.error());
         }
-        const auto last = read_range(*txn_, after->log_len - std::min(after->log_len, std::uint64_t{1}), after->log_len);
+        const auto last =
+            read_range(*txn_, after->log_len - std::min(after->log_len, std::uint64_t{1}), after->log_len);
         if (!last) [[unlikely]] {
             return stop_voting(last.error());
         }
