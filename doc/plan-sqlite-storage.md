@@ -469,7 +469,13 @@ request enters, and gives an error value above the bound.
    recovery sets `nBackfill` to 0 (`wal.c:1579-1580`), and the
    database file keeps pages of commits after that frame. So the state
    can be a mix of commits, and each record CRC still holds (review 2
-   B1). How a start detects that is a card. The vote after f + 1 answers after each
+   B1). This happens only when a frame that was synced is damaged
+   later; SQLite syncs the WAL before a checkpoint copies it
+   (`wal.c:2360`). The recovery after each start compares the digest
+   of the state at the applied index with the digest of the new
+   leader at the same index. A difference asks for a changeset with
+   the digest check of section 7.8, else the full copy (owner,
+   2026-10-27 08:36). The vote after f + 1 answers after each
    start (plan-one-environment.md 8.1) does not keep Paxos safe here:
    TLC found a decided entry that is lost (`OneEnvironment` with
    `StoreRollback`, and `RecoveryRollback`). Taking the log of the
@@ -812,7 +818,7 @@ blocking, 9 others.
 
 | finding | change |
 |---|---|
-| B1, a mixed state after a damaged WAL frame | 7.3; card (detection at start) |
+| B1, a mixed state after a damaged WAL frame | 7.3; digest of the state against the new leader at each start (owner, 2026-10-27 08:36) |
 | B2, the rejoining node took an old accept sync | model 803da6d: only a ballot above its answers; 7.3 |
 | B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3: the single-node mode (owner, 2026-10-24) |
 | B4, a failed commit of "done" at the leader | 6.1: `SQLITE_FULL` ends the process (owner, 2026-10-24), so the leader proposes nothing after it |
