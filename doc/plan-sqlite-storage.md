@@ -755,30 +755,6 @@ lookup. The three points of section 4.2.1 (one statement for a query
 by session) are not measured; a query by session needs its own index
 in both forms.
 
-## 12. Review 2 and changes
-
-doc/review-plan-sqlite-storage-2.md (second agent, 2026-10-27): 7
-blocking, 9 others.
-
-| finding | change |
-|---|---|
-| B1, a mixed state after a damaged WAL frame | 7.3; card (detection at start) |
-| B2, the rejoining node took an old accept sync | model 803da6d: only a ballot above its answers; 7.3 |
-| B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3; card |
-| B4, a failed commit of "done" at the leader | 6.3; card |
-| B5, `SQLITE_FULL` rolls back only the statement | 5.1 item 3 |
-| B6, `CHECK(cbor_valid(x))` against `.recover` | card |
-| B7, text against owner decisions | 4.1, 4.2, 5.3, 6.3, 6.5, 6.7, 7.6, 9, tables |
-| O1, the checkpoint in `sqlite3_close` | 6.5 |
-| O2, `wal_autocheckpoint=0` removes the hook; 1000 frames | 6.5 |
-| O3, `SQLITE_BUSY` from another process | 6.1 |
-| O4, "the model shows" | 6.3 |
-| O5, the rules of the rejoining node | 7.3 |
-| O6, the digest, primary keys, the conflict handler | 7.8 |
-| O7, the faults of the run of 10.2, psow | 10.2 |
-| O8, the node stops during the copy | 7.7 |
-| O9, two citations | section 2 |
-
 ## 11. Review 1 and changes
 
 doc/review-plan-sqlite-storage-1.md (second agent, 2026-10-26): 28
@@ -805,3 +781,27 @@ findings, 6 blocking. Verdict: approve after the blocking fixes.
 | 17, the copy | 7.5 |
 | 18, the size of a value | 6.2 |
 | 19 to 28 | section 1, 4.1, 6.1, 6.2, 7.7, 8.1, 8.2, 9, 10 |
+
+## 12. Review 2 and changes
+
+doc/review-plan-sqlite-storage-2.md (second agent, 2026-10-27): 7
+blocking, 9 others.
+
+| finding | change |
+|---|---|
+| B1, a mixed state after a damaged WAL frame | 7.3; card (detection at start) |
+| B2, the rejoining node took an old accept sync | model 803da6d: only a ballot above its answers; 7.3 |
+| B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3; card |
+| B4, a failed commit of "done" at the leader | 6.3; card |
+| B5, `SQLITE_FULL` rolls back only the statement | 5.1 item 3 |
+| B6, `CHECK(cbor_valid(x))` against `.recover` | card |
+| B7, text against owner decisions | 4.1, 4.2, 5.3, 6.3, 6.5, 6.7, 7.6, 9, tables |
+| O1, the checkpoint in `sqlite3_close` | 6.5 |
+| O2, `wal_autocheckpoint=0` removes the hook; 1000 frames | 6.5 |
+| O3, `SQLITE_BUSY` from another process | 6.1 |
+| O4, "the model shows" | 6.3 |
+| O5, the rules of the rejoining node | 7.3 |
+| O6, the digest, primary keys, the conflict handler | 7.8 |
+| O7, the faults of the run of 10.2, psow | 10.2 |
+| O8, the node stops during the copy | 7.7 |
+| O9, two citations | section 2 |
