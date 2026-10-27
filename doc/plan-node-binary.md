@@ -139,6 +139,14 @@ builds the program that runs one node from that config.
      after the key-value form, as its own step: the state machine must
      first keep its state in tables that SQL can read (open, see the
      SQL form of the owner, 2026-10-26).
+   - Every error that the SQL of a client can cause is refused at once
+     with a 4xx status and a problem detail (owner, 18:21): each
+     primary result code of SQLite that a statement can give gets its
+     status, for example a syntax or name error 400, a write in a
+     QUERY 403 (QUERY is safe), a constraint 409, a value too big 413.
+     A fault of the machine (I/O, a full disk, a failed sync) is not a
+     client error and keeps the rules of the library. The test checks
+     every primary result code (the whole set of sqlite3.h).
    - Any node takes a call. A follower forwards writes and asks the
      leader for the read index, as the library does now.
 7. Status of each result (every value of `client_errc` and the rest):
