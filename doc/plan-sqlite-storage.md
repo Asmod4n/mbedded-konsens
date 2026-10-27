@@ -321,6 +321,19 @@ measurement of blob against columns (section 10).
 9. How a task reaches SQL is not in this plan. The `state_machine`
    concept offers `find` of a byte key (`state_machine.hpp:28-31`). A
    plan of its own gives the interface.
+10. The nodes of a cluster may run different versions of SQLite, and
+    no version check exists (measured,
+    `bench/results/2026-10-27-083000Z-sqlite-versions.txt`, 3.37.2 to
+    3.55.0). The stored values are the same bit for bit in every
+    version. The bytes of the file differ by version and by build
+    flags, and no mode of SQLite makes them equal. The text of a float
+    differs: `cast(1.0/3 as text)` gives 15 digits before 3.53 and 17
+    digits from 3.53 on, and `printf` of a float differs too. A new
+    syntax, such as `sum(x ORDER BY y)` from 3.44 on, fails on an older
+    version. So the digest and Execute-Verify read values, never the
+    bytes of the file. A task that turns a float into text or uses a
+    syntax that one node does not know gives different results on the
+    nodes; Execute-Verify finds the difference.
 
 ## 5. The transactions
 
