@@ -193,12 +193,14 @@ HandleAcceptSync(j, m) ==
     /\ status[j] \in {"running", "rejoining"}
     /\ cur[j].promise = m.b
     /\ cur[j].acc # m.b
+    /\ status[j] = "rejoining" => m.b > SetMax({a[2] : a \in answers[j]})
     /\ LET d == Min(Len(m.log), Max(cur[j].dec, m.dec))
        IN Commit(j, [cur[j] EXCEPT !.log = m.log, !.acc = m.b, !.dec = d, !.wrec = Above(@, Len(m.log))])
     /\ work' = [work EXCEPT ![j] = <<>>]
     /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> Len(m.log)])
     /\ status' = [status EXCEPT ![j] = "running"]
-    /\ UNCHANGED <<dur, lead, answers, msgs, chosen, replied, Ghosts>>
+    /\ answers' = [answers EXCEPT ![j] = {}]
+    /\ UNCHANGED <<dur, lead, msgs, chosen, replied, Ghosts>>
 
 ----------------------------------------------------------------------------
 (* Phase 2.                                                               *)
@@ -374,6 +376,10 @@ DropExpired(i) ==
     /\ UNCHANGED <<dur, queue, work, status, lead, answers, msgs, chosen, replied, Ghosts>>
 
 \* After each start, a node votes only after f + 1 answers (VR Revisited).
+\* With RecoveryWaitsForLeader, answers[i] of a rejoining node holds one
+\* pair <<i, p>>: p is the highest promise of its answers, and the node
+\* takes only an accept sync of a ballot above p (RecoveryRollback.tla,
+\* "newleader").
 RecoveryAnswer(i, j) ==
     /\ status[i] = "recovering"
     /\ status[j] = "running"
@@ -386,7 +392,9 @@ RecoveryComplete(i) ==
     /\ Cardinality({a[1] : a \in answers[i]}) >= F + 1
     /\ Commit(i, [cur[i] EXCEPT !.promise = SetMax({a[2] : a \in answers[i]} \cup {@})])
     /\ status' = [status EXCEPT ![i] = IF RecoveryWaitsForLeader THEN "rejoining" ELSE "running"]
-    /\ answers' = [answers EXCEPT ![i] = {}]
+    /\ answers' = [answers EXCEPT ![i] = IF RecoveryWaitsForLeader
+                                         THEN {<<i, SetMax({a[2] : a \in answers[i]} \cup {cur[i].promise})>>}
+                                         ELSE {}]
     /\ UNCHANGED <<dur, queue, work, lead, msgs, chosen, replied, Ghosts>>
 
 ----------------------------------------------------------------------------
