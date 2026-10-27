@@ -140,7 +140,9 @@ builds the program that runs one node from that config.
      its statements by name, the client binds values). Proposal:
      `QUERY /statements/{name}` for a read statement and
      `POST /statements/{name}` for a write statement, with the values
-     as a CBOR array (`application/cbor`). Every error of the bound
+     as a CBOR array (`application/cbor`). `GET /statements` lists
+     the statements that the client may use, with the names and types
+     of their values (owner, 18:23). Every error of the bound
      values (a type, a constraint, a value too big, a name that the
      client may not use) is refused at once with 4xx (owner, 18:21).
      This comes after the key-value form, as its own step, because the
