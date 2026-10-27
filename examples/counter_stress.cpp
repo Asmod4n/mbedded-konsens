@@ -562,13 +562,19 @@ struct cluster {
 
     bool agrees() const
     {
-        const auto applied = at(0).get_applied_idx();
+        const auto applied = at(first_voter()).get_applied_idx();
         return std::ranges::all_of(nodes, [applied](const auto& o) {
             const auto& n = o.value();
             const auto& sp = n.get_sequence_paxos();
-            return !sp.recovering() && n.get_applied_idx() == applied && sp.get_decided_idx() == applied &&
-                   sp.get_accepted_idx() == applied;
+            return n.retired() || (!sp.recovering() && n.get_applied_idx() == applied &&
+                                   sp.get_decided_idx() == applied && sp.get_accepted_idx() == applied);
         });
+    }
+
+    std::size_t first_voter() const
+    {
+        const auto found = std::ranges::find_if(nodes, [](const auto& o) { return !o.value().retired(); });
+        return static_cast<std::size_t>(found - nodes.begin()) % node_count;
     }
 };
 
@@ -1018,6 +1024,7 @@ int run(const options& given, Cluster storage)
                                        {},
                                        {},
                                        {},
+                                       {},
                                        std::mt19937_64{given.seed},
                                        given.loss,
                                        given.duplicate,
@@ -1072,6 +1079,9 @@ int run(const options& given, Cluster storage)
               << '\n';
 
     for (std::size_t i = 0; i < node_count; ++i) {
+        if (s.net.at(i).retired()) {
+            continue;
+        }
         const auto v = s.final_read(i);
         if (!v) [[unlikely]] {
             return fail(given.seed, v.error());
@@ -1082,20 +1092,24 @@ int run(const options& given, Cluster storage)
     }
     std::cout << std::format("Check 2 (final read): passed. The read at each node gives {}.", total) << '\n';
 
-    const auto log = s.net.at(0).read_decided_suffix(0);
+    const auto log = s.net.at(s.net.first_voter()).read_decided_suffix(0);
     if (!log) [[unlikely]] {
         return fail(given.seed, {"read the decided log", log.error()});
     }
-    for (std::size_t i = 1; i < node_count; ++i) {
+    for (std::size_t i = 0; i < node_count; ++i) {
         const auto other = s.net.at(i).read_decided_suffix(0);
         if (!other) [[unlikely]] {
             return fail(given.seed, {"read the decided log", other.error()});
         }
-        if (*other != *log) [[unlikely]] {
+        const bool equal = s.net.at(i).retired() ? std::ranges::starts_with(*log, *other) : *other == *log;
+        if (!equal) [[unlikely]] {
             return fail(given.seed, {"check 3: the decided logs are not equal", {}});
         }
     }
-    std::cout << std::format("Check 3 (equal decided logs): passed. Each log holds {} entries.", log->size()) << '\n';
+    std::cout << std::format("Check 3 (equal decided logs): passed. Each log holds {} entries; the log of a retired "
+                             "node is a prefix of them.",
+                             log->size())
+              << '\n';
 
     std::cout << std::format("Check 4 (reads during the faults): passed. {} reads gave at least the count of "
                              "increments that were confirmed before the read started.",

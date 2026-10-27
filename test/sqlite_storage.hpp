@@ -101,7 +101,7 @@ inline konsens::node_storage open_node_storage_stopped_cleanly(const konsens::pe
                                                                const std::filesystem::path& directory = new_directory())
 {
     auto node = open_node_storage_in(directory);
-    REQUIRE(node.write_the_clean_stop_mark({pid, configuration_id, meta_of(storage)}).has_value());
+    REQUIRE(node.write_the_clean_stop_mark({pid, configuration_id, meta_of(storage), 0}).has_value());
     return node;
 }
 

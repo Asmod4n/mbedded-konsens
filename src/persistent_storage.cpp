@@ -91,7 +91,8 @@ constexpr std::size_t repair_record_size = proof_other_crc_offset + sizeof(fault
 constexpr std::size_t mark_pid_offset = 0;
 constexpr std::size_t mark_configuration_id_offset = mark_pid_offset + sizeof(clean_stop_mark::pid);
 constexpr std::size_t mark_meta_offset = mark_configuration_id_offset + sizeof(clean_stop_mark::configuration_id);
-constexpr std::size_t clean_stop_mark_size = mark_meta_offset + meta_record_size;
+constexpr std::size_t mark_verified_idx_offset = mark_meta_offset + meta_record_size;
+constexpr std::size_t clean_stop_mark_size = mark_verified_idx_offset + sizeof(clean_stop_mark::verified_idx);
 constexpr auto last_proof_kind = proof_kind::wrong_list;
 
 class storage_error_category final : public std::error_category {
@@ -2144,6 +2145,8 @@ std::expected<std::optional<clean_stop_mark>, std::error_code> node_storage::get
         from_little_endian<std::uint32_t>(
             body.subspan<mark_configuration_id_offset, sizeof(clean_stop_mark::configuration_id)>()),
         decode_meta(body.subspan<mark_meta_offset, meta_record_size>()),
+        from_little_endian<std::uint64_t>(
+            body.subspan<mark_verified_idx_offset, sizeof(clean_stop_mark::verified_idx)>()),
     };
     sqlite3_reset(s);
     return mark;
@@ -2156,6 +2159,7 @@ std::expected<void, std::error_code> node_storage::write_the_clean_stop_mark(con
     auto next = std::ranges::copy(to_little_endian(mark.pid), record.begin()).out;
     next = std::ranges::copy(to_little_endian(mark.configuration_id), next).out;
     next = std::ranges::copy(encode_meta(mark.meta), next).out;
+    next = std::ranges::copy(to_little_endian(mark.verified_idx), next).out;
     std::ranges::copy(to_little_endian(crc_of(std::span(record).first<clean_stop_mark_size>())), next);
     sqlite3_stmt* const s = env_->put_record.get();
     sqlite3_reset(s);

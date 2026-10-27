@@ -268,6 +268,7 @@ struct sequence_paxos_config {
     std::vector<node_id> peers;
     std::vector<node_id> build_from{};
     start_kind start{};
+    std::uint64_t verified_idx{};
 };
 
 struct build_state {
@@ -394,6 +395,7 @@ public:
             break;
         case start_kind::clean:
             sp.state_ = {role::follower, phase::recover};
+            sp.verified_idx_ = std::max(sp.verified_idx_, std::min(config.verified_idx, m->log_len));
             sp.send_preparereq_to_all_peers(m->promise);
             break;
         case start_kind::retired:
@@ -435,7 +437,7 @@ public:
         if (error_) [[unlikely]] {
             txn_.reset();
             drop_incoming_and_outgoing();
-            return std::unexpected(*error_);
+            return error_unless_retired();
         }
         if (repair_) {
             incoming_.clear();
@@ -467,7 +469,7 @@ public:
         if (error_) [[unlikely]] {
             txn_.reset();
             drop_incoming_and_outgoing();
-            return std::unexpected(*error_);
+            return error_unless_retired();
         }
         if (repair_ || !txn_) {
             return {};
@@ -502,6 +504,9 @@ private:
         requires requires(const T& msg) { paxos_msg{std::in_place_type<T>, msg}; }
     result handle(node_id from, node_id to, const T& msg)
     {
+        if (retired_ && (error_ || !std::is_same_v<T, build_request>)) {
+            return {};
+        }
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
@@ -513,9 +518,6 @@ private:
                 return r;
             }
             return handle_build_request(msg, from);
-        }
-        if (retired_) {
-            return {};
         }
         if (build_) {
             if constexpr (std::is_same_v<T, build_response> || std::is_same_v<T, build_refused>) {
@@ -682,6 +684,9 @@ public:
 
     result resend_message_timeout()
     {
+        if (retired_) {
+            return {};
+        }
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
@@ -691,9 +696,6 @@ public:
         }
         if (build_) {
             return ask_again_for_the_build();
-        }
-        if (retired_) {
-            return {};
         }
         if (recovering_) {
             send_recovery_to_all_peers();
@@ -747,6 +749,14 @@ public:
     {
         return state_.first == role::leader &&
                (leader_state_.accepted_stop_sign || std::ranges::any_of(buffered_proposals_, entry_is_a_stop_sign));
+    }
+
+    result error_unless_retired() const
+    {
+        if (retired_) {
+            return {};
+        }
+        return std::unexpected(*error_);
     }
 
     result refuse_if_retired() const
@@ -958,6 +968,9 @@ public:
 
     result reconnected(const node_id pid)
     {
+        if (retired_) {
+            return {};
+        }
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }

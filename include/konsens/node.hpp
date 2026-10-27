@@ -53,7 +53,7 @@ inline start_kind kind_of_the_start(const node_config& config, const std::option
     if (!config_first_idx && config.configuration_id > 1) {
         return start_kind::build;
     }
-    if (mark && *mark == clean_stop_mark{config.pid, config.configuration_id, m}) {
+    if (mark && mark->pid == config.pid && mark->configuration_id == config.configuration_id && mark->meta == m) {
         return start_kind::clean;
     }
     if (config.first_start) {
@@ -142,7 +142,9 @@ public:
             return std::unexpected(kind.error());
         }
         auto sp = sequence_paxos<S>::with(
-            {config.configuration_id, config.pid, config.peers, config.build_from, *kind}, std::move(internal_storage),
+            {config.configuration_id, config.pid, config.peers, config.build_from, *kind,
+             *kind == start_kind::clean ? (*mark)->verified_idx : 0},
+            std::move(internal_storage),
             nonce);
         if (!sp) [[unlikely]] {
             return std::unexpected(sp.error());
@@ -174,6 +176,9 @@ public:
             }
         }
         n.retire_after_a_fault_at_the_start(*record);
+        if (n.seq_paxos_.retired()) {
+            static_cast<void>(n.ble_.take_outgoing_messages());
+        }
         if (n.seq_paxos_.votes()) {
             if (auto r = n.apply_at_the_start(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -193,7 +198,8 @@ public:
         }
         drop_held_messages_and_replies();
         reply_stopped_to_the_waiting_calls();
-        const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta()};
+        const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta(),
+                                   seq_paxos_.get_verified_idx()};
         if (auto w = own_storage_.write_the_clean_stop_mark(mark); !w) [[unlikely]] {
             throw sync_error(w.error(), "konsens: the node storage failed to keep the clean-stop mark");
         }

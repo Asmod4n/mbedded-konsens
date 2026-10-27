@@ -174,7 +174,7 @@ TEST_CASE("a leader that starts after a crash retires and answers no heartbeat")
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    for (const auto i : {0, 1}) {
+    for (const auto i : {std::size_t{0}, std::size_t{1}}) {
         CHECK(*nodes.at(i).read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
 }
@@ -487,7 +487,8 @@ void end_without_stop(node_t& n)
 // Plan clean-stop 2.6, decided 2026-10-27: a repair replaces promises
 // that the node sent, which is a rollback, so a damage that the start
 // checks find retires the node, also after a clean stop. The two other
-// nodes decide without it.
+// nodes elect a leader among them when the damaged node led, and decide
+// without it.
 TEST_CASE("a damage that the start checks find retires the node")
 {
     const auto log_directory = sqlite_storage::new_directory();
@@ -517,11 +518,16 @@ TEST_CASE("a damage that the start checks find retires the node")
     CHECK(nodes[2].retired());
     CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
     CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
-    batches::commit(nodes[0], nodes[0].append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    for (const auto i : {0, 1}) {
+    const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+    REQUIRE((leader == 1 || leader == 2));
+    batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(2)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    for (const auto i : {std::size_t{0}, std::size_t{1}}) {
         CHECK(*nodes.at(i).read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
 }
@@ -609,5 +615,7 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
     nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
                              sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
     CHECK(nodes[2].retired());
-    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
+    const auto e = nodes[2].get_sequence_paxos().get_error();
+    REQUIRE(e.has_value());
+    CHECK(konsens::error_is_a_damage(*e));
 }

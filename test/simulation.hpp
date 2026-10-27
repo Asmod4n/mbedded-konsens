@@ -251,7 +251,8 @@ std::string name_of(const message& m)
         "accepted",          "decide",         "not_accepted", "proposal_forward",   "recovery",
         "recovery_response", "get_state",      "new_state",    "read_index_request", "heartbeat",
         "heartbeat_ack",     "read_index_reply", "repair_request", "repair_response", "get_repair_entries",
-        "repair_entries",    "answer",         "try_again",    "refused"};
+        "repair_entries",    "answer",         "try_again",    "refused",            "work",
+        "build_request",     "build_response", "build_refused"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());

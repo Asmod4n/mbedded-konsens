@@ -1976,8 +1976,11 @@ case_outcome measure_scan_the_whole_log_on([[maybe_unused]] const run_settings& 
                 return std::unexpected(w.error());
             }
         }
-        auto sp = konsens::sequence_paxos<S>::with({1, leader_pid, {follower_pid, follower_pid + 1}}, std::move(*store),
-                                                   leader_pid);
+        konsens::sequence_paxos_config config{1, leader_pid, {follower_pid, follower_pid + 1}};
+        if constexpr (requires { config.start; }) {
+            config.start = konsens::start_kind::clean;
+        }
+        auto sp = konsens::sequence_paxos<S>::with(config, std::move(*store), leader_pid);
         if (!sp) [[unlikely]] {
             return std::unexpected(failure{"start sequence_paxos on the log", sp.error()});
         }

@@ -189,6 +189,7 @@ struct clean_stop_mark {
     node_id pid;
     std::uint32_t configuration_id;
     meta_record meta;
+    std::uint64_t verified_idx;
 
     friend bool operator==(const clean_stop_mark&, const clean_stop_mark&) = default;
 };

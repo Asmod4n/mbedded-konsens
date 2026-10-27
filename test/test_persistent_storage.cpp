@@ -1241,6 +1241,7 @@ TEST_CASE("the clean-stop mark survives a close, its deletion too, and a copy ha
     const temporary_directory copied;
     const konsens::clean_stop_mark mark{
         3, 2, konsens::meta_record{konsens::ballot{2, 7, 0, 3}, konsens::ballot{2, 7, 0, 3}, 4, 5, 0xabcdef01, 4, 0x1234},
+        5,
     };
     {
         auto storage = open_storage(dir.path());
