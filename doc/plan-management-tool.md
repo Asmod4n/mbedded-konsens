@@ -155,13 +155,17 @@ The names of the commands are provisional (question 6.6).
 
 ## 4. Order of the build
 
-1. Core and CLI, with tests against the three-node example. The CLI is
-   the level that a test can call.
-2. The mruby binding of the core, and the route handlers.
-3. The webview through ascaridol.
-4. The web level through mruby-webmachine.
-5. TUI on the same core.
-6. Web Push.
+1. `init` in the CLI: it writes the finished config of each node of a
+   new cluster (owner, 2026-10-27: the tool sets up the cluster, and
+   the first version has at least the part that finishes the config).
+   The test starts the three-node example from these configs.
+2. The rest of the core and the CLI, with tests against the
+   three-node example. The CLI is the level that a test can call.
+3. The mruby binding of the core, and the route handlers.
+4. The webview through ascaridol.
+5. The web level through mruby-webmachine.
+6. TUI on the same core.
+7. Web Push.
 
 Each step is its own branch and is green before the next starts.
 
