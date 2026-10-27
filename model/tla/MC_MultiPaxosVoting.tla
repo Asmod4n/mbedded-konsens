@@ -7,8 +7,11 @@ MCBallot == 0..MaxBallot
 MCLog == UNION {[1..n -> Value] : n \in 0..MaxLength}
 MCQuorum == {Q \in SUBSET Acceptor : 2 * Cardinality(Q) > Cardinality(Acceptor)}
 
+MCPair == MCBallot \X MCLog
+SmallVotes == {{}} \cup {{p} : p \in MCPair} \cup {{p, q} : p, q \in MCPair}
+
 TypeOKRandom ==
-  /\ votes \in RandomSubset(Samples, [Acceptor -> SUBSET (MCBallot \X MCLog)])
+  /\ votes \in RandomSubset(Samples, [Acceptor -> SmallVotes])
   /\ maxBal \in [Acceptor -> MCBallot \cup {-1}]
 
 InductiveInit == TypeOKRandom /\ VInv
