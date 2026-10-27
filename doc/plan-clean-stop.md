@@ -10,80 +10,95 @@ No backup carries the mark. A crash of a majority at the same time needs
 the operator.
 
 Base: branch `reconfiguration` at 0b1b966. Branch: `clean-stop`. This
-plan replaces section 14 of doc/plan-sqlite-storage.md, which built the
-rejoin form of 7.3 that the model found unsafe with five nodes.
+plan replaces section 14 of doc/plan-sqlite-storage.md. That section was
+a plan for the rejoin form of 7.3, which the model found unsafe with five
+nodes; nothing of it was built.
 
 Marks: "provisional" marks a form or a name that waits on the owner.
+Section 7 lists the findings of review 1 and what changed.
 
 ## 1. Facts checked in this session
 
-1. `sequence_paxos::with` starts the recovery when the stored promise is
-   not `ballot{}` (sequence_paxos.hpp:384-387). A first start (promise
-   `ballot{}`) votes at once.
-2. The repair of a damaged log ends in the recovery too
-   (sequence_paxos.hpp:2077-2078). This path has no lost sync: the node
-   rewrote its log from peers in one synced transaction.
+1. `sequence_paxos::with` queues the recovery when the stored promise is
+   not `ballot{}` (sequence_paxos.hpp:384-387). A start with promise
+   `ballot{}` votes at once.
+2. The repair of a damaged log replaces the promise, the accepted round
+   and the log of the node with those of a peer, then runs the recovery
+   (sequence_paxos.hpp:2058-2078; persistent_storage.cpp:1554-1584). The
+   node loses promises and Accepted messages that it sent before. This
+   is a rollback.
 3. `node_storage` (node.db) holds the repair record of the node
    (persistent_storage.hpp:185-205). `persistent_storage::copy` copies
-   konsens.db only. A backup is a copy of konsens.db, so a backup holds
-   nothing of node.db.
+   konsens.db only. `node_storage::open` creates node.db when it does not
+   exist (persistent_storage.cpp:1970).
 4. The model checks form B with a retirement after a rollback
    (RecoveryRollback.tla, Recovery "newid";
-   results/20261027T113350Z-rejoin-new-identity.md). The model cannot see
-   whether a start lost a sync; the code retires at every start without
-   the mark, which retires more often than the model. That is safe:
-   a retired node takes no action.
-5. Tests that start a node again on its store and expect the recovery:
-   test_node.cpp:140, test_reconfiguration.cpp:342, test/simulation.hpp
-   (crash at 535-547 and rollback at 560-570, used by
-   test_simulation.cpp, test_simulation_clients.cpp and
-   test_simulation_rollback.cpp), test/node_cluster.hpp users in
-   test_group_commit.cpp and test_device_faults. Tests of
-   `sequence_paxos` alone (test_sequence_paxos.cpp:320, 1272, 1308 and
-   the recovery tests) start `sequence_paxos` without `node`.
-6. examples/counter.cpp, counter_stress.cpp and three_nodes.cpp start
-   nodes with `node::with`; none starts a node again on a store that it
-   used before in the same run (not checked for the restart flags of
-   counter_stress).
+   results/20261027T113350Z-rejoin-new-identity.md). The code retires at
+   every start that cannot show a clean stop, which is more often than
+   the model. A retired node votes never.
+5. After a recovery, the node is in `{follower, recover}` and sends
+   `prepare_req` to all peers (sequence_paxos.hpp:1906-1915), the
+   fail-recovery of Omni-Paxos.
+6. `write_the_proof_and_throw` ends the process with a `node_fault`
+   (node.hpp:690-697). No clean stop follows.
+7. Starts of a node on a store that it used before, or on a prepared
+   store with a promise: test_node.cpp:140, 503-545, 557-600, 643-659;
+   test_client.cpp:196, 498, 537; test_execute_verify.cpp:611, 655, 851,
+   904, 918, 931, 943; test_reconfiguration.cpp (`cluster::start` at
+   120, used at 347, 372-373, 421-422, 458-459); test/simulation.hpp
+   (crash at 535-547, rollback at 560-570); test/node_cluster.hpp:215
+   and its users; examples/counter_stress.cpp:433-454 (`restart`,
+   `lose_power`). simulation.hpp:542 and 566, node_cluster.hpp:215 and
+   test_client.cpp:196 give a new node.db at a restart. The tests of
+   `sequence_paxos` alone (test_sequence_paxos.cpp:320, 1272, 1308 and the
+   recovery tests) start `sequence_paxos` without `node`.
 
 ## 2. The form
 
-1. The mark lives in node.db as its own row (`clean_stop`). The
-   functions of `node_storage` (provisional names):
-   `write_the_clean_stop_mark()`, `has_a_clean_stop_mark()` and
-   `delete_the_clean_stop_mark()`. Each write syncs before it returns.
-2. `node::stop()` (provisional name) writes the mark. It is a wrong use
-   (`std::logic_error`) while a call waits for its commit, and every call
-   of the node after `stop()` is a wrong use. The node sends nothing and
-   writes nothing after the mark.
-3. `node::with` decides the start from two facts: the promise of the
-   store and the mark.
-   - Promise `ballot{}`: a first start. The node votes at once, as now.
-   - Promise set and a mark: the node deletes the mark (synced), then
-     starts without the recovery: phase `none`, Ballot Leader Election
-     with the stored promise as the recovered leader, as now after a
-     recovery.
-   - Promise set and no mark: the node is retired.
-4. A retired node (provisional name `retired`):
-   - votes never again, sends no Sequence Paxos and no Ballot Leader
-     Election message, and answers none, with one exception: it answers
-     `build_request` as plan-reconfiguration 2.9 says, because a decided
-     StopSign fixes its decided prefix and a lost sync only removes
-     entries from the end;
-   - gives `client_errc::retired` (provisional name) to each client call;
-   - stays retired across each later start: `node::with` sees the
-     promise and no mark again. The caller deletes its stores after the
-     next configuration has started without it.
-   - `node::retired()` returns true.
-5. The repair path keeps its recovery (fact 2). `sequence_paxos::with`
-   gets the start from `node` as a value of `sequence_paxos_config`
-   (provisional `start_after_a_clean_stop`, a bool): true starts without
-   the recovery; false keeps the recovery at a start with a promise, so
-   that the tests of `sequence_paxos` alone keep their form.
-6. The order at a start with the mark: delete the mark and sync, then
-   send the first message. A crash between the two leaves no mark, and
-   the next start retires. A crash after a first message and before the
-   next clean stop leaves no mark either.
+1. konsens.db gets a random store identity of 16 bytes when the store is
+   created; a store of format 5 without it gets one at its next open.
+   The mark is a row of node.db (`clean_stop`) that holds: the store
+   identity, the pid, the configuration_id, `mark_of(meta)` and the
+   `last_chain_crc` of the meta record. Each write of node.db syncs
+   before it returns.
+2. `node::stop()` (provisional name) is the clean stop:
+   - it is a wrong use (`std::logic_error`) after a write or a sync of
+     the store failed (`throw_if_a_write_did_not_finish`), after
+     `node_fault`, on a retired node, and while a step is open;
+   - it gives each call that waits for its decide the error
+     `client_errc::stopped` (provisional), drops the messages that are
+     not released, and writes the mark from the committed meta record;
+   - every call of the node after `stop()` is a wrong use.
+3. Every start reads the mark and deletes it (synced) before the node
+   releases any output, whatever the promise is. Then:
+   - The caller states a first start (section 6, question 1). A first
+     start on a store with promise `ballot{}` votes at once.
+   - A mark that agrees with the store (identity, pid,
+     configuration_id, `mark_of(meta)`, `last_chain_crc`): the node starts
+     without the recovery in `{follower, recover}` and sends
+     `prepare_req` to all peers, as after a recovery (fact 5). A node
+     whose promise names its own pid takes a ballot above the promise
+     (`ballot_above_promise`), never the old ballot again.
+   - A build in progress (plan-reconfiguration 2.7) continues as now,
+     with or without the mark: its store holds no promise that it sent.
+   - Every other start retires the node.
+4. A retired node (name from the model: `retired`):
+   - votes never, sends no Sequence Paxos and no Ballot Leader Election
+     message, and answers none, with one exception: it answers
+     `build_request` as plan-reconfiguration 2.9 says;
+   - gives `client_errc::retired` (provisional) to each client call;
+   - retires again at each later start, because a start without a mark
+     that agrees retires;
+   - `node::retired()` returns true. The caller deletes its stores after
+     the next configuration has started without it.
+5. `sequence_paxos::with` queues no recovery any more. The start is the
+   decision of `node`; `sequence_paxos` gets it as a value
+   (`start_kind`: first, clean, build, retired; provisional names). The
+   tests of `sequence_paxos` alone that need the recovery start it
+   through `start_recovery(nonce)` (provisional), the call that the
+   repair path uses too.
+6. After a damage of the own log (fact 2) and after a proof (fact 6):
+   section 6, question 2.
 
 ## 3. What this plan does not do
 
@@ -92,39 +107,84 @@ Marks: "provisional" marks a form or a name that waits on the owner.
 - No path for a crash of a majority at the same time; the operator
   decides (owner 13:12).
 - No change to the model: fact 4 holds for the code.
+- Two copies of one stopped directory that both start are the clone
+  case (owner 2026-10-17, hidden identity); it is not built here.
 
 ## 4. Tests
 
-1. node_storage: a new node.db has no mark; the mark survives a close
-   and an open; its deletion survives a close and an open; a copy of
-   konsens.db leaves node.db alone.
-2. A node that stops cleanly and starts again votes at once: no
-   recovery message, it answers a prepare, and the cluster decides
-   with it while one other node is down.
-3. A node that starts again without `stop()` is retired: it sends no
-   message, a client call gives `client_errc::retired`, and a second
-   start is retired too.
+1. Storage: a new store has an identity, and an open keeps it; a store
+   without one gets one at its open; node.db has no mark at first; the
+   mark and its deletion each survive a close and an open; a copy of
+   konsens.db holds no mark.
+2. A node that stops cleanly and starts again votes: it sends
+   `prepare_req`, it answers a prepare, and the cluster decides with it
+   while one other node is down. A leader that stops cleanly and starts
+   again leads only with a higher ballot.
+3. A start without `stop()` retires: no message, `client_errc::retired`
+   for a client call, and a second start retires too.
 4. A start with the mark deletes it: a second start without `stop()`
-   retires.
-5. `stop()` while a call waits for its commit, and any call after
-   `stop()`, are wrong uses.
-6. A retired old node answers `build_request` after its StopSign is
+   retires. A stop before the first promise, and a stop during a build,
+   leave no mark that a later start after a crash can use.
+5. A mark that does not agree retires: a konsens.db restored from an
+   older copy, a node.db of another node, a mark of another pid.
+6. Wrong uses: `stop()` after a write error, on a retired node, while a
+   step is open; a call after `stop()`. A call that waits gets
+   `client_errc::stopped`.
+7. A retired old node answers `build_request` after its StopSign is
    decided (replaces test_reconfiguration.cpp:342).
-7. A whole cluster that stops cleanly starts again and elects a leader
+8. A whole cluster that stops cleanly starts again and elects a leader
    without the operator (the question of the owner, 13:10).
-8. The tests of fact 5 change: a restart that expects the old recovery
-   calls `stop()` first, or expects the retirement. The simulations
-   pick for each crash one of two kinds, a clean stop with a start, or
-   a crash that retires; a rollback retires. The check that a majority
-   decides counts only the nodes that are not retired, and a run with
-   a retired majority checks safety only.
+9. The starts of fact 7 change: a restart that expects the old recovery
+   calls `stop()` first and keeps its node.db, or expects the
+   retirement. The simulations pick for each crash one of two kinds, a
+   clean stop with a start, or a crash that retires; a rollback retires.
+   The check that a majority decides counts only the nodes that are not
+   retired, and a run with a retired majority checks safety only.
+   counter_stress stops each node cleanly in `restart` and
+   `lose_power`, and gets a crash that retires as a separate option.
 
 ## 5. Order
 
-This plan, the review, the cards of the provisional names, the code of
-2.1 to 2.6 with the tests of 4.1 to 4.7, then the tests of 4.8, then the
-full suite.
+This plan, review 1 (done), the owner questions of section 6, the code
+of 2.1 to 2.5 with the tests of 4.1 to 4.8, then the tests and the
+example of 4.9, then the full suite.
 
-## 6. Data on the disk
+## 6. Questions to the owner
+
+1. A first start can follow a lost sync too: a node sends its first
+   promise, loses that sync and starts on an empty store. Options:
+   (a) the caller states a first start (a field of `node_config`); a
+   start on an empty store without it retires; (b) an empty store always
+   votes. Proposal: (a).
+2. A damage of the own log, and a proof: options: (a) the node retires
+   (the repair code goes); (b) the repair keeps the higher promise of
+   its own and of the peer, and a model run checks it first. Proposal:
+   (a).
+3. Names: `node::stop()`, `client_errc::retired`, `client_errc::stopped`,
+   `start_kind`, `start_recovery`, the row `clean_stop`. Proposal: as
+   written.
+
+## 7. Review 1 and changes
+
+1. A stale mark after a stop with promise `ballot{}`: every start
+   deletes the mark (2.3).
+2. The mark was not tied to the store: it holds the store identity and
+   the meta values (2.1).
+3. A lost first sync: question 1.
+4. `stop()` after a failed sync: a wrong use (2.2).
+5. A retired node that stops: a wrong use (2.2).
+6. The repair is a rollback: fact 2, question 2.
+7. A start after a proof retires: fact 6, question 2.
+8. Phase `none` after a clean start: `{follower, recover}` with
+   `prepare_req` (2.3).
+9. A bool with no safe default: `start_kind` and no recovery in `with`
+   (2.5).
+10. and 11. The list of restarts: fact 7.
+12. A stop without a majority: waiting calls get an error (2.2).
+13. A leader that restarts: `ballot_above_promise`, test 4.2.
+14. "Takes no action": "votes never" (fact 4).
+15. Wording of the replaced section 14: corrected.
+
+## 8. Data on the disk
 
 Listed at the end of the build.
