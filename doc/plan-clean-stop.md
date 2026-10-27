@@ -56,16 +56,20 @@ Section 7 lists the findings of review 1 and what changed.
 ## 2. The form
 
 1. The mark is a row of node.db (`clean_stop`) that holds the pid, the
-   configuration_id and the whole meta record of konsens.db at the stop,
-   with a CRC32C over these bytes. Each write of node.db syncs before it
+   configuration_id, the whole meta record of konsens.db and the
+   verified index at the stop, with a CRC32C over these bytes. The
+   start compares the pid, the configuration_id and the meta record. A
+   clean start raises the verified index to the value of the mark,
+   bounded by the log length (section 7, item 17). Each write of node.db syncs before it
    returns. The store has no own identity: the meta record holds
    `last_chain_crc`, which names the log, and `applied_chain_crc`. A
    konsens.db from an older copy, or of another node, has another meta
    record (section 7, item 16).
 2. `node::stop()` (provisional name) is the clean stop:
    - it is a wrong use (`std::logic_error`) after a write or a sync of
-     the store failed (`throw_if_a_write_did_not_finish`), after
-     `node_fault`, on a retired node, and while a step is open;
+     the store failed (`throw_if_a_write_did_not_finish`), after an
+     error of the store, after `node_fault`, on a retired node, and
+     while a step is open;
    - it gives each call that waits for its decide the error
      `client_errc::stopped` (provisional), drops the messages that are
      not released, and writes the mark from the committed meta record;
@@ -96,10 +100,10 @@ Section 7 lists the findings of review 1 and what changed.
    decision of `node`; `sequence_paxos` gets it as a value
    (`start_kind`: first, clean, build, retired; provisional names). The
    tests of `sequence_paxos` alone that need the recovery start it
-   through `start_recovery(nonce)` (provisional), the call that the
-   repair path uses too.
-6. After a damage of the own log (fact 2) and after a proof (fact 6):
-   section 6, question 2.
+   through `start_recovery(nonce)`.
+6. A damage of the own log that the start finds (fact 2), and a proof
+   (fact 6), retire the node. The repair of a damaged log goes, in its
+   own commit. The proof stays in node.db.
 
 ## 3. What this plan does not do
 
@@ -148,7 +152,12 @@ This plan, review 1 (done), the owner questions of section 6, the code
 of 2.1 to 2.5 with the tests of 4.1 to 4.8, then the tests and the
 example of 4.9, then the full suite.
 
-## 6. Questions to the owner
+## 6. Questions to the owner, and the decisions
+
+The owner decided on 2026-10-27: question 1 (a) at 15:42, question 3
+as written at 15:43. Question 2 the owner left to the session at 15:43;
+the session took (a). After a power loss the node retires, and the
+documentation recommends a UPS (owner, 15:52).
 
 1. A first start can follow a lost sync too: a node sends its first
    promise, loses that sync and starts on an empty store. Options:
@@ -188,6 +197,18 @@ example of 4.9, then the full suite.
     stores that hold another log, and a store with the same log and the
     same meta is the same state. The identity added a column and a
     migration with no case that the meta record misses.
+
+17. During the build, a wrong assumption: the plan assumed that the
+    meta record holds all that a promise needs after a clean start.
+    The verified index is not in konsens.db. A promise after a clean
+    start reported only the decided index, raised over the entries
+    that are no request. A node that had verified and accepted entries
+    before the stop under-reported them, and a new leader lost a
+    decided entry (test_simulation_clients, seed 113, "S2b"). The mark
+    now holds the verified index.
+18. counter_stress gets the option `--crash` (per mille, at most one
+    crash for each run). Its end checks skip a retired node, and the
+    decided log of a retired node must be a prefix of the others.
 
 ## 8. Data on the disk
 

@@ -34,12 +34,12 @@ auto storage = konsens::persistent_storage::open("node-1", max_size, geteuid()).
 auto own_storage = konsens::node_storage::open("node-1-node", geteuid()).value();
 auto node = konsens::node<konsens::persistent_storage, counter>::with(
     {.configuration_id = 1, .pid = 1, .peers = {2, 3}, .leader_priority = 0,
-     .election_tick_timeout = 5, .resend_message_tick_timeout = 3},
+     .election_tick_timeout = 5, .resend_message_tick_timeout = 3, .first_start = true},
     std::move(storage), std::move(own_storage), counter{}, nonce).value();
 ```
 
 It follows Omni-Paxos (Sequence Paxos and Ballot Leader Election), the
-recovery and the client table of Viewstamped Replication Revisited, and
+client table of Viewstamped Replication Revisited, and
 the read index of the Raft dissertation. The messages between the nodes
 are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
 (RFC 7143).
@@ -48,9 +48,13 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
 
 - **Durable decisions.** A node answers Accepted only after the
   synchronous commit of the entry.
-- **Recovery after each start.** A node votes again only after answers
-  of its peers. After a restart of every node, the nodes compare their
-  last entries and take the highest log.
+- **Clean stop.** `stop()` writes a mark into the node storage. The
+  next start reads the mark and deletes it. A node with a mark that
+  agrees with its store votes again, and sends PrepareReq to its peers.
+  The caller sets `first_start` for the first start of a node. Every
+  other start retires the node: `retired()` returns true, and the node
+  sends nothing and votes never. The operator replaces a retired node
+  with a reconfiguration.
 - **Linearizable reads.** A read goes through a read index: one round
   of heartbeats to a majority, and the answer comes from the applied
   state at that index.
@@ -88,10 +92,9 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   of its own log, a chosen result that fails its CRC on the node, a
   value that reads back different, or its own result outside the
   majority when the leader listed it, it writes a proof into the node
-  storage and throws `konsens::node_fault`. The next start counts one
-  automatic repair. A further repair waits until the operator calls
-  `allow_one_more_repair()` and starts the node again. A leader whose
-  `results` entry a majority refused throws in the same way.
+  storage and throws `konsens::node_fault`. The next start retires the
+  node. A damage that the start finds retires the node too. A leader
+  whose `results` entry a majority refused throws in the same way.
 - **Runs on your thread.** Each call runs on the thread of the caller.
   `commit()` returns when its writes reach the file. The program makes
   the sync.
@@ -255,6 +258,8 @@ of the node reaches the read index.
 | `session_expired` | The session has expired. Register again. |
 | `stale_request` | The request number is below the last request number of the session. |
 | `retry` | The node knows no leader, or its promise changed. Send the call again. |
+| `retired` | The node is retired. Send the call to another node. |
+| `stopped` | The node stopped before the call was decided. The call may still be decided. |
 | `rejected` | No result of the request got a majority. The request changed no state. |
 
 ## Documentation
