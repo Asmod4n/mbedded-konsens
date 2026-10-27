@@ -518,7 +518,9 @@ request enters, and gives an error value above the bound.
 ## 8. Build and tests
 
 1. SQLite comes from the package of the distribution
-   (`libsqlite3-dev`). The submodules `deps/lmdb` and `deps/lmdb-0.9`,
+   (`libsqlite3-dev`). The framework neither ships nor builds SQLite
+   (owner, 2026-10-27 08:14 and 08:32, after the version comparison
+   of section 4.3 item 10). The submodules `deps/lmdb` and `deps/lmdb-0.9`,
    `mdb_dump`, `mdb_load`, the checksum module, `lmdb_category`,
    `test/lsan-mdb_dump-0.9.txt` and `test_lmdb_upgrade` go. RULES.md
    names LMDB as an exception to the rule on packages; the owner
