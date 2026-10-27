@@ -219,8 +219,7 @@ the section named.
    classes, and an extension cannot add one: a `STRICT` table refuses
    every column type except `ANY`, `BLOB`, `INT`, `INTEGER`, `REAL` and
    `TEXT` (`build.c:2686-2698`, `global.c:394`). So the form is that of
-   JSONB in SQLite: a `BLOB` column with `CHECK(cbor_valid(x))`, the
-   functions of the extension, and a virtual table that gives the
+   JSONB in SQLite: a `BLOB` column, the functions of the extension, and a virtual table that gives the
    fields as typed columns. Each CBOR tag on the wire
    has a typed form in SQLite (owner, 18:42). A tag with no form is
    refused at the wire with an RFC 9290 error, and tag 24 is decoded
@@ -230,6 +229,11 @@ the section named.
    thread "user logic on virtual tables"
    (`/mnt/project-files/actor-raft/nutzer-logik/vorbereitung.md`
    section 10). Nothing of it is built or measured.
+   The schema holds no `CHECK(cbor_valid(x))`. The library checks each
+   CBOR value in C++ before it writes the value (owner, 2026-10-27
+   08:33, review 2 B6). Reason: `.recover` of the distribution package
+   builds the tables again without the extension, and a `CHECK` that
+   calls a function it does not know fails there.
 4. A `STRICT` column checks the type and converts a value that it can
    convert without loss (text `'12'` into `INTEGER`). A prepared
    statement has no parameter types. An `ANY` column checks nothing;
@@ -813,7 +817,7 @@ blocking, 9 others.
 | B3, the code recovers in the "answerlog" form; a majority that starts at once | section 3; 7.3: the single-node mode (owner, 2026-10-24) |
 | B4, a failed commit of "done" at the leader | 6.1: `SQLITE_FULL` ends the process (owner, 2026-10-24), so the leader proposes nothing after it |
 | B5, `SQLITE_FULL` rolls back only the statement | 5.1 item 3 |
-| B6, `CHECK(cbor_valid(x))` against `.recover` | card |
+| B6, `CHECK(cbor_valid(x))` against `.recover` | the check is in C++, the schema has no CHECK (owner, 2026-10-27 08:33) |
 | B7, text against owner decisions | 4.1, 4.2, 5.3, 6.3, 6.5, 6.7, 7.6, 9, tables |
 | O1, the checkpoint in `sqlite3_close` | 6.5 |
 | O2, `wal_autocheckpoint=0` removes the hook; 1000 frames | 6.5 |
