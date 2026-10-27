@@ -130,10 +130,10 @@ lists the findings of review 1 and what changed.
    index at or above it ends the current configuration. The indexes of
    the next configuration continue the old log. The state that
    Execute-Verify applies is the state of the whole log.
-9. A start of a node of the old configuration after the decide of its
-   StopSign runs the recovery as now. Whether such a node may serve as
-   a source without the recovery is open (card 3, and plan 14 of
-   doc/plan-sqlite-storage.md).
+9. A node of the old configuration that restarts after the decide of
+   its StopSign serves as a source without the recovery, when its
+   synced store holds the decided StopSign. It never votes again.
+   Model run: results/20261027T134426Z-build-from-recovering.md.
 
 ## 3. What this plan does not do
 
@@ -209,7 +209,8 @@ to 2.9 with 4.4 to 4.6.
    entries (2.2, 2.4).
 8. The scope of "holds a StopSign": `config_first_idx` (2.8).
 9. A partial build: transactions per part and a resumed build (2.7).
-10. An old node restarts after the decide: card 3 (2.9).
+10. An old node restarts after the decide: it serves without the
+    recovery (2.9).
 11. Reads across the decide: dropped with an error (2.6).
 12. The same pid in two configurations: excluded by 2.1.
 
