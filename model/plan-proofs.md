@@ -1,6 +1,7 @@
 # Plan: proofs and the open checks of the model
 
-Version 2, after review 1 (model/review-plan-proofs.md).
+Version 3, after review 1 (model/review-plan-proofs.md) and review 2
+(model/review2-plan-proofs.md, approved with changes).
 
 The owner asked on 2026-10-27 (19:42) that the open checks of the model
 are finished: the proofs, run F6c, and liveness (model L). The owner
@@ -13,7 +14,8 @@ allowed TLAPS for the proofs, from its origin and only for the model
    - No complete breadth-first run reaches the bounds of plan.md
      section 6. The largest complete runs use ballot 2 and log 2 with
      no fault (MC_base), or ballot 1 and log 1 with one fault each
-     (MC_a_F1_dup, MC_a_F1_loss, MC_a_F3, MC_a_F4, MC_F6b).
+     (MC_a_F1_dup, MC_a_F1_loss, MC_a_F3, MC_F6b), and ballot 2 with
+     log 1 (MC_a_F4).
    - S4 and S6 (reconfiguration), the properties of the single-node
      mode and of the witness lease, and every fault of the start
      checks, the store and Execute-Verify are checked only by
@@ -68,23 +70,35 @@ and the tool that shows a fault breaks a property (mutations, run G).
 
 - Step 0 (done, fact 4): tlapm proves VoteProof.tla of tlaplus/Examples
   here, in full.
+- Step 0a: TLC checks the invariant `LogExtendsOwnVotes` on the
+  model: at its ballot n_accepted, the log of a node extends each log
+  it held before at that ballot. Review 2 found no path where a
+  duplicate AcceptSync makes a log shorter (FIFO, and AcceptSync is
+  taken only in Follower/Prepare, SequencePaxos.tla:1129, :2131-2138).
+  If the invariant fails, the work stops, and the trace goes to the
+  owner as a question about safety.
 - A new module `MultiPaxosVoting.tla` states what
   Sequence Paxos does in the words of VoteProof.tla. A vote is a log,
-  not a value. At one ballot a node can hold several logs over time
-  (AcceptSync, then AcceptDecide appends), and a duplicate AcceptSync
-  can make the log shorter. So the abstract vote at ballot b is the set
-  of all logs that the node held at b. Each two of them are
-  prefix-compatible.
+  not a value, and it is keyed by n_accepted. The log of the leader is
+  its own vote (SequencePaxos.tla:1082-1084). Only nodes that vote
+  count in a quorum. The abstract vote at ballot b is the set of all
+  logs that the node held at b; each two of them are prefix-compatible.
+- A log is chosen at ballot b when a quorum of voting nodes voted at b
+  for logs that each extend it.
+- Ballots are an abstract ordered set. The model maps its ballots
+  n*10+p onto it (SequencePaxos.tla:321-322).
 - Properties as theorems, with the names of SequencePaxos.tla:
-  - S1 (SequencePaxos.tla, `S1`): decided prefixes of two nodes that
-    vote agree.
-  - S2 (`S2`): each decided prefix of a node that votes is compatible
-    with `decided_history`.
+  - The main theorem: each two chosen logs are prefix-compatible.
+  - S1 (SequencePaxos.tla, `S1`) and S2 (`S2`) follow from it, with
+    the lemma that each decided prefix is chosen. This lemma is
+    checked by TLC at bounds in 3.2 and is not proved by TLAPS.
   - S2Grows (`S2Grows`, SequencePaxos.tla:3648): `decided_history`
     only grows.
-- The inductive invariant follows VoteProof.tla: each log that a node
-  votes for at ballot b extends every log that is chosen at a ballot
-  below b, and the logs of one ballot are prefix-compatible.
+- The inductive invariant takes the log forms of VInv2, VInv3 and
+  VInv4 of VoteProof.tla (:429-612): each log that a node votes for at
+  ballot b is safe at b, and the logs of one ballot are
+  prefix-compatible. The proof that SafeAt is stable is written again
+  for logs.
 - Steps:
   1. Write the module and the candidate invariant `Inv`.
   2. Apalache checks `Init => Inv` and `Inv /\ Next => Inv'` for fixed
@@ -103,15 +117,24 @@ and the tool that shows a fault breaks a property (mutations, run G).
   promise; the history variables keep what the abstract module needs.
   The wrapper has no VIEW, or a VIEW that holds the history variables.
 - TLC checks the abstract `Spec` under the mapping as a property.
-- First scope: no F4, no F6, no ForceSingle, no read-only appends, no
-  reconfiguration. Configs are written new for this scope; the old
+- First scope, as constants: no crash, no wipe, no rollback; MaxLoss
+  1, so that the mutation MC_mut_S5 can break the mapping; no
+  Execute-Verify; no ForceSingle; no read-only appends; no
+  reconfiguration and no StopSign (S4 and S6 are not in scope); no log
+  copy of VR recovery. Configs are written new for this scope; the old
   results of MC_a_F4 and MC_F6b do not count, because they ran on
   older forms of the spec.
+- The first run measures what the history variables cost: the number
+  of initial states and of distinct states with and without them.
 - Then F4 and F6. They add one obligation: a node never accepts at a
   ballot below the highest promise it ever gave, also after rule R or
   VR recovery (a recovered node can hold a promise below the lost one,
   SequencePaxos.tla:1350). This obligation is a property of its own,
-  checked before the mapping.
+  checked before the mapping. It holds for nodes that vote only,
+  because a wipe sets the promise to 0 (SequencePaxos.tla:1776). It
+  can fail with 5 nodes and a promise in flight (compare
+  MC_rr_inflight_n5). If it fails, the work stops, and the trace goes
+  to the owner.
 - Reconfiguration, ForceSingle and read-only appends change the
   quorum. They need their own plan after the first scope holds.
 - 3.2 runs at small bounds before step 3 of 3.1, so that a fault in the
@@ -122,7 +145,10 @@ and the tool that shows a fault breaks a property (mutations, run G).
 - A new invariant on MC_F6c.cfg: each node that rolled back stays
   recovering (`\A k \in rolled_back : recovering[k]`), checked with the
   existing bounds by simulation for 15 min and breadth-first to its
-  time limit.
+  time limit. A mutation through a cfg override
+  (`RecoveryComplete <- ...`) shows that the invariant can break; the
+  spec does not change. Apalache can show that the invariant is
+  inductive.
 - The result goes to the owner as question Q1: F6c keeps S2 and loses
   liveness.
 
@@ -130,10 +156,8 @@ and the tool that shows a fault breaks a property (mutations, run G).
 
 - This plan runs the reviewed plan of branch ble-liveness
   (doc/plan-ble-liveness.md) and adds nothing to its model.
-- Two items of the state file are added to that plan as its section 4
-  (second step): the liveness of F6c (fact 5 says it is lost; model L
-  shows it as a counter-example), and the reuse of a ballot after a
-  rollback with BLE.
+- The liveness of F6c and the reuse of a ballot after a rollback with
+  BLE get a plan of their own after model L has results.
 
 ## 4. Mutations
 
@@ -142,8 +166,9 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 - 3.1: a node accepts at a ballot below its promise (breaks S1); a
   leader takes a log that is not the longest of the highest accepted
   ballot (breaks S2); a quorum of f nodes instead of f+1 (breaks S1).
-- 3.2: the existing mutations PromiseWithoutAccepted, SyncIgnored and
-  SeqNumUnchecked each break the refinement.
+- 3.2: the existing mutations PromiseWithoutAccepted (MC_mut_S1),
+  SyncIgnored (MC_mut_S2b) and SeqNumUnchecked (MC_mut_S5),
+  SequencePaxos.tla:3434-3438, each break the refinement.
 - 3.3: a rolled-back node that votes after an answer from one node
   (breaks the invariant of 3.3).
 
@@ -156,7 +181,8 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
   question to the owner (Q3). A run that reaches its limit is
   written down as stopped. After three stopped runs on one question,
   the question goes to the owner with the bounds that were tried.
-- One result file per run, as plan.md section 7 states.
+- One result file per run, as plan.md section 7 states. It records the
+  number of threads of the run.
 - TLAPS: each proof obligation proved or not, with the prover and its
   time. A proof file is checked again in full before each commit.
 
@@ -170,7 +196,7 @@ Each mutation breaks a property in a run from `Init`, not only `Inv`:
 
 ## 7. Order
 
-1. 3.3 F6c (one invariant, one config).
+1. 3.1 step 0a (`LogExtendsOwnVotes`) and 3.3 F6c.
 2. 3.1 steps 1 and 2.
 3. 3.2 first scope at small bounds.
 4. 3.1 step 3 (TLAPS).
