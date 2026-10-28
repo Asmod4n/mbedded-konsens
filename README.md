@@ -120,7 +120,7 @@ The cost of the checksum against a MAC:
 
 | Part | Version |
 |---|---|
-| Compiler | g++ 16 |
+| Compiler | g++ 15 or later |
 | System | Linux |
 | LMDB | the submodule `deps/lmdb`, LMDB 1.0.2, OpenLDAP Public License |
 | Boost | the headers |
@@ -146,10 +146,10 @@ the storage of a node has two.
 
 ## Installation
 
-Ubuntu 26.10:
+Ubuntu 26.04:
 
 ```sh
-sudo apt install g++-16 cmake doctest-dev libboost-dev git
+sudo apt install g++-15 cmake doctest-dev libboost-dev git
 ```
 
 On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel`.
@@ -158,7 +158,7 @@ On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel`.
 git clone https://github.com/Asmod4n/mbedded-konsens
 cd mbedded-konsens
 git submodule update --init --recursive
-CC=gcc-16 CXX=g++-16 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+CC=gcc-15 CXX=g++-15 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
@@ -249,7 +249,7 @@ on LMDB for 2000 seeds with message loss, duplicate messages, a crash
 and a restart from an earlier copy of the store. They check the safety
 properties of the model after each step.
 `counter_stress` runs many clients against three nodes on a network
-that loses and repeats messages. The tests run with g++ 16, with
+that loses and repeats messages. The tests run with g++ 15 and g++ 16, with
 AddressSanitizer and UndefinedBehaviorSanitizer.
 
 The tests open their LMDB environments in `TMPDIR`. The cache variable

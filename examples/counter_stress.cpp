@@ -234,7 +234,8 @@ entry_fields fields_of(const konsens::entry& e)
 
 bool compatible(const std::span<const konsens::entry> a, const std::span<const konsens::entry> b)
 {
-    return std::ranges::starts_with(a, b) || std::ranges::starts_with(b, a);
+    const auto n = std::min(a.size(), b.size());
+    return std::ranges::equal(a.first(n), b.first(n));
 }
 
 struct failure {
@@ -885,7 +886,7 @@ struct stress {
                     }
                     continue;
                 }
-                if (reply.client_id != pending) {
+                if (!pending || reply.client_id != *pending) {
                     continue;
                 }
                 if (!reply.response) [[unlikely]] {
