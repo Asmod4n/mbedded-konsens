@@ -129,6 +129,50 @@ Properties:
   pushed after each round with `[skip ci]`. The state file of
   mbedded-konsens in Claude-state gets the result after each round.
 
+## 3a. Change after the first runs (2026-10-28)
+
+What the runs showed (session VM, TLC 2.19, one worker):
+- `MC_ble_all_crash` and `MC_ble_all_restart` at `MaxN` 4: cut by the
+  2 h limit at about 0.95 M distinct states, about 10 k distinct states
+  per minute.
+- The same at `MaxN` 3, `MaxEarlyTimeout` 1: cut at 1.0 M distinct
+  states. With `-lncheck final` the rate stays the same.
+- Only invariants, no faults (`MaxCrash` 0): 10.6 M distinct states at
+  depth 36 after 15 min, not complete. With one crash: 21.7 M at depth
+  34 after 30 min, not complete.
+- So the size comes from the order of heartbeat messages after
+  `Stabilize`, not from the faults.
+
+Common practice (Vanlightly 2023, "The importance of liveness
+properties" part 2; Konnov, Kuppe, Merz 2022, "Specification and
+verification with the TLA+ trifecta"): check liveness exhaustively on a
+very small model; keep the perturbations few and the recovery free;
+check the large model with invariants and simulation only.
+
+Change:
+1. A constant `AtomicRounds`. With `AtomicRounds = TRUE`, `Stabilize`
+   also empties `reqs` and `reps`. This is a loss of messages before
+   the stable time, which the network allows.
+2. After `Stabilize` with `AtomicRounds = TRUE`, `HbTimeout(i)` first
+   sets `replies[i][j]` to `Reply(cur[j], leader[j], happy[j])` for
+   each peer j that is alive, not recovering and linked, then runs the
+   steps of `hb_timeout` as now. It sends no request. `DeliverRequest`
+   and `DeliverReply` are not enabled after `Stabilize`. `RoundDone`
+   holds.
+3. `DeliverPrepare` stays asynchronous.
+4. Before `Stabilize` nothing changes.
+5. What it does not show: a liveness fault that needs a reply that is
+   older than the state of the peer at the end of the round. The plan
+   assumes after the stable time that a reply arrives within its round
+   (section 1, partial synchrony), and the reply then holds a state of
+   the peer from inside the round. The atomic form takes the state at
+   the end of the round, which is one of these states.
+6. `AtomicRounds = FALSE` keeps the old form for invariants and for a
+   simulation run.
+7. Runs: the configurations of section 3 with `AtomicRounds = TRUE`,
+   `MaxN` 3; the three mutations with the same values. A cut run gives
+   no result and says so.
+
 ## 4. Second step, after the first runs
 
 Compose the module with `SequencePaxos.tla`: `HbTimeout` replaces the
