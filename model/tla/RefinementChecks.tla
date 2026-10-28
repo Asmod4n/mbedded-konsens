@@ -22,6 +22,7 @@ HNext ==
   /\ hist_votes' =
        [a \in Nodes |->
           IF /\ crashes' = crashes /\ wipes' = wipes /\ rolled_back' = rolled_back
+             /\ Votes(a)
              /\ n_accepted'[a] # DefaultBallot
              /\ <<n_accepted'[a], log'[a]>> # <<n_accepted[a], log[a]>>
           THEN hist_votes[a] \cup {<<n_accepted'[a], log'[a]>>}
