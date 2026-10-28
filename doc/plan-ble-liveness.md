@@ -149,29 +149,52 @@ verification with the TLA+ trifecta"): check liveness exhaustively on a
 very small model; keep the perturbations few and the recovery free;
 check the large model with invariants and simulation only.
 
-Change:
-1. A constant `AtomicRounds`. With `AtomicRounds = TRUE`, `Stabilize`
-   also empties `reqs` and `reps`. This is a loss of messages before
-   the stable time, which the network allows.
-2. After `Stabilize` with `AtomicRounds = TRUE`, `HbTimeout(i)` first
-   sets `replies[i][j]` to `Reply(cur[j], leader[j], happy[j])` for
-   each peer j that is alive, not recovering and linked, then runs the
-   steps of `hb_timeout` as now. It sends no request. `DeliverRequest`
-   and `DeliverReply` are not enabled after `Stabilize`. `RoundDone`
-   holds.
-3. `DeliverPrepare` stays asynchronous.
-4. Before `Stabilize` nothing changes.
-5. What it does not show: a liveness fault that needs a reply that is
-   older than the state of the peer at the end of the round. The plan
-   assumes after the stable time that a reply arrives within its round
-   (section 1, partial synchrony), and the reply then holds a state of
-   the peer from inside the round. The atomic form takes the state at
-   the end of the round, which is one of these states.
-6. `AtomicRounds = FALSE` keeps the old form for invariants and for a
-   simulation run.
-7. Runs: the configurations of section 3 with `AtomicRounds = TRUE`,
-   `MaxN` 3; the three mutations with the same values. A cut run gives
-   no result and says so.
+Change (after review doc/review-plan-ble-liveness-3a.md):
+1. A constant `RoundForm` with the values "async", "collect" and
+   "atomic". "async" is the old form.
+2. In "collect" and "atomic", `Stabilize` empties `reqs` and `reps`.
+   The replies of the round come from the peers later, in a state of
+   the same peer that is not older. The model has no loss action, so
+   this is a change of the replies, not a loss.
+3. `Answers(i, j)`: j is a live peer, linked, not recovering, and i is
+   not recovering (node.hpp:358-360).
+4. "collect": after `Stabilize`, `Collect(i, j)` takes the reply of j
+   in one step when `Answers(i, j)` holds and the entry is empty. It
+   merges the delivery of the request and of the reply. `HbTimeout(i)`
+   after `Stabilize` waits until each j with `Answers(i, j)` replied.
+   Other timeouts can come between two `Collect` steps, so two nodes
+   can take over in the same round.
+5. "atomic": `HbTimeout(i)` after `Stabilize` fills each empty entry j
+   with `Answers(i, j)` from the state of j at that step, and keeps an
+   entry that is already filled (hpp:145-148). This is the sequence of
+   all deliveries of the round and then the timeout. It does not show
+   replies that miss a timeout of another node inside the round, for
+   example two nodes that take over in the same round.
+6. In both forms, `HbTimeout` after `Stabilize` leaves `reqs` and
+   `reps` unchanged, and `DeliverRequest` and `DeliverReply` are not
+   enabled. `DeliverPrepare` stays asynchronous. Before `Stabilize`
+   nothing changes.
+7. A constant `TrackStable`. With FALSE, `was_stable` stays empty; the
+   liveness runs use FALSE, the cover uses TRUE.
+8. Every cfg names `RoundForm` and `TrackStable`.
+9. The state counts of "async", "collect" and "atomic" and of the
+   states before `Stabilize` are measured on `MC_ble_nofault` (3 nodes,
+   no faults, `MaxN` 3, `MaxEarlyTimeout` 1, invariants only, 15 min).
+   The liveness runs take "collect" if it ends, else "atomic".
+10. Runs: the configurations of section 3 with `MaxN` 3. A cut run
+    gives no result and says so.
+11. Mutations:
+    - `AbovePromise = FALSE` cannot break in this model: a promise with
+      the own pid comes only from the own lead, and `EndRecovery`
+      keeps the promise; `complete_recovery` (sequence_paxos.hpp:1072)
+      is not modelled. No run. The result file says that this model
+      does not answer the question of the owner of 2026-10-21.
+    - `NoQuorumCheck`: with 3 nodes and one cut, each node still gets
+      a reply. Expected with `MaxCut` 2: `NoOverflow` fails after
+      `Stabilize`, and `EventuallyStableLeader` holds.
+    - `NoTimeoutAfterStabilize` breaks; it shows only that the check
+      can fail.
+12. The first runs go into a result file under `model/results/`.
 
 ## 4. Second step, after the first runs
 

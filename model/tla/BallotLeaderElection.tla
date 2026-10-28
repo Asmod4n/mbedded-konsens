@@ -17,7 +17,9 @@ CONSTANTS
   MaxN,
   MaxEarlyTimeout,
   AbovePromise,
-  Mutation
+  Mutation,
+  RoundForm,
+  TrackStable
 
 VARIABLES
   alive,
@@ -68,8 +70,8 @@ Reply(b, l, h) == [none |-> FALSE, ballot |-> b, leader |-> l, happy |-> h]
 InitialRound == 1
 RecoveryRound == 0
 
-Got(i) == {j \in Peers(i) : ~replies[i][j].none}
-Rep(i, j) == replies[i][j]
+Got(r, i) == {j \in Peers(i) : ~r[j].none}
+Rep(r, j) == r[j]
 
 \* A node takes as leader only a node it reaches itself; the property
 \* asks for a node that reaches a majority of live nodes.
@@ -105,24 +107,24 @@ Init ==
 (* then the call of handle_leader in the same tick (node.hpp:126-131).      *)
 
 \* ble.hpp:98-105 update_leader: the highest ballot of the repliers.
-UpdateLeader(i) ==
-  LET bs == {Rep(i, j).ballot : j \in Got(i)}
+UpdateLeader(i, r) ==
+  LET bs == {Rep(r, j).ballot : j \in Got(r, i)}
   IN IF bs = {} THEN leader[i]
      ELSE LET m == CHOOSE b \in bs : \A c \in bs : Leq(c, b) IN MaxB(leader[i], m)
 
 \* ble.hpp:107-122 update_happiness
-Happiness(i, l) ==
+Happiness(i, l, r) ==
   IF l # cur[i]
-  THEN \E j \in Got(i) : Rep(i, j).ballot = l /\ Rep(i, j).happy
-  ELSE LET pf == Cardinality({j \in Got(i) : Leq(Rep(i, j).leader, cur[i])}) IN
+  THEN \E j \in Got(r, i) : Rep(r, j).ballot = l /\ Rep(r, j).happy
+  ELSE LET pf == Cardinality({j \in Got(r, i) : Leq(Rep(r, j).leader, cur[i])}) IN
        IF pf + 1 >= Majority THEN TRUE
-       ELSE \E j \in Got(i) : Less(cur[i], Rep(i, j).leader) /\ Rep(i, j).happy
+       ELSE \E j \in Got(r, i) : Less(cur[i], Rep(r, j).leader) /\ Rep(r, j).happy
 
 \* ble.hpp:124-136 check_takeover
-TakesOver(i, h) ==
+TakesOver(i, h, r) ==
   /\ ~h
-  /\ \A j \in Got(i) : ~Rep(i, j).happy
-  /\ Mutation = "NoQuorumCheck" \/ Cardinality(Got(i)) + 1 >= Majority
+  /\ \A j \in Got(r, i) : ~Rep(r, j).happy
+  /\ Mutation = "NoQuorumCheck" \/ Cardinality(Got(r, i)) + 1 >= Majority
 
 \* node.hpp:372-379 ballot_above_promise
 AbovePromiseOf(i, b) ==
@@ -135,16 +137,37 @@ RoundDone(i) ==
   /\ \A j \in Peers(i) : (<<i, j>> \in reqs /\ Linked(i, j) /\ j \in alive) => FALSE
   /\ \A j \in Peers(i) : (~reps[<<j, i>>].none /\ Linked(i, j)) => FALSE
 
+\* Plan section 3a: after Stabilize, a round in the form "collect" takes
+\* one reply of a peer in one step, and in the form "atomic" all replies
+\* in the step of the timeout. A recovering node takes no reply.
+Answers(i, j) ==
+  /\ j \in Peers(i) /\ j \in alive /\ ~recovering[j] /\ Linked(i, j)
+  /\ ~recovering[i]
+
+RowAt(i) ==
+  IF stable /\ RoundForm = "atomic"
+  THEN [j \in Nodes |-> IF replies[i][j].none /\ Answers(i, j)
+                        THEN Reply(cur[j], leader[j], happy[j]) ELSE replies[i][j]]
+  ELSE replies[i]
+
+RoundOver(i) ==
+  CASE RoundForm = "async" -> RoundDone(i)
+    [] RoundForm = "collect" -> \A j \in Nodes : Answers(i, j) => ~replies[i][j].none
+    [] OTHER -> TRUE
+
+AsyncMessages == ~stable \/ RoundForm = "async"
+
 HbTimeout(i) ==
   /\ i \in alive
   /\ ~overflow
-  /\ stable => Mutation # "NoTimeoutAfterStabilize" /\ RoundDone(i)
+  /\ stable => Mutation # "NoTimeoutAfterStabilize" /\ RoundOver(i)
   \* Before Stabilize, at most MaxEarlyTimeout rounds end in all.
   /\ ~stable => early < MaxEarlyTimeout
   /\ early' = IF stable THEN early ELSE early + 1
-  /\ LET l1 == UpdateLeader(i)
-         h1 == Happiness(i, l1)
-         take == TakesOver(i, h1)
+  /\ LET r == RowAt(i)
+         l1 == UpdateLeader(i, r)
+         h1 == Happiness(i, l1, r)
+         take == TakesOver(i, h1, r)
          c2 == IF take THEN [cur[i] EXCEPT !.n = l1.n + 1] ELSE cur[i]
          l2 == IF take THEN c2 ELSE l1
          h2 == IF take THEN TRUE ELSE h1
@@ -166,8 +189,10 @@ HbTimeout(i) ==
         /\ replies' = [replies EXCEPT ![i] = [j \in Nodes |-> NoReply]]
         \* ble.hpp:88-96 new_hb_round; the requests of the old round and
         \* the replies to them leave, as handle_reply drops them.
-        /\ reqs' = {p \in reqs : p[1] # i} \cup {<<i, j>> : j \in {k \in Peers(i) : Linked(i, k)}}
-        /\ reps' = [p \in Pairs |-> IF p[2] = i THEN NoReply ELSE reps[p]]
+        /\ IF AsyncMessages
+           THEN /\ reqs' = {p \in reqs : p[1] # i} \cup {<<i, j>> : j \in {k \in Peers(i) : Linked(i, k)}}
+                /\ reps' = [p \in Pairs |-> IF p[2] = i THEN NoReply ELSE reps[p]]
+           ELSE UNCHANGED <<reqs, reps>>
         /\ IF lead
            THEN /\ promise' = [promise EXCEPT ![i] = nb]
                 /\ n_leader' = [n_leader EXCEPT ![i] = nb]
@@ -183,6 +208,7 @@ HbTimeout(i) ==
 \* is lost.
 DeliverRequest(p) ==
   /\ ~overflow
+  /\ AsyncMessages
   /\ p \in reqs
   /\ reqs' = reqs \ {p}
   /\ LET i == p[1]
@@ -196,6 +222,7 @@ DeliverRequest(p) ==
 \* ble.hpp:143-150 handle_reply; one reply for each peer in a round.
 DeliverReply(p) ==
   /\ ~overflow
+  /\ AsyncMessages
   /\ ~reps[p].none
   /\ LET j == p[1]
          i == p[2]
@@ -269,11 +296,23 @@ Disconnect(e) ==
   /\ UNCHANGED <<alive, recovering, cur, leader, happy, replies, promise, n_leader, role,
                  reqs, reps, prep, stable, overflow, crashes, restarts, early>>
 
+\* Plan section 3a: in the forms "collect" and "atomic" the requests and
+\* replies in flight are replaced by replies taken from the peers later.
 Stabilize ==
   /\ ~stable /\ ~overflow
   /\ stable' = TRUE
+  /\ IF RoundForm = "async" THEN UNCHANGED <<reqs, reps>>
+     ELSE /\ reqs' = {}
+          /\ reps' = [p \in Pairs |-> NoReply]
   /\ UNCHANGED <<alive, recovering, links, cur, leader, happy, replies, promise, n_leader,
-                 role, reqs, reps, prep, overflow, crashes, restarts, cuts, early>>
+                 role, prep, overflow, crashes, restarts, cuts, early>>
+
+Collect(i, j) ==
+  /\ stable /\ RoundForm = "collect" /\ ~overflow
+  /\ i \in alive /\ Answers(i, j) /\ replies[i][j].none
+  /\ replies' = [replies EXCEPT ![i][j] = Reply(cur[j], leader[j], happy[j])]
+  /\ UNCHANGED <<alive, recovering, links, cur, leader, happy, promise, n_leader, role,
+                 reqs, reps, prep, stable, overflow, crashes, restarts, cuts, early>>
 
 ----------------------------------------------------------------------------
 StableLeaderAt(l) ==
@@ -288,19 +327,22 @@ StableLeaderAt(l) ==
 
 Step ==
   \/ \E i \in Nodes : HbTimeout(i) \/ Crash(i) \/ Restart(i) \/ EndRecovery(i)
-  \/ \E p \in Pairs : DeliverRequest(p) \/ DeliverReply(p) \/ DeliverPrepare(p)
+  \/ \E p \in Pairs : DeliverRequest(p) \/ DeliverReply(p) \/ DeliverPrepare(p) \/ Collect(p[1], p[2])
   \/ \E e \in Links : Disconnect(e)
   \/ Stabilize
 
-Next == Step /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)}
+Track == was_stable' = IF TrackStable THEN was_stable \cup {l \in Nodes : StableLeaderAt(l)} ELSE was_stable
+
+Next == Step /\ Track
 
 Fairness ==
-  /\ \A i \in Nodes : WF_vars(HbTimeout(i) /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)})
-  /\ \A i \in Nodes : WF_vars(EndRecovery(i) /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)})
-  /\ \A p \in Pairs : WF_vars(DeliverRequest(p) /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)})
-  /\ \A p \in Pairs : WF_vars(DeliverReply(p) /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)})
-  /\ \A p \in Pairs : WF_vars(DeliverPrepare(p) /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)})
-  /\ WF_vars(Stabilize /\ was_stable' = was_stable \cup {l \in Nodes : StableLeaderAt(l)})
+  /\ \A i \in Nodes : WF_vars(HbTimeout(i) /\ Track)
+  /\ \A i \in Nodes : WF_vars(EndRecovery(i) /\ Track)
+  /\ \A p \in Pairs : WF_vars(DeliverRequest(p) /\ Track)
+  /\ \A p \in Pairs : WF_vars(DeliverReply(p) /\ Track)
+  /\ \A p \in Pairs : WF_vars(DeliverPrepare(p) /\ Track)
+  /\ \A p \in Pairs : WF_vars(Collect(p[1], p[2]) /\ Track)
+  /\ WF_vars(Stabilize /\ Track)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -328,4 +370,5 @@ TypeOK ==
   /\ alive \subseteq Nodes
   /\ links \subseteq Links
   /\ reqs \subseteq Pairs
+PreStable == ~stable
 =============================================================================
