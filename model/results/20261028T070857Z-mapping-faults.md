@@ -64,3 +64,9 @@ seed 1, depth 80, 3 workers.
 
 The runs MC_ref_F3 and MC_ref_F6b above have no lost disk, so `Votes`
 holds for each node there, and the change does not touch them.
+
+## Longer run of the lost disk (2026-10-28 10:09 UTC)
+
+MC_ref_F4 (549a919), 1 worker, limit 100 min, beside three runs of
+model L (load average about 3.1 to 4.7): no violation; did not end;
+17,686,607 distinct states, depth 16.
