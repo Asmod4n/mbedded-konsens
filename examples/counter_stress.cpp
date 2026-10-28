@@ -1102,7 +1102,10 @@ int run(const options& given, Cluster storage)
         if (!other) [[unlikely]] {
             return fail(given.seed, {"read the decided log", other.error()});
         }
-        const bool equal = s.net.at(i).retired() ? std::ranges::starts_with(*log, *other) : *other == *log;
+        const bool equal = s.net.at(i).retired()
+                               ? other->size() <= log->size() &&
+                                     std::ranges::equal(*other, std::span{*log}.first(other->size()))
+                               : *other == *log;
         if (!equal) [[unlikely]] {
             return fail(given.seed, {"check 3: the decided logs are not equal", {}});
         }
