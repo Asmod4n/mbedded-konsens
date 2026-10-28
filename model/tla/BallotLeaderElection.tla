@@ -15,6 +15,7 @@ CONSTANTS
   MaxRestart,
   MaxCut,
   MaxN,
+  MaxEarlyTimeout,
   AbovePromise,
   Mutation
 
@@ -37,10 +38,11 @@ VARIABLES
   crashes,
   restarts,
   cuts,
+  early,
   was_stable
 
 vars == <<alive, recovering, links, cur, leader, happy, replies, promise, n_leader, role,
-          reqs, reps, prep, stable, overflow, crashes, restarts, cuts, was_stable>>
+          reqs, reps, prep, stable, overflow, crashes, restarts, cuts, early, was_stable>>
 
 ----------------------------------------------------------------------------
 (* A ballot is (n, priority, pid), ordered in that order (ble.hpp uses the *)
@@ -95,6 +97,7 @@ Init ==
   /\ crashes = 0
   /\ restarts = 0
   /\ cuts = 0
+  /\ early = 0
   /\ was_stable = {}
 
 ----------------------------------------------------------------------------
@@ -136,6 +139,9 @@ HbTimeout(i) ==
   /\ i \in alive
   /\ ~overflow
   /\ stable => Mutation # "NoTimeoutAfterStabilize" /\ RoundDone(i)
+  \* Before Stabilize, at most MaxEarlyTimeout rounds end in all.
+  /\ ~stable => early < MaxEarlyTimeout
+  /\ early' = IF stable THEN early ELSE early + 1
   /\ LET l1 == UpdateLeader(i)
          h1 == Happiness(i, l1)
          take == TakesOver(i, h1)
@@ -185,7 +191,7 @@ DeliverRequest(p) ==
                 THEN [reps EXCEPT ![<<j, i>>] = Reply(cur[j], leader[j], happy[j])]
                 ELSE reps
   /\ UNCHANGED <<alive, recovering, links, cur, leader, happy, replies, promise, n_leader,
-                 role, prep, stable, overflow, crashes, restarts, cuts>>
+                 role, prep, stable, overflow, crashes, restarts, cuts, early>>
 
 \* ble.hpp:143-150 handle_reply; one reply for each peer in a round.
 DeliverReply(p) ==
@@ -198,7 +204,7 @@ DeliverReply(p) ==
                       THEN [replies EXCEPT ![i][j] = reps[p]]
                       ELSE replies
   /\ UNCHANGED <<alive, recovering, links, cur, leader, happy, reqs, promise, n_leader,
-                 role, prep, stable, overflow, crashes, restarts, cuts>>
+                 role, prep, stable, overflow, crashes, restarts, cuts, early>>
 
 \* sp.hpp:704-731 handle_prepare: a higher ballot becomes the promise and
 \* the node becomes follower. The answer is not modelled.
@@ -213,7 +219,7 @@ DeliverPrepare(p) ==
              /\ role' = [role EXCEPT ![j] = "Follower"]
         ELSE UNCHANGED <<promise, role>>
   /\ UNCHANGED <<alive, recovering, links, cur, leader, happy, replies, reqs, reps, n_leader,
-                 stable, overflow, crashes, restarts, cuts>>
+                 stable, overflow, crashes, restarts, cuts, early>>
 
 Crash(i) ==
   /\ ~stable /\ ~overflow
@@ -222,7 +228,7 @@ Crash(i) ==
   /\ crashes' = crashes + 1
   /\ alive' = alive \ {i}
   /\ UNCHANGED <<recovering, links, cur, leader, happy, replies, promise, n_leader, role,
-                 reqs, reps, prep, stable, overflow, restarts, cuts>>
+                 reqs, reps, prep, stable, overflow, restarts, cuts, early>>
 
 \* node.hpp:114-115 and ble.hpp:28-45: BLE starts with the stored promise
 \* as recovered leader and recovery_round; Sequence Paxos recovers.
@@ -242,7 +248,7 @@ Restart(i) ==
   /\ role' = [role EXCEPT ![i] = "Follower"]
   /\ reqs' = {p \in reqs : p[1] # i} \cup {<<i, j>> : j \in {k \in Peers(i) : Linked(i, k)}}
   /\ reps' = [p \in Pairs |-> IF p[2] = i THEN NoReply ELSE reps[p]]
-  /\ UNCHANGED <<alive, links, promise, prep, stable, overflow, crashes, cuts>>
+  /\ UNCHANGED <<alive, links, promise, prep, stable, overflow, crashes, cuts, early>>
 
 \* The recovery of VR Revisited ends after f + 1 answers; here it ends
 \* when a majority is reachable.
@@ -252,7 +258,7 @@ EndRecovery(i) ==
   /\ Cardinality({j \in Reach(i) : ~recovering[j] \/ j = i}) >= Majority
   /\ recovering' = [recovering EXCEPT ![i] = FALSE]
   /\ UNCHANGED <<alive, links, cur, leader, happy, replies, promise, n_leader, role,
-                 reqs, reps, prep, stable, overflow, crashes, restarts, cuts>>
+                 reqs, reps, prep, stable, overflow, crashes, restarts, cuts, early>>
 
 Disconnect(e) ==
   /\ ~stable /\ ~overflow
@@ -261,13 +267,13 @@ Disconnect(e) ==
   /\ cuts' = cuts + 1
   /\ links' = links \ {e}
   /\ UNCHANGED <<alive, recovering, cur, leader, happy, replies, promise, n_leader, role,
-                 reqs, reps, prep, stable, overflow, crashes, restarts>>
+                 reqs, reps, prep, stable, overflow, crashes, restarts, early>>
 
 Stabilize ==
   /\ ~stable /\ ~overflow
   /\ stable' = TRUE
   /\ UNCHANGED <<alive, recovering, links, cur, leader, happy, replies, promise, n_leader,
-                 role, reqs, reps, prep, overflow, crashes, restarts, cuts>>
+                 role, reqs, reps, prep, overflow, crashes, restarts, cuts, early>>
 
 ----------------------------------------------------------------------------
 StableLeaderAt(l) ==
