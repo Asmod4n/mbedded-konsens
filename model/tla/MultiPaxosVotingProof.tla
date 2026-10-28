@@ -85,26 +85,28 @@ THEOREM SafeAtProp ==
                 /\ \A d \in (c + 1)..(b - 1), a \in Q : DidNotVoteIn(a, d)
 <1> USE DEF Ballot
 <1> DEFINE Def(SA, bb) ==
-      [m \in Log |->
+      {m \in Log :
         \/ bb = 0
         \/ \E Q \in Quorum :
              /\ \A a \in Q : maxBal[a] >= bb
              /\ \E c \in -1..(bb - 1) :
                   /\ (c # -1) => \E a0 \in Q : \E L \in VotesAt(a0, c) :
-                                   /\ SA[c][L]
+                                   /\ L \in SA[c]
                                    /\ TRUE => IsPrefix(L, m)
                                    /\ \A a \in Q : \A w \in VotesAt(a, c) : IsPrefix(w, L)
-                  /\ \A d \in (c + 1)..(bb - 1), a \in Q : DidNotVoteIn(a, d)]
+                  /\ \A d \in (c + 1)..(bb - 1), a \in Q : DidNotVoteIn(a, d)}
      SA[bb \in Ballot] == Def(SA, bb)
-<1>1. \A b, l : SafeAt(b, l) = SA[b][l]
+<1>1. \A b, l : SafeAt(b, l) = (l \in SA[b])
   BY Zenon DEF SafeAt, SafeAtWith
 <1>2. ASSUME NEW n \in Nat, NEW g, NEW h,
              \A i \in 0..(n - 1) : g[i] = h[i]
       PROVE  Def(g, n) = Def(h, n)
   <2>1. \A c \in -1..(n - 1) : (c # -1) => g[c] = h[c]
     BY <1>2
-  <2>2. QED
-    BY <2>1, Isa
+  <2>2. ASSUME NEW m PROVE m \in Def(g, n) <=> m \in Def(h, n)
+    BY <2>1
+  <2>3. QED
+    BY <2>2
 <1>3. SA = [b \in Ballot |-> Def(SA, b)]
   <2> HIDE DEF Def
   <2> QED
@@ -113,8 +115,13 @@ THEOREM SafeAtProp ==
   <2> HIDE DEF Def
   <2> QED
     BY <1>3, Zenon
-<1>5. QED
-  BY <1>1, <1>4, Zenon
+<1>5. \A c, L : (L \in SA[c]) <=> SafeAt(c, L)
+  BY <1>1
+<1>6. ASSUME NEW b \in Ballot, NEW l \in Log
+      PROVE  SafeAt(b, l) <=> l \in Def(SA, b)
+  BY <1>1, <1>4
+<1>7. QED
+  BY <1>5, <1>6, Zenon
 
 THEOREM SafeAtPropPrime ==
   \A b \in Ballot, l \in Log :
@@ -163,7 +170,10 @@ LEMMA SafeLemma ==
                                   /\ IsPrefix(L, l)
                                   /\ \A a \in Q : \A w \in VotesAt(a, cc) : IsPrefix(w, L)
                /\ \A d \in (cc + 1)..b, a \in Q : DidNotVoteIn(a, d)
-    BY <2>1, SafeAtProp, Zenon
+    <3>1. b + 1 \in Ballot /\ b + 1 # 0 /\ (b + 1) - 1 = b
+      OBVIOUS
+    <3>2. QED
+      BY <2>1, <3>1, SafeAtProp, Zenon
   <2>3. PICK cc \in -1..b :
           /\ (cc # -1) => \E a0 \in Q : \E L \in VotesAt(a0, cc) :
                              /\ SafeAt(cc, L)
@@ -258,7 +268,7 @@ LEMMA ChosenIsLog ==
 <1>5. Len(q[2]) \in Nat /\ \A i \in 1..Len(q[2]) : q[2][i] \in Value
   BY <1>4, LenProperties DEF Log
 <1>6. \A i \in 1..k : q[2][i] \in Value
-  BY <1>5
+  BY <1>3, <1>5
 <1>7. SubSeq(q[2], 1, k) \in Seq(Value)
   BY <1>6, SubSeqProperties
 <1>8. QED
@@ -350,7 +360,10 @@ LEMMA SafeAtStable ==
   <2>2. QED
     BY <2>1 DEF Grows
 <1>1. P(0)
-  BY SafeAtPropPrime, 0..0 = {0}, Zenon
+  <2>1. ASSUME NEW w \in Log PROVE SafeAt(0, w)'
+    BY 0 \in Ballot, SafeAtPropPrime, Zenon
+  <2>2. QED
+    BY <2>1
 <1>2. ASSUME NEW d \in Nat, P(d) PROVE P(d + 1)
   <2>1. SUFFICES ASSUME NEW e \in 0..(d + 1), NEW w \in Log, SafeAt(e, w)
                  PROVE  SafeAt(e, w)'
@@ -366,7 +379,10 @@ LEMMA SafeAtStable ==
                                     /\ IsPrefix(L, w)
                                     /\ \A a \in Q : \A x \in VotesAt(a, cc) : IsPrefix(x, L)
                  /\ \A dd \in (cc + 1)..(e - 1), a \in Q : DidNotVoteIn(a, dd)
-      BY <2>1, <2>3, SafeAtProp, Zenon
+      <4>1. e \in Ballot /\ e # 0
+        BY <2>3
+      <4>2. QED
+        BY <2>1, <4>1, SafeAtProp, Zenon
     <3>2. PICK cc \in -1..(e - 1) :
             /\ (cc # -1) => \E a0 \in Q : \E L \in VotesAt(a0, cc) :
                                /\ SafeAt(cc, L)
@@ -400,12 +416,14 @@ LEMMA SafeAtStable ==
       <4>2. L \in Log
         BY <3>3, VotesAtType
       <4>3. L \in VotesAt(a0, cc)'
+        <5>0. a0 \in Acceptor /\ L \in VotesAt(a0, cc)
+          BY <4>1, <3>3
         <5>1. <<cc, L>> \in votes[a0]
-          BY <3>3, VotesAtPair
+          BY <5>0, VotesAtPair
         <5>2. <<cc, L>> \in votes'[a0]
           BY <5>1, <3>3 DEF Grows
         <5>3. QED
-          BY <5>2, <3>3, <1>00
+          BY <5>0, <5>2, <1>00
       <4>4. cc \in 0..d
         BY <3>6, <2>3
       <4>5. SafeAt(cc, L)'
@@ -416,8 +434,10 @@ LEMMA SafeAtStable ==
         BY <4>1, <4>3, <4>5, <4>6
     <3>7. \A dd \in (cc + 1)..(e - 1), a \in Q : DidNotVoteIn(a, dd)'
       BY <3>2, <3>5 DEF DidNotVoteIn
-    <3>8. QED
-      BY <2>1, <2>3, <3>4, <3>6, <3>7, SafeAtPropPrime, Zenon
+    <3>8. e \in Ballot /\ e # 0
+      BY <2>3
+    <3>9. QED
+      BY <2>1, <3>8, <3>4, <3>6, <3>7, SafeAtPropPrime, Zenon
   <2>4. QED
     BY <2>2, <2>3
 <1>3. \A d \in Nat : P(d)
@@ -538,7 +558,14 @@ THEOREM InductiveInvariance == VInv /\ [Next]_vars => VInv'
                    PROVE  p[1] <= maxBal'[a]
       BY DEF VInv4
     <3>2. CASE p \in votes[a]
-      BY <1>1, <2>2, <3>2 DEF VInv, VInv4, Grows, TypeOK
+      <4>1. p[1] <= maxBal[a]
+        BY <3>2 DEF VInv, VInv4
+      <4>2. maxBal'[a] >= maxBal[a]
+        BY <2>2 DEF Grows
+      <4>3. p[1] \in Int /\ maxBal[a] \in Int /\ maxBal'[a] \in Int
+        BY <1>1, <2>1, <3>2 DEF TypeOK
+      <4>4. QED
+        BY <4>1, <4>2, <4>3
     <3>3. CASE p \notin votes[a]
       BY <2>0, <3>3
     <3>4. QED
