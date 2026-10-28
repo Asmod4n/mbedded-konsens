@@ -21,7 +21,8 @@ HNext ==
   /\ Next
   /\ hist_votes' =
        [a \in Nodes |->
-          IF /\ n_accepted'[a] # DefaultBallot
+          IF /\ crashes' = crashes /\ wipes' = wipes /\ rolled_back' = rolled_back
+             /\ n_accepted'[a] # DefaultBallot
              /\ <<n_accepted'[a], log'[a]>> # <<n_accepted[a], log[a]>>
           THEN hist_votes[a] \cup {<<n_accepted'[a], log'[a]>>}
           ELSE hist_votes[a]]
@@ -39,6 +40,9 @@ AbstractStep ==
     \/ \E p \in new : new = {p} /\ A!VoteFor(a, p[1], p[2])
 
 Refines == [][AbstractStep]_hist
+
+NoVoteBelowPromise ==
+  [][\A a \in Nodes : \A p \in hist_votes'[a] \ hist_votes[a] : p[1] >= hist_maxbal[a]]_hist
 
 AbstractInv == A!VInv
 ChosenCompatible == A!ChosenCompatible
