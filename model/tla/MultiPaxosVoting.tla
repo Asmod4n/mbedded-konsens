@@ -9,7 +9,7 @@ ASSUME QA == /\ \A Q \in Quorum : Q \subseteq Acceptor
 Ballot == Nat
 Log == Seq(Value)
 
-IsPrefix(a, b) == Len(a) <= Len(b) /\ SubSeq(b, 1, Len(a)) = a
+IsPrefix(a, b) == Len(a) <= Len(b) /\ \A k \in 1..Len(a) : a[k] = b[k]
 Compatible(a, b) == IsPrefix(a, b) \/ IsPrefix(b, a)
 
 VARIABLES votes, maxBal
@@ -21,17 +21,17 @@ VotesAt(a, b) == {p[2] : p \in {q \in votes[a] : q[1] = b}}
 DidNotVoteIn(a, b) == VotesAt(a, b) = {}
 
 SafeAtWith(Qs, b, l, extends) ==
-  LET SA[bb \in Ballot, m \in Log] ==
+  LET SA[bb \in Ballot] == [m \in Log |->
         \/ bb = 0
         \/ \E Q \in Qs :
              /\ \A a \in Q : maxBal[a] >= bb
              /\ \E c \in -1..(bb - 1) :
                   /\ (c # -1) => \E a0 \in Q : \E L \in VotesAt(a0, c) :
-                                   /\ SA[c, L]
+                                   /\ SA[c][L]
                                    /\ extends => IsPrefix(L, m)
                                    /\ \A a \in Q : \A w \in VotesAt(a, c) : IsPrefix(w, L)
-                  /\ \A d \in (c + 1)..(bb - 1), a \in Q : DidNotVoteIn(a, d)
-  IN SA[b, l]
+                  /\ \A d \in (c + 1)..(bb - 1), a \in Q : DidNotVoteIn(a, d)]
+  IN SA[b][l]
 
 SafeAt(b, l) == SafeAtWith(Quorum, b, l, TRUE)
 
