@@ -20,7 +20,7 @@ public:
     {
         switch (static_cast<client_errc>(code)) {
         case client_errc::recovering:
-            return "The node recovers and takes no call";
+            return "The node builds and takes no call";
         case client_errc::session_expired:
             return "The session has expired";
         case client_errc::stale_request:
