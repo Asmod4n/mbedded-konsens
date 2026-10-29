@@ -2,6 +2,7 @@
 
 Branch repair, from main 03e9477. Owner 2026-10-29 16:59: "Reparatur
 muss rein". Owner 17:00: after 1.0 no change of the wire protocol.
+Review: doc/review-plan-repair.md; its findings are folded in.
 
 Marks: "provisional" marks a form or a name that waits on the owner.
 
@@ -9,180 +10,176 @@ Marks: "provisional" marks a form or a name that waits on the owner.
 
 1. A damage of the own log ends the process. A step that finds a damage
    writes a proof into node.db and throws `node_fault`
-   (include/konsens/node.hpp:781-802). A start with a proof, or with a
-   damage that the start checks find, retires the node
-   (node.hpp:763-770, :573-594). A retired node comes back only as a new
-   node, with a copy of the whole log (doc/plan-clean-stop.md, item 6).
-2. Each record of the log is `[entry, entry CRC, chain CRC, state]`
-   (src/persistent_storage.cpp:58-60, :262-309). The entry CRC covers
-   the index and the encoded entry. The chain CRC of index i is computed
-   from the chain CRC of i - 1, the index and the encoded entry. The
-   meta record holds the last chain CRC (:74).
-3. The scan of the whole log (`scan_the_whole_log`,
-   include/konsens/sequence_paxos.hpp:888-898) ends at the first record
-   that fails.
-4. The repair that was removed (7a20c63; plan doc/plan-repair-from-peer.md)
-   gave the node the log, the promise and the accepted round of a peer.
-   That is a rollback: the node loses promises and Accepted messages
-   that it sent (doc/plan-clean-stop.md, fact 2). It needed the recovery
-   of VR Revisited after it.
-5. The model checks that removed form: `RepairFromPeer`,
-   `OperatorAllowsRepair`, `AutoRepairs` (model/tla/SequencePaxos.tla:686,
-   :1912-1995).
-6. Owner decisions in force: a follower with a damaged entry stays
-   silent until it is repaired (PAR, owner 2026-10-17). One repair runs
-   automatically; each further repair waits until the operator allows it
-   (owner 2026-10-24 20:57). A repair never overwrites correct data
-   (owner 2026-10-21).
+   (include/konsens/node.hpp:780-802). A start with a proof, with a
+   damage that the start checks find, or without a clean-stop mark,
+   retires the node (node.hpp:49-65, :573-594, :759-768). A retired node
+   comes back only as a new node, with a copy of the whole log.
+2. Each record of the log is `[entry, entry CRC, chain CRC, state,
+   state CRC]` (src/persistent_storage.cpp:56-62, :294-311). The entry
+   CRC covers the index and the encoded entry. No CRC covers the chain
+   CRC field (`check_record`, :267-291). The meta record holds the last
+   chain CRC and is covered by its own CRC and by the high-water mark
+   (include/konsens/sequence_paxos.hpp:1027-1036).
+3. The scan of the whole log (sequence_paxos.hpp:888-898, :1913-1934)
+   ends at the first record that fails, at a missing row and at a read
+   error.
+4. The repair that was removed (7a20c63) gave the node the log, the
+   promise and the accepted round of a peer. That is a rollback, and it
+   needed the recovery of VR Revisited after it.
+5. The chain CRC is CRC32C (`crc32c::Extend`). CRC32C is linear, and a
+   client chooses the payload bytes of an entry. So two different
+   entries can have the same chain contribution.
+6. A silent node still answers heartbeats (node.hpp:697-701,
+   ballot_leader_election.hpp:140).
+7. Owner decisions in force: a follower with a damaged entry stays
+   silent until it is repaired (PAR, 2026-10-17). One repair runs
+   automatically; each further one waits until the operator allows it
+   (2026-10-24 20:57). A repair never overwrites correct data
+   (2026-10-21).
 
 ## 2. What others do
 
-Protocol-Aware Recovery (Alagappan et al., FAST 2018, CTRL;
+Protocol-Aware Recovery (Alagappan et al., FAST 2018;
 https://www.usenix.org/system/files/conference/fast18/fast18-alagappan.pdf,
 read in this session):
 
-- The identifier of an entry is stored apart from the entry (3.3.4).
-  A damaged entry is replaced only by a copy with the same identifier.
-- A follower reports its damaged entries; the leader sends the correct
-  copies (3.4.3, 4.2).
-- A leader asks every follower for the entry. One "have" repairs it. A
-  majority of "dontHave" shows that the entry is not committed, and the
-  leader discards it and every later entry (3.4.1-3.4.3).
-- The node takes no part in normal work until the fault is fixed or
-  discarded (4.2).
-- The metadata (term, vote) is not taken from peers, because it is
-  unique to the node. CLSTORE keeps two local copies (3.3.1).
+- The identifier of an entry is stored apart from the entry (3.3.4). A
+  damaged entry is replaced only by a copy with the same identifier.
+- The leader sends a follower the correct copies (3.4.3, 4.2). A
+  leader asks every follower (3.4.1-3.4.3).
+- The node takes no part in normal work until the fault is fixed
+  (4.2).
+- The metadata is not taken from peers, because it is unique to the
+  node. CLSTORE keeps two local copies (3.3.1).
+- A majority of "dontHave" lets the leader discard an entry in its own
+  term. Without a ballot, a message in flight can make that unsafe; it
+  is not built here.
 
-ZFS repairs a block from another copy only when the checksum of that
-copy holds (from memory, not read in this session).
+Where an equal hash is taken as equal data, a cryptographic hash is
+used (ZFS dedup, CockroachDB; owner card 2026-10-29). The repair takes
+a copy as equal to the lost bytes because the hash is equal. So the
+repair needs the chain hash.
 
-The consensus: a damaged entry is replaced only by a copy that the node
-can identify as the entry that it wrote. The node keeps every vote that
-it gave.
+## 3. Order
 
-## 3. The form for us
+1. The chain field is covered by a CRC (owner card, 2026-10-29).
+2. The chain becomes a cryptographic hash (plan of the chain hash,
+   with a measurement).
+3. This repair. Its check uses the chain function, so it works with
+   the hash of step 2 and never with CRC32C.
+4. The branch remove-recovery does not conflict: this repair needs no
+   recovery of VR Revisited. remove-recovery is merged before step 3.
 
-The chain CRC is the identifier that is stored apart from the entry:
-the record after the damage and the meta record hold it. So the node
-can check a copy from any peer, and no copy that it did not write
-passes.
+## 4. The form for us
 
-1. The damaged range. The scan (fact 3) continues after a record that
-   fails, to the end of the log. A damaged range is a run of records
-   that fail, `[a, b)`. Its end is the first record at `b` that holds,
-   or the meta record when `b` is the log length. The chain CRC of
-   `a - 1` comes from the record before the range (0 when `a` is 0).
-2. The check of a copy. The node folds the chain CRC from `a - 1` over
-   the copies of `[a, b)`. The result must equal the chain CRC that the
-   record at `b` holds as the chain before it: the node computes the
-   chain of `b` from the result and the entry at `b`, and compares it
-   with the stored chain CRC of `b`. When `b` is the log length, the
-   result must equal the last chain CRC of the meta record. One function
-   does this check, with the fold that the build uses.
-3. The node cannot repair, and retires as now, when: the meta record
-   fails; the chain CRC before `a` is not readable; no record holds
-   after the range and the meta record fails; SQLite reports a damage of
-   the file (no record is readable).
+1. Who repairs. The scan decides, not the error code. The repair runs
+   only when the meta record holds and the scan finds at least one
+   damaged record below `meta.log_len`. A damaged record is a record
+   that fails `check_record`, or a missing row. Every other damage
+   (meta record, `storage_errc::corrupt`, hardware_fault,
+   inconsistent_storage) takes the path of fact 1.
+2. A local repair first. A record whose entry CRC holds keeps its
+   entry; the node writes its chain field, its state and its state CRC
+   again. The state comes from the own decided index of the meta
+   record, never from a peer.
+3. The check. The node folds the chain from index 0 to `meta.log_len`
+   over its records that hold and the copies of the damaged records,
+   in order of index, and compares the result with
+   `meta.last_chain_crc`. One function does this fold; the build uses
+   it too. No copy is written before the whole fold passes.
 4. The request. The node sends `repair_request{nonce, from_idx,
-   to_idx}` (provisional) to every peer, one request for each range.
-   A peer answers with `repair_entries{nonce, from_idx, entries}`
-   (provisional): the entries it holds in that range, decided or not,
-   from one read transaction, after its own check of those records. A
-   peer that holds fewer entries, or finds a damage in them, answers
-   with the entries up to that point. The peer answers whether it votes
-   or not, but not when it is retired. The count of entries in a
-   request is limited by one named constant, through one check function;
-   the decoder reserves nothing from a count in the input.
-5. The node takes the first answer whose copies pass the check of item
-   2. It writes the records of `[a, b)` in one write transaction, with
-   the same entry CRC, chain CRC and state as the records that the
-   chain CRC identifies. Nothing else in the store changes: not the
-   meta record, not the promise, not any other record.
-6. While a range is damaged, the node takes no part in the vote: it
-   sends no Promise, no Accepted, no Ballot Leader Election message as a
-   candidate, and refuses client work with `client_errc::repairing`
-   (provisional). A leader that finds a damage stops being leader in the
-   same step. After the last range is written, the node continues in
-   `{follower, recover}` and sends `prepare_req` to all peers, as a
-   clean start does (sequence_paxos.hpp:380-383). No recovery of VR
-   Revisited is needed, because no vote of the node changed.
-7. When no answer passes, the node sends the request again at each
-   resend timeout. The operator sees the state in the management tool
-   and can retire the node. The node does not retire by itself: an
-   uncommitted entry that only this node holds is part of its votes.
-   The discard of PAR (a majority of "dontHave") is not built.
-8. A damage found by a step, not only by the start, runs the same path.
-   The step does not throw `node_fault` for a damage of the log any
-   more. The proof stays in node.db.
-9. The count of automatic repairs (owner 2026-10-24 20:57) is one row
-   with a CRC in node.db: the count and a mark that a repair is open. A
-   damage found while the mark is set continues the open repair and does
-   not count again. At the limit the node stays silent and
-   `waits_for_the_operator()` is true. `allow_one_more_repair()` sets
-   the count to 0. The names come from the removed code (7a20c63).
+   to_idx}` (provisional) for each range to every peer. A peer answers
+   `repair_entries{nonce, from_idx, entries}` (provisional) with the
+   entries it holds in that range, decided or not, from one read
+   transaction. A peer that finds a damage in its own range answers
+   with the entries before it and runs its own scan. A retired peer does
+   not answer. The node refuses an answer whose `from_idx` or count
+   differs from its own request. A range longer than
+   `max_build_entries` (sequence_paxos.hpp:245) takes several
+   requests.
+5. The write. One write transaction through a new member of the storage
+   concept (storage.hpp:218-232), without `read_checked_meta`. It
+   replaces the damaged records and inserts the missing rows, with the
+   state of item 2. The meta record does not change. Every storage of
+   the tests implements it.
+6. The silent node. A repair state apart from `error_`. In it the node
+   handles only the repair messages, and sends no Sequence Paxos and no
+   Ballot Leader Election message, heartbeat replies included. A leader
+   that finds a damage stops being leader in the same step. The output
+   of that step is dropped. Waiting client calls and new calls get
+   `client_errc::repairing` (provisional).
+7. Voting again. After the commit of the repair, one function runs the
+   steps of a clean start of `node::with`: the leader election with the
+   promise, the check of the applied state and the apply at the start.
+   The volatile state of the leader and of the client rounds is reset.
+   `verified_idx_` does not fall below its value before the pause. The
+   node continues in `{follower, recover}` and sends `prepare_req` to
+   all peers.
+8. No proof for a repairable damage. A crash during the repair retires
+   the node, as form B says, because the start finds no clean-stop mark.
+   `stop()` is refused during a repair. So the count of automatic
+   repairs is one row with a CRC in node.db without a mark of an open
+   repair. At the limit the node stays silent and
+   `waits_for_the_operator()` is true; `allow_one_more_repair()` sets
+   the count to 0.
+9. When no copy passes, the node sends the request again at each
+   resend timeout. It does not retire by itself, because an uncommitted
+   entry that only it holds is part of its votes. The management tool
+   shows each range and the answer of each peer (same, different, none).
+   The operator can retire the node.
 
-## 4. The model
+## 5. The model
 
-The repair changes no durable value that the protocol reads. In the
-model, it is a pause of the node: the node is silent from the damage
-until the repair.
+The repair changes no durable value. In the model it is a pause of the
+node.
 
-1. New action `RepairExact(i)` (provisional): enabled when node i is
-   damaged and a peer holds the same entries at the damaged indices. It
-   clears the damage. The log, the promise and the accepted round of i
-   do not change.
-2. The damage marks a node as silent; the node keeps its log in the
-   model (the model holds the bytes that the chain CRC identifies).
-3. Runs: a small BFS with one damage and one repair (MaxBallot 1,
-   MaxLog 2, Cap 2), and simulations of 15 min on MC_c_crash and
-   MC_ev_loss.sim with the new action. A mutation `RepairTakesOther`
-   lets the repair take a different entry, and must break S2.
-4. `RepairFromPeer` stays in the model as the checked form of the past,
-   off in the new configs.
+1. A new variable `damage_at` in `[Nodes -> 0..MaxLog]`.
+   `RunningStorageFault` with the kind "missing_entry" sets
+   `damage_at[i]` to the index and calls `DamageFound`.
+2. `RepairExact(i)` (provisional): i is in `refused`, `damage_at[i] >
+   0`, `repairs[i] < AutoRepairs`, and a peer that is not refused holds
+   the same entry at that index. Effect: i leaves `refused`,
+   `damage_at[i] = 0`, `Restart({i}, DurableOf(i), Q, FALSE)`, the
+   count rises. `OperatorAllowsRepair` is enabled under it too.
+3. The model does not follow form B (every restart runs
+   `Restart(..., Recovery)`). These configs use Recovery FALSE,
+   MaxCrash 0, SingleNode FALSE and no storage fault at a start, so they
+   check only paths that the code has.
+4. Runs: a BFS from MC_r_entry_chain.cfg and a simulation of 15 min
+   from MC_ev_damage.sim.cfg, both with RepairFromPeer FALSE and a
+   cover that a repair is reached. Mutation `RepairTakesOther`: the
+   repair takes the entry of the peer without the equality; with
+   MaxElection 3 and Values 2 it must break S2.
 
-## 5. Tests
+## 6. Tests
 
-- A follower with one flipped record in the middle repairs from the
-  leader. After the repair, every record equals its bytes before the
-  damage (test with a damage in a forked child, as
-  test/test_persistent_storage.cpp does).
-- A flipped chain CRC field with an intact entry is repaired.
-- Two damaged ranges are repaired.
-- A damage of the last record is checked against the meta record.
-- A copy from a peer with another entry at the index is refused, and
-  the node stays silent.
-- A damage found in a step does not throw, and the node repairs.
-- A leader that finds a damage stops being leader.
+- A follower with one flipped entry repairs from the leader; every
+  record equals its bytes before the damage.
+- A flipped chain field, state byte or CRC field is repaired locally.
+- A missing row is repaired. Two ranges are repaired.
+- A copy with another entry at the index is refused, and the node stays
+  silent.
+- A damage found in a step does not throw. A leader that finds a
+  damage stops being leader, and the others elect a new one.
+- A silent node sends no heartbeat reply.
+- After the repair the node votes, and `verified_idx` is not lower.
 - The second damage waits for the operator; `allow_one_more_repair`
   allows one more.
-- A peer that is retired does not answer. A request above the limit is
-  refused.
-- Wire round trip of the two messages; the kinds after them in
-  test/test_wire.cpp.
+- An answer with another `from_idx` or count is refused.
+- Wire round trip of the two messages; the kinds in test/test_wire.cpp.
 
-## 6. What this plan does not do
+## 7. What this plan does not do
 
 - No repair of the meta record. Two local copies, as CLSTORE keeps,
   change no wire and can come later.
-- No repair of the rows of `data`; they carry no CRC (Claude-state
-  mbedded-konsens.md, bit-flip gaps).
-- No change of the chain CRC to a cryptographic hash. The check of
-  item 3.2 uses the chain function, so the plan of the chain hash
-  changes it in one place. Until then, a copy with another entry passes
-  the check with a probability of 2^-32.
-- No discard of an uncommitted entry (item 3.7).
+- No repair of the rows of `data` and `session`.
+- No discard of an uncommitted entry.
 - No change of the build and of the clean stop.
-
-## 7. Order
-
-The branch remove-recovery does not conflict: this repair needs no
-recovery of VR Revisited. remove-recovery is built and merged first;
-this branch then takes main.
 
 ## 8. Questions to the owner
 
-None. The form follows the consensus of section 2. The provisional
-names wait on the review.
+None in this plan. The order of section 3 follows the consensus of
+section 2.
 
 ## 9. Data of this plan
 
