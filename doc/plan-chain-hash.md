@@ -47,15 +47,30 @@ Marks: "provisional" marks a form or a name that waits on the owner.
 9. Owner 2026-10-24: a cryptographic hash comes from libhydrogen, not
    SHA-256, and the consensus path computes no cryptographic hash
    (Claude-state mbedded-konsens.md:251-256). The owner message of
-   2026-10-29 17:25 puts the hash on the consensus path, so the cost of
-   section 4 goes to the owner before the build.
+   2026-10-29 17:25 puts the hash on the consensus path. Owner
+   2026-10-29 21:10: "OpenSSL ist ja überall installiert. Und die API
+   ist ja auch ziemlich stabil. Vielleicht finden wir da einen Hash, den
+   wir nutzen können." This lifts the decision of 2026-10-24 for the
+   chain.
+10. The measurement of section 4
+    (bench/results/2026-10-29-211945Z-chain-hash.txt) gives the time of
+    one chain step on this machine, median over g++ 15, g++ 16 and
+    clang 22: SHA-256 of OpenSSL 108 ns at 64 B and 621 ns at 1 KiB,
+    BLAKE3 147 ns and 972 ns, hydro_hash 781 ns to 3767 ns and 5.4 µs to
+    26 µs. Only at 64 KiB is BLAKE3 faster than SHA-256 (11.9 µs against
+    35.3 µs). The processor has SHA-NI.
+11. Ubuntu packages libssl-dev 4.0.3 (OpenSSL 4.0). `EVP_MD_fetch`,
+    `EVP_DigestInit_ex2`, `EVP_DigestUpdate` and `EVP_DigestFinal_ex`
+    are the API of OpenSSL 3.0 and later.
 
 ## 2. What others do
 
 A fast checksum guards a block against random faults. Where an equal
 hash is taken as equal data, a cryptographic hash is used: OpenZFS asks
 for sha256 or stronger when dedup is on; the consistency checker of
-CockroachDB compares replicas with SHA-512; FoundationDB compares the
+CockroachDB compares replicas with SHA-512; Git names its objects with
+SHA-256 in its second object format; the Merkle tree of Certificate
+Transparency is SHA-256 (RFC 9162, 2.1); FoundationDB compares the
 data itself (sources in the thread, 2026-10-29). A checksum covers
 every stored byte of its block (OpenZFS; PAR, FAST 2018, 3.3.4).
 `base_crc` of fact 6 is the same case as the chain, so it becomes a
@@ -63,48 +78,59 @@ hash too.
 
 ## 3. The change
 
-1. The chain value is the hash of libhydrogen with 32 bytes, over the
-   previous chain value, the index in little-endian order and the
-   encoded entry: `hydro_hash_init` with one fixed context of 8 bytes
-   (provisional value) and no key, one `hydro_hash_update` for each
-   part, `hydro_hash_final`. No copy into one buffer. The chain value of
+1. The chain value is SHA-256 of OpenSSL, over the previous chain
+   value, the index in little-endian order and the encoded entry:
+   `EVP_DigestInit_ex2`, one `EVP_DigestUpdate` for each part,
+   `EVP_DigestFinal_ex`. No copy into one buffer. The chain value of
    the empty log is 32 zero bytes. One function computes it; the fold
-   over a range calls it. `hydro_init` is not called.
-2. The public headers name a constant of konsens for the size, 32, and
+   over a range calls it.
+2. The storage fetches `SHA2-256` once when it opens, with
+   `EVP_MD_fetch`, and holds one `EVP_MD_CTX`; the chain step is a
+   method of that object, so the path that succeeds allocates nothing
+   (provisional form). A libcrypto without SHA-256 makes the open fail
+   with an error value; a failure of a step after the open ends the
+   process (provisional error path).
+3. The public headers name a constant of konsens for the size, 32, and
    the type `std::array<std::byte, chain_hash_size>` under the name
    `chain_hash` (provisional). One `static_assert` in src/ states that
-   the constant equals `hydro_hash_BYTES`. hydrogen.h is included in one
-   .cpp only. `konsens` links libhydrogen PRIVATE.
-3. The record becomes `[entry, entry CRC, chain hash, state, state
+   the constant equals `SHA256_DIGEST_LENGTH`. The OpenSSL headers are
+   included in one .cpp only. `konsens` links `OpenSSL::Crypto` PRIVATE,
+   from the Ubuntu package libssl-dev.
+4. The record becomes `[entry, entry CRC, chain hash, state, state
    CRC]`. The entry CRC of the record covers the index, the encoded
    entry and the chain hash, through a function of its own (name
    provisional: `compute_record_crc`). `compute_entry_crc` stays for
    the `work` message. `last_entry` holds the record CRC. The state CRC
    stays.
-4. The meta record holds `last_chain_hash` and `applied_chain_hash`.
+5. The meta record holds `last_chain_hash` and `applied_chain_hash`.
    konsens.db gets format version 6. node.db gets one format row, value
    1, that covers the clean-stop mark and the proof. A store of an older
    format is refused with the error of a wrong format version; the
    stores before 1.0 hold test data only.
-5. Each message of fact 5 carries `chain_hash` in place of the CRC, as
+6. Each message of fact 5 carries `chain_hash` in place of the CRC, as
    tag 64 over 32 bytes, which the library already checks. The members
    are renamed, so the map keys and the golden bytes of
    test/test_wire.cpp change.
-6. `answer.base_crc` becomes a chain hash over the result CRCs, with
-   the same function and another context (provisional value).
-7. The proof (provisional form): `fault_proof` holds two `chain_hash`
+7. `answer.base_crc` becomes a chain hash over the result CRCs, with
+   the same function. Its first input is one fixed byte string that
+   names it (provisional value), so its values never equal a chain value.
+8. The proof (provisional form): `fault_proof` holds two `chain_hash`
    values for a chain difference and two CRCs for a result of
    Execute-Verify, each kind in its own form of the row.
-8. Every name with `chain_crc` becomes `chain_hash`, through the
+9. Every name with `chain_crc` becomes `chain_hash`, through the
    language server in the build container. The text of an error that
    says "chain CRC" changes by hand.
-9. The scan at start keeps only the count and the last chain value.
-10. The model does not change: its chain is abstract.
+10. The scan at start keeps only the count and the last chain value.
+11. The model does not change: its chain is abstract.
 
 ## 4. Measurement, before the build
 
+Done for 4.1 to 4.3 with the arms CRC32C, hydro_hash, SHA-256,
+SHA-512/256, BLAKE2b-256 (OpenSSL) and BLAKE3; clang 23 is not on this
+machine. Result: fact 10.
+
 1. One file outside the tree. Arms: the CRC32C chain as now, and the
-   hash of 3.1 with 32 bytes; a third arm with 16 bytes for comparison.
+   hash of 3.1 with 32 bytes (first libhydrogen); a third arm with 16 bytes for comparison.
    libhydrogen and crc32c are built with the flags of the tree. Each
    arm in its own binary, run alternately, medians compared, the noise
    floor (one arm built twice) first. Run length: 31 samples per
@@ -125,9 +151,9 @@ No number about the cost is written before these runs.
 ## 5. Tests
 
 - A flipped byte in the chain field is a CRC mismatch at its index.
-- The chain hash of a known input equals the value of
-  `hydro_hash_init/update/final` called directly in the test on bytes
-  built by hand.
+- The chain hash of the empty input and of "abc" equals the test
+  vectors of FIPS 180-4 (NIST examples), and the chain step of a known
+  input equals SHA-256 of the bytes built by hand.
 - A message with a chain hash of 31 or 33 bytes is refused by the
   decoder.
 - A store of format version 5, and a node.db without a format row, are
@@ -143,9 +169,9 @@ No number about the cost is written before these runs.
 
 ## 7. Order
 
-1. The measurement of section 4.1 to 4.3, when processors are free.
-2. The owner sees the measurement and the provisional forms of 3.1,
-   3.2, 3.3 and 3.7. The build starts after that.
+1. The measurement of section 4.1 to 4.3 (done, fact 10).
+2. The owner sees the measurement and the provisional forms of 3.2,
+   3.3, 3.4 and 3.8. The build starts after that.
 
 ## 8. Data of this plan
 
