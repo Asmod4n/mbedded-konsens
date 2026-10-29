@@ -10,7 +10,7 @@
 
 namespace konsens {
 
-enum class client_errc { recovering = 1, session_expired, stale_request, retry, rejected, reconfiguring, retired, stopped };
+enum class client_errc { building = 1, session_expired, stale_request, retry, rejected, reconfiguring, retired, stopped };
 
 class client_error_category final : public std::error_category {
 public:
@@ -19,7 +19,7 @@ public:
     std::string message(const int code) const override
     {
         switch (static_cast<client_errc>(code)) {
-        case client_errc::recovering:
+        case client_errc::building:
             return "The node builds and takes no call";
         case client_errc::session_expired:
             return "The session has expired";

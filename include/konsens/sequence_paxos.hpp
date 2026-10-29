@@ -697,7 +697,7 @@ public:
     result refuse_if_building() const
     {
         if (build_) [[unlikely]] {
-            return std::unexpected(make_error_code(client_errc::recovering));
+            return std::unexpected(make_error_code(client_errc::building));
         }
         return {};
     }

@@ -526,7 +526,7 @@ struct world {
         note([&] { return std::string("append " + std::to_string(i + 1) + " value " + std::to_string(next_value)); });
         next_value += 1;
         const auto r = nodes[i].append(e);
-        REQUIRE((r || r.error() == konsens::client_errc::recovering || r.error() == konsens::client_errc::retired));
+        REQUIRE((r || r.error() == konsens::client_errc::building || r.error() == konsens::client_errc::retired));
         if (r) {
             proposed.insert(fields_of(e));
             REQUIRE(nodes[i].commit(*r));
@@ -718,7 +718,7 @@ struct world {
             REQUIRE(nodes[i].commit(*r));
         } else {
             const auto e = r.error();
-            if (e != konsens::client_errc::recovering && e != konsens::client_errc::retry &&
+            if (e != konsens::client_errc::building && e != konsens::client_errc::retry &&
                 e != konsens::client_errc::session_expired && e != konsens::client_errc::retired) {
                 fail_client("a call at node " + std::to_string(i + 1) + " gave the error " + e.message());
             }

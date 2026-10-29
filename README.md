@@ -255,7 +255,7 @@ of the node reaches the read index.
 
 | Error value | Case |
 |---|---|
-| `recovering` | The node builds and takes no call. |
+| `building` | The node builds and takes no call. |
 | `session_expired` | The session has expired. Register again. |
 | `stale_request` | The request number is below the last request number of the session. |
 | `retry` | The node knows no leader, or its promise changed. Send the call again. |

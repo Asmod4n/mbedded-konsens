@@ -245,7 +245,7 @@ konsens::node_config config_of(const konsens::node_id pid)
 
 bool is_transient(const std::error_code& code)
 {
-    return code == konsens::client_errc::recovering || code == konsens::client_errc::retry ||
+    return code == konsens::client_errc::building || code == konsens::client_errc::retry ||
            code == konsens::client_errc::stopped || code == konsens::client_errc::retired;
 }
 
