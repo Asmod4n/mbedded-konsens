@@ -54,7 +54,7 @@ text{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14p
 </g>
 <g class="s6">
 <rect class="b" x="70.5" y="277" width="159" height="26" rx="5"/>
-<text x="150" y="295" text-anchor="middle">one LMDB commit</text>
+<text x="150" y="295" text-anchor="middle">one SQLite commit</text>
 </g>
 <g class="s7">
 <rect class="g" x="57" y="317" width="186" height="26" rx="5"/>
