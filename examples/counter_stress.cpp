@@ -483,11 +483,6 @@ struct cluster {
         return {};
     }
 
-    bool recovers() const
-    {
-        return std::ranges::any_of(nodes, [](const auto& n) { return n.value().get_sequence_paxos().recovering(); });
-    }
-
     std::optional<std::size_t> leader() const
     {
         for (std::size_t i = 0; i < node_count; ++i) {
@@ -567,8 +562,8 @@ struct cluster {
         return std::ranges::all_of(nodes, [applied](const auto& o) {
             const auto& n = o.value();
             const auto& sp = n.get_sequence_paxos();
-            return n.retired() || (!sp.recovering() && n.get_applied_idx() == applied &&
-                                   sp.get_decided_idx() == applied && sp.get_accepted_idx() == applied);
+            return n.retired() || (n.get_applied_idx() == applied && sp.get_decided_idx() == applied &&
+                                   sp.get_accepted_idx() == applied);
         });
     }
 
@@ -904,11 +899,11 @@ struct stress {
             if (round - last_progress_round > rounds_without_progress_limit) [[unlikely]] {
                 return std::unexpected(failure{"the phase \"increments\" reached its round limit", {}});
             }
-            if (!net.recovers() && net.happens(given.restart)) {
+            if (net.happens(given.restart)) {
                 if (auto r = net.restart(net.pick_node()); !r) [[unlikely]] {
                     return std::unexpected(failure{"restart a node", r.error()});
                 }
-            } else if (!net.recovers() && net.happens(given.power_loss)) {
+            } else if (net.happens(given.power_loss)) {
                 if (auto r = net.lose_power(); !r) [[unlikely]] {
                     return std::unexpected(failure{"restart every node", r.error()});
                 }

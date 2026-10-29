@@ -34,19 +34,14 @@
 // variants of message.hpp.
 //
 // Provisional names of the recovery after a power loss
-// (doc/plan-power-loss-code.md): the messages get_state and new_state (from
-// the state transfer of VR Revisited, section not checked); their members
-// from_idx and entries; the members recovering, accepted_idx and
-// last_chain_crc of recovery_response; compute_entry_crc, encode_entry, decode_entry and encoded_size_of of
+// (doc/plan-power-loss-code.md) that the code keeps without the recovery:
+// compute_entry_crc, encode_entry, decode_entry and encoded_size_of of
 // storage.hpp; in src/persistent_storage.cpp record_size_of, encode_record
 // and decode_record; src/byte_order.hpp; in sequence_paxos.hpp paxos_errc
 // and its value hardware_fault, paxos_error_category, paxos_category, the
 // error value hardware_fault with its members index, pid, crc, other_pid
-// and other_crc, get_hardware_fault, keep_recovery_response,
-// select_recovery_source, find_recovery_primary, find_hardware_fault,
-// complete_recovery, handle_get_state, handle_new_state and state_request_;
-// in counter_stress the flag --power-loss, lose_power, power_losses and
-// check_decided_logs; ballot_above_promise of node.hpp.
+// and other_crc, and get_hardware_fault; in counter_stress power_losses
+// and check_decided_logs; ballot_above_promise of node.hpp.
 //
 // Provisional names of the vote with the chain CRC
 // (doc/plan-lmdb-only-source.md 2.5): the members decided_chain_crc,
@@ -273,13 +268,6 @@ std::vector<message> every_kind()
         paxos(konsens::decide{ballot_from(10), {20, 21}, 22, 0}),
         paxos(konsens::not_accepted{ballot_from(10)}),
         paxos(konsens::proposal_forward{five_entries()}),
-        paxos(konsens::recovery{10}),
-        paxos(konsens::recovery_response{10, ballot_from(20), true, ballot_from(30), five_entries(), 40, false, 41, 42,
-                                         0}),
-        paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), five_entries(), 40, true, 41, 42,
-                                         0}),
-        paxos(konsens::get_state{10, ballot_from(20), 30, 31}),
-        paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, five_entries(), 0}),
         paxos(konsens::read_index_request{10}),
         paxos(konsens::heartbeat{ballot_from(10), 20}),
         paxos(konsens::heartbeat_ack{ballot_from(10), 20}),
@@ -382,23 +370,19 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::decide{ballot_from(10), {20, 21}, 22, 0}), 6},
         {paxos(konsens::not_accepted{ballot_from(10)}), 7},
         {paxos(konsens::proposal_forward{{}}), 8},
-        {paxos(konsens::recovery{10}), 9},
-        {paxos(konsens::recovery_response{10, ballot_from(20), false, ballot_from(30), {}, 40, true, 41, 42, 0}), 10},
-        {paxos(konsens::get_state{10, ballot_from(20), 30, 31}), 11},
-        {paxos(konsens::new_state{10, ballot_from(20), ballot_from(30), 40, 41, 42, 43, {}, 0}), 12},
-        {paxos(konsens::read_index_request{10}), 13},
-        {paxos(konsens::heartbeat{ballot_from(10), 20}), 14},
-        {paxos(konsens::heartbeat_ack{ballot_from(10), 20}), 15},
-        {paxos(konsens::read_index_reply{{10}, 20}), 16},
-        {paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 0}), 17},
-        {paxos(konsens::try_again{ballot_from(10), 20}), 18},
-        {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 19},
-        {paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::normal}, 21}), 20},
-        {paxos(konsens::build_request{10, 20}), 21},
-        {paxos(konsens::build_response{10, 20, {}, 30, 40, 50}), 22},
-        {paxos(konsens::build_refused{10}), 23},
-        {ble(konsens::heartbeat_request{10}), 24},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 25},
+        {paxos(konsens::read_index_request{10}), 9},
+        {paxos(konsens::heartbeat{ballot_from(10), 20}), 10},
+        {paxos(konsens::heartbeat_ack{ballot_from(10), 20}), 11},
+        {paxos(konsens::read_index_reply{{10}, 20}), 12},
+        {paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 0}), 13},
+        {paxos(konsens::try_again{ballot_from(10), 20}), 14},
+        {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 15},
+        {paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::normal}, 21}), 16},
+        {paxos(konsens::build_request{10, 20}), 17},
+        {paxos(konsens::build_response{10, 20, {}, 30, 40, 50}), 18},
+        {paxos(konsens::build_refused{10}), 19},
+        {ble(konsens::heartbeat_request{10}), 20},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 21},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -434,7 +418,7 @@ TEST_CASE("an accept_decide with a payload has the bytes of RFC 8949 and RFC 874
 // CBOR array. This test holds the bytes of that tag.
 TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 {
-    constexpr std::uint64_t read_index_reply_kind = 16;
+    constexpr std::uint64_t read_index_reply_kind = 12;
     constexpr std::uint64_t first_read = 1;
     constexpr std::uint64_t second_read = 258;
     const auto m = paxos(konsens::read_index_reply{{first_read, second_read}, 30});
@@ -451,7 +435,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 25;
+    constexpr std::uint64_t heartbeat_reply_kind = 21;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
@@ -479,7 +463,7 @@ TEST_CASE("an empty input and each cut input give too_little_data")
 // not read it.
 TEST_CASE("bytes after the body give extraneous_data")
 {
-    const auto bytes = konsens::encode(paxos(konsens::recovery{10}));
+    const auto bytes = konsens::encode(paxos(konsens::prepare_req{ballot_from(10)}));
     REQUIRE(bytes.has_value());
     CHECK(error_of(*bytes + integer(0)) == wire_errc::extraneous_data);
     CHECK(error_of(*bytes + std::string(1, static_cast<char>(reserved_initial_byte))) == wire_errc::extraneous_data);
@@ -489,13 +473,13 @@ TEST_CASE("bytes after the body give extraneous_data")
 // 12.1.1) is a message between the nodes.
 TEST_CASE("each method other than POST gives method_not_allowed")
 {
-    constexpr std::uint64_t recovery_kind = 9;
-    const auto body = head(map, 1) + text("nonce") + integer(10);
+    constexpr std::uint64_t prepare_req_kind = 0;
+    const auto body = head(map, 1) + text("n") + ballot_bytes(ballot_from(10));
     for (std::size_t method = 0; method < uint8_values; ++method) {
         CAPTURE(method);
-        const auto bytes = header_bytes(integer(method), integer(recovery_kind), paxos_from, paxos_to) + body;
+        const auto bytes = header_bytes(integer(method), integer(prepare_req_kind), paxos_from, paxos_to) + body;
         if (method == konsens::post) {
-            CHECK(decoded_message(bytes) == paxos(konsens::recovery{10}));
+            CHECK(decoded_message(bytes) == paxos(konsens::prepare_req{ballot_from(10)}));
         } else {
             CHECK(error_of(bytes) == wire_errc::method_not_allowed);
         }
@@ -547,8 +531,8 @@ TEST_CASE("a body of another kind decodes only when it has the keys of the kind 
     constexpr std::uint64_t prepare_req_kind = 0;
     constexpr std::uint64_t decide_kind = 6;
     constexpr std::uint64_t not_accepted_kind = 7;
-    constexpr std::uint64_t heartbeat_kind = 14;
-    constexpr std::uint64_t heartbeat_ack_kind = 15;
+    constexpr std::uint64_t heartbeat_kind = 10;
+    constexpr std::uint64_t heartbeat_ack_kind = 11;
     const auto heartbeat_request_body = head(map, 1) + text("round") + integer(10);
     CHECK(error_of(header_bytes(decide_kind, paxos_from, paxos_to) + heartbeat_request_body) ==
           cbor::error::key_not_found);
@@ -643,7 +627,7 @@ TEST_CASE("an entry with a field that its kind does not carry gives entry_field_
 // decode refuses it with entry_field_of_another_kind.
 TEST_CASE("work with a done record gives entry_field_of_another_kind")
 {
-    constexpr std::uint64_t work_kind = 20;
+    constexpr std::uint64_t work_kind = 16;
     const auto work_bytes = [](const result_fields& r) {
         return header_bytes(work_kind, paxos_from, paxos_to) + head(map, 4) + text("n") +
                ballot_bytes(ballot_from(10)) + text("index") + integer(20) + text("request") +
@@ -677,7 +661,7 @@ TEST_CASE("a cluster_config passes the payload of a StopSign, and a broken paylo
 }
 
 // Plan reconfiguration 2.7: a build_response carries entries of another
-// node, so decode checks them as it checks the entries of new_state.
+// node, so decode checks them as it checks the entries of accept_decide.
 TEST_CASE("a build_response with an entry of a foreign field gives entry_field_of_another_kind")
 {
     const auto m =

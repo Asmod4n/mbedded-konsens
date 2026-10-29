@@ -40,11 +40,6 @@
 // Rollback in SequencePaxos.tla, run F6b. The rolled back node retires.
 // When a majority retired, no marker can be decided, and the run checks
 // the safety properties only.
-// A crash or a rollback starts only while no node recovers: two nodes that
-// recover at once leave one voting node of three, no primary, and a
-// recovery that waits (plan v0.1 section 7). VR Revisited 4.3 also allows
-// at most f nodes to fail at once. A recovering node refuses an append, so
-// the markers of the quiet end wait until no node recovers.
 // With clients::two, two clients register, send requests with request
 // numbers, send a call again after a timeout, read and expire sessions, as
 // ClientRegister, ClientRequest, ReadStart and ExpireSession in the model
@@ -247,11 +242,10 @@ node_id to_of(const message& m)
 std::string name_of(const message& m)
 {
     static constexpr std::array<const char*, std::variant_size_v<konsens::paxos_msg>> paxos{
-        "prepare_req",       "prepare",        "promise",      "accept_sync",        "accept_decide",
-        "accepted",          "decide",         "not_accepted", "proposal_forward",   "recovery",
-        "recovery_response", "get_state",      "new_state",    "read_index_request", "heartbeat",
-        "heartbeat_ack",     "read_index_reply", "answer",     "try_again",          "refused",
-        "work",              "build_request",  "build_response", "build_refused"};
+        "prepare_req", "prepare",       "promise",          "accept_sync",      "accept_decide",
+        "accepted",    "decide",        "not_accepted",     "proposal_forward", "read_index_request",
+        "heartbeat",   "heartbeat_ack", "read_index_reply", "answer",           "try_again",
+        "refused",     "work",          "build_request",    "build_response",   "build_refused"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());
@@ -566,11 +560,6 @@ struct world {
                                  sqlite_storage::open_node_storage_in(own_directories[i]), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
-    }
-
-    bool recovers() const
-    {
-        return std::ranges::any_of(nodes, [](const node_t& n) { return n.get_sequence_paxos().recovering(); });
     }
 
     void keep_earlier(std::size_t i)
@@ -989,7 +978,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
             w.note([&] { return std::string("duplicate " + name_of(w.network[k])); });
             w.network.push_back(w.network[k]);
             w.duplicated = true;
-        } else if (action == 98 && !w.crashed && !w.recovers()) {
+        } else if (action == 98 && !w.crashed) {
             const auto i = pick(node_count);
             w.crash(i, pick(2) == 0);
             w.crashed = true;
@@ -999,7 +988,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
                 if (w.nodes[i].get_sequence_paxos().get_promise() != ballot{}) {
                     w.keep_earlier(i);
                 }
-            } else if (faults == rollback::one && action == 99 && w.earlier && !w.rolled_back && !w.recovers()) {
+            } else if (faults == rollback::one && action == 99 && w.earlier && !w.rolled_back) {
                 w.roll_back();
             }
         }
@@ -1009,7 +998,7 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     }
     std::vector<std::vector<std::byte>> markers;
     for (int r = 0; r < quiet_rounds; ++r) {
-        if (markers.empty() && r >= marker_round && !w.recovers() && w.settled()) {
+        if (markers.empty() && r >= marker_round && w.settled()) {
             for (std::size_t i = 0; i < node_count; ++i) {
                 if (!w.nodes[i].retired()) {
                     markers.push_back(entry_of(w.next_value).payload);

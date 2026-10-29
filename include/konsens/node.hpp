@@ -678,7 +678,7 @@ private:
         if constexpr (std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
                       std::is_same_v<T, work>) {
             if (to != seq_paxos_.get_pid() || !std::ranges::contains(seq_paxos_.peers_, from) ||
-                seq_paxos_.recovering() || seq_paxos_.building() || seq_paxos_.retired()) [[unlikely]] {
+                seq_paxos_.building() || seq_paxos_.retired()) [[unlikely]] {
                 return {};
             }
             if constexpr (std::is_same_v<T, answer>) {
@@ -694,7 +694,7 @@ private:
         } else if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
             return seq_paxos_.handle(from, to, msg);
         } else {
-            if (seq_paxos_.recovering() || seq_paxos_.building() || seq_paxos_.retired()) {
+            if (seq_paxos_.building() || seq_paxos_.retired()) {
                 return {};
             }
             ble_.handle(ble_message{from, to, heartbeat_msg{std::in_place_type<T>, msg}});
@@ -948,7 +948,7 @@ private:
 
     result check_the_done_records()
     {
-        if (!seq_paxos_.votes() || seq_paxos_.recovering() || seq_paxos_.get_state().second != phase::accept) {
+        if (!seq_paxos_.votes() || seq_paxos_.get_state().second != phase::accept) {
             return {};
         }
         if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
@@ -1108,7 +1108,7 @@ private:
         if (auto r = check_the_done_records(); !r) [[unlikely]] {
             return r;
         }
-        if (!seq_paxos_.votes() || seq_paxos_.recovering()) {
+        if (!seq_paxos_.votes()) {
             return {};
         }
         if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) {
@@ -1641,7 +1641,7 @@ private:
 
     result execute_verify()
     {
-        if (seq_paxos_.recovering() || !seq_paxos_.votes()) {
+        if (!seq_paxos_.votes()) {
             forget_the_runs();
             return {};
         }
