@@ -1,5 +1,11 @@
 # Plan: the code of the recovery delta
 
+Stopped on 2026-10-29 after review (doc/review-plan-recovery-delta.md).
+The node never starts a recovery: a start with no matching clean-stop
+mark retires the node (include/konsens/node.hpp:55-64), a clean start
+votes at once, and `start_recovery` has no caller outside
+test/test_sequence_paxos.cpp:92. So the change has no use in the node.
+
 Branch recovery-delta-code, from main 03e9477. The model of this
 change is checked: model/plan-recovery-delta.md,
 model/results/20261029T111410Z-recovery-delta.md (no violation;
