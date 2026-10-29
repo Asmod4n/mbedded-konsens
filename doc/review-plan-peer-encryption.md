@@ -387,3 +387,96 @@ Add these tests:
 - Key file: missing, of a wrong size, mode 0640, mode 0604, another
   owner. `--generate-key` on a file that exists is refused.
 - `program/test/three_nodes.sh` runs with keys.
+
+## Second round (0e90e2c)
+
+Plan: `doc/plan-peer-encryption.md` at 0e90e2c. Source: `program/` at
+0e90e2c. libhydrogen 264bf42 in `/home/claude/mbedded-konsens`. The
+reviewer read RFC 8446 5.2, 5.3, 5.5 and RFC 9001 6.6, B.1.1 in the
+text of doc-rfc-std-proposed. Noise was not read. The reviewer did not
+build or run anything.
+
+### Earlier findings
+
+1. Resolved in intent (3.2.2-3.2.5, fact 1.2). New finding A breaks
+   the form as written.
+2. Resolved. 2^24 pieces of 2^14 bytes is 2^38 bytes. This is below
+   RFC 8446 5.5 (2^24.5 full-size records). It is also below RFC 9001
+   B.1.1 (q x l <= 2^35 blocks; the plan gives at most 2^34 blocks).
+3. Resolved (3.2.4). New finding B is a contradiction in that text.
+4. Resolved. The nonce is RFC 8446 5.3 with an IV of zeros, checked in
+   the RFC text (line 4608). Each key is new, so a zero IV is safe.
+5. Resolved (3.2.1).
+6. Resolved (fact 1.4, 3.4.1, section 4).
+7. Resolved (3.3.1).
+8. Resolved (3.2.1).
+9. Resolved (3.2.6, section 7). See new findings C and D.
+10. Resolved (3.2.3, 3.2.5, 3.3.5, fact 1.4).
+11. Resolved (section 4).
+12. Resolved (3.1.2).
+13. Resolved. The nonce no longer depends on Noise. RFC 8446, 9001 and
+    4648 go to refs/ (3.4.3).
+14. Resolved (3.1.4).
+15. Resolved. `confidentiality_limit` from RFC 9001 6.6; the other
+    names are marked provisional.
+16. Open: 3.4.2 names `OpenSSL::Crypto` only. `konsensd_parts` does
+    not link the libhydrogen target today (CMakeLists.txt:164). The
+    plan adds that link and states that `deps/libhydrogen` is checked
+    out before the build.
+17. Resolved (fact 1.6 gives the range).
+18. Resolved. The wrong words on packet 2 are gone.
+19. Resolved through the tests of 31 and 33 bytes and the test with
+    the right keys. The note on the padding of `EVP_DecodeBlock` stays.
+20. Resolved (section 5).
+
+### New findings
+
+A. Should fix: "not open" stops the handshake itself.
+`arm_the_sends` sends only on a connection with `c.open`
+(serve.cpp:563), and an outgoing connection starts with `open = false`
+(:186). 3.2.3 keeps the outgoing side "not open" while it sends the
+`hello` with packet 1 and the encrypted `hello`. So neither frame goes
+out, and every connection ends at `handshake_ticks`. Fix: the state of
+3.2.2 replaces `open`. `arm_the_sends` sends in every state.
+`release_the_output` (:414) and the log line in `finish_the_close`
+(:199) require `ready`.
+
+B. Should fix: the plan contradicts itself on the encrypted `hello`.
+3.2.1 says that a `hello` without `kx` is refused. 3.2.3 and 3.2.4
+send and accept a `hello` without `kx` in the first record. Fix: the
+first record holds the same bytes as the payload of the first frame,
+with `kx`. The incoming side compares the bytes. One decoder stays.
+
+C. Should fix: one receive limit before `ready` does not fit the two
+frames that arrive then. At the outgoing side the one frame is packet
+2: its length is exactly 48 bytes, and any other length closes the
+connection. At the incoming side the second frame is the encrypted
+`hello`: with the fix of B it is `max_hello_bytes` plus the tag, so
+the limit of 3.2.6 refuses it. Fix: state the limit for each state.
+
+D. Note: the number of connections that are not `ready` has no bound.
+A replayed packet 1 passes its MAC. Then `hydro_kx_kk_2` makes five
+X25519 operations (kx.h:288-299) and the connection stays for
+`handshake_ticks` (1 s with the defaults, config.hpp:14, :16). The
+measurement of section 7 gives the cost. The owner decides whether a
+bound per pid is necessary.
+
+E. Note: 3.3.4 does not say which side counts. The outgoing side seals,
+so it counts. A frame with an empty plaintext counts zero pieces;
+count at least one. The record that would pass the limit is not
+sealed, and its message is lost as on any close today.
+
+F. Note: section 2 cites RFC 9001 6.6 for the TLS 1.3 close on a
+failed tag. The source is RFC 8446 5.2 (`bad_record_mac`).
+
+G. Note: 3.3.5 erases with `OPENSSL_cleanse`, 3.1.2 and 3.2.3 with
+`hydro_memzero`. One function for one operation is enough.
+
+H. Note: section 4 gives `wrong_type` to a key of 31 or 33 bytes.
+config.cpp uses `out_of_range` for a value of the right type outside
+its bound (:79, :95). That value fits better.
+
+### Verdict
+
+Approve with fixes. No finding is blocking. A, B, C and 16 are
+corrected in the plan before the build starts.

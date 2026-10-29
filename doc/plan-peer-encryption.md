@@ -76,7 +76,8 @@ blocking findings); all its findings are folded in here.
   bits and the counter in big-endian order. That equals RFC 8446 5.3
   with an IV of zeros.
 - TLS 1.3 closes a connection after any record that fails its tag
-  (RFC 9001 6.6).
+  (RFC 8446 5.2, "bad_record_mac"; RFC 9001 6.6 states the same of
+  TLS).
 
 ## 3. The change
 
@@ -111,32 +112,43 @@ blocking findings); all its findings are folded in here.
    another version, is refused. There is no plaintext mode, so a
    rolling upgrade from the plaintext protocol is not possible.
 2. A connection has three states: `connected`, `kx_sent` (outgoing) or
-   `kx_answered` (incoming), and `ready`.
+   `kx_answered` (incoming), and `ready`. The state takes the place of
+   `connection::open` (serve.cpp:186). Frames of the handshake are sent
+   in every state; `release_the_output` (serve.cpp:414) and the log line
+   of a closed connection (serve.cpp:199) wait for `ready`.
 3. Outgoing side: after the TCP connect, it sends the `hello` with
-   packet 1 and stays not open. It reads exactly one frame: packet 2,
+   packet 1. It sends no message of the library before `ready`. It reads exactly one frame: packet 2,
    48 bytes. `hydro_kx_kk_3` gives the keys. Then it sends, as its
-   first encrypted record, the same `hello` without `kx`. Only then is
-   the connection open and `reconnected` called. Any later receive
+   first encrypted record, the same bytes as its first frame, `kx`
+   included. Only then is the connection `ready` and `reconnected`
+   called. Any later receive
    closes the connection, as now. `hydro_kx_state` is erased with
    `hydro_memzero` after `hydro_kx_kk_3` and when the connection closes
    before it.
 4. Incoming side: it looks up the public key of `hello.pid` in
    `peers`, calls `hydro_kx_kk_2`, and sends packet 2. This is the one
    frame that an incoming connection sends. The old connection of that
-   pid stays. When the first encrypted record decrypts and its `hello`
-   equals the plaintext `hello` without `kx`, the old connection of
+   pid stays. When the first encrypted record decrypts and its bytes
+   equal the bytes of the first frame, the old connection of
    that pid closes, the new one goes into `l.incoming`, and
    `reconnected` is called. So a replayed first frame does not close
    the live connection, and the encrypted `hello` binds the cluster
    name, the pid and the version to the keys.
 5. Each side keeps only the key of its direction: the outgoing side
    `tx`, the incoming side `rx`. The other key is erased at once.
-6. Before `ready`, the receive limit is `max_hello_bytes`, the encoded
+6. Each state has its own receive limit. The incoming side in
+   `connected` takes one frame of at most `max_hello_bytes`, the encoded
    size of a `hello` with a cluster name of 255 bytes and `kx`
-   (provisional name). A connection that is not `ready` after
+   (provisional name); in `kx_answered` one record of at most
+   `max_hello_bytes` plus the tag. The outgoing side in `kx_sent` takes
+   one frame of exactly 48 bytes. A connection that is not `ready` after
    `handshake_ticks` ticks closes (provisional name, value 2 x
    `election_ticks`). A failed handshake increments a counter of the
    node and writes at most one log line per tick (provisional form).
+   At most one connection per configured peer and one more are not
+   `ready` at the same time; a further accept closes at once
+   (provisional bound). Each handshake costs the X25519 operations of
+   KK; their time is measured in section 7.
 
 ### 3.3 Records
 
@@ -151,13 +163,15 @@ blocking findings); all its findings are folded in here.
    for each key and is never sent. TCP keeps the order, so a record
    that is repeated, missing or moved fails its tag.
 3. A failed tag closes the connection.
-4. The confidentiality limit counts the full-size records of fact 1.5:
-   each frame counts as the number of 2^14-byte pieces of its
-   plaintext, rounded up. At `confidentiality_limit` (RFC 9001 6.6),
+4. The confidentiality limit counts, at the sender, the full-size
+   records of fact 1.5: each frame counts as the number of 2^14-byte
+   pieces of its plaintext, rounded up, and at least 1. The receiver
+   counts the same way and closes the connection at the same limit. At `confidentiality_limit` (RFC 9001 6.6),
    2^24 such records, the connection closes, and the next connection
    makes new keys. The test passes the limit as a value.
 5. Each connection holds one `EVP_CIPHER_CTX`, set up once with its
-   key; the key bytes are erased with `OPENSSL_cleanse` after that.
+   key; the key bytes are erased with `hydro_memzero` after that, the
+   one erase function of this plan.
    Whether `EVP_CIPHER_CTX_free` erases the key schedule is checked in
    the OpenSSL source before the build. AES-256-GCM is fetched once at
    start with `EVP_CIPHER_fetch`.
@@ -170,7 +184,9 @@ blocking findings); all its findings are folded in here.
    first connection. konsensd does not fork, so a copied state of the
    generator is not a risk today.
 2. konsensd links `OpenSSL::Crypto` of the Ubuntu package libssl-dev,
-   OpenSSL 3.0 or later. The library `konsens` does not change.
+   OpenSSL 3.0 or later, and the target `hydrogen` (CMakeLists.txt:164,
+   `konsensd_parts`). The submodule deps/libhydrogen is checked out
+   before the build. The library `konsens` does not change.
 3. RFC 8446, RFC 9001 and RFC 4648 go to refs/ from the Ubuntu package
    doc-rfc-std-proposed, in the commit of the first function that
    reads each. refs/rfc-origin.md names the package and its SHA-256.
@@ -181,7 +197,8 @@ blocking findings); all its findings are folded in here.
 |---|---|
 | key file missing, wrong size, wrong mode, other owner | start refused, one message |
 | `--generate-key` on a file that exists | refused, one message |
-| public key not base64 or not 32 bytes | `config_errc::wrong_type` |
+| public key not base64 | `config_errc::wrong_type` |
+| public key not 32 bytes | `config_errc::out_of_range` |
 | two peers with one key | new `config_errc::duplicate_public_key` |
 | a peer with a revoked key | new `config_errc::revoked_public_key` |
 | no AES-256-GCM in libcrypto | start refused, one message |
