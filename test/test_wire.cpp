@@ -40,8 +40,13 @@
 // and decode_record; src/byte_order.hpp; in sequence_paxos.hpp paxos_errc
 // and its value hardware_fault, paxos_error_category, paxos_category, the
 // error value hardware_fault with its members index, pid, crc, other_pid
-// and other_crc, and get_hardware_fault; in counter_stress power_losses
-// and check_decided_logs; ballot_above_promise of node.hpp.
+// and other_crc, and get_hardware_fault; check_decided_logs of
+// counter_stress; ballot_above_promise of node.hpp.
+//
+// Provisional names of the removal of the recovery
+// (doc/plan-remove-recovery.md item 8): in counter_stress the flag
+// --restart-all, its member restart_all and default_restart_all,
+// restart_every_node and restarts_of_every_node.
 //
 // Provisional names of the vote with the chain CRC
 // (doc/plan-lmdb-only-source.md 2.5): the members decided_chain_crc,
