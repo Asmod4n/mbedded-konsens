@@ -391,19 +391,6 @@ public:
         return sp;
     }
 
-    void start_recovery(const std::uint64_t nonce)
-    {
-        if (!votes() || txn_) [[unlikely]] {
-            throw std::logic_error("konsens: a recovery starts on a node that votes, between two steps");
-        }
-        nonce_ = nonce;
-        state_ = {role::follower, phase::recover};
-        recovering_ = true;
-        recovery_responses_.clear();
-        state_request_.reset();
-        send_recovery_to_all_peers();
-    }
-
     result handle(paxos_message m)
     {
         incoming_.push_back(std::move(m));
@@ -525,10 +512,6 @@ private:
                 return {};
             }
         }
-        if (recovering_ && !std::is_same_v<T, recovery> && !std::is_same_v<T, recovery_response> &&
-            !std::is_same_v<T, konsens::get_state> && !std::is_same_v<T, new_state>) {
-            return {};
-        }
         if (auto r = begin_step(); !r) [[unlikely]] {
             return r;
         }
@@ -555,14 +538,6 @@ private:
         } else if constexpr (std::is_same_v<T, not_accepted>) {
             handle_notaccepted(msg, from);
             return {};
-        } else if constexpr (std::is_same_v<T, recovery>) {
-            return handle_recovery(msg, from);
-        } else if constexpr (std::is_same_v<T, recovery_response>) {
-            return handle_recovery_response(msg, from);
-        } else if constexpr (std::is_same_v<T, konsens::get_state>) {
-            return handle_get_state(msg, from);
-        } else if constexpr (std::is_same_v<T, new_state>) {
-            return handle_new_state(msg, from);
         } else if constexpr (std::is_same_v<T, read_index_request>) {
             return handle_read_index_request(msg, from);
         } else if constexpr (std::is_same_v<T, heartbeat>) {
@@ -586,9 +561,6 @@ public:
     {
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
-        }
-        if (recovering_) {
-            return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
             return r;
@@ -625,7 +597,7 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (auto r = refuse_if_recovering(); !r) [[unlikely]] {
+        if (auto r = refuse_if_building(); !r) [[unlikely]] {
             return r;
         }
         if (state_ == std::pair{role::leader, phase::prepare} || state_ == std::pair{role::leader, phase::accept}) {
@@ -658,13 +630,6 @@ public:
         }
         if (build_) {
             return ask_again_for_the_build();
-        }
-        if (recovering_) {
-            send_recovery_to_all_peers();
-            if (state_request_) {
-                outgoing_.push_back({pid_, state_request_->first, state_request_->second});
-            }
-            return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
             return r;
@@ -729,10 +694,10 @@ public:
         return {};
     }
 
-    result refuse_if_recovering() const
+    result refuse_if_building() const
     {
-        if (recovering_ || build_) [[unlikely]] {
-            return std::unexpected(make_error_code(client_errc::recovering));
+        if (build_) [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::building));
         }
         return {};
     }
@@ -883,7 +848,6 @@ public:
     bool retired() const { return retired_; }
     bool building() const { return build_.has_value(); }
     std::uint64_t get_config_first_idx() const { return config_first_idx_; }
-    bool recovering() const { return recovering_; }
 
     result scan_the_whole_log()
     {
@@ -912,7 +876,7 @@ public:
         if (pid != pid_) {
             peers_seen_.at(node_index_of(pid)) = {};
         }
-        if (pid == pid_ || recovering_ || retired_) {
+        if (pid == pid_ || retired_) {
             return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
@@ -1270,13 +1234,6 @@ private:
         }
     }
 
-    void send_recovery_to_all_peers()
-    {
-        for (const auto peer : peers_) {
-            outgoing_.push_back({pid_, peer, recovery{nonce_}});
-        }
-    }
-
     void send_prepare(const node_id to, const meta_record& m)
     {
         outgoing_.push_back({pid_, to,
@@ -1292,7 +1249,7 @@ private:
 
     void reconnected(const node_id pid, const meta_record& m)
     {
-        if (pid == pid_ || recovering_) {
+        if (pid == pid_) {
             return;
         }
         if (pid == m.promise.pid) {
@@ -1673,243 +1630,6 @@ private:
         return {};
     }
 
-    result handle_recovery(const recovery& rec, const node_id from)
-    {
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
-        if (!decided_chain) [[unlikely]] {
-            return stop_voting(decided_chain.error());
-        }
-        const bool primary = !recovering_ && state_ == std::pair{role::leader, phase::accept};
-        std::vector<entry> log;
-        if (primary) {
-            auto l = read_range(*txn_, 0, m->log_len);
-            if (!l) [[unlikely]] {
-                return stop_voting(l.error());
-            }
-            log = std::move(*l);
-        }
-        outgoing_.push_back(
-            {pid_, from,
-             recovery_response{rec.nonce, m->promise, primary, m->accepted_round, std::move(log), m->decided_idx,
-                               recovering_, m->log_len, m->last_chain_crc, *decided_chain}});
-        return {};
-    }
-
-    result handle_recovery_response(const recovery_response& resp, const node_id from)
-    {
-        if (!recovering_ || resp.nonce != nonce_) {
-            return {};
-        }
-        keep_recovery_response(from, resp);
-        return select_recovery_source();
-    }
-
-    void keep_recovery_response(const node_id from, const recovery_response& resp)
-    {
-        std::erase_if(recovery_responses_, [from](const auto& r) { return r.first == from; });
-        recovery_responses_.emplace_back(from, resp);
-    }
-
-    result select_recovery_source()
-    {
-        state_request_.reset();
-        if (const auto* primary = find_recovery_primary()) {
-            const auto m = read_meta();
-            if (!m) [[unlikely]] {
-                return stop_voting(m.error());
-            }
-            const auto& [source, l] = *primary;
-            return complete_recovery(0, l.log, std::max(m->promise, l.promise), l.n_accepted, l.decided_idx,
-                                     l.decided_chain_crc, source);
-        }
-        if (recovery_responses_.size() < peers_.size() ||
-            std::ranges::any_of(recovery_responses_, [](const auto& r) { return r.second.primary; })) {
-            return {};
-        }
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        auto all = recovery_responses_;
-        all.emplace_back(pid_, recovery_response{nonce_,
-                                                 m->promise,
-                                                 false,
-                                                 m->accepted_round,
-                                                 {},
-                                                 m->decided_idx,
-                                                 true,
-                                                 m->log_len,
-                                                 m->last_chain_crc,
-                                                 0});
-        if (const auto fault = find_hardware_fault(all)) [[unlikely]] {
-            return stop_voting(*fault);
-        }
-        const auto pr = std::ranges::max(all | std::views::values | std::views::transform(&recovery_response::promise));
-        const auto& [source, l] = *std::ranges::min_element(all, [this](const auto& x, const auto& y) {
-            if (x.second.n_accepted != y.second.n_accepted) {
-                return x.second.n_accepted > y.second.n_accepted;
-            }
-            if (x.second.accepted_idx != y.second.accepted_idx) {
-                return x.second.accepted_idx > y.second.accepted_idx;
-            }
-            if ((x.first == pid_) != (y.first == pid_)) {
-                return x.first == pid_;
-            }
-            return x.first < y.first;
-        });
-        if (source == pid_) {
-            return complete_recovery(m->log_len, {}, pr, m->accepted_round, m->decided_idx, 0, pid_);
-        }
-        const auto from_idx = m->accepted_round == l.n_accepted ? m->log_len : m->decided_idx;
-        state_request_.emplace(source, konsens::get_state{nonce_, l.n_accepted, l.accepted_idx, from_idx});
-        outgoing_.push_back({pid_, source, state_request_->second});
-        return {};
-    }
-
-    static std::optional<konsens::hardware_fault>
-    find_hardware_fault(const std::span<const std::pair<node_id, recovery_response>> all)
-    {
-        for (const auto& [i, a] : std::views::enumerate(all)) {
-            for (const auto& b : all.subspan(static_cast<std::size_t>(i) + 1)) {
-                if (a.second.accepted_idx > 0 && a.second.n_accepted == b.second.n_accepted &&
-                    a.second.accepted_idx == b.second.accepted_idx &&
-                    a.second.last_chain_crc != b.second.last_chain_crc) [[unlikely]] {
-                    return konsens::hardware_fault{a.second.accepted_idx, a.first, a.second.last_chain_crc, b.first,
-                                                   b.second.last_chain_crc};
-                }
-            }
-        }
-        return std::nullopt;
-    }
-
-    result handle_get_state(const konsens::get_state& req, const node_id from)
-    {
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        const auto decided_chain = read_prefix_chain_crc(m->decided_idx);
-        if (!decided_chain) [[unlikely]] {
-            return stop_voting(decided_chain.error());
-        }
-        std::vector<entry> entries;
-        if (m->accepted_round == req.n_accepted && m->log_len == req.accepted_idx) {
-            auto e = read_range(*txn_, std::min(req.from_idx, m->log_len), m->log_len);
-            if (!e) [[unlikely]] {
-                return stop_voting(e.error());
-            }
-            entries = std::move(*e);
-        }
-        outgoing_.push_back({pid_, from,
-                             new_state{req.nonce, m->promise, m->accepted_round, m->log_len, m->decided_idx,
-                                       m->last_chain_crc, req.from_idx, std::move(entries), *decided_chain}});
-        return {};
-    }
-
-    result handle_new_state(const new_state& ns, const node_id from)
-    {
-        if (!recovering_ || !state_request_ || state_request_->first != from) {
-            return {};
-        }
-        const auto& req = state_request_->second;
-        if (ns.nonce != req.nonce || ns.from_idx != req.from_idx) {
-            return {};
-        }
-        if (ns.n_accepted != req.n_accepted || ns.accepted_idx != req.accepted_idx) {
-            const auto old = std::ranges::find(recovery_responses_, from, [](const auto& r) { return r.first; });
-            const bool source_recovering = old == recovery_responses_.end() || old->second.recovering;
-            keep_recovery_response(from, recovery_response{nonce_,
-                                                           ns.promise,
-                                                           false,
-                                                           ns.n_accepted,
-                                                           {},
-                                                           ns.decided_idx,
-                                                           source_recovering,
-                                                           ns.accepted_idx,
-                                                           ns.last_chain_crc,
-                                                           ns.decided_chain_crc});
-            return select_recovery_source();
-        }
-        if (ns.entries.empty() && ns.from_idx < ns.accepted_idx) {
-            return {};
-        }
-        if (ns.from_idx > ns.accepted_idx || ns.from_idx + ns.entries.size() != ns.accepted_idx) [[unlikely]] {
-            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, 0, from, ns.last_chain_crc});
-        }
-        auto crc = read_prefix_chain_crc(ns.from_idx);
-        if (!crc) [[unlikely]] {
-            return stop_voting(crc.error());
-        }
-        *crc = compute_chain_crc(*crc, ns.from_idx, ns.entries);
-        if (*crc != ns.last_chain_crc) [[unlikely]] {
-            return stop_voting(konsens::hardware_fault{ns.accepted_idx, pid_, *crc, from, ns.last_chain_crc});
-        }
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        const auto answered = std::ranges::max(recovery_responses_ | std::views::values |
-                                               std::views::transform(&recovery_response::promise));
-        const auto pr = std::max({m->promise, ns.promise, answered});
-        return complete_recovery(ns.from_idx, ns.entries, pr, ns.n_accepted, ns.decided_idx, ns.decided_chain_crc,
-                                 from);
-    }
-
-    const std::pair<node_id, recovery_response>* find_recovery_primary()
-    {
-        auto normal = recovery_responses_ | std::views::filter([](const auto& r) { return !r.second.recovering; });
-        if (static_cast<std::size_t>(std::ranges::distance(normal)) < leader_state_.majority()) {
-            return nullptr;
-        }
-        const auto highest =
-            std::ranges::max(normal | std::views::values | std::views::transform(&recovery_response::promise));
-        const auto l = std::ranges::find_if(normal, [highest](const auto& r) {
-            return r.second.primary && r.second.promise == highest && highest.pid == r.first;
-        });
-        return l == normal.end() ? nullptr : &*l;
-    }
-
-    result complete_recovery(const std::uint64_t from_idx, const std::span<const entry> entries, const ballot pr,
-                             const ballot n_accepted, const std::uint64_t source_decided_idx,
-                             const std::uint32_t source_decided_chain_crc, const node_id source)
-    {
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return stop_voting(m.error());
-        }
-        write_or_throw(txn_->append_on_prefix(from_idx, entries));
-        if (source_decided_idx > m->decided_idx) {
-            if (auto r = check_decided_chain_crc(source_decided_idx, source_decided_chain_crc, source); !r)
-                [[unlikely]] {
-                return r;
-            }
-            write_or_throw(txn_->set_decided_index(source_decided_idx));
-        }
-        write_or_throw(txn_->set_accepted_round(n_accepted));
-        write_or_throw(txn_->set_promise(pr));
-        const auto after = read_meta();
-        if (!after) [[unlikely]] {
-            return stop_voting(after.error());
-        }
-        if (auto r = extend_the_verified_idx(after->decided_idx); !r) [[unlikely]] {
-            return r;
-        }
-        state_ = {role::follower, phase::recover};
-        current_seq_num_ = {};
-        answered_prepare_.reset();
-        buffered_proposals_.clear();
-        leader_state_ = leader_state::with(pr, nodes_);
-        recovering_ = false;
-        recovery_responses_.clear();
-        state_request_.reset();
-        send_preparereq_to_all_peers(pr);
-        return {};
-    }
-
     std::expected<std::vector<std::uint32_t>, std::error_code> read_verified_chain_crcs() const
     {
         const auto t = internal_storage_.begin_read_only();
@@ -2188,12 +1908,9 @@ private:
     std::vector<paxos_message> outgoing_;
     std::optional<std::error_code> error_;
     bool write_unfinished_{};
-    bool recovering_{};
     bool step_ended_{};
     bool retired_{};
     std::uint64_t nonce_{};
-    std::vector<std::pair<node_id, recovery_response>> recovery_responses_;
-    std::optional<std::pair<node_id, konsens::get_state>> state_request_;
     std::optional<konsens::hardware_fault> hardware_fault_;
     std::vector<peer_seen> peers_seen_;
     std::vector<peer_step_back> peer_step_backs_;

@@ -141,13 +141,38 @@ bool is_a_map_key(const cbor::item& container, const std::size_t position)
     return container.type == cbor::type::map && position % data_items_per_map_entry == 0;
 }
 
+std::size_t element_size_of(const std::uint64_t number)
+{
+    return smallest_float_size << (number & length_field);
+}
+
+constexpr bool has_a_float_type_of_size(const std::size_t size)
+{
+    switch (size) {
+#ifdef __STDCPP_FLOAT16_T__
+    case sizeof(std::float16_t):
+        return true;
+#endif
+#ifdef __STDCPP_FLOAT128_T__
+    case sizeof(std::float128_t):
+        return true;
+#endif
+    case sizeof(float):
+    case sizeof(double):
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool is_a_float_typed_array(const cbor::item& n)
 {
     if (n.type != cbor::type::typed_array) {
         return false;
     }
     const auto number = n.get<cbor::type::typed_array>()->first;
-    return number >= first_float_typed_array_tag && number <= last_float_typed_array_tag;
+    return number >= first_float_typed_array_tag && number <= last_float_typed_array_tag &&
+           has_a_float_type_of_size(element_size_of(number));
 }
 
 template <typename F>
@@ -171,10 +196,6 @@ void append_element_as(const double value, const bool little_endian, std::vector
     out.insert(out.end(), bytes.begin(), bytes.end());
 }
 
-std::size_t element_size_of(const std::uint64_t number)
-{
-    return smallest_float_size << (number & length_field);
-}
 
 std::vector<double> floats_in(const cbor::item& typed_array)
 {
@@ -186,17 +207,21 @@ std::vector<double> floats_in(const cbor::item& typed_array)
     for (std::size_t at = 0; at + size <= bytes.size(); at += size) {
         const auto element = bytes.subspan(at, size);
         switch (size) {
+#ifdef __STDCPP_FLOAT16_T__
         case sizeof(std::float16_t):
             values.push_back(element_as<std::float16_t>(element, little));
             break;
+#endif
+#ifdef __STDCPP_FLOAT128_T__
+        case sizeof(std::float128_t):
+            values.push_back(element_as<std::float128_t>(element, little));
+            break;
+#endif
         case sizeof(float):
             values.push_back(element_as<float>(element, little));
             break;
-        case sizeof(double):
-            values.push_back(element_as<double>(element, little));
-            break;
         default:
-            values.push_back(element_as<std::float128_t>(element, little));
+            values.push_back(element_as<double>(element, little));
             break;
         }
     }
@@ -209,17 +234,21 @@ std::vector<std::byte> typed_array_bytes_of(const std::uint64_t number, const st
     std::vector<std::byte> out;
     for (const auto v : values) {
         switch (element_size_of(number)) {
+#ifdef __STDCPP_FLOAT16_T__
         case sizeof(std::float16_t):
             append_element_as<std::float16_t>(v, little, out);
             break;
+#endif
+#ifdef __STDCPP_FLOAT128_T__
+        case sizeof(std::float128_t):
+            append_element_as<std::float128_t>(v, little, out);
+            break;
+#endif
         case sizeof(float):
             append_element_as<float>(v, little, out);
             break;
-        case sizeof(double):
-            append_element_as<double>(v, little, out);
-            break;
         default:
-            append_element_as<std::float128_t>(v, little, out);
+            append_element_as<double>(v, little, out);
             break;
         }
     }
@@ -330,18 +359,8 @@ double unit_in_the_last_place(const double value)
 
 void write_the_float(const double value, std::vector<std::byte>& out)
 {
-    write_with_an_encoder(out, [value](auto& e) {
-        if (std::isnan(value)) {
-            return e.floating_point(std::numeric_limits<std::float16_t>::quiet_NaN());
-        }
-        if (static_cast<double>(static_cast<std::float16_t>(value)) == value) {
-            return e.floating_point(static_cast<std::float16_t>(value));
-        }
-        if (static_cast<double>(static_cast<float>(value)) == value) {
-            return e.floating_point(static_cast<float>(value));
-        }
-        return e.floating_point(value);
-    });
+    const auto bytes = encode_or_throw(std::isnan(value) ? std::numeric_limits<double>::quiet_NaN() : value);
+    out.insert(out.end(), bytes.begin(), bytes.end());
 }
 
 void write_rounded(const cbor::owning<cbor::item>& tree, const cbor::item& n, const std::uint32_t float_denominator,

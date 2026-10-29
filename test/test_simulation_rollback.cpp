@@ -4,16 +4,10 @@
 #include "sqlite_cluster.hpp"
 
 // Plan v0.1 F15: the run of test_simulation with one rollback in addition. A crash
-// keeps the durable state, so only a rollback shows that recovery is
-// needed: without recovery, the rolled back node promises with a log that
-// misses accepted entries, and a new leader can decide over them.
-// Seeds 32 and 542 show a stop of progress after the power-loss path of
-// doc/plan-power-loss-code.md: the leader of ballot (2,1) rolls back, no
-// peer is a primary, and the node recovers through the power-loss path with
-// the highest promise, its own ballot (2,1). The election then names (2,1)
-// for this node, and handle_leader refuses a ballot that is not above the
-// promise. The node takes the next round above its promise instead
-// (ballot_above_promise in node.hpp, a provisional form).
+// keeps the durable state, so only a rollback gives a node a log that misses
+// accepted entries. A node that promised with such a log would let a new
+// leader decide over them. The rolled back node starts without a clean stop
+// and retires, so it promises nothing.
 TEST_CASE("simulation with one rollback keeps the safety properties")
 {
     const auto c =

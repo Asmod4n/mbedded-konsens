@@ -476,8 +476,8 @@ TEST_CASE("open refuses another format and a store with data and no format")
     CHECK(none.error() == konsens::storage_errc::unsupported_format);
 }
 
-// Recovery after a power loss compares the CRC32C of the last entry of two
-// nodes, so the value must follow the record format and nothing else: the
+// The vote and the build compare the chain CRC of an entry of two nodes,
+// so the value must follow the record format and nothing else: the
 // index in 8 bytes little endian, the kind in one byte, the fields of the
 // kind in 8 bytes little endian each, then the payload. A request kind
 // carries its result between its fields and its payload: one byte that is 1
@@ -611,9 +611,9 @@ TEST_CASE("a raise of the decided index over large entries keeps every entry")
     CHECK(entries_of(storage, 0, 5) == entries);
 }
 
-// The recovery writes the whole log of the primary again from index 0. An
-// entry that it writes below the decided index is a decided entry, so it is
-// written committed.
+// append_on_prefix can write the log again from index 0. An entry that it
+// writes below the decided index is a decided entry, so it is written
+// committed.
 TEST_CASE("an entry written below the decided index is committed")
 {
     const temporary_directory dir;
