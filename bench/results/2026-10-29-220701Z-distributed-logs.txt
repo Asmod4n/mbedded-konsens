@@ -1,0 +1,298 @@
+# One write benchmark for konsensd, other replicated logs and raw SQLite
+Plan: doc/plan-bench-distributed-logs.md (this branch). Three nodes per system in one podman container (--cpus=3 of 4 processors), user bench (uid 1001), nice 0, not pinned. Data on btrfs zstd:1 on a loop file (fs line below).
+Operation: one write of a new key with a random value of 64 B or 1 KiB to the leader, closed loop, 1 or 64 writes in flight. 15 samples per run after 2 warm-up samples; 50 writes per sample at 1 in flight, 256 at 64. 3 rounds; the systems run one after the other in each round, each from fresh data directories.
+konsensd: main f65926a (code as main a6e8b50), Release, g++ 16 twice (g16, g16aa: the noise floor; both binaries have the same SHA-256) and clang 22. A PUT probe must answer before the first sample.
+raw_sqlite: one process, WAL, synchronous=FULL, PASSIVE checkpoint at 1000 frames; batch 1 = one commit per write (row c1), batch 64 = 64 writes per commit (row c64). 31 samples of 200 writes.
+Not done from plan 4.7: fsyncs per write (strace -c) and CPU time per write. Not done from plan 2.1: Omni-Paxos.
+A row with fail>0 had a driver run end on a request that got no answer in 30 s (driver_failed in the raw output).
+
+## Medians over the rounds (n = rounds with a result; range = min-max of the round medians)
+
+ size conc system           n fail  writes/s         range  median µs    p99 µs
+   64    1 dqlite           3    0       157        76-170       4073     14970
+   64    1 etcd             3    0        74         74-75      11680     29261
+   64    1 konsensd_c22     2    1        70         68-71      13914     27559
+   64    1 konsensd_g16     2    1        58         54-63      16794     29600
+   64    1 konsensd_g16aa   2    1        60         57-62      16059     28666
+   64    1 nats             3    0        40         40-41      23943     44129
+   64    1 raw_sqlite       3    0       922      897-1073        955      1936
+   64    1 rqlite           3    0        89         85-95       6322     25372
+   64    1 zookeeper        3    0        85         83-90      11788     19649
+   64   64 dqlite           3    0       144        74-149     296196   1461403
+   64   64 etcd             3    0      1299     1278-1313      41940     66040
+   64   64 konsensd_c22     3    0      4120     2261-4338      12402     24436
+   64   64 konsensd_g16     3    0      2239     2202-2526      25019     38330
+   64   64 konsensd_g16aa   3    0      2351     2099-2459      22640     41467
+   64   64 nats             3    0        71         71-71     916989   1048359
+   64   64 raw_sqlite       3    0     52796   50251-71491       1270      1450
+   64   64 rqlite           3    0       774       773-807      73911    110634
+   64   64 zookeeper        3    0      1724     1711-1774      34943     44907
+ 1024    1 dqlite           3    0        76         75-78      12170     20701
+ 1024    1 etcd             3    0        71         66-72      12045     29045
+ 1024    1 konsensd_c22     2    1        58         54-61      16434     29200
+ 1024    1 konsensd_g16     3    0        56         54-62      17276     28747
+ 1024    1 konsensd_g16aa   2    1        60         57-64      16272     28347
+ 1024    1 nats             2    1        38         37-39      25542     46587
+ 1024    1 raw_sqlite       3    0       939       936-996        971      2011
+ 1024    1 rqlite           3    0        73         72-74      12675     27928
+ 1024    1 zookeeper        3    0        82         78-83      11927     20403
+ 1024   64 dqlite           3    0        73         71-73     595792   2866013
+ 1024   64 etcd             3    0      1252     1175-1256      47067     69250
+ 1024   64 konsensd_c22     3    0      1349     1336-1428      41485     69799
+ 1024   64 konsensd_g16     3    0      1393     1368-1742      41700     66044
+ 1024   64 konsensd_g16aa   3    0      1408      949-1520      38532     66512
+ 1024   64 nats             3    0        69         68-69     963957   1099094
+ 1024   64 raw_sqlite       3    0     25607   21160-27927       2579      2937
+ 1024   64 rqlite           3    0       728       727-733      75808    124010
+ 1024   64 zookeeper        3    0      1627     1608-1951      39453     47330
+
+## Raw output
+
+start=2026-10-29T22:07:01Z user=bench uid=1001 nice=0 nproc=4 cpus_allowed=0-3
+kernel=6.18.44-fc-v185 sched=cat: /sys/kernel/debug/sched/preempt: No such file or directory cpu=Intel(R) Xeon(R) Processor flags_sha256=733bd6f8a6de28df
+fs=/dev/loop0 btrfs rw,relatime,compress=zstd:1,discard=async,space_cache=v2,subvolid=5,subvol=/
+versions: etcd=3.5.30-2 zookeeper=3.9.5-2 java=openjdk version "25.0.4.1" 2026-08-18 nats=2.14.3-1 libdqlite=1.18.7-1 libsqlite3=3.53.4-2 go=go1.27.1 rqlite=v9.4.5 go-dqlite=v3.0.4
+konsensd: 4e29c5792ef4dacc 4e29c5792ef4dacc 1f68d62188e8006c
+sources sha256: 4f60e2f9318132af 75cad17b7b2406fa 896fe079116f91e0 f8cf21bacac28e89 9d58bd21001f2a52
+durability: etcd default (WAL fsync before answer); rqlite default; dqlite default; zookeeper forceSync default yes; nats jetstream sync_interval always; konsensd default (synchronous=FULL); raw sqlite WAL synchronous=FULL
+konsensd: probes before the first answer=0
+round=1 size=64 system=konsensd_g16 conc=1 target=127.0.0.1:7163
+label=konsensd_g16 system=konsensd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=63 min=53 max=68 median_latency_us=15846 median_p99_us=28344 busy_retries=0 retry_duplicates=0 rates=53,63,66,66,56,64,65,63,56,62,68,61,57,60,68,
+round=1 size=64 system=konsensd_g16 conc=64 target=127.0.0.1:7163
+label=konsensd_g16 system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2526 min=1895 max=3183 median_latency_us=22853 median_p99_us=38179 busy_retries=0 retry_duplicates=0 rates=1942,2095,2872,2526,2415,2038,2413,2628,2598,3139,1895,3183,2554,2394,2540,
+konsensd: probes before the first answer=0
+round=1 size=64 system=konsensd_g16aa conc=1 target=127.0.0.1:7163
+warm-up: Put "http://127.0.0.1:7163/kv/k1793311639641007199-19": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+driver_failed rc=1
+round=1 size=64 system=konsensd_g16aa conc=64 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2099 min=1634 max=2902 median_latency_us=27714 median_p99_us=41748 busy_retries=0 retry_duplicates=0 rates=2902,1891,2130,1773,1885,2284,2541,1814,2183,2099,2011,2137,2128,2017,1634,
+konsensd: probes before the first answer=0
+round=1 size=64 system=konsensd_c22 conc=1 target=127.0.0.1:7163
+warm-up: Put "http://127.0.0.1:7163/kv/k1793311672830042614-33": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+driver_failed rc=1
+round=1 size=64 system=konsensd_c22 conc=64 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2261 min=1571 max=3465 median_latency_us=26407 median_p99_us=42118 busy_retries=0 retry_duplicates=0 rates=2261,2647,3144,3465,2906,1591,1943,1986,2879,3100,1988,2398,1869,1843,1571,
+round=1 size=64 system=etcd conc=1 target=127.0.0.1:2379
+label=etcd system=etcd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=74 min=64 max=80 median_latency_us=11907 median_p99_us=29261 busy_retries=0 retry_duplicates=0 rates=77,76,64,74,70,70,71,75,76,76,80,69,70,77,66,
+round=1 size=64 system=etcd conc=64 target=127.0.0.1:2379
+label=etcd system=etcd conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=1299 min=1101 max=1860 median_latency_us=39326 median_p99_us=67987 busy_retries=0 retry_duplicates=0 rates=1101,1402,1486,1237,1285,1345,1393,1167,1299,1122,1528,1272,1456,1860,1239,
+round=1 size=64 system=rqlite conc=1 target=127.0.0.1:4001
+label=rqlite system=rqlite conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=85 min=70 max=131 median_latency_us=7441 median_p99_us=25372 busy_retries=0 retry_duplicates=0 rates=72,129,131,89,86,85,70,85,80,103,75,88,81,81,74,
+round=1 size=64 system=rqlite conc=64 target=127.0.0.1:4001
+label=rqlite system=rqlite conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=774 min=626 max=954 median_latency_us=73114 median_p99_us=112202 busy_retries=0 retry_duplicates=0 rates=676,781,774,753,857,663,778,687,931,626,773,954,936,777,751,
+round=1 size=64 system=dqlite conc=1 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=170 min=129 max=620 median_latency_us=3976 median_p99_us=14970 busy_retries=0 retry_duplicates=0 rates=620,606,427,176,129,154,135,179,170,161,181,168,170,142,133,
+round=1 size=64 system=dqlite conc=64 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=149 min=135 max=162 median_latency_us=280209 median_p99_us=1398385 busy_retries=0 retry_duplicates=0 rates=147,146,151,162,162,159,151,142,153,135,136,140,147,149,150,
+round=1 size=64 system=zookeeper conc=1 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=85 min=80 max=92 median_latency_us=11788 median_p99_us=20410 busy_retries=0 retry_duplicates=0 rates=82,87,81,80,83,84,92,86,85,86,90,86,90,82,82,
+round=1 size=64 system=zookeeper conc=64 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=1711 min=1520 max=2303 median_latency_us=36119 median_p99_us=48107 busy_retries=0 retry_duplicates=0 rates=1712,2303,1711,1520,1983,1871,1593,1670,1537,1800,1774,1646,1677,2059,1648,
+round=1 size=64 system=nats conc=1 target=127.0.0.1:4222
+label=nats system=nats conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=41 min=37 max=44 median_latency_us=22964 median_p99_us=44129 busy_retries=0 retry_duplicates=0 rates=39,37,39,41,42,43,44,44,44,44,43,41,41,41,41,
+round=1 size=64 system=nats conc=64 target=127.0.0.1:4222
+label=nats system=nats conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=71 min=66 max=74 median_latency_us=920433 median_p99_us=1062271 busy_retries=0 retry_duplicates=0 rates=70,66,66,71,74,69,71,71,71,68,70,72,74,71,70,
+round=1 size=64 system=raw_sqlite batch=1
+label=raw system=sqlite-3.53.4 conc=1 connections=1 size=64 samples=31 per_sample=200 median_writes_per_s=922 min=820 max=1111 median_latency_us=988 median_p99_us=1993 rates=1005,931,875,952,829,968,1111,976,925,922,953,951,945,934,966,936,838,876,855,826,832,1035,948,876,826,820,873,841,880,848,891,
+round=1 size=64 system=raw_sqlite batch=64
+label=raw system=sqlite-3.53.4 conc=64 connections=1 size=64 samples=31 per_sample=200 median_writes_per_s=50251 min=40434 max=64800 median_latency_us=1270 median_p99_us=1559 rates=53045,49904,45314,40434,64141,52847,60112,63728,45481,42457,46887,41876,58238,64800,51027,44632,47866,49112,59885,64299,47504,48437,61431,48774,50251,41075,57609,64086,52288,58815,48892,
+konsensd: probes before the first answer=0
+round=1 size=1024 system=konsensd_g16 conc=1 target=127.0.0.1:7163
+label=konsensd_g16 system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=54 min=47 max=81 median_latency_us=17800 median_p99_us=30346 busy_retries=0 retry_duplicates=0 rates=55,55,48,51,49,54,49,47,52,60,81,66,58,53,63,
+round=1 size=1024 system=konsensd_g16 conc=64 target=127.0.0.1:7163
+label=konsensd_g16 system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1368 min=1019 max=1555 median_latency_us=41700 median_p99_us=67718 busy_retries=0 retry_duplicates=0 rates=1545,1335,1162,1019,1220,1155,1046,1337,1377,1467,1497,1368,1555,1387,1549,
+konsensd: probes before the first answer=0
+round=1 size=1024 system=konsensd_g16aa conc=1 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=57 min=47 max=65 median_latency_us=16769 median_p99_us=28700 busy_retries=0 retry_duplicates=0 rates=65,49,60,54,61,59,54,54,60,58,57,56,57,47,56,
+round=1 size=1024 system=konsensd_g16aa conc=64 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=949 min=655 max=1104 median_latency_us=52880 median_p99_us=113877 busy_retries=0 retry_duplicates=0 rates=1093,1104,889,844,937,954,949,929,1041,987,932,1013,937,1021,655,
+konsensd: probes before the first answer=0
+round=1 size=1024 system=konsensd_c22 conc=1 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=61 min=49 max=77 median_latency_us=15808 median_p99_us=29285 busy_retries=0 retry_duplicates=0 rates=60,69,66,63,65,61,53,49,66,63,59,55,55,77,61,
+round=1 size=1024 system=konsensd_c22 conc=64 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1349 min=963 max=1633 median_latency_us=40665 median_p99_us=70522 busy_retries=0 retry_duplicates=0 rates=1181,963,1196,1463,1360,1280,1222,1349,1322,1393,1318,1561,1633,1428,1509,
+round=1 size=1024 system=etcd conc=1 target=127.0.0.1:2379
+label=etcd system=etcd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=66 min=61 max=81 median_latency_us=12099 median_p99_us=31891 busy_retries=0 retry_duplicates=0 rates=68,73,81,73,73,66,61,62,76,66,65,63,64,69,66,
+round=1 size=1024 system=etcd conc=64 target=127.0.0.1:2379
+label=etcd system=etcd conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=1175 min=883 max=1447 median_latency_us=47358 median_p99_us=82952 busy_retries=0 retry_duplicates=0 rates=1447,996,1013,883,1048,1359,1097,1402,1223,1175,1417,1128,1071,1414,1336,
+round=1 size=1024 system=rqlite conc=1 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=73 min=62 max=84 median_latency_us=12675 median_p99_us=28060 busy_retries=0 retry_duplicates=0 rates=63,73,67,73,81,63,72,69,74,68,73,62,73,82,84,
+round=1 size=1024 system=rqlite conc=64 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=733 min=541 max=909 median_latency_us=76714 median_p99_us=124010 busy_retries=0 retry_duplicates=0 rates=774,641,595,733,770,715,849,644,909,863,687,541,708,824,803,
+round=1 size=1024 system=dqlite conc=1 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=76 min=69 max=84 median_latency_us=12170 median_p99_us=22972 busy_retries=0 retry_duplicates=0 rates=75,76,73,75,77,76,81,84,76,75,75,79,69,73,77,
+round=1 size=1024 system=dqlite conc=64 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=73 min=70 max=78 median_latency_us=597146 median_p99_us=2784135 busy_retries=0 retry_duplicates=0 rates=74,72,70,75,77,71,70,74,73,73,73,74,78,77,71,
+round=1 size=1024 system=zookeeper conc=1 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=83 min=77 max=93 median_latency_us=11792 median_p99_us=20300 busy_retries=0 retry_duplicates=0 rates=77,79,81,80,82,93,88,83,81,84,85,77,93,86,89,
+round=1 size=1024 system=zookeeper conc=64 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=1951 min=1439 max=2853 median_latency_us=30128 median_p99_us=45644 busy_retries=0 retry_duplicates=0 rates=1670,1951,1439,1983,2007,1662,2730,1991,1680,1813,2853,1996,1752,1738,2156,
+round=1 size=1024 system=nats conc=1 target=127.0.0.1:4222
+connect: nats: API error: code=400 err_code=10005 description=no suitable peers for placement, peer offline
+driver_failed rc=1
+round=1 size=1024 system=nats conc=64 target=127.0.0.1:4222
+label=nats system=nats conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=69 min=67 max=72 median_latency_us=928232 median_p99_us=1079988 busy_retries=0 retry_duplicates=0 rates=68,70,69,68,69,72,71,67,67,68,69,67,70,71,71,
+round=1 size=1024 system=raw_sqlite batch=1
+label=raw system=sqlite-3.53.4 conc=1 connections=1 size=1024 samples=31 per_sample=200 median_writes_per_s=936 min=724 max=1147 median_latency_us=971 median_p99_us=2011 rates=724,893,875,890,928,893,844,955,1095,1093,1147,1075,961,992,885,872,936,925,879,948,921,1034,979,942,958,1011,976,952,816,864,925,
+round=1 size=1024 system=raw_sqlite batch=64
+label=raw system=sqlite-3.53.4 conc=64 connections=1 size=1024 samples=31 per_sample=200 median_writes_per_s=25607 min=11190 max=30798 median_latency_us=2579 median_p99_us=2937 rates=23631,13815,26614,26101,13882,30244,26206,13376,28852,25417,11190,24230,25828,13896,29505,28835,12559,28879,28110,11365,23457,24192,12463,28164,25607,13067,26230,25695,12426,29923,30798,
+konsensd: probes before the first answer=0
+round=2 size=64 system=konsensd_g16 conc=1 target=127.0.0.1:7161
+label=konsensd_g16 system=konsensd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=54 min=46 max=65 median_latency_us=17742 median_p99_us=30855 busy_retries=0 retry_duplicates=0 rates=59,52,53,46,63,65,55,54,51,57,58,52,53,50,57,
+round=2 size=64 system=konsensd_g16 conc=64 target=127.0.0.1:7161
+label=konsensd_g16 system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2202 min=1581 max=3977 median_latency_us=25019 median_p99_us=39189 busy_retries=0 retry_duplicates=0 rates=1988,2447,3977,2062,2585,2941,1932,2152,3321,2123,2202,2096,1581,2475,2482,
+konsensd: probes before the first answer=0
+round=2 size=64 system=konsensd_g16aa conc=1 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=57 min=51 max=69 median_latency_us=16401 median_p99_us=28609 busy_retries=0 retry_duplicates=0 rates=56,51,65,57,57,64,64,52,59,54,69,63,63,56,55,
+round=2 size=64 system=konsensd_g16aa conc=64 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2351 min=1507 max=3793 median_latency_us=21234 median_p99_us=38325 busy_retries=0 retry_duplicates=0 rates=1507,2178,3080,2767,2754,3383,1697,2878,2679,3793,2215,2351,1638,2232,1936,
+konsensd: probes before the first answer=0
+round=2 size=64 system=konsensd_c22 conc=1 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=71 min=60 max=93 median_latency_us=13829 median_p99_us=27225 busy_retries=0 retry_duplicates=0 rates=60,71,70,71,71,81,69,93,67,80,65,63,64,83,79,
+round=2 size=64 system=konsensd_c22 conc=64 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=4120 min=2815 max=5945 median_latency_us=12210 median_p99_us=24436 busy_retries=0 retry_duplicates=0 rates=4120,3286,4111,5729,4290,3668,5945,4961,3334,2815,3985,4177,4356,5718,3194,
+round=2 size=64 system=etcd conc=1 target=127.0.0.1:2389
+label=etcd system=etcd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=74 min=62 max=80 median_latency_us=11680 median_p99_us=31574 busy_retries=0 retry_duplicates=0 rates=74,80,73,77,73,70,75,71,80,70,71,79,74,74,62,
+round=2 size=64 system=etcd conc=64 target=127.0.0.1:2389
+label=etcd system=etcd conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=1278 min=999 max=1820 median_latency_us=43186 median_p99_us=66040 busy_retries=0 retry_duplicates=0 rates=1249,1317,1278,1356,1078,1523,1293,1419,999,1254,1123,1820,1250,1379,1239,
+round=2 size=64 system=rqlite conc=1 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=95 min=79 max=138 median_latency_us=5924 median_p99_us=24891 busy_retries=0 retry_duplicates=0 rates=95,95,138,123,106,118,95,88,80,84,79,101,88,109,95,
+round=2 size=64 system=rqlite conc=64 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=807 min=733 max=901 median_latency_us=73911 median_p99_us=110634 busy_retries=0 retry_duplicates=0 rates=758,841,812,820,733,757,807,868,773,887,762,754,875,901,760,
+round=2 size=64 system=dqlite conc=1 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=76 min=70 max=87 median_latency_us=12119 median_p99_us=23036 busy_retries=0 retry_duplicates=0 rates=79,81,87,77,79,78,71,76,73,76,73,73,77,71,70,
+round=2 size=64 system=dqlite conc=64 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=74 min=72 max=79 median_latency_us=572830 median_p99_us=2822669 busy_retries=0 retry_duplicates=0 rates=79,75,74,75,75,72,74,72,74,74,74,74,75,74,77,
+round=2 size=64 system=zookeeper conc=1 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=83 min=76 max=92 median_latency_us=11951 median_p99_us=19649 busy_retries=0 retry_duplicates=0 rates=84,78,78,81,76,81,87,85,86,87,79,83,92,78,86,
+round=2 size=64 system=zookeeper conc=64 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=1724 min=1482 max=2111 median_latency_us=33534 median_p99_us=44907 busy_retries=0 retry_duplicates=0 rates=1607,1957,1641,2054,1704,1764,1724,1482,1685,1839,1888,1721,1825,1699,2111,
+round=2 size=64 system=nats conc=1 target=127.0.0.1:4222
+label=nats system=nats conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=40 min=37 max=44 median_latency_us=23943 median_p99_us=45996 busy_retries=0 retry_duplicates=0 rates=40,39,39,37,39,38,40,40,39,41,42,41,44,42,41,
+round=2 size=64 system=nats conc=64 target=127.0.0.1:4222
+label=nats system=nats conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=71 min=65 max=73 median_latency_us=916989 median_p99_us=1044661 busy_retries=0 retry_duplicates=0 rates=71,65,71,72,73,72,73,72,72,73,70,70,71,71,71,
+round=2 size=64 system=raw_sqlite batch=1
+label=raw system=sqlite-3.53.4 conc=1 connections=1 size=64 samples=31 per_sample=200 median_writes_per_s=1073 min=847 max=1218 median_latency_us=824 median_p99_us=1809 rates=1180,1192,1078,1172,1196,1082,863,1199,1068,967,1166,1165,1188,1141,1180,987,1057,1007,847,993,1107,1062,1046,991,1073,1218,1134,932,892,943,892,
+round=2 size=64 system=raw_sqlite batch=64
+label=raw system=sqlite-3.53.4 conc=64 connections=1 size=64 samples=31 per_sample=200 median_writes_per_s=71491 min=62280 max=79984 median_latency_us=905 median_p99_us=963 rates=72989,62280,71184,68187,76451,74926,72439,74703,73117,79984,76577,75656,69039,71491,65221,69115,72969,69905,71282,73773,68221,69720,67007,69485,72677,73153,68061,70437,65972,72634,72551,
+konsensd: probes before the first answer=0
+round=2 size=1024 system=konsensd_g16 conc=1 target=127.0.0.1:7161
+label=konsensd_g16 system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=56 min=50 max=66 median_latency_us=17276 median_p99_us=28747 busy_retries=0 retry_duplicates=0 rates=54,53,60,57,63,50,52,53,53,52,56,56,59,56,66,
+round=2 size=1024 system=konsensd_g16 conc=64 target=127.0.0.1:7161
+label=konsensd_g16 system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1393 min=1182 max=1862 median_latency_us=42554 median_p99_us=66044 busy_retries=0 retry_duplicates=0 rates=1380,1402,1182,1642,1475,1492,1347,1424,1470,1209,1862,1340,1314,1367,1393,
+konsensd: probes before the first answer=0
+round=2 size=1024 system=konsensd_g16aa conc=1 target=127.0.0.1:7161
+label=konsensd_g16aa system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=64 min=51 max=79 median_latency_us=15775 median_p99_us=27994 busy_retries=0 retry_duplicates=0 rates=54,65,59,73,64,72,58,79,69,68,60,65,51,52,58,
+round=2 size=1024 system=konsensd_g16aa conc=64 target=127.0.0.1:7161
+label=konsensd_g16aa system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1408 min=1195 max=1908 median_latency_us=38532 median_p99_us=63115 busy_retries=0 retry_duplicates=0 rates=1315,1562,1211,1371,1272,1422,1599,1647,1195,1255,1470,1364,1908,1513,1408,
+konsensd: probes before the first answer=0
+round=2 size=1024 system=konsensd_c22 conc=1 target=127.0.0.1:7163
+warm-up: Put "http://127.0.0.1:7163/kv/k1793312492498385047-30": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+driver_failed rc=1
+round=2 size=1024 system=konsensd_c22 conc=64 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1428 min=880 max=1858 median_latency_us=41485 median_p99_us=58667 busy_retries=0 retry_duplicates=0 rates=880,1675,1606,1392,1213,1526,1430,1451,1321,1317,1162,1434,1858,1428,1301,
+round=2 size=1024 system=etcd conc=1 target=127.0.0.1:2389
+label=etcd system=etcd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=72 min=67 max=80 median_latency_us=11855 median_p99_us=29045 busy_retries=0 retry_duplicates=0 rates=72,73,71,70,71,72,74,71,74,80,74,77,72,70,67,
+round=2 size=1024 system=etcd conc=64 target=127.0.0.1:2389
+label=etcd system=etcd conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=1252 min=951 max=1614 median_latency_us=45546 median_p99_us=67174 busy_retries=0 retry_duplicates=0 rates=951,1239,1179,1614,1181,1252,1253,1447,1461,1268,1211,1098,1507,1413,1250,
+round=2 size=1024 system=rqlite conc=1 target=127.0.0.1:4003
+label=rqlite system=rqlite conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=72 min=61 max=87 median_latency_us=12774 median_p99_us=27928 busy_retries=0 retry_duplicates=0 rates=75,87,84,71,64,69,70,74,70,72,87,61,77,72,70,
+round=2 size=1024 system=rqlite conc=64 target=127.0.0.1:4003
+label=rqlite system=rqlite conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=728 min=532 max=891 median_latency_us=75808 median_p99_us=119453 busy_retries=0 retry_duplicates=0 rates=810,749,832,788,885,728,619,891,588,727,532,726,758,589,655,
+round=2 size=1024 system=dqlite conc=1 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=78 min=64 max=84 median_latency_us=12123 median_p99_us=20506 busy_retries=0 retry_duplicates=0 rates=80,81,78,80,75,75,78,84,78,75,76,71,64,81,77,
+round=2 size=1024 system=dqlite conc=64 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=71 min=66 max=79 median_latency_us=595792 median_p99_us=2866013 busy_retries=0 retry_duplicates=0 rates=77,73,74,74,79,70,69,71,71,68,66,70,72,70,71,
+round=2 size=1024 system=zookeeper conc=1 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=78 min=62 max=91 median_latency_us=11929 median_p99_us=20458 busy_retries=0 retry_duplicates=0 rates=76,78,80,78,84,82,82,83,62,78,76,78,91,84,78,
+round=2 size=1024 system=zookeeper conc=64 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=1627 min=1458 max=1951 median_latency_us=39488 median_p99_us=47330 busy_retries=0 retry_duplicates=0 rates=1951,1818,1480,1858,1657,1767,1669,1528,1627,1603,1531,1458,1715,1565,1593,
+round=2 size=1024 system=nats conc=1 target=127.0.0.1:4222
+label=nats system=nats conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=39 min=36 max=41 median_latency_us=24393 median_p99_us=46533 busy_retries=0 retry_duplicates=0 rates=40,39,41,37,38,36,37,41,39,37,39,38,40,40,37,
+round=2 size=1024 system=nats conc=64 target=127.0.0.1:4222
+label=nats system=nats conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=68 min=66 max=71 median_latency_us=963957 median_p99_us=1099094 busy_retries=0 retry_duplicates=0 rates=70,66,68,67,68,68,69,70,66,71,67,71,71,71,67,
+round=2 size=1024 system=raw_sqlite batch=1
+label=raw system=sqlite-3.53.4 conc=1 connections=1 size=1024 samples=31 per_sample=200 median_writes_per_s=996 min=669 max=1286 median_latency_us=945 median_p99_us=1795 rates=989,980,989,1286,1156,1191,1159,920,998,994,1032,1053,1039,970,669,858,1142,1027,1138,953,1016,991,866,880,996,1016,1023,814,961,798,1015,
+round=2 size=1024 system=raw_sqlite batch=64
+label=raw system=sqlite-3.53.4 conc=64 connections=1 size=1024 samples=31 per_sample=200 median_writes_per_s=27927 min=11566 max=31978 median_latency_us=2303 median_p99_us=2565 rates=28121,14505,30693,27927,14302,29504,27704,15191,28609,30066,12835,25544,27261,13451,28477,27940,11952,27872,29535,11566,28752,29991,11944,31124,30224,13068,24090,29271,13542,31978,31199,
+konsensd: probes before the first answer=0
+round=3 size=64 system=konsensd_g16 conc=1 target=127.0.0.1:7162
+warm-up: Put "http://127.0.0.1:7162/kv/k1793312757927385252-48": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+driver_failed rc=1
+round=3 size=64 system=konsensd_g16 conc=64 target=127.0.0.1:7162
+label=konsensd_g16 system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2239 min=1421 max=3593 median_latency_us=26245 median_p99_us=38330 busy_retries=0 retry_duplicates=0 rates=1950,2063,2001,2114,2396,1932,1564,2712,2253,2552,2658,3593,2879,1421,2239,
+konsensd: probes before the first answer=0
+round=3 size=64 system=konsensd_g16aa conc=1 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=62 min=52 max=88 median_latency_us=15717 median_p99_us=28723 busy_retries=0 retry_duplicates=0 rates=79,64,56,67,60,55,62,88,62,72,56,52,67,57,58,
+round=3 size=64 system=konsensd_g16aa conc=64 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=2459 min=1915 max=3404 median_latency_us=22640 median_p99_us=41467 busy_retries=0 retry_duplicates=0 rates=1915,2835,3028,2088,2459,2668,2756,2496,2060,2454,3404,2627,2159,1983,2249,
+konsensd: probes before the first answer=0
+round=3 size=64 system=konsensd_c22 conc=1 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=68 min=60 max=89 median_latency_us=13999 median_p99_us=27893 busy_retries=0 retry_duplicates=0 rates=65,74,72,60,64,68,69,71,63,63,66,71,65,84,89,
+round=3 size=64 system=konsensd_c22 conc=64 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=4338 min=2949 max=5639 median_latency_us=12402 median_p99_us=21721 busy_retries=0 retry_duplicates=0 rates=4713,3264,4664,2949,4453,4403,4485,5639,3135,4198,3693,4653,4338,3475,3147,
+round=3 size=64 system=etcd conc=1 target=127.0.0.1:2399
+label=etcd system=etcd conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=75 min=68 max=85 median_latency_us=11484 median_p99_us=26260 busy_retries=0 retry_duplicates=0 rates=71,71,68,70,69,75,81,84,74,84,78,81,85,76,74,
+round=3 size=64 system=etcd conc=64 target=127.0.0.1:2399
+label=etcd system=etcd conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=1313 min=1105 max=1580 median_latency_us=41940 median_p99_us=63636 busy_retries=0 retry_duplicates=0 rates=1169,1378,1308,1241,1480,1286,1313,1475,1445,1340,1580,1415,1105,1285,1139,
+round=3 size=64 system=rqlite conc=1 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=89 min=77 max=126 median_latency_us=6322 median_p99_us=26161 busy_retries=0 retry_duplicates=0 rates=84,94,98,77,99,87,81,87,82,90,123,126,86,89,91,
+round=3 size=64 system=rqlite conc=64 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=64 connections=64 size=64 samples=15 per_sample=256 median_writes_per_s=773 min=571 max=964 median_latency_us=75723 median_p99_us=108796 busy_retries=0 retry_duplicates=0 rates=764,864,823,769,759,706,571,812,834,699,793,788,773,964,753,
+round=3 size=64 system=dqlite conc=1 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=157 min=134 max=599 median_latency_us=4073 median_p99_us=13269 busy_retries=0 retry_duplicates=0 rates=549,599,473,158,151,149,134,157,136,155,151,166,149,171,164,
+round=3 size=64 system=dqlite conc=64 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=144 min=130 max=177 median_latency_us=296196 median_p99_us=1461403 busy_retries=0 retry_duplicates=0 rates=147,143,135,143,140,130,144,154,177,154,174,168,140,131,170,
+round=3 size=64 system=zookeeper conc=1 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=90 min=75 max=99 median_latency_us=11301 median_p99_us=19249 busy_retries=0 retry_duplicates=0 rates=75,89,99,94,90,85,92,95,84,84,96,87,90,92,89,
+round=3 size=64 system=zookeeper conc=64 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=1774 min=1649 max=2063 median_latency_us=34943 median_p99_us=44122 busy_retries=0 retry_duplicates=0 rates=2048,1691,2063,1790,1751,2060,1774,1707,1867,1649,1711,1665,1702,1801,1833,
+round=3 size=64 system=nats conc=1 target=127.0.0.1:4222
+label=nats system=nats conc=1 connections=1 size=64 samples=15 per_sample=50 median_writes_per_s=40 min=39 max=44 median_latency_us=24201 median_p99_us=43169 busy_retries=0 retry_duplicates=0 rates=42,42,44,40,40,40,39,42,40,40,39,40,42,41,42,
+round=3 size=64 system=nats conc=64 target=127.0.0.1:4222
+label=nats system=nats conc=64 connections=1 size=64 samples=15 per_sample=256 median_writes_per_s=71 min=65 max=76 median_latency_us=908065 median_p99_us=1048359 busy_retries=0 retry_duplicates=0 rates=72,70,71,71,73,71,76,72,72,71,71,71,74,68,65,
+round=3 size=64 system=raw_sqlite batch=1
+label=raw system=sqlite-3.53.4 conc=1 connections=1 size=64 samples=31 per_sample=200 median_writes_per_s=897 min=750 max=1177 median_latency_us=955 median_p99_us=1936 rates=1093,883,1017,1127,1177,1158,1037,1016,928,897,1020,1001,996,964,973,774,772,884,810,865,750,993,820,870,855,886,871,984,850,805,794,
+round=3 size=64 system=raw_sqlite batch=64
+label=raw system=sqlite-3.53.4 conc=64 connections=1 size=64 samples=31 per_sample=200 median_writes_per_s=52796 min=33302 max=62159 median_latency_us=1284 median_p99_us=1450 rates=44895,47937,49666,53072,43439,52796,51697,44871,46750,55770,43096,46037,54647,50113,58939,49129,58027,48952,55178,55970,58129,53058,57118,62159,47120,33302,56808,50740,55801,61729,58963,
+konsensd: probes before the first answer=0
+round=3 size=1024 system=konsensd_g16 conc=1 target=127.0.0.1:7163
+label=konsensd_g16 system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=62 min=55 max=72 median_latency_us=15250 median_p99_us=28223 busy_retries=0 retry_duplicates=0 rates=71,67,62,63,71,72,62,61,59,68,55,62,63,59,62,
+round=3 size=1024 system=konsensd_g16 conc=64 target=127.0.0.1:7163
+label=konsensd_g16 system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1742 min=1422 max=2031 median_latency_us=32844 median_p99_us=54496 busy_retries=0 retry_duplicates=0 rates=1532,1897,1622,2031,1550,1742,1772,1870,1422,1583,1759,1824,1439,1821,1716,
+konsensd: probes before the first answer=0
+round=3 size=1024 system=konsensd_g16aa conc=1 target=127.0.0.1:7163
+warm-up: Put "http://127.0.0.1:7163/kv/k1793313036172188832-15": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+driver_failed rc=1
+round=3 size=1024 system=konsensd_g16aa conc=64 target=127.0.0.1:7163
+label=konsensd_g16aa system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1520 min=1114 max=1781 median_latency_us=36625 median_p99_us=66512 busy_retries=0 retry_duplicates=0 rates=1520,1596,1502,1654,1286,1675,1114,1530,1469,1358,1293,1781,1569,1514,1648,
+konsensd: probes before the first answer=0
+round=3 size=1024 system=konsensd_c22 conc=1 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=54 min=50 max=81 median_latency_us=17061 median_p99_us=29114 busy_retries=0 retry_duplicates=0 rates=81,62,58,59,52,54,53,52,63,58,50,54,50,51,58,
+round=3 size=1024 system=konsensd_c22 conc=64 target=127.0.0.1:7163
+label=konsensd_c22 system=konsensd conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=1336 min=1084 max=1736 median_latency_us=43993 median_p99_us=69799 busy_retries=0 retry_duplicates=0 rates=1726,1184,1414,1273,1336,1248,1206,1283,1485,1469,1736,1406,1084,1153,1478,
+round=3 size=1024 system=etcd conc=1 target=127.0.0.1:2389
+label=etcd system=etcd conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=71 min=64 max=88 median_latency_us=12045 median_p99_us=28879 busy_retries=0 retry_duplicates=0 rates=71,70,88,70,76,73,78,69,64,80,64,64,70,74,74,
+round=3 size=1024 system=etcd conc=64 target=127.0.0.1:2389
+label=etcd system=etcd conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=1256 min=1013 max=1706 median_latency_us=47067 median_p99_us=69250 busy_retries=0 retry_duplicates=0 rates=1439,1256,1395,1123,1307,1085,1017,1230,1261,1552,1013,1489,1108,1706,1243,
+round=3 size=1024 system=rqlite conc=1 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=74 min=60 max=99 median_latency_us=11809 median_p99_us=27869 busy_retries=0 retry_duplicates=0 rates=74,74,99,75,80,75,65,70,71,75,60,76,66,82,63,
+round=3 size=1024 system=rqlite conc=64 target=127.0.0.1:4005
+label=rqlite system=rqlite conc=64 connections=64 size=1024 samples=15 per_sample=256 median_writes_per_s=727 min=552 max=950 median_latency_us=75766 median_p99_us=127127 busy_retries=0 retry_duplicates=0 rates=761,950,695,793,761,778,727,569,846,552,708,629,680,694,751,
+round=3 size=1024 system=dqlite conc=1 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=75 min=64 max=81 median_latency_us=12319 median_p99_us=20701 busy_retries=0 retry_duplicates=0 rates=80,75,75,71,70,73,81,75,75,75,70,73,64,79,76,
+round=3 size=1024 system=dqlite conc=64 target=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003
+label=dqlite system=dqlite conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=73 min=69 max=76 median_latency_us=586767 median_p99_us=2976240 busy_retries=0 retry_duplicates=0 rates=74,69,72,72,74,72,75,76,73,75,72,72,74,73,72,
+round=3 size=1024 system=zookeeper conc=1 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=82 min=66 max=91 median_latency_us=11927 median_p99_us=20403 busy_retries=0 retry_duplicates=0 rates=77,77,82,76,79,82,91,79,82,85,87,82,86,82,66,
+round=3 size=1024 system=zookeeper conc=64 target=127.0.0.1:2183
+label=zookeeper system=zookeeper conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=1608 min=1463 max=2301 median_latency_us=39453 median_p99_us=48262 busy_retries=0 retry_duplicates=0 rates=1611,1811,1463,1559,1505,1671,1603,1608,1540,1593,2301,1560,1625,1887,1841,
+round=3 size=1024 system=nats conc=1 target=127.0.0.1:4222
+label=nats system=nats conc=1 connections=1 size=1024 samples=15 per_sample=50 median_writes_per_s=37 min=35 max=40 median_latency_us=26690 median_p99_us=46641 busy_retries=0 retry_duplicates=0 rates=40,37,35,37,37,38,40,36,38,39,39,37,37,37,37,
+round=3 size=1024 system=nats conc=64 target=127.0.0.1:4222
+label=nats system=nats conc=64 connections=1 size=1024 samples=15 per_sample=256 median_writes_per_s=69 min=65 max=75 median_latency_us=975659 median_p99_us=1099256 busy_retries=0 retry_duplicates=0 rates=68,71,67,67,67,66,65,71,75,71,68,69,71,69,73,
+round=3 size=1024 system=raw_sqlite batch=1
+label=raw system=sqlite-3.53.4 conc=1 connections=1 size=1024 samples=31 per_sample=200 median_writes_per_s=939 min=738 max=1081 median_latency_us=1005 median_p99_us=2043 rates=960,960,966,869,825,1000,884,1049,939,890,965,935,830,906,996,1005,936,791,955,1046,941,1053,1081,974,950,881,846,900,856,745,738,
+round=3 size=1024 system=raw_sqlite batch=64
+label=raw system=sqlite-3.53.4 conc=64 connections=1 size=1024 samples=31 per_sample=200 median_writes_per_s=21160 min=8597 max=27991 median_latency_us=3133 median_p99_us=3342 rates=23350,12824,23141,23963,12819,23279,21390,12638,27991,26073,12380,18737,19066,10311,23720,21031,10696,21754,19882,9668,21440,20137,8597,22916,21160,9640,23744,23567,10846,25301,25400,
+end=2026-10-29T22:35:21Z
