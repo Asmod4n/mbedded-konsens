@@ -114,13 +114,14 @@ the request replies. So a write needs two rounds before its reply.
 
 ## How a node starts
 
-<img src="doc/img/start.svg" alt="a node that starts asks every peer, takes the highest log, writes it in one commit and votes again" width="100%">
+<img src="doc/img/start.svg" alt="a node that starts after a clean stop sends PrepareReq to every peer, gets the missing entries from the leader in one commit and accepts again" width="100%">
 
-A node that starts with a stored promise sends Recovery to every peer.
-When the leader answers, the node takes the state of the leader. When
-every peer answers and no answer comes from a leader, the node takes
-the node with the highest round and index as the source and gets the
-entries after its own from that source.
+A node that starts after a clean stop sends PrepareReq to every peer,
+as the fail-recovery of Omni-Paxos does. The leader answers with
+Prepare, the node answers with Promise, and the leader sends the
+entries that the node misses in AcceptSync. A node that starts without
+a matching clean-stop mark retires. It votes never again, and the
+operator replaces it with a new node through a reconfiguration.
 
 ## Performance
 
@@ -254,7 +255,7 @@ of the node reaches the read index.
 
 | Error value | Case |
 |---|---|
-| `recovering` | The node recovers and takes no call. |
+| `building` | The node builds and takes no call. |
 | `session_expired` | The session has expired. Register again. |
 | `stale_request` | The request number is below the last request number of the session. |
 | `retry` | The node knows no leader, or its promise changed. Send the call again. |
@@ -376,7 +377,7 @@ The key is percent-encoded in the path. A value is bytes.
 | 409 | The cluster rejected the write. |
 | 411 | A PUT without Content-Length. |
 | 413 | The value is larger than `max_body_bytes`. |
-| 503 with Retry-After | The node knows no leader, recovers, changes its configuration or is retired. Send the call again. |
+| 503 with Retry-After | The node knows no leader, builds, changes its configuration or is retired. Send the call again. |
 | 503 without Retry-After | The node stopped. The write may still be decided. |
 
 An error comes as problem details of RFC 9457

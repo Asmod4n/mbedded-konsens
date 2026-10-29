@@ -55,22 +55,22 @@ are therefore outside this matrix.
 | Part | Content |
 |---|---|
 | Fault | The process ends. The disk keeps the last commit. |
-| Required | After the start, a node with a stored promise does not vote. It sends Recovery to every peer. It votes again after f + 1 answers, one from the primary of the highest ballot (VR Revisited 4.3). |
-| Assumptions | The disk is good. At most f nodes recover at the same time. |
-| Tests | test_sequence_paxos: "a node with a stored promise restarts in recover and sends recovery" and 20 recovery cases. test_node: "a restarted leader answers no heartbeat while it recovers". test_group_commit: "a crash between the batch and the commit sends nothing". test_simulation: one crash per seed, 2000 seeds (200 under ASan). counter_stress: restarts, seeds 1 to 300. |
-| Model | `Crash` (`:1320`) restarts through `Restart`, as `Rollback` does (`:1323`, `:1341`). MC_F6b is complete on 4c357be with recovery. That run checks the restart into recovery with an older state. MC_a_F3 is complete on the model of 2026-10-16, with no recovery and no S7. |
-| Gap | No complete run of `Crash` with recovery on the current model. The model writes and sends in one step. It has no crash between the commit and the send. The code test for that case exists (test_group_commit). |
+| Required | A node that stopped cleanly starts in the phase Recover and sends PrepareReq to every peer. A node that ends without a clean stop finds no matching clean-stop mark at the start and retires. It votes never again. The operator replaces it with a new node through a reconfiguration. |
+| Assumptions | The disk is good. At most f nodes are retired or down at the same time. |
+| Tests | test_clean_stop: "a node that stops cleanly and starts again votes", "a start without a clean stop retires the node, also at each later start". test_node: "a leader that starts after a crash retires and answers no heartbeat". test_sequence_paxos: "a clean start is a follower in recover and sends prepare_req", "a retired node sends nothing, drops each message and refuses each call". test_group_commit: "a crash between the batch and the commit sends nothing". test_simulation: one crash per seed, 2000 seeds (200 under ASan). counter_stress: restarts, seeds 1 to 300. |
+| Model | `Crash` (`:1320`) restarts through `Restart`, as `Rollback` does (`:1323`, `:1341`). The model restarts a node through the recovery of VR Revisited 4.3. The code has no recovery since doc/plan-remove-recovery.md, and a crashed node retires. MC_F6b is complete on 4c357be with recovery. MC_a_F3 is complete on the model of 2026-10-16, with no recovery and no S7. |
+| Gap | The model has no clean stop. A crash in the model ends in the recovery and not in a retired node (SequencePaxos.tla, searched for "retire" and "clean"). The model writes and sends in one step. It has no crash between the commit and the send. The code test for that case exists (test_group_commit). |
 
 ### 2.2 The whole cluster restarts
 
 | Part | Content |
 |---|---|
 | Fault | Every node ends, for example at a power loss, and starts again. |
-| Required | When no primary answers, a node waits for an answer from every peer. It takes the log of the node with the highest (accepted round, accepted index). It takes the highest promise (owner, 2026-10-21; `sequence_paxos.hpp:918-960`). |
-| Assumptions | Every node starts again. A node that does not start stops the recovery of all. The operator then uses stage 1 or stage 2. |
-| Tests | test_sequence_paxos: "when every node restarts, each node takes the log of the highest accepted round", "one node restarts while no peer is a primary, and the power-loss path recovers it". counter_stress: `--power-loss 50`, seeds 1 to 300. |
-| Model | No action of its own: a sequence of `Crash`. MC_p_reach reaches the case at depth 8. MC_p and MC_p_dup are simulations with no violation. |
-| Gap | No complete run. The model does not count how often the power-loss branch fired. A cluster that restarts with one node lost waits for ever. The README does not say so. |
+| Required | Each node that stopped cleanly votes again. A node that ends without a clean stop retires. When more than f nodes retire, the cluster decides nothing more. |
+| Assumptions | When more than f nodes retire, the operator uses stage 1 or stage 2. |
+| Tests | test_clean_stop: "a whole cluster that stops cleanly starts again and decides". counter_stress: `--restart-all` stops every node cleanly and starts it again. |
+| Model | No action of its own: a sequence of `Crash`. The model keeps the recovery after a power loss, and the code has none. MC_p_reach reaches the case at depth 8. MC_p and MC_p_dup are simulations with no violation. |
+| Gap | A power loss retires every node, and the cluster decides nothing more until the operator repairs it (doc/plan-management-tool.md section 10). |
 
 ### 2.3 The leader changes
 
@@ -99,11 +99,11 @@ are therefore outside this matrix.
 | Part | Content |
 |---|---|
 | Fault | The disk of one node returns to an older valid state: a lost fsync, a volatile disk cache, a restore from a backup. |
-| Required | The node recovers as after a crash. The recovery gives it back each entry that it lost. A decided entry stays on f + 1 nodes. |
+| Required | A node whose disk rolls back while it runs has no matching clean-stop mark at the next start, and it retires. A decided entry stays on f + 1 nodes. |
 | Assumptions | At most f nodes roll back at the same time. The disk keeps a whole earlier commit. This is not checked. A disk that drops one page write and keeps the next meta page is row 2.6. |
-| Tests | test_simulation_rollback and test_simulation_clients: one rollback from a copy that `persistent_storage::copy` made. test_sequence_paxos: "recovery after a rollback keeps S1". |
+| Tests | test_simulation_rollback and test_simulation_clients: one rollback from a copy that `persistent_storage::copy` made. The rolled back node retires. |
 | Model | `Rollback` (`:1333`). MC_F6b is complete with one rollback, on 4c357be. MC_F6c (two rollbacks) has a simulation only. MC_p_rollback2 (more than f rollbacks) breaks S2b. |
-| Gap | No complete run of F6c. counter_stress has no rollback. The code cannot detect a rollback. Only the recovery after each start covers it. |
+| Gap | No complete run of F6c. counter_stress has no rollback. The code detects a rollback only through the clean-stop mark at the start. |
 
 ### 2.6 An entry is missing, or a write is lost or torn
 
@@ -114,16 +114,16 @@ are therefore outside this matrix.
 | Assumptions | LMDB writes a commit as a whole or not at all, while the disk writes each page that LMDB syncs. |
 | Tests | None. |
 | Model | Not modeled. A rollback restores a whole earlier record only. |
-| Gap | `read_entries` returns a shorter vector with no indexes (`persistent_storage.cpp:468-486`). Its callers place entry k + 1 at index k: `create_log_sync` (`sequence_paxos.hpp:609-617`), `handle_recovery` (`:891-896`), `handle_get_state` (`:987-991`) and `apply_decided_entries` (`node.hpp:392-403`). This shifts the log with no error, and it can break S1. `get_log_len` counts the entries and does not read the last index (`persistent_storage.cpp:199`). Some detection exists. The next append gets MDB_KEYEXIST from MDB_APPEND (`:207`). A truncation over the hole gets MDB_NOTFOUND (`:233-236`). Both throw `write_error`. `get_last_entry_crc` reads the true last key (`:550-566`). `find_hardware_fault` can then flag a peer with the same (round, accepted index) (`sequence_paxos.hpp:962-975`). A lost page write that leaves an old entry with a valid CRC is not detected. The CRC is in the entry and not in a reference to it (state file, section 1). |
+| Gap | `read_entries` returns a shorter vector with no indexes (`persistent_storage.cpp:468-486`). Its callers place entry k + 1 at index k: `create_log_sync` (`sequence_paxos.hpp:609-617`) and `apply_decided_entries` (`node.hpp:392-403`). This shifts the log with no error, and it can break S1. `get_log_len` counts the entries and does not read the last index (`persistent_storage.cpp:199`). Some detection exists. The next append gets MDB_KEYEXIST from MDB_APPEND (`:207`). A truncation over the hole gets MDB_NOTFOUND (`:233-236`). Both throw `write_error`. `get_last_entry_crc` reads the true last key (`:550-566`). A lost page write that leaves an old entry with a valid CRC is not detected. The CRC is in the entry and not in a reference to it (state file, section 1). |
 
 ### 2.7 An entry is damaged
 
 | Part | Content |
 |---|---|
 | Fault | The bytes of a stored entry change. |
-| Required | The CRC32C of the record does not agree. The node stops voting. It reports the index, the stored CRC and the computed CRC. At recovery, two nodes with the same (round, accepted index) and a different last CRC are a hardware fault with evidence. |
+| Required | The CRC32C of the record does not agree. The node stops voting. It reports the index, the stored CRC and the computed CRC. In the vote, a decided index whose chain CRC differs from the own chain CRC is a hardware fault with evidence. |
 | Assumptions | CRC32C detects the change. LMDB reads its B-tree pages with no check. |
-| Tests | test_persistent_storage: "a flipped byte in a stored entry is a CRC mismatch at its index". test_sequence_paxos: "a different CRC32C of one last entry stops voting with the evidence", and the flipped last entry under recovery. test_device_faults: a failed read gives SIGBUS. |
+| Tests | test_persistent_storage: "a flipped byte in a stored entry is a CRC mismatch at its index". test_sequence_paxos: "a decide with another chain CRC stops the vote", "an entry with a wrong CRC stops the vote". test_device_faults: a failed read gives SIGBUS. |
 | Model | Not modeled. plan.md counts it as a `Wipe` of the node. |
 | Gap | The check runs only when an entry is read. An entry that no one reads stays damaged with no report until a scrub (not built). The B-tree pages have no check. LMDB page checksums are not taken (section 5, item 4). |
 
@@ -136,7 +136,7 @@ are therefore outside this matrix.
 | Assumptions | As 2.7. |
 | Tests | None. No test damages a meta value. The CRC tests of test_persistent_storage damage an entry only (`:155-191`). |
 | Model | Not modeled. A detected fault counts as a `Wipe`. |
-| Gap | A missing value reads as a default: `ballot{}` (`persistent_storage.cpp:327-329`) and 0 (`:523-525`). A missing promise with a non-empty log starts the node as new, with no recovery (`sequence_paxos.hpp:268`). That node then promises to a lower ballot (`:706`). The start takes the four values with no comparison between them (`:262-266`). |
+| Gap | A missing value reads as a default: `ballot{}` (`persistent_storage.cpp:327-329`) and 0 (`:523-525`). A missing promise with a non-empty log starts the node as new (`sequence_paxos.hpp:268`). That node then promises to a lower ballot (`:706`). The start takes the four values with no comparison between them (`:262-266`). |
 
 ### 2.9 A node is wiped
 
@@ -147,7 +147,7 @@ are therefore outside this matrix.
 | Assumptions | The start of a cluster writes the storage of the first nodes in a step of its own (`model/plan.md:69-70`). |
 | Tests | None. |
 | Model | `Wipe` (`:1347`) with rule R. MC_a_F4 is complete on the model of 2026-10-16. MC_G breaks S2 without rule R. |
-| Gap | The code has no rule R, and no place refuses a wiped node. `open` creates the databases (`persistent_storage.cpp:386-425`). `node::with` checks only the ids and the timeouts (`node.hpp:106-109`). Recovery starts only with a stored promise (`sequence_paxos.hpp:268-272`). The wiped node promises to any higher ballot (`:706`). It also answers Recovery as a normal node (`:881-900`). So it counts in the recovery majority (`:1050-1055`) and in the wait for every peer (`:921-923`). MC_G shows that this can lose a decided entry. |
+| Gap | The code has no rule R, and no place refuses a wiped node. `open` creates the databases (`persistent_storage.cpp:386-425`). `node::with` checks only the ids and the timeouts (`node.hpp:106-109`). A wiped node that the caller starts with `first_start` promises to any higher ballot (`sequence_paxos.hpp:706`). So it counts in the majority of a Prepare. MC_G shows that this can lose a decided entry. |
 
 ### 2.10 A node is cloned
 
@@ -217,7 +217,7 @@ The result files are in `model/results/`.
 
 ## 4. Related decisions and open proposals
 
-- Log comparison at recovery: the open work of the state file proposes
+- Log comparison between two nodes: the open work of the state file proposes
   a chain over the CRC of each entry, 64 bits, or a running sum of all
   CRCs. A binary search then finds the first index that differs. A
   chain would also detect 2.6, because each entry depends on the one
@@ -241,8 +241,7 @@ These are proposals. The owner decides each one.
    identity on the disk is lost with the disk. So the refusal needs a
    mark that the empty disk does not have: the start of a cluster, or
    the join of a node, writes a member record in a step of its own. A
-   node with no member record does not vote and does not answer
-   Recovery. A new node that gets a compact LMDB copy (`copy`) gets no
+   node with no member record does not vote. A new node that gets a compact LMDB copy (`copy`) gets no
    member record with it. The decided configuration that adds it
    writes the record. The hidden identity of 2.10 can be part of the
    same record.
