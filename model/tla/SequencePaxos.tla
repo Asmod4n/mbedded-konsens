@@ -789,11 +789,13 @@ PowerLossSource(rs, i) ==
 (* from the source (doc/plan-power-loss-code.md): from its accepted_idx   *)
 (* with the same n_accepted, else from its decided_idx, the rule of        *)
 (* follower.rs:13-51. The model takes the whole log of the source; this   *)
-(* states that both give the same log. Mutation PowerLossStartAtAccepted  *)
-(* always starts at accepted_idx.                                         *)
-\* @type: (Int, $response) => Bool;
-PowerLossKeptPrefix(i, l) ==
-  LET start == IF Mutation = "PowerLossStartAtAccepted" \/ n_accepted[i] = l.n_accepted
+(* states that both give the same log. It holds on both paths: the answer *)
+(* of a primary and power loss (plan model/plan-recovery-delta.md). The   *)
+(* mutations PrimaryStartAtAccepted and PowerLossStartAtAccepted always   *)
+(* start at accepted_idx on their path.                                   *)
+\* @type: (Int, $response, Bool) => Bool;
+RecoveryKeptPrefix(i, l, atAccepted) ==
+  LET start == IF atAccepted \/ n_accepted[i] = l.n_accepted
                THEN accepted_idx[i] ELSE decided_idx[i]
   IN start <= Len(l.log) /\ SubSeq(log[i], 1, start) = SubSeq(l.log, 1, start)
 
@@ -1352,7 +1354,11 @@ HandleRecoveryResponse(i, j, m, c) ==
                                 \A x \in rs : p >= promise[i] /\ p >= x.promise
                    di == IF DecidedIdxMonotone THEN Max(decided_idx[i], l.decided_idx)
                          ELSE l.decided_idx
-               IN /\ normal \/ Assert(PowerLossKeptPrefix(i, l), "PowerLossKeptPrefix")
+               IN /\ IF normal
+                     THEN Assert(RecoveryKeptPrefix(i, l, Mutation = "PrimaryStartAtAccepted"),
+                                 "RecoveryKeptPrefix after the answer of a primary")
+                     ELSE Assert(RecoveryKeptPrefix(i, l, Mutation = "PowerLossStartAtAccepted"),
+                                 "RecoveryKeptPrefix after a power loss")
                   /\ promise' = [promise EXCEPT ![i] = pr]
                   /\ n_accepted' = [n_accepted EXCEPT ![i] = l.n_accepted]
                   /\ log' = [log EXCEPT ![i] = l.log]
@@ -3510,7 +3516,7 @@ ASSUME Mutation \in {"none", "StopSignUnchecked", "PromiseWithoutAccepted", "Syn
                      "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
                      "NoDecideOnResend", "DecideOnResendOldSeq",
-                     "PowerLossWithF", "PowerLossStartAtAccepted",
+                     "PowerLossWithF", "PowerLossStartAtAccepted", "PrimaryStartAtAccepted",
                      "StartCheckMissing", "StartAsNewNode", "NoAbortOnCut",
                      "ApplyOwnResult", "CountOtherBase", "SelectWithoutMajority",
                      "AcceptWithoutCheck", "ThrowWithoutRerun", "CountProofTwice",
