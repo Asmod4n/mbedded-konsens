@@ -597,7 +597,7 @@ public:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
-        if (auto r = refuse_if_recovering(); !r) [[unlikely]] {
+        if (auto r = refuse_if_building(); !r) [[unlikely]] {
             return r;
         }
         if (state_ == std::pair{role::leader, phase::prepare} || state_ == std::pair{role::leader, phase::accept}) {
@@ -694,7 +694,7 @@ public:
         return {};
     }
 
-    result refuse_if_recovering() const
+    result refuse_if_building() const
     {
         if (build_) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::recovering));

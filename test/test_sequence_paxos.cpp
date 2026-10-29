@@ -554,7 +554,7 @@ TEST_CASE("a message to another node is dropped")
 TEST_CASE("a first start does not recover")
 {
     auto sp = make(1);
-    CHECK(sp.refuse_if_recovering());
+    CHECK(sp.refuse_if_building());
     CHECK(committed_messages_of(sp).empty());
     REQUIRE(sp.append(make_entry(1)));
 }

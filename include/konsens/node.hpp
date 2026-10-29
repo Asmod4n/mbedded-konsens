@@ -358,7 +358,7 @@ public:
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
@@ -383,7 +383,7 @@ public:
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
@@ -409,7 +409,7 @@ public:
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
@@ -437,7 +437,7 @@ public:
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            if (auto r = seq_paxos_.refuse_if_recovering(); !r) [[unlikely]] {
+            if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
