@@ -6,6 +6,8 @@ den selben benchmark zum vergleichen." Owner 19:53: the goal is a write
 path "so nah an rohem SQLite speed wie geht".
 
 Marks: "provisional" marks a form or a name that waits on the owner.
+Review: doc/review-plan-bench-distributed-logs.md; its findings are
+folded in.
 
 ## 1. Facts checked in this session
 
@@ -41,10 +43,17 @@ process with its own data directory on the same file system.
    process with its persistent storage and passes messages through
    channels, as konsens_bench does for konsens. That row is compared
    with the in-process case of konsens_bench, not with the rows over
-   the network.
-2. Raw SQLite is the reference row: one process, the same table form
-   (key, value), one INSERT and one commit for each write, WAL and
-   synchronous=FULL, as konsens.db uses.
+   the network. Its storage is checked first: a row whose storage does
+   not sync each write is marked as not durable.
+2. Raw SQLite is the reference, in two rows: one INSERT and one commit
+   for each write (the floor of the latency), and 64 INSERTs in one
+   commit (the ceiling of the throughput). One process, the table form
+   (key, value), WAL, synchronous=FULL, the checkpoint form of
+   konsens.db (PASSIVE at 1000 frames). It is a C++ program that links
+   the libsqlite3 that konsens links.
+3. The cases commit_lmdb, write_lmdb, write_batch_lmdb and
+   write_lmdb_threads of konsens_bench are the steps between raw SQLite
+   and konsensd over HTTP. They show where the time goes.
 
 ## 3. Durability of each system
 
@@ -65,24 +74,48 @@ that note.
 
 ## 4. The workload
 
-1. One driver program in Go (Ubuntu golang-go), in bench/compare/ of
-   this tree, with one adapter for each client of section 2. The
-   driver and the nodes run in one podman container built from
-   localhost/cxx-matrix-sqlite with the Ubuntu packages of section 1.2.
-2. Each write puts a new key with a value of 64 B or 1 KiB to the
-   leader (the driver finds the leader first, so that no forward
-   counts).
-3. Two loads: concurrency 1 (latency of one write), and concurrency 64
-   (throughput with group commit).
-4. 31 samples of a fixed count of writes each, after a warm-up. The
-   noise floor is one system run twice. The systems run alternately,
-   in rounds.
+1. One driver program in Go (Ubuntu golang-go). It stays outside the
+   tree, because its client modules come from proxy.golang.org and
+   not from the distribution; each result file holds the SHA-256 of
+   its source and of go.sum. The driver and the nodes run in one podman
+   container built from localhost/cxx-matrix-sqlite with the Ubuntu
+   packages of section 1.2, limited to 3 processors (--cpus=3).
+2. Each write puts a new key with a value of random bytes, 64 B or
+   1 KiB, to the leader. No key is written twice. The leader is found
+   before the samples: konsensd from its stderr line, etcd from
+   endpoint status, rqlite from /status, dqlite from client.Leader,
+   ZooKeeper from srvr, NATS from the stream info. A leader change
+   during a sample marks the sample.
+3. Two loads, both closed loops: 1 write in flight, and 64 writes in
+   flight. Each system takes the client form of its own documentation:
+   konsensd, rqlite and dqlite-demo take 64 HTTP connections with
+   keep-alive (MaxIdleConnsPerHost and MaxConnsPerHost 64); etcd, NATS
+   and ZooKeeper take one client. The row records the number of
+   connections. Each connection is warmed up before the first sample,
+   so that a session of konsensd is registered once.
+4. Each round starts each system from fresh data directories and stops
+   it after its samples (konsensd with SIGTERM, a clean stop). The
+   systems run alternately, round by round. 31 samples of a fixed count
+   of writes each, after a warm-up that covers the JIT of the JVM and
+   one checkpoint of konsens. The noise floor is konsensd built twice,
+   as two arms. konsensd runs in two builds, g++ 16 and clang 22
+   Release.
 5. Units: writes per second and the median and p99 latency in µs. Each
    number names the system, the version, the value size, the
    concurrency and the build.
 6. The bench leaves one processor free, runs as the user of the bench,
    not as root, not pinned, with the priority recorded. The data
-   directories lie on the same file system; the result file names it.
+   directories lie on /mnt/zrun (btrfs with zstd on a loop file); the
+   result file names the file system, its mount options and the loop
+   mode.
+7. Each row also records the fsyncs per write (strace -c -f, where the
+   container allows it), the CPU time per write of each process, the
+   SQLite version that the row runs, and the version and toolchain of
+   each binary.
+8. The writes are not the same work, and the result says so: konsensd
+   appends a log entry and applies it to the state in SQLite; etcd adds
+   an MVCC revision; ZooKeeper updates a tree in memory; NATS appends a
+   message; dqlite and rqlite run an SQL INSERT.
 
 ## 5. What this plan does not do
 
@@ -104,6 +137,9 @@ that note.
 
 - The container image localhost/bench-logs (provisional name): made
   again from its Containerfile.
+- The driver, the raw-SQLite program, their binaries, the Go and cargo
+  caches in the scratchpad: deleted after the run; the source digests
+  stand in the result file.
 - The data directories of the nodes on /mnt/zrun: deleted after each
   run.
 - The result file under bench/results: recorded in the state file.
