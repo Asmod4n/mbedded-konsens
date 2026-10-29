@@ -53,24 +53,56 @@ Branch remove-recovery, from main 03e9477. Owner card 2026-10-29
    kinds after them move down by four. The wire is stable only from 1.0
    on. test/test_wire.cpp checks the kind numbers; they change with it.
 5. Remove `check_entries_of` for the two removed messages.
-6. Tests:
-   - Remove the 22 test cases that test only this recovery
-     (test_sequence_paxos.cpp:626-1352, the list of section 1 without
-     :363, :468, :609).
-   - Adapt the cases that use it for one part: :363 (a retired node),
-     :1057 (evidence of a different CRC32C), :1509, :1555, :1714. Each
-     keeps what it tests with another path, or goes when that path is
-     the recovery itself. The plan lists each decision in the commit.
-   - The helper `start_recovery` and `answer_of` go.
-   - test_wire.cpp: remove the cases of the four messages; the kind
-     table follows.
-   - test/simulation.hpp and examples/counter_stress.cpp: remove the
-     conditions on `recovering()`.
-7. Docs: README.md:119 and doc/storage-fault-matrix.md rows of the
-   restart, the loss of a message and the rollback state form B: a
-   start with no matching mark retires the node; it comes back as a
-   new node.
-8. The model keeps the recovery. A note in model/plan-recovery-delta.md
+6. Tests (review doc/review-plan-remove-recovery.md, B1 to B3):
+   - The helper `make` (test_sequence_paxos.cpp:84-94) calls
+     `start_recovery` for a stored promise. It becomes a clean start
+     that drops its `prepare_req`. The helpers `answer_of` (:198),
+     `new_state_of` (:205-218), `waiting_for_new_state` and
+     `source_log` (:1094-1106) go; `cut::all_but_recovery` in
+     `deliver_among` (:141-157) goes; `running_node_in` (:1404-1421)
+     and `check_stops_voting` (:1423-1428) send `prepare_req` in place
+     of `recovery`.
+   - Decisions for each case:
+
+     | Line | Case | Decision |
+     |---|---|---|
+     | :331 | clean start in recover | adapt: no check of `recovering()` and of a sent `recovery` |
+     | :363 | retired node | adapt: `prepare_req` in place of `recovery{9}` |
+     | :468 | gap in the sequence numbers | keep |
+     | :609 | first start | adapt: no `recovering()`; `refuse_if_building` |
+     | :626 to :1316 | recovery only (25 cases) | delete |
+     | :1057 | CRC evidence at recovery | delete; its checks of the category (:1076-1077) move to a test of each `paxos_errc` value |
+     | :1352 | rollback keeps S1 | delete; the rolled-back node retires (test_simulation_rollback) |
+     | :1442, :1452, :1465 | step-check damage | adapt through the helpers |
+     | :1509 | wrong CRC | adapt: a `prepare` that makes `promise_for` read the log from 0 in place of `get_state` |
+     | :1555 | writers of the decided index | adapt: the SUBCASE "complete_recovery" (:1605-1628) goes; a SUBCASE for the build, which writes the decided index (sequence_paxos.hpp:2034) |
+     | :1670 | decide with another chain CRC | keep |
+     | :1714 | chain CRC against entry CRC at recovery | delete; :1670 covers the chain CRC in the vote |
+
+   - test_wire.cpp: the entries of the four messages go (:276-282,
+     :385-388); the kind constants change (:437, :454, :550-551,
+     :646); the tests at :482 and :492-501 take `prepare_req` in place
+     of `recovery`; the provisional names (:36-49) and the comment at
+     :680 follow.
+   - test/simulation.hpp: `recovers()` (:571-574), its callers (:992,
+     :1002, :1012) and the comment at :42-47. examples/counter_stress.cpp:
+     `recovers()` (:486-489) and its callers (:907, :911).
+   - Comments that give a reason that ends: test_simulation_rollback.cpp:7-16,
+     test_persistent_storage.cpp:479, :614.
+7. Docs state form B: a start with no matching mark retires the node;
+   it comes back as a new node. README.md:117 (doc/img/start.svg and
+   its alt text), :119, :257, :379; doc/storage-fault-matrix.md:57,
+   section 2.2 (:64-72), :102-106, :117, :124, :126, :139, :150, :220,
+   :245. The text of `client_errc::recovering` (client.hpp:22-23) says
+   that the node builds.
+8. The flag `--power-loss` of counter_stress does a clean restart of
+   every node (:449-450, :475-484), not a power loss. Its name claims
+   what does not happen, so it becomes `--restart-all` (provisional,
+   decided by the session).
+9. `refuse_if_recovering` is renamed by clangd in the build container
+   (rule on renames); callers: sequence_paxos.hpp:628, node.hpp:361,
+   :386, :412, :440.
+10. The model keeps the recovery. A note in model/plan-recovery-delta.md
    says that the code has no recovery since this change.
 
 ## 3. Checks
@@ -79,6 +111,12 @@ Branch remove-recovery, from main 03e9477. Owner card 2026-10-29
   once (RULES: a run checks the work at hand first).
 - g++ 15 and clang 22 Release, the full run.
 - ASan and UBSan g++ 16, once before the merge into main.
+- program/ (KONSENS_PROGRAM) builds, and counter_stress runs once
+  with a short seed range.
+- Builds run one after another with -j4, or two at a time with -j2.
+- Each push carries [skip ci] until the local run is green.
+- The kinds after proposal_forward move down by four, as in 7a20c63;
+  the commit says so.
 - `grep` for each removed name over include, src, program, examples,
   bench and test gives nothing.
 
@@ -92,3 +130,11 @@ Branch remove-recovery, from main 03e9477. Owner card 2026-10-29
 
 - Build directories under the scratchpad (main-build/*): made again by
   the build command.
+- The state file mbedded-konsens.md records the change.
+
+## 6. Question to the owner
+
+- The error code `client_errc::recovering` has only the build as its
+  cause after this change. Options: keep the name; rename it to
+  `building`. Proposal: rename (the owner's word "build",
+  plan-reconfiguration.md:99-100). Asked on a card.
