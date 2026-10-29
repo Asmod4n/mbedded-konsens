@@ -1,8 +1,8 @@
 # Origin of the RFCs
 
 Each file rfcNNNN.txt here is the text of that RFC, unchanged. The
-IETF Trust allows a copy of an RFC in full (Trust Legal Provisions,
-section 3.c). The files come from the Ubuntu packages of the RFCs:
+IETF Trust allows a copy of an RFC in full (Trust Legal Provisions;
+from memory, the section is not checked here). The files come from the Ubuntu packages of the RFCs:
 
 | Package | Version | SHA-256 of the .deb |
 |---|---|---|
