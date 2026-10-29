@@ -260,10 +260,9 @@ void answer_with(loop& l, const std::uint64_t id, connection& c, const problem& 
     answer(l, id, c, problem_response_of(p, closes), closes);
 }
 
-void send_the_write(loop& l, const std::uint64_t id, connection& c)
+void send_the_write(loop& l, const std::uint64_t id, connection& c, const std::uint64_t number)
 {
     const auto op = c.call->method == rest_method::put ? key_value_op::put : key_value_op::erase;
-    const auto number = c.request_number + 1;
     auto t = l.node.client_request(id, *c.session, number, encode_write({op, c.call->key, c.call->body}));
     if (!t) [[unlikely]] {
         answer_with(l, id, c, problem_of(t.error()));
@@ -287,7 +286,7 @@ void start_the_call(loop& l, const std::uint64_t id, connection& c)
         return;
     }
     if (c.session) {
-        send_the_write(l, id, c);
+        send_the_write(l, id, c, c.request_number + 1);
         return;
     }
     auto t = l.node.register_client(id);
@@ -348,6 +347,10 @@ void take_a_reply(loop& l, const konsens::client_reply& r)
     if (c.waits_for == awaited::nothing) [[unlikely]] {
         return;
     }
+    if (!r.response && c.waits_for == awaited::write && r.response.error() == konsens::client_errc::retry) [[unlikely]] {
+        send_the_write(l, r.client_id, c, c.request_number);
+        return;
+    }
     if (!r.response) [[unlikely]] {
         answer_with(l, r.client_id, c, problem_of(r.response.error()));
         return;
@@ -356,7 +359,7 @@ void take_a_reply(loop& l, const konsens::client_reply& r)
     case awaited::registration:
         c.session = r.session;
         c.request_number = 0;
-        send_the_write(l, r.client_id, c);
+        send_the_write(l, r.client_id, c, 1);
         return;
     case awaited::write:
         answer(l, r.client_id, c, response_of(status_no_content, {}, {}, c.call->closes), c.call->closes);

@@ -86,6 +86,11 @@ struct client_read {
     std::optional<std::uint64_t> read_index;
 };
 
+struct client_write {
+    std::uint64_t client_id;
+    konsens::ballot ballot;
+};
+
 class [[nodiscard]] transaction {
 public:
     transaction& operator+=(const transaction& other)
@@ -294,10 +299,13 @@ private:
                 return {};
             }
             drop_the_reads_for_the_stop_sign();
-            if (auto r = serve_reads(); !r) [[unlikely]] {
+            const auto promise = seq_paxos_.get_promise();
+            if (!promise) [[unlikely]] {
                 drop_held_messages_and_replies();
-                return r;
+                return std::unexpected(promise.error());
             }
+            drop_writes_of_an_old_promise(*promise);
+            serve_reads(*promise);
             release_the_output();
             return {};
         });
@@ -392,11 +400,15 @@ public:
             if (request_number == 0) [[unlikely]] {
                 throw std::logic_error("konsens: a request number starts at 1");
             }
+            const auto promise = seq_paxos_.get_promise();
+            if (!promise) [[unlikely]] {
+                return std::unexpected(promise.error());
+            }
             if (auto r = propose_a_request({entry_kind::client_request, std::move(payload), session, request_number}); !r)
                 [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            requests_.insert_or_assign({session, request_number}, client_id);
+            requests_.insert_or_assign({session, request_number}, client_write{client_id, *promise});
             return current_transaction();
         });
     }
@@ -600,8 +612,8 @@ private:
         for (const auto client_id : std::exchange(registrations_, {})) {
             released_replies_.push_back({client_id, 0, stopped});
         }
-        for (const auto& [request, client_id] : std::exchange(requests_, {})) {
-            released_replies_.push_back({client_id, request.first, stopped});
+        for (const auto& [request, w] : std::exchange(requests_, {})) {
+            released_replies_.push_back({w.client_id, request.first, stopped});
         }
         for (const auto& [session, client_id] : std::exchange(expirations_, {})) {
             released_replies_.push_back({client_id, session, stopped});
@@ -860,16 +872,11 @@ private:
         return {};
     }
 
-    result serve_reads()
+    void serve_reads(const ballot promise)
     {
         index_reads();
-        const auto promise = seq_paxos_.get_promise();
-        if (!promise) [[unlikely]] {
-            return std::unexpected(promise.error());
-        }
-        drop_reads_of_an_old_promise(*promise);
+        drop_reads_of_an_old_promise(promise);
         answer_indexed_reads();
-        return {};
     }
 
     struct own_result {
@@ -1350,7 +1357,7 @@ private:
             break;
         case entry_kind::client_request:
             if (const auto it = requests_.find({e.session, e.request_number}); it != requests_.end()) {
-                client_replies_.push_back({it->second, e.session, response()});
+                client_replies_.push_back({it->second.client_id, e.session, response()});
                 requests_.erase(it);
             }
             break;
@@ -1722,6 +1729,18 @@ private:
         });
     }
 
+    void drop_writes_of_an_old_promise(const ballot promise)
+    {
+        std::erase_if(requests_, [this, promise](const auto& r) {
+            if (r.second.ballot == promise) {
+                return false;
+            }
+            client_replies_.push_back(
+                {r.second.client_id, r.first.first, std::unexpected(make_error_code(client_errc::retry))});
+            return true;
+        });
+    }
+
     void answer_indexed_reads()
     {
         if (reads_.empty()) {
@@ -1771,7 +1790,7 @@ private:
     std::vector<received> received_batch_;
     std::vector<message> message_batch_;
     std::set<std::uint64_t> registrations_;
-    std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t> requests_;
+    std::map<std::pair<std::uint64_t, std::uint64_t>, client_write> requests_;
     std::map<std::uint64_t, std::uint64_t> expirations_;
     std::map<std::uint64_t, client_read> reads_;
     std::uint64_t last_read_{};

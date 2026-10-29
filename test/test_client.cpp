@@ -424,6 +424,89 @@ TEST_CASE("a read is dropped with retry when the promise changes before the answ
     CHECK(failed_with(replies[0].response, client_errc::retry));
 }
 
+// The leader 3 takes a request and then loses its majority before any
+// other node has the request. The new leader never learns of it, so the
+// request is never decided. Without an answer the client waits for good.
+// The session table makes a second send of the same request number safe,
+// so the node answers retry when its promise changes.
+TEST_CASE("a write is answered with retry when its leader loses the promise before the decision")
+{
+    auto c = elected();
+    const auto s = registered(c, 3, client_a);
+    const auto cut_off_3 = [](const message& m) -> std::size_t { return from_of(m) == 3 || to_of(m) == 3 ? 0 : 1; };
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.run(rounds, cut_off_3);
+    REQUIRE(c.at(1).get_sequence_paxos().get_promise()->pid != 3);
+    CHECK(c.at(3).take_client_replies().empty());
+
+    c.run(rounds, once);
+    REQUIRE(c.at(3).get_sequence_paxos().get_promise()->pid != 3);
+    const auto replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].client_id == client_a);
+    CHECK(replies[0].session == s);
+    CHECK(failed_with(replies[0].response, client_errc::retry));
+}
+
+// The case where retry must be safe: a majority accepted the entry, but
+// the old leader never decided it. The new leader decides it, so the write
+// is applied after the client got retry. The retry answer erases the wait,
+// so no second answer comes, and a second send of the same request number
+// gets the kept reply of the session table and applies nothing again.
+TEST_CASE("a write that gets retry and is then decided is applied once")
+{
+    auto c = elected();
+    const auto s = registered(c, 3, client_a);
+    const auto no_accepted_to_3 = [](const message& m) -> std::size_t {
+        return holds<konsens::accepted>(m) && to_of(m) == 3 ? 0 : 1;
+    };
+    const auto cut_off_3 = [](const message& m) -> std::size_t { return from_of(m) == 3 || to_of(m) == 3 ? 0 : 1; };
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.run(rounds, no_accepted_to_3);
+    REQUIRE(c.at(3).get_applied_idx() == registration_done);
+    REQUIRE(c.at(3).take_client_replies().empty());
+
+    c.run(rounds, cut_off_3);
+    REQUIRE(c.at(1).get_sequence_paxos().get_promise()->pid != 3);
+    REQUIRE(concatenation_of(c.at(1)) == bytes_of("a"));
+
+    c.run(rounds, once);
+    REQUIRE(c.at(3).get_applied_idx() >= request_done);
+    const auto replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(failed_with(replies[0].response, client_errc::retry));
+    CHECK(concatenation_of(c.at(3)) == bytes_of("a"));
+
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.run(rounds, once);
+    const auto again = c.at(3).take_client_replies();
+    REQUIRE(again.size() == 1);
+    CHECK(again[0].response == bytes_of("a"));
+    for (node_id p = 1; p <= node_count; ++p) {
+        CHECK(concatenation_of(c.at(p)) == bytes_of("a"));
+    }
+}
+
+// A follower sends a request to the leader of its promise. When that
+// leader goes before the request reaches a majority, the follower is the
+// only node that can still answer the client.
+TEST_CASE("a write sent through a follower is answered with retry when the promise changes")
+{
+    auto c = elected();
+    const auto s = registered(c, 1, client_a);
+    const auto lost_to_3 = [](const message& m) -> std::size_t { return to_of(m) == 3 ? 0 : 1; };
+    batches::commit(c.at(1), c.at(1).client_request(client_a, s, 1, bytes_of("a")));
+    c.deliver(lost_to_3);
+    c.alive[2] = false;
+    c.run(rounds, once);
+    REQUIRE(c.at(1).get_sequence_paxos().get_promise()->pid != 3);
+    const auto replies = c.at(1).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].client_id == client_a);
+    CHECK(replies[0].session == s);
+    CHECK(failed_with(replies[0].response, client_errc::retry));
+}
+
 // A lost ReadIndex request would leave the read open for good. The resend
 // timeout of the node sends each read without an index again to the leader
 // of its promise.
