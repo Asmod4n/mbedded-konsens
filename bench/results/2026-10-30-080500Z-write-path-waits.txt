@@ -1,0 +1,13 @@
+What was measured
+- Where the thread of each konsensd node spends the time of a run: CPU (/proc/<pid>/stat fields 14 and 15) and the wait for block I/O (field 42, delayacct_blkio_ticks, after sysctl kernel.task_delayacct=1). Ticks of 10 ms. One run of each cell, one sample. Over the wall time of the driver.
+- The number of fdatasync per node: strace -f -e trace=fdatasync, 200 writes at 1 in flight. strace slows the run, so its rate is not a result.
+- konsensd_g16F2: commit dd179cb (sha256 486d1b0efe993860), g++ 16.2.0 Release. Own bed as in 2026-10-30-073500Z-konsensd-arm-f2.txt. podman --cpus=3, user 1001, not pinned. Scripts outside the tree: delay.sh fa0fb659e55eca90, trace-f2c1.sh 9d5aa9d02cd346e5, cluster.sh d9bad1b2fb550242.
+
+Results
+- 1 in flight, 300 writes, 467 writes/s, wall 657 ms. Per node: block I/O wait 370 to 400 ms (56 to 61 % of the wall time), CPU 150 to 190 ms (23 to 29 %), so 0.50 to 0.63 ms of CPU per write.
+- 64 in flight, 8192 writes, 4 751 writes/s, wall 1 737 ms. Per node: block I/O wait 540 to 730 ms (31 to 42 %), CPU 440 to 700 ms (26 to 40 %); the rest of the time the thread waits for the network.
+- fdatasync at 1 in flight: 227 to 229 per node for 200 writes and the start, so about 1.1 per write per node. Before F2 it was 2.1 (2026-10-30-055400Z-write-path-beds.txt, shared bed).
+
+Reading
+- At 1 in flight the path of one write holds about one fdatasync per node and 0.5 to 0.6 ms of CPU per node. Raw SQLite takes about 0.88 ms for a whole write with its sync (1 140 writes/s).
+- At 64 in flight the one thread of a node waits for the disk while requests wait for its CPU. The CPU and the sync do not overlap.
