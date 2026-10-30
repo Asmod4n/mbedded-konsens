@@ -1118,6 +1118,7 @@ private:
     struct done_log {
         std::uint64_t applied_idx;
         std::span<const entry> done;
+        std::span<const std::optional<request_result>> results;
 
         std::uint64_t log_len() const { return applied_idx + done.size(); }
     };
@@ -1203,6 +1204,8 @@ private:
             return seq_paxos_.stop_voting(tail.error());
         }
         const auto at = [&tail, first](const std::uint64_t k) -> const entry& { return (*tail)[k - first - 1]; };
+        const std::span<const entry> read(*tail);
+        const auto results = decode_the_results_of(read.subspan(std::min(m->applied_idx - first, read.size())));
         auto verified = seq_paxos_.get_verified_idx();
         std::optional<std::uint64_t> passed;
         std::optional<refusal_reason> reason;
@@ -1214,14 +1217,15 @@ private:
                 break;
             }
             if (index > m->decided_idx && index > m->applied_idx) {
-                const done_log b{m->applied_idx, std::span<const entry>(*tail).subspan(m->applied_idx - first,
-                                                                                      index - 1 - m->applied_idx)};
+                const auto count = index - 1 - m->applied_idx;
+                const done_log b{m->applied_idx, read.subspan(m->applied_idx - first, count),
+                                 std::span(results).first(count)};
                 if (!base) {
                     base.emplace(begin_an_empty_write_set());
                 }
                 write_the_done_results(b, base_below, index, *base);
                 base_below = index;
-                reason = check_the_done_record(b, at(index), *base);
+                reason = check_the_done_record(b, at(index), results[count], *base);
                 if (reason) {
                     break;
                 }
@@ -1283,7 +1287,8 @@ private:
         return o->second.bytes;
     }
 
-    std::optional<refusal_reason> check_the_done_record(const done_log& b, const entry& e, base_write_set& w)
+    std::optional<refusal_reason> check_the_done_record(const done_log& b, const entry& e,
+                                                        const std::optional<request_result>& decoded, base_write_set& w)
     {
         if (!entry_is_a_request(e)) {
             return std::nullopt;
@@ -1308,7 +1313,7 @@ private:
         if (listed ? !still : still) {
             return listed ? refusal_reason::wrong_list : refusal_reason::result_differs;
         }
-        if (!decode_result(e.result)) [[unlikely]] {
+        if (!decoded) [[unlikely]] {
             return refusal_reason::result_differs;
         }
         return std::nullopt;
@@ -1705,6 +1710,16 @@ private:
         refusal_.reset();
     }
 
+    static std::vector<std::optional<request_result>> decode_the_results_of(const std::span<const entry> entries)
+    {
+        std::vector<std::optional<request_result>> results;
+        results.reserve(entries.size());
+        for (const auto& e : entries) {
+            results.push_back(entry_is_a_request(e) && !e.rejected ? decode_result(e.result) : std::nullopt);
+        }
+        return results;
+    }
+
     base_write_set begin_the_base(const done_log& b, const std::uint64_t below)
     {
         auto w = begin_an_empty_write_set();
@@ -1723,7 +1738,7 @@ private:
             if (!entry_is_a_request(e) || e.rejected) {
                 continue;
             }
-            if (const auto r = decode_result(e.result)) {
+            if (const auto& r = b.results[k - b.applied_idx - 1]) {
                 write_the_result(e, k, *r, w);
             }
         }
@@ -1892,7 +1907,8 @@ private:
         if (!log) [[unlikely]] {
             return seq_paxos_.stop_voting(log.error());
         }
-        const done_log b{m->log_len - log->size(), *log};
+        const auto results = decode_the_results_of(*log);
+        const done_log b{m->log_len - log->size(), *log, results};
         const auto pointer = b.log_len();
         follow_the_leader(b);
         keep_the_tasks(promise, pointer);
