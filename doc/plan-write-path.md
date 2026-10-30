@@ -462,3 +462,30 @@ clients); whether item 6 can drop output that already left (the early
 prefix); whether a nested transaction (Execute-Verify base) inside a
 long transaction is safe; whether a checkpoint is delayed without a
 bound.
+
+### Changes after review (arm S2, round 1)
+
+Q1. The output of a step in the open transaction is tagged as pending.
+    The commit resolves the tag: the new sync number when the
+    transaction has log writes, else the last sync number. Test: an
+    Accepted of a step in the open transaction does not leave on the
+    report of the sync that was out.
+Q2. Every rollback of the open transaction calls `stop_voting` and
+    clears the held output; the node then never votes again, and a
+    restart is form B. This covers the reset after a failure of
+    `serve_clients_in_the_step` and a failure inside the storage.
+Q3. A flag marks the open step apart from the open transaction.
+    `throw_if_a_step_is_open` and the calls that use it test the flag.
+    `stop()` commits the open transaction, syncs it, then writes the
+    mark.
+Q4. `expire_session`, `find_client_session` and `get_applied_idx` read
+    through the open write transaction when one is open. Test: a session
+    registered in the open transaction does not expire as unknown.
+Q5. The path that keeps the transaction open does not raise the mark.
+    The share of F1 replies that leave early is measured.
+Q6. "A sync is out" is: last sync number > synced sync number.
+Q7. The R7 test runs with S2 too.
+Q8. The nested transaction of the Execute-Verify base is a savepoint in
+    the open transaction (no change; lang_savepoint.html is not in
+    refs/sqlite/ and was not checked).
+Q9. The latency of reads is measured with S2.

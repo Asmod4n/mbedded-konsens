@@ -538,3 +538,10 @@ Verdict: approve with changes. Ten findings; the changes R1 to R10 in
 section 15 of the plan answer them. Findings 1 to 3 (a stale synced
 length after append_on_prefix, a decide of one index only, the scope of
 item 5) changed the form before the build.
+
+## Arm S2 (section 17), round 1
+
+Verdict: approve with changes. Ten findings; Q1 to Q9 in section 17 of
+the plan answer them. Findings 1 to 4 (the sync number of held output,
+a partial rollback, the meaning of an open step, reads of committed
+state) changed the form before the build.
