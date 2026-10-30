@@ -1256,69 +1256,113 @@ No form of this plan pins more memory.
 
 ## 26. An entry is copied and decoded once, not once per step
 
-Measured (section 25, leader, conc 64): about 298 calls into operator
-new per write. The receive path makes about 13 of them. Most of the
-rest come from work that each step does again for every entry that is
-still in flight.
+Measured (section 25, leader, conc 64, one repetition, Release build):
+about 298 calls into operator new per write. The receive path makes
+about 13 of them. Most of the rest come from work that each step does
+again for every entry that is still in flight.
 
-Facts (write-path 0d015ac):
+Facts (write-path 0d015ac; node.hpp, selection and verdict code equal
+to 4314cd3, so the numbers of section 25 apply):
 1. open_tasks_after (include/konsens/node.hpp:1427-1435) copies every
    open entry of tasks_ into a new std::vector<entry>. It runs in
    append_the_done_records (:1439) and again after the answers are
    counted (:1930). An entry holds three std::vector members
    (storage.hpp:38-51), so a copy can allocate three times.
-   Measured: 140,161 entry copies come from these two calls.
-2. leader_log (include/konsens/selection.hpp:35-38) is a pointer and a
-   std::span<const entry>. selection reads log.entries in four places
-   (src/selection.cpp:90-91, 176, 247, 260-261).
-3. check_the_done_records (node.hpp, read_range at its start) reads
-   every record from the verified index to log_len back from SQLite at
-   each step and decodes each one (decode_entry: 133,646 calls).
-4. write_the_done_results (node.hpp:1718-1730), check_the_done_record
-   (:1311) and apply_the_done_records (:1508) each decode the same
-   result bytes again (decode_bytes<request_result>: 99,830 calls).
+   Callers of entry::entry(const entry&) as callgrind gives them:
+   append_the_done_records 124,451, execute_verify 25,480,
+   open_tasks_after 15,710. Callgrind gives a call to the caller that
+   an inlined function stands in. The row of append_the_done_records
+   holds open_tasks_after and accept_entries_leader, which copies the
+   done records once for each follower (sequence_paxos.hpp:1530). The
+   row of execute_verify probably holds the call at :1930. Not checked
+   how the rows divide.
+2. leader_log (include/konsens/selection.hpp:35-38, a public header) is
+   a pointer and a std::span<const entry>. selection reads log.entries
+   at src/selection.cpp:91, 176, 247, 261. test/test_execute_verify.cpp
+   builds a leader_log from a std::vector<entry> at :139-286.
+3. The done records are read from SQLite twice in each step:
+   check_the_done_records (node.hpp:1201) and execute_verify (:1891).
+   Each read decodes every record (decode_entry: 133,646 calls).
+4. The same result bytes are decoded again in several places:
+   write_the_done_results (:1718-1730), called by begin_the_base (:1711)
+   at each run_the_tasks (:1794) and each run_again (:1808), decodes
+   every record from applied_idx + 1; check_the_done_record (:1311)
+   decodes the next record after the done records; apply_the_done_records
+   (:1508) decodes the records of its own read_range (:1496); results_agree
+   (src/verdict.cpp:520-521) decodes both sides when a float rule is set
+   and the bytes differ. decode_bytes<request_result>: 99,830 calls.
 
 Form, in three parts. Each part is one commit and one arm.
 
 Part A, no behaviour change. leader_log holds
 `std::span<const std::reference_wrapper<const entry>>`. open_tasks_after
-returns a vector of references into tasks_. A step then allocates one
-vector of pointers in place of one copy of each open entry. The four
-reads in selection.cpp call get(). tasks_ does not change while a
-leader_log lives: append_the_done_records erases from tasks_ only after
-its last use of log. A test checks that select_results and
-find_the_done_records give the same results from a log of references
-as the current form gives from a log of copies, for the sequences of
-test_selection.
+returns a std::vector<std::reference_wrapper<const entry>> into tasks_.
+A step then allocates one vector of pointers in place of one copy of
+each open entry. Edits in src/selection.cpp: :91 converts implicitly;
+:247 `auto e = log.entries[i]` becomes `entry e = log.entries[i].get()`
+(the copy in find_the_rejected_record stays, once per rejected record);
+:255 `done.push_back(task)` and :277 `auto e = task` take `.get()` at
+:261. The references stay valid where they are read:
+- in append_the_done_records, from :1439 to the last read of `log` in
+  find_the_done_records (:1445); tasks_ is erased first at :1464, and
+  `done` and `chosen` are copies. A later change must not read `open`
+  after :1464.
+- at :1930-1931, `open` lives in one statement; keep_the_tasks changes
+  tasks_ at :1896, before it.
+The tests in test/test_execute_verify.cpp build a vector of references
+and keep their expectations. One test is added: the log lies in a
+std::map with a gap in its indexes, as open_tasks_after builds it.
 
-Part B, no behaviour change. A done record that a step decodes keeps
-its decoded request_result beside it for that step: done_log carries a
-span of std::optional<request_result> parallel to done, filled once
-when the done records are read. write_the_done_results,
-check_the_done_record and apply_the_done_records read it there.
+Part B, no behaviour change. Each step decodes a result once. Where a
+step reads the done records (fact 3), it decodes the result of every
+record of the range it read, through log_len, into a
+std::vector<std::optional<request_result>> beside the entries; nullopt
+where the code now skips the decode (not a request, or rejected: a
+rejected record holds chosen results, not a request_result).
+write_the_done_results and check_the_done_record read the decoded
+result there. apply_the_done_records stays out of part B: it reads its
+own range in its own place.
 
-Part C, a question for the owner. The done records that this node
-appended or received are kept in memory from the append until they are
-applied, and check_the_done_records reads them there and not from
-SQLite. SQLite is read at the start of the node and after a recovery.
-A lost write is then not seen in a release build until the next start;
-the lost-write check of the debug build (decision 2026-10-17) reads the
-record back. Owner (2026-10-30 18:51, card "Erst messen"): part C is built as an
-arm and measured before the owner decides. It does not enter the tree
-before that decision. Part C conflicts with the owner rule of
-2026-10-24: the log store is the only source of data, and a node never
-answers from memory (written for LMDB; whether it holds for SQLite in
-the same words is not recorded). The arm measures the cost of that
-rule; it does not change the rule.
+Part C, an arm only (owner, 2026-10-30 18:51, card "Erst messen"). The
+done records that this node appended or received stay in memory from
+the append until they are applied, and the step reads them there and
+not from SQLite. SQLite is read at the start of the node, after a
+recovery, and where a record is not in memory. Part C does not enter
+the tree before the owner decides.
+- Rule in force (owner, 2026-10-24 14:44-14:45): the log store is the
+  only source of data, and a node never answers from memory.
+  Part C conflicts with it. The arm measures what the rule costs.
+- Lost write (owner, 2026-10-17, /mnt/project-files/actor-raft/
+  fehlerquellen.md:94, 107): the debug build checks after each write
+  that it landed; open: the check must read past the page cache.
+  The state file also holds "the node reads no page back from the disk
+  itself" (owner, 2026-10-24 20:50, mbedded-konsens.md:1169).
+- What systems that Jepsen praised do (source read on GitHub main,
+  tigerbeetle 0450c32b, foundationdb bcdefac9): both apply from memory
+  and read the disk only where the entry is no longer in memory, and
+  every disk read is checked by checksum. TigerBeetle: the primary
+  commits from the in-memory pipeline (src/vsr/replica.zig:4609-4627),
+  a backup from the pipeline cache first and the journal second
+  (:4660, :4670); a read of the journal checks header, cluster, op,
+  checksum and body (src/vsr/journal.zig:832-913) and marks a bad slot
+  for repair from a peer. FoundationDB: the TLog serves a peek from
+  memory (fdbserver/tlog/TLogServer.cpp:2603) and reads spilled data
+  from disk with CheckHashes::True (:2534). Both protect a lost write
+  through the quorum and a checked read later, not through a read-back.
+- The chain CRC of the step is a modelled check (state file
+  :1160-1168). Part C changes what the step reads, so part C needs the
+  TLA+ model before it can enter the tree.
 
-Not in this section: the receive path (section 25), the copy of a done
-record in find_the_done_records (`auto e = task`, src/selection.cpp,
-one copy per done record and not per step).
+Not in this section: the receive path (section 25).
 
-Measure: for each part, callgrind calls into operator new per write on
-the leader at conc 64 (count, not time), and then the bed of section
-22 at 1 and 64 in flight, base 0d015ac against the part, each arm in
-its own binary, A/A noise first, alternate runs, medians.
+Measure: base binary built from 0d015ac. For each part, callgrind calls
+into operator new per write on the leader at conc 64 (count, not
+time), then the bed of section 22 at 1 and 64 in flight, base against
+the part, each arm in its own binary, A/A noise first, alternate runs,
+medians.
 
-The TLA+ model needs no change: no part changes a message, a stored
-record, or the order of a step.
+The TLA+ model needs no change for parts A and B: neither changes a
+message, a stored record, or the order of a step.
+
+Review: doc/review-plan-write-path-26.md, approved after fixes 1-6,
+which this text carries.
