@@ -331,3 +331,203 @@ this code.
 
 Fix: name the known obstacle. Keep the claim of the dissertation out of
 the safety argument.
+
+# Round 2
+
+## Task
+
+Review sections 10 to 12 and arm F of doc/plan-write-path.md at commit
+b00f4a7 against the code. Check whether sections 10 to 12 contradict
+sections 1 to 9. This review changes no other file.
+
+Read: plan sections 10 to 12; bench/results/2026-10-30-061200Z-write-path-steps.txt;
+bench/results/2026-10-30-060200Z-write-path-callgrind.txt (lines 44,
+102, 114, 152); include/konsens/node.hpp 207, 243-311, 645-690, 875-935,
+1140-1310, 1341-1372, 1436-1460, 1715-1780; include/konsens/sequence_paxos.hpp
+430-460, 1608-1630; program/serve.cpp 408-453, 690-779;
+program/main.cpp 82; include/konsens/persistent_storage.hpp 175-199.
+
+Not checked: the SQLite documentation, the Raft dissertation,
+CockroachDB, any run.
+
+## Verdict
+
+Approve with changes. Arm F is safe in the form the plan gives, under
+the same invariant as arm A. As written it does not take the apply sync
+off the path (finding 2.1). The plan must also become one text in force
+(finding 2.3) before the build.
+
+## Correction of round 1
+
+- Findings 4 and 5 of round 1 are void. They rest on the two-round form
+  of plan-execute-verify.md 2.1 and 2.6.5. The code makes one round:
+  `work`, the answers, then one done record (node.hpp:1158-1235).
+- Finding 8 of round 1 counted four writing steps per node per write.
+  That count came from plan-execute-verify.md, not from the code. The
+  code gives two per node: the append and the apply. This agrees with
+  fact 1.4 (2.1 fdatasync per node per write) and with section 12.
+- The protection of plan-execute-verify.md 2.7.7 still holds with arm F.
+  A follower accepts a done record only up to its `verified_idx`
+  (sequence_paxos.hpp:1617-1628). So a decide needs a majority that
+  checked the record, and arm F replies only after the decide.
+
+## Findings
+
+### 2.1. Blocking. Arm F leaves the apply sync on the path at 1 in flight.
+
+Section 12, last sentence: "With arms A and F ... step 4 has no sync on
+the path." That is false for a client that sends its next write after
+the reply. konsensd is one thread (serve.cpp:690-779). The apply commit
+blocks that thread in `txn.commit()` (sequence_paxos.hpp:455-458). The
+reply leaves before the sync, and the next request reaches the leader
+during the sync. The leader handles that request, and sends the next
+`work`, only after the sync returns. So arm F saves at most the time the
+client and the network take to send the next request. It does not save
+the 1.39 ms of the sync (result file, step 4).
+
+The follower has the same fault. Item 5 of section 12 says that the
+apply sync of the follower is not on the path. Each follower syncs its
+apply when the Decide arrives, at about the time the leader replies.
+Once the leader's own sync is off the path, the next `work` reaches the
+followers during their apply sync (1.34 ms). The leader needs the answer
+of one follower, and both followers sync at the same time.
+
+Fix: arm F has two parts, measured as two arms.
+- F1: the reply leaves before the apply commit, as written.
+- F2: a commit whose writes are only the decided index and the apply
+  does not sync, on the leader and on the followers. The next commit
+  that syncs makes it durable. From memory, not checked: SQLite in WAL
+  mode with `PRAGMA synchronous = NORMAL` commits without a sync, and a
+  later sync of the WAL covers every earlier frame. Check this in the
+  SQLite text before the plan uses it, and put the text in refs/.
+  Safety of F2: a crash retires the identity, so no node reads a lost
+  apply under that identity. A clean stop keeps the identity. So the
+  clean stop syncs the log database before it writes the mark, because
+  the mark is in another database (persistent_storage.hpp:184-199,
+  node.hpp:207). The read path reads the committed state through a read
+  transaction (node.hpp:1751-1758). In the same process that state holds
+  a commit without a sync, so a read after a reply sees the write.
+  F2 is a new design, so the owner decides it.
+
+### 2.2. Blocking. Arms A and F rest on one invariant, and the plan must say so.
+
+Arm F says the reply depends on a done record that is durable on a
+majority after step 3. With arm A that is true only under the invariant
+of R1: no Accepted is handled between the early release and the
+leader's commit. The leader counts its own index before its write is
+durable (sequence_paxos.hpp:1330). Without the invariant, the leader
+could decide on its own index, which is not durable, plus one follower,
+and reply. If the leader and that follower then crash, both identities
+retire. The entry can then be absent from every promise of a new
+leader, and the client holds a reply for a lost entry.
+
+Fix: section 12 states that the reply of arm F rests on the invariant of
+R1 when arm A is in force. The replies of arm F leave at the release
+point of R3, inside the same interval. The model mutation of R1 also
+releases a reply, and the invariant "each replied entry is decided on a
+majority of durable logs" must fail with it.
+
+### 2.3. Blocking. Sections 1 to 9 contradict sections 10 to 12.
+
+- Arm A (line 90-92): "every client reply leaves after the commit, as
+  now". Arm F changes that.
+- Fact 1.5 still says that Execute-Verify adds a second round with the
+  `results` entry. Section 11 says that round does not exist.
+- Arm B (section 4), section 5, the arm B test of section 6, the arm B
+  model of section 7 and step 3 of section 8 are still in the text.
+  Section 11 withdraws question B.
+- R4 and R5 of section 10 say what is done ("The question names both
+  losses. The model runs with Flip and Spread"). Section 11 says R4 and
+  R5 are void.
+- R1 says "fact 1.5 and arm A are wrong about the count". The wrong
+  count stands in arm A (line 87-89), not in fact 1.5.
+- Sections 6, 7, 8 and 9 have no entry for arm F.
+
+An agent that builds from this plan reads sections 1 to 9 as in force.
+
+Fix: rewrite sections 1 to 9 so that they hold what is in force. Keep
+the wrong assumption whole in section 11. Delete or mark as void the
+text of arm B. Add arm F to sections 6 to 9.
+
+### 2.4. Not blocking. Arm F must name the replies that leave early.
+
+`client_replies_` is one list (node.hpp:661). It holds the replies of
+the apply (`reply_to_the_client`, 1341-1366), and also the retry
+replies of an old promise (1738), the read replies (1756), the retry
+replies of reads (1727, 1773) and the refusals during a
+reconfiguration (921). Most of these are made after the commit, in
+`finish_the_step`. Some are made before it.
+
+Fix: arm F releases early only the replies that `reply_to_the_client`
+makes in `apply_the_done_records` of this step, rejected entries
+included. Every other reply leaves after the commit, as now.
+
+### 2.5. Not blocking. The release point inside `commit` needs an API, and the API is an owner question.
+
+R3 puts the release just before `txn.commit()`, inside
+`sequence_paxos::commit` (sequence_paxos.hpp:455). The replies and
+`work` belong to `node` (node.hpp:649-663), and konsensd must call
+`io_uring_submit` in that interval. So `node` needs a new form. One
+option splits `commit` into a call that gives the early output and a
+call that writes. Another option makes `commit` take a function that
+sends. That is a new design.
+
+The open item of R3 ("the error path of `serve_clients_in_the_step`
+after the release is checked ... before the build") is closed by R3
+itself. `serve_clients_in_the_step` (node.hpp:275) runs before
+`seq_paxos_.commit()` (283), so its error path comes before the
+release.
+
+Fix: put the two options of the API in the next owner message, with a
+proposal. Delete the open item of R3.
+
+### 2.6. Not blocking. The crash between the reply and the apply commit is safe. The test is missing.
+
+The reply bytes come from the decided done record (node.hpp:1271,
+`decode_result(e.result)`), after its CRC check (1276) and after the
+read-back (1292). The session record holds `{request_number, reply}`
+(node.hpp:1453), and it is written by every node that applies the
+decided record. A failed `txn.commit()` throws `write_error`
+(sequence_paxos.hpp:457). main catches it and ends (main.cpp:82). The
+next start retires the identity. A retry of the client at the new
+leader gets the same reply bytes from the session record.
+
+Fix: a test. The leader releases the reply, then crashes before the
+apply commit. A new leader is elected. The client retries with the same
+request number and gets the same bytes. The write is applied once on
+every node.
+
+### 2.7. Not blocking. Numbers of section 12 do not match the result file.
+
+- "1.4 to 1.9 ms of a step with a sync is not the sync". The result file
+  gives 3 233 - 2 010 = 1 223 us (leader, append), 2 814 - 1 390 =
+  1 424 us (leader, apply), 2 828 - 1 340 = 1 488 us (follower, apply).
+  That is 1.2 to 1.5 ms.
+- The result file gives one sample for each step, from 40 writes. The
+  rule asks for each repetition, the median and the spread.
+- The times come from a run under strace, which slows each node (63
+  writes/s against 99 to 115). Section 12 does not say that next to the
+  numbers.
+- The raw lines give the kinds of the messages as numbers with no
+  legend. Some lines of n1 show "in=4, out=5,5": one message in, two
+  of one kind out. That is the pattern of a leader that sends an
+  AcceptDecide to each follower, but the summary names n3 as the leader.
+  Not checked.
+- The context lacks items that the rule names: the dirty mark (a patch
+  outside the tree was applied), the C library, the scheduler, the
+  priority, the number of threads, the digest of the processor flags.
+- Line 152 of the callgrind file says "start included". Section 10
+  quotes 42.9 and 31.2 calls of `sqlite3_step` per write without that
+  note.
+
+Fix: give the medians and the spread over the 40 writes, with the
+legend of the kinds and the full context. Mark each time as measured
+under strace.
+
+### 2.8. Not blocking. The known practice is from memory.
+
+Section 12 quotes the Raft dissertation, chapter 5, and CockroachDB,
+both from memory. The argument of arm F needs neither. It rests on two
+facts of this code: the reply comes from a decided record, and a crash
+retires the identity (finding 2.6). Remove the quotes, or read the
+sources and give the sections.

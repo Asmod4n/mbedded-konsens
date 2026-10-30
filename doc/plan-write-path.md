@@ -2,248 +2,213 @@
 
 Source: the owner, 2026-10-30 05:42 (UTC+1): close the gap to raw
 SQLite; the goal is to come within 50 % of raw SQLite, if that is
-possible. This plan gets one review before the build.
+possible. Review: doc/review-plan-write-path.md, rounds 1 and 2, both
+"approve with changes". This text has the changes of both rounds.
 
 ## 1. Facts measured in this session
 
-All on commit edfb54f, konsensd built with g++ 16 Release, 64 B values,
-three nodes on one machine. Files: bench/results/2026-10-29-220701Z-distributed-logs.txt,
-bench/results/2026-10-30-055400Z-write-path-beds.txt.
+All on commit edfb54f or later with the same konsensd code, g++ 16
+Release, 64 B values, three nodes on one machine. Result files:
+bench/results/2026-10-29-220701Z-distributed-logs.txt,
+2026-10-30-055400Z-write-path-beds.txt,
+2026-10-30-060200Z-write-path-callgrind.txt,
+2026-10-30-061200Z-write-path-steps.txt.
 
 1. The bed changes the result. With the three data directories on one
    btrfs file system, konsensd gives 38 to 57 writes/s at 1 in flight
    and 1 355 to 2 335 writes/s at 64 in flight. With one btrfs file
-   system for each node, it gives 99 to 115 writes/s and 3 389 to 3 451
-   writes/s. One sample per cell, two rounds, no A/A floor.
-2. Raw SQLite on the own bed (one process, WAL, synchronous=FULL):
-   929 to 1 224 writes/s with 1 write per commit, 76 486 to 79 401
-   writes/s with 64 writes per commit.
-3. The goal of this plan is half of the raw SQLite median of the same
-   run, on the own bed: at 1 in flight against 1 write per commit, at
-   64 in flight against 64 writes per commit. On the numbers of item 2
-   that is 465 to 612 writes/s and 38 243 to 39 701 writes/s.
-4. On the shared bed, the median fdatasync of the WAL takes 7.52 ms on
-   the leader and 2.53 ms and 3.64 ms on the followers. Each node makes
-   2.1 fdatasync for each write at 1 in flight, and about 20 pwrite64.
-   At 64 in flight, each fdatasync covers about 12 writes.
-5. The fdatasync calls of one write follow each other: leader, both
-   followers, leader, both followers (strace -ttt, 50 writes). The
-   leader writes before it sends the Accept, and a follower writes
-   before it sends the Accepted (doc/plan-group-commit.md section 2).
-   Execute-Verify adds a second round: the `results` entry
-   (doc/plan-execute-verify.md 2.5, 2.6.5).
-6. CPU time of the three nodes per write, own bed: at 1 in flight 1.0 to
-   1.2 ms user and 2.6 to 3.2 ms system; at 64 in flight 102 to 107 us
-   user and 114 to 120 us system. At 64 in flight the three nodes use
-   0.7 of one processor. So the CPU is not the limit at that load now.
-7. Omni-Paxos `accept_entries_leader` (refs/omnipaxos leader.rs:123-133)
-   appends to its storage before `send_acceptdecide`. The form where the
-   leader writes in parallel with the Accept is in the Raft dissertation,
-   section 10.2.1, from memory. The dissertation is not in refs/
-   (refs/papers.md). Before the build of arm A, the claim is checked in
-   the text, and the text goes into refs/ if its download works.
+   system for each node, it gives 99 to 115 and 3 389 to 3 451 writes/s.
+   Both beds lie on one host disk. One sample per cell, two rounds, no
+   A/A floor.
+2. Raw SQLite on the own bed (one process, WAL, synchronous=FULL): 929
+   to 1 224 writes/s with 1 write per commit, 76 486 to 79 401 writes/s
+   with 64 writes per commit.
+3. The goal is half of the raw SQLite median of the same run, on the
+   own bed: at 1 in flight against 1 write per commit, at 64 in flight
+   against 64 writes per commit. On the numbers of item 2 that is 465 to
+   612 writes/s and 38 243 to 39 701 writes/s.
+4. On the shared bed, each node makes 2.1 fdatasync and about 20
+   pwrite64 for each write at 1 in flight. At 64 in flight each
+   fdatasync covers about 12 writes.
+5. The path of one write at 1 in flight (M2, steps file):
+   1. The leader sends `work` to the followers. No sync.
+   2. Each follower runs the request and sends its `answer`. No sync.
+   3. The leader appends one done record (request and chosen result,
+      node.hpp:1208-1238), syncs, and sends the AcceptDecide.
+   4. Each follower syncs and sends the Accepted.
+   5. The leader decides, applies, syncs, and then releases the reply.
+   6. Each follower applies on the Decide and syncs.
+   konsensd is one thread (serve.cpp:737-777), so the syncs of steps 5
+   and 6 also delay the next request at 1 in flight.
+6. CPU of the three nodes per write at 64 in flight, own bed: 102 to
+   107 us user and 114 to 120 us system, 221 to 222 us in total, 0.75
+   to 0.76 of one processor. The goal needs at most 78 us per write on
+   the 3 processors of the bench, a cut of about 2.8 times.
+7. Instruction profile at 64 in flight (callgrind, start included): the
+   leader calls `sqlite3_step` 42.9 times per write, a follower 31.2
+   times. Raw SQLite calls it once.
+8. The leader counts its own accepted index before its commit
+   (sequence_paxos.hpp:1330, 1432, 1615-1616). This is safe only
+   because no message leaves before the commit
+   (doc/plan-group-commit.md, R8).
+9. SQLite 3.53.4, pragma.html of the package sqlite3-doc: "In WAL mode
+   when synchronous is NORMAL (1), the WAL file is synchronized before
+   each checkpoint ... but no sync operations occur during most
+   transactions." "WAL mode is always consistent with
+   synchronous=NORMAL, but WAL mode does lose durability. A transaction
+   committed in WAL mode with synchronous=NORMAL might roll back
+   following a power loss or system crash." The text goes into
+   refs/sqlite/ (public domain) with the first function that reads it.
 
 ## 2. What is measured, and how
 
 1. Bed: one btrfs file system with compress=zstd:1 for each node, each
-   on its own loop image. Raw SQLite runs on the file system of node 1.
-   The shared bed stays as a second column, because it shows the cost
-   of three nodes on one disk.
-2. Builds: konsensd with g++ 16, g++ 16 with -march=x86-64-v3 (g16aa as
-   in the comparison), clang 22. Each arm is one binary for each build.
+   on its own loop image. Raw SQLite runs as one process on the file
+   system of node 1, and as three processes at once, one on each file
+   system. The three processes are the bound for three nodes on this
+   host. The shared bed stays as a second column.
+2. Builds: g++ 15, g++ 16, g16aa (g++ 16 with -march=x86-64-v3), clang
+   22. Each arm is one binary for each build.
 3. Each run: the A/A floor first (one binary built twice), then old arm
    and new arm alternately, 15 samples, 3 rounds, medians and spread.
-   The run length is the shortest one at which the A/A pair agrees.
+   The run length is read from the state file where it is kept, else it
+   is measured once and kept there.
 4. Cells: 64 B and 1 KiB; 1 and 64 in flight. Each cell also reports
-   fdatasync per write per node, writes per commit, and user and system
-   CPU per write.
-5. Each run writes one file under bench/results/ with the full context
-   (RULES.md "Each run of the bench is one file").
+   fdatasync per write per node and user and system CPU per write.
+5. Each run writes one file under bench/results/ with the full context.
 
 ## 3. Measurements that find the cost (no change of code)
 
-M1. Writes per commit at 64 in flight, per node: the count of entries
-   that each commit appends, and the count of steps between two
-   commits. Source: a counter that a Debug build gives in the log of
-   konsensd (RULES.md: "What is there to debug is there in a debug
-   build"), and strace -c for the Release build.
-M2. The critical path of one write: strace -ttt -T of fdatasync on all
-   three nodes, at 1 in flight, on the own bed. The question: does the
-   order of item 1.5 hold there, and how long is each part.
-M3. Pages per commit: the WAL frames of each commit, by table, read with
-   the dbstat virtual table on a copy of the database and with the frame
-   count that `sqlite3_wal_hook` reports. The question: which tables add
-   the 20 page writes of item 1.4.
-M4. CPU profile at 1 and at 64 in flight with valgrind callgrind (a
-   package of the distribution, in the bench image only). Instruction
-   counts find the hot functions. They do not say what a change gains;
-   only arm runs say that.
+M1. Writes per commit and `sqlite3_step` calls per commit at 64 in
+   flight, per node, by the kind of the step. Source: a counter in the
+   Debug build, printed to the log of konsensd. Not under strace.
+M2. Done (fact 1.5). It is repeated after each arm.
+M3. Pages per commit, by table: dbstat on a copy of the database, and
+   the frame count that the WAL hook gives. The meaning of that count is
+   checked in the SQLite text before M3 uses it.
+M4. Done (fact 7). It is repeated after arm D.
 
 ## 4. Arms (each measured as section 2 says)
 
-A. The leader sends the Accept before its own commit.
-   - The rule of doc/plan-group-commit.md section 2 holds for every
-     message that depends on the write of the step. An Accept of the
-     leader does not: the leader counts its own accepted index only
-     after its commit, so a decide never depends on a write that is not
-     durable.
-   - `node` gives the AcceptDecide messages of the leader before
-     `commit`; every other message, every Accepted and every client
-     reply leaves after the commit, as now.
-   - The model gets the same split: the leader sends in one step and
-     counts itself in a later step after its write. TLC checks the
-     safety properties with it (section 7).
-B. One round for Execute-Verify on the critical path. Owner question
-   (section 5). No code before the answer.
-C. Larger batches at 64 in flight. What limits the batch is found by
-   M1. The arm changes only that limit. The plan is extended with the
-   form after M1, and the review checks that part.
-D. Less CPU per write. The arm takes the hot functions that M4 shows,
-   one change per arm.
-E. Fewer pages per commit. The arm follows M3. A change of the schema
-   is an owner question.
+A. The leader sends the AcceptDecide before its own sync.
+   - The release point is just before `txn.commit()`
+     (sequence_paxos.hpp:455), after `read_checked_meta`. konsensd
+     queues the early messages and calls `io_uring_submit` before it
+     calls the commit.
+   - Only the prefix of the messages to each follower, in the order of
+     the step, that holds only AcceptDecide and Decide leaves early. So
+     no message with a sequence number overtakes a held one
+     (message.hpp:65-74).
+   - Invariant: no message is handled between the release and the end
+     of the commit. `node` throws `std::logic_error` on any call in that
+     interval. With fact 8, the invariant keeps every decide on durable
+     writes of a majority.
+   - Every other message, every Accepted, and every client reply that F1
+     does not name leaves after the commit.
+   - The release needs a new call of `node`. Its name has no source; it
+     is provisional and goes to the owner with the result.
+F1. The reply to a client leaves before the commit of its apply.
+   - Only the replies that `reply_to_the_client` makes in
+     `apply_the_done_records` leave early, at the release point of arm A
+     and inside its interval. Retry, read and reconfiguration replies
+     (node.hpp:661) leave after the commit.
+   - The reply depends on the decided done record, which is durable on
+     a majority. A follower accepts only up to its verified index
+     (sequence_paxos.hpp:1617-1628), so the result was checked by a
+     majority. A read still waits until the committed state reaches the
+     read index. A crash between the reply and the commit retires the
+     identity (rejoin form B).
+F2. A commit that holds only the decided index and the apply does not
+   sync.
+   - Such a commit runs with synchronous=NORMAL (fact 9); every other
+     commit runs with synchronous=FULL. The next synced commit makes it
+     durable, because the WAL keeps the order of its frames.
+   - A clean stop syncs the log database before it writes the mark.
+   - After a crash or a power loss, the node retires its identity (form
+     B), so it never serves from an apply that the loss rolled back.
+   - Known practice: a replicated state machine keeps its log durable
+     and applies without a sync, because the state follows from the log.
+     CockroachDB and TiKV apply this way (from memory, not checked).
+     For this project the practice fits, because form B already treats
+     every crash as a loss of the local state. F2 is a new design; it is
+     built as an arm, and the owner sees the arm with its numbers before
+     it stays.
+C. Larger batches at 64 in flight. M1 shows what limits a batch. The
+   arm changes only that limit, and the plan gets the form before the
+   build.
+D. Fewer SQL statements per write. M1 names the statements; one change
+   per arm.
+E. Fewer pages per commit, after M3. A change of the schema goes to the
+   owner.
 
 An arm that is faster in the table as a whole stays. An arm that is
-not faster is deleted, with its row in the result file.
+not faster is deleted, and its row stays in the result file.
 
-## 5. Owner question (sent in one message after the review)
+## 5. Owner questions
 
-B. Execute-Verify makes two rounds before a client gets its reply: the
-   request entry, then the `results` entry. Options:
-   1. Keep two rounds. The reply waits for the decide of `results`.
-   2. The leader replies when a majority of answers agrees (2.6.3),
-      before `results` is decided. `results` follows off the critical
-      path. The model must show that a later leader selects the same
-      result or keeps the entry pending, and never rejects an entry
-      whose client got a reply.
-   Proposal: 2, after the model check of section 7 is green.
+Sent in one message when the first arms are measured: the name of the
+release call of arm A, F2 with its numbers, and any change of the
+schema from arm E.
 
 ## 6. Tests
 
-- Arm A: a crash of the leader after it sent the Accept and before its
-  commit: the entry is decided only by the followers, and the restart of
-  the leader takes a new identity (rejoin form B). A decide on the
-  leader never counts its own accepted index before its commit.
-- Arm B (if the owner takes 2): a leader change after the reply and
-  before the decide of `results`: the new leader selects the same
-  result.
+- A: a Decide and then an AcceptDecide to one follower in one step; an
+  AcceptSync and then an AcceptDecide: the early prefix holds no
+  message after a held one. A call of `node` between the release and the
+  commit throws. A crash of the leader after the release and before its
+  sync: the entry is decided by the followers, and the restart takes a
+  new identity.
+- F1: a crash between the reply and the apply commit: after the
+  restart the client gets the same reply for its session and number.
+  A retry reply is not released early.
+- F2: a pure apply step makes no fdatasync (a store that counts
+  syncs); the next step with an append syncs both; a clean stop syncs
+  before the mark; a power cut after a NORMAL commit leaves a consistent
+  database whose applied index is at or below the decided index.
 - Each arm: the client tests, the konsensd tests (three_nodes), seeds 1
-  to 300 of counter_stress, test_simulation. Release with g++ 15, g++ 16
-  and clang 22. ASan and UBSan once before the merge
-  .
+  to 300 of counter_stress, test_simulation, Release with g++ 15, g++ 16
+  and clang 22. ASan and UBSan once before the merge.
 
 ## 7. Model
 
-The model of this thread (/mnt/project-files/actor-raft/model/) gets
-the split of arm A, and for arm B the reply at the selection. BFS with
-small bounds, the same invariants as the current configs, and a
-mutation that counts the own accepted index before the write, which
-must fail.
+model/tla/SequencePaxos.tla of this repository, with `Flip` and the
+`MC_ev_*` configurations. Arm A: the leader releases the AcceptDecide
+in one step and syncs in a later step. Arm F1: the reply is released in
+the same step. Mutation that must fail: an Accepted is handled between
+the release and the sync, and a reply is released on it. F2 needs no
+model change: an apply that is lost in a crash is the same as a crash
+before the apply. BFS with small bounds.
 
 ## 8. Order
 
-1. Plan, review, owner question B.
-2. Bed scripts; M1 to M4; the results go into this plan as facts.
-3. Arm A with its model check, then C, D, E in the order of what M1 to
-   M4 show, then B if the owner takes it.
-4. After each arm: one result file, push.
-5. Merge only after the full test run and ASan and UBSan.
+1. M1 and M3 (Debug counter, dbstat).
+2. Arm A with F1, model check, tests, measurement.
+3. Arm F2, tests, measurement.
+4. Arm D, then C and E in the order that M1 and M3 show.
+5. After each arm: one result file, push, state file.
+6. Merge only after the full test run and ASan and UBSan.
 
 ## 9. Data on the disk
 
-- $S/zn1.img, $S/zn2.img, $S/zn3.img (8 GiB sparse each, btrfs) and the
-  mounts /mnt/zn1 to /mnt/zn3: needed by open work (the own bed).
-- $S/bench-logs/cpu.sh, $S/bench-logs/disks.sh: needed by open work;
-  their digests stand in the result file.
-- /mnt/zrun/b/cpu, /mnt/zrun/b/disks, /mnt/zrun/b/trace1, the data of
+- $S/zn1.img, $S/zn2.img, $S/zn3.img (8 GiB sparse each, btrfs) and
+  /mnt/zn1 to /mnt/zn3: needed by open work (the own bed).
+- $S/bench-logs/*.sh, $S/vg-image, image localhost/bench-vg: needed by
+  open work; their digests stand in the result files.
+- $S/diag-steps.patch and $S/wt-diag: the diagnostic build of M2; needed
+  until M2 is repeated after arm A.
+- $S/sqlitedoc: the package sqlite3-doc; its text goes into refs/.
+- /mnt/zrun/b/{cpu,disks,trace1,trace-own,trace-diag,vg-c64} and
   /mnt/zn*/b/n: made again by the scripts. Deleted after the owner has
   seen this list.
 - $S/wt-write: the worktree of this branch.
 
-## 10. Changes after the review
-
-The review (doc/review-plan-write-path.md: approve with changes, 17
-findings, 6 blocking) is applied as follows.
-
-- R1: fact 1.5 and arm A are wrong about the count. The leader counts
-  its own accepted index before the commit (sequence_paxos.hpp:1330,
-  1432, 1615-1616). Arm A is safe only while no message is handled
-  between the release of the early messages and the commit. `node`
-  throws `std::logic_error` on any call in that interval. The model
-  mutation is "an Accepted is handled between the release and the
-  write".
-- R2: for each follower, only the prefix of its messages in the order
-  of the step that holds only AcceptDecide and Decide leaves early. So
-  no message with a sequence number overtakes a held one
-  (message.hpp:65-74). Tests: a Decide then an AcceptDecide to one
-  follower in one step; an AcceptSync then an AcceptDecide.
-- R3: the release is just before `txn.commit()` (sequence_paxos.hpp:455),
-  after `read_checked_meta`. konsensd queues the early messages and
-  calls `io_uring_submit` before the commit. The error path of
-  `serve_clients_in_the_step` after the release is checked in the code
-  before the build, and the plan names its form then.
-- R4, R5: option 2 of question B loses plan-execute-verify.md 2.7.7 (a
-  fault in the count, compare or copy of the leader reaches the client)
-  and, with floats, 2.9.1 (a later leader can choose other bytes than
-  the reply). The question names both losses. The model runs with
-  `Flip` and `Spread`.
-- R6: the model is model/tla/SequencePaxos.tla of this repository, with
-  `Flip` and the `MC_ev_*` configurations.
-- Bed: each run also measures three raw SQLite processes at once, one
-  on each file system. That is the bound for three nodes on this host.
-- CPU: the three nodes use 221 to 222 us of CPU per write at 64 in
-  flight. Half of raw SQLite needs at most 78 us on 3 processors. The
-  profile (bench/results/2026-10-30-060200Z-write-path-callgrind.txt)
-  shows 42.9 calls of `sqlite3_step` per write on the leader and 31.2 on
-  a follower. Arm D starts with the statements per write.
-- 1 in flight: half of raw SQLite allows at most two commits in
-  sequence. M2 maps each fdatasync to the writes it holds and to the
-  messages that wait for it.
-- Smaller fixes: the share is 0.75 to 0.76 of one processor; both beds
-  are on one host disk; g16aa is g++ 16 with -march=x86-64-v3; a g++ 15
-  column is added; M1 counts in a Debug build only, not under strace;
-  the frame count of `sqlite3_wal_hook` is checked in the SQLite
-  documentation before M3 uses it; section 6 reads "ASan and UBSan once
-  before the merge"; the run length is read from the state file where it
-  is kept.
-
-## 11. Wrong assumption
+## 10. Wrong assumption
 
 - Assumed: Execute-Verify makes two log rounds, the request entry and
-  then a `results` entry (fact 1.5, section 5, review R4 and R5).
-- True: the code (node.hpp:1150-1235) sends `work` to the followers
-  first, collects the answers, and appends one done record that holds
-  the request and the chosen result. One log round is on the path.
-- Caused: owner question B named a round that does not exist. It was
-  withdrawn on 2026-10-30. Question B and R4, R5 are void. M2 maps each
-  fdatasync to its step before any new question about the path.
-
-## 12. Result of M2
-
-bench/results/2026-10-30-061200Z-write-path-steps.txt. At 1 in flight
-the path of one write holds three fdatasync calls in sequence:
-
-1. The leader sends `work`. No commit syncs here, and the follower
-   answers without a sync.
-2. The leader appends the done record and syncs. Then it sends the
-   AcceptDecide.
-3. Each follower syncs and sends the Accepted.
-4. The leader decides, applies the result, syncs, and then releases the
-   client reply.
-5. The follower applies on the Decide and syncs. This sync is not on
-   the path.
-
-A step costs 0.3 to 3.2 ms under strace, and 1.4 to 1.9 ms of a step
-with a sync is not the sync.
-
-New arm F. The client reply leaves before the commit of its apply. The
-reply depends on the done record, which is durable on a majority after
-step 3. It does not depend on the apply. A read still waits until the
-committed state reaches the read index. If the apply commit fails, the
-process ends, and the reply was right because the entry is decided.
-Known practice: a state machine of a replicated log is rebuilt from the
-log, so its apply needs no sync before the reply (Raft dissertation,
-chapter 5, from memory, not checked; CockroachDB applies without a
-sync, from memory, not checked). The review checks arm F before the
-build. With arms A and F, step 2 and 3 run in parallel and step 4 has
-no sync on the path. The measurement says what that gives.
+  then a `results` entry (from doc/plan-execute-verify.md).
+- True: the code (node.hpp:1150-1238) sends `work` first, collects the
+  answers, and appends one done record that holds the request and the
+  chosen result. One log round is on the path.
+- Caused: an owner question about a second round was sent and withdrawn
+  on 2026-10-30. Review round 1, findings 4, 5 and 8, rested on it and
+  are void.
