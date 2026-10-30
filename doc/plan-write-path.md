@@ -1120,3 +1120,20 @@ Open with it:
   writes a value in parts; not checked against the schema of the store.
 - The value still goes to the followers in frames of at most 2^32 - 1
   bytes; a value past one frame needs a form for parts on the wire.
+
+The form of mruby-webmachine (branch integration, 8c76f51,
+src/ring.hpp), read 2026-10-30:
+- One area holds the pool, 2048 buffers of 4 KiB (ring.hpp:74-75).
+- A request is parsed as a view into the buffer of its CQE. The answer
+  goes into the rest of that buffer when it fits (ring.hpp:625-631).
+- The buffer stays out of the ring (holds_bid) until its send has
+  completed. Then it goes back in a batch (given_back, ring.hpp:395-406).
+- A send holds pointers to other pages up to a named bound (held,
+  kHeldMost, ring.hpp:367).
+- Recv bundles are used where the kernel has them
+  (IORING_FEAT_RECVSEND_BUNDLE, ring.hpp:174).
+- Not found there: a request that spans several buffers, and a body that
+  goes to a temporary file.
+
+So this form carries "a view, and its buffer stays out of the ring until
+the work on it is done". It gives no form for a frame across buffers.
