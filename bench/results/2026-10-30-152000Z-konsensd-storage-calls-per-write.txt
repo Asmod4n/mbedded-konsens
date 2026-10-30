@@ -82,3 +82,19 @@ Reading
 - At 1 in flight, get_meta runs about 36 times and get_entries about 13 times for each write. 5 transactions begin for each write, and 2 of them commit a write.
 - The change cuts read_checked_meta from 10.1 to 7.0 calls per write at 1 in flight, and sqlite3_step from 84 to 80. It is not kept.
 - Under valgrind the run is slower, so the work that a timer starts (begin_step of a tick) is a larger part of the counts than in a native run.
+
+Calls per write split by caller (cgcallers.py 419cbca3e7bd50c6), 1011ddc
+- leader, 1 in flight :
+      2.00 node::begin_the_nested_transaction -> konsens::persistent_storage::transaction::begin_nested
+      1.00 node::run_the_tasks -> ode::write_the_result<konsens::persistent_storage::nested_transaction>
+      1.00 node::check_the_done_records -> node::write_the_done_results
+- leader, 64 in flight :
+      2.92 node::run_the_tasks -> ode::write_the_result<konsens::persistent_storage::nested_transaction>
+      1.72 node::write_the_done_results -> ode::write_the_result<konsens::persistent_storage::nested_transaction>
+      1.02 node::check_the_done_records -> node::write_the_done_results
+      0.23 node::begin_the_nested_transaction -> konsens::persistent_storage::transaction::begin_nested
+- follower n1, 64 in flight:
+      3.04 node::run_the_tasks -> ode::write_the_result<konsens::persistent_storage::nested_transaction>
+      1.72 node::write_the_done_results -> ode::write_the_result<konsens::persistent_storage::nested_transaction>
+      1.02 node::check_the_done_records -> node::write_the_done_results
+- begin_the_base is inlined into run_the_tasks, so its writes of own results count under run_the_tasks.

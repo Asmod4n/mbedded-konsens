@@ -761,3 +761,63 @@ The data of this section: $S/hyp-p and $S/hyp-w (test files and their
 binaries, deleted after this section is decided); $S/cbor-main (a
 worktree of mbedded-cbor main, removed after step 2); the bench binaries
 of step 5 (deleted after the arms are decided).
+
+## 23. Arm W: the base of Execute-Verify as a write set in memory
+
+Facts (bench/results/2026-10-30-152000Z-konsensd-storage-calls-per-write.txt,
+konsensd 1011ddc):
+- At 64 in flight, the leader calls write_the_result about 4.6 times
+  for each write, and the session writes as often.
+- The cause is in include/konsens/node.hpp. run_the_tasks calls
+  begin_the_base for the first new task of each step. begin_the_base
+  opens a nested transaction and writes again the result of each done
+  record from applied_idx + 1 up to the task, and each own result before
+  it (write_the_done_results, own_). The nested transaction is rolled
+  back at the end of the step. With many writes in flight, many done
+  records stand between applied_idx and log_len, and each step writes
+  them all again.
+
+Consensus of known systems: an execution that runs before the order is
+final keeps its effects as a write set in memory, and the commit applies
+the write set. Hyperledger Fabric (execute-order-validate) keeps the
+read set and the write set of each simulated transaction and applies
+the write set at validation
+(hyperledger-fabric.readthedocs.io, "Read-Write set semantics": "a
+read-write set is prepared for the transaction"; "the committer uses
+the write set for updating the world state"). Eve (OSDI 2012,
+execute-verify) is not checked: its paper did not download here.
+
+Form:
+1. node keeps one write set in memory: the keys and the session records
+   that the done records above applied_idx and the own results wrote,
+   in log order. It is a std::map of key to an optional value (empty for
+   an erase), and a std::map of session to an optional session_record.
+2. run_request reads the write set first, then the nested transaction.
+3. A done record or an own result adds its writes to the write set once,
+   when it is first taken. apply_the_done_records removes the writes of
+   each applied record from the write set, in the same order as now.
+4. A change of the ballot, or an own result that keep_the_tasks or
+   check_the_own_results erases, clears the write set and builds it again
+   from the done records and own_. This is the rare path; it gives the
+   same result as begin_the_base now.
+5. The result of each request is the same as with begin_the_base,
+   because both give run_request the same view: the committed state plus
+   the effects of the records before the request in log order.
+
+The model: the TLA+ model of Execute-Verify holds the base as a value,
+not as a sequence of writes. The arm changes how the base is held, not
+which base a request sees. The plan review checks that claim against
+the model before the code is written.
+
+Checks:
+- test_execute_verify gains a test that runs the same requests through
+  the write set and through begin_the_base and compares each result
+  byte for byte, for every kind of request, with a change of ballot and
+  with an erased own result in the middle.
+- The full tests on the four builds of section 2.
+- callgrind: write_the_result and the session writes per write, at 1
+  and at 64 in flight. Then konsensd as section 2 says, arm W against
+  1011ddc, 6 rounds.
+
+Provisional names: the write set (source: Hyperledger Fabric "write
+set"), write_set_.

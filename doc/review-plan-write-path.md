@@ -912,3 +912,21 @@ indexed_result. B: the result of the place of the description is a
 file under bench/results/. C: the verified read of the form inside
 compares the description; step 4 tests a description that differs.
 These are small corrections and are taken without a third round.
+
+## Review of section 23 (arm W, the base as a write set)
+
+Round 1: not approved, 12 findings. In short: the cause was not split by
+caller (now in 2026-10-30-152000Z-konsensd-storage-calls-per-write.txt:
+at 64 in flight run_the_tasks writes 2.92 results and
+write_the_done_results 1.72 per write on the leader); one write set
+cannot give the views below index that run_again, check_the_done_records
+and apply_the_done_records take, so each write needs its log index and a
+read takes an upper index; a removal by key must keep a later write of
+the same key; the rebuild needs each event that replaces a record; the
+write set must copy write_the_result for each kind, an erased session
+included; the view type of the state machine changes; the SAVEPOINT
+has no purpose on these paths; the model holds the base per index
+(model/tla/SequencePaxos.tla:629 BaseWith, :2821 NodeBase) and needs no
+change; the memory bound is the bound of own_ and of the done records
+above applied_idx; the test needs an oracle that replays the records in
+log order; the form is new and goes to the owner first.
