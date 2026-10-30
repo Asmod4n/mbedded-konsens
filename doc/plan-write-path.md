@@ -1305,7 +1305,11 @@ A lost write is then not seen in a release build until the next start;
 the lost-write check of the debug build (decision 2026-10-17) reads the
 record back. Owner (2026-10-30 18:51, card "Erst messen"): part C is built as an
 arm and measured before the owner decides. It does not enter the tree
-before that decision.
+before that decision. Part C conflicts with the owner rule of
+2026-10-24: the log store is the only source of data, and a node never
+answers from memory (written for LMDB; whether it holds for SQLite in
+the same words is not recorded). The arm measures the cost of that
+rule; it does not change the rule.
 
 Not in this section: the receive path (section 25), the copy of a done
 record in find_the_done_records (`auto e = task`, src/selection.cpp,
