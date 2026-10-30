@@ -1220,3 +1220,27 @@ the decision (PLAN.md:127 on branch rules-say-what-holds: "Buffers are
 provided, never registered"). Its bench/results on every branch and the
 history of Claude-state hold no measurement of splice or of registered
 buffers (git grep and git log -S, 2026-10-30).
+
+Owner (2026-10-30 18:47): the setup of registered buffers costs so much
+that they pay off only from some hundreds of MB. Splice almost never
+wins. The measurement was lost when the repository of mruby-webmachine
+was reset.
+
+Allocations on the leader (node 2, conc 64, same run; calls into
+operator new counted from the callgrind file with tools/callers.py in
+the scratchpad): 1,219,348 calls for 4096 writes, about 298 per write.
+The largest callers:
+  201,624  entry::entry(const entry&)   (124,451 from
+           append_the_done_records, 25,480 from execute_verify, 15,710
+           from open_tasks_after)
+  133,646  decode_entry
+  119,172  open_tasks_after
+   99,830  decode_bytes<request_result>
+   92,769  selection::select_results
+   79,976  write_the_result
+The receive path (take_frame, konsens::decode, frame_of,
+handle_a_receive, decode_write) makes about 52,000, about 13 per write.
+open_tasks_after copies every open entry of tasks_ into a new vector
+at each step (include/konsens/node.hpp:1427-1435), and
+append_the_done_records copies them again. At 64 in flight an entry is
+copied at each step that it stays open.
