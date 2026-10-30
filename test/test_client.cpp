@@ -474,7 +474,7 @@ TEST_CASE("a leader sends a lost heartbeat again")
     CHECK(replies[0].response == std::vector<std::byte>{});
 }
 
-// Plan state-in-lmdb 3.2 to 3.4: the state of the machine changes in the
+// Plan state-in-storage 3.2 to 3.4: the state of the machine changes in the
 // state storage only after the entry is decided, so a leader that loses
 // its round before the decide keeps no state of the entry.
 TEST_CASE("a state change commits only after the decide")
@@ -504,7 +504,7 @@ std::filesystem::path decided_log_of_two_entries(cluster& c)
 
 }
 
-// Plan state-in-lmdb 1.3: the storage keeps the applied index over
+// Plan state-in-storage 1.3: the storage keeps the applied index over
 // a restart. A start runs only the entries after it, so the second start
 // does not execute the request a second time.
 TEST_CASE("a start runs only the entries after the applied index of the state storage")
@@ -521,7 +521,7 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
     }
 }
 
-// Plan state-in-lmdb 1.4: the storage keeps the chain CRC of the
+// Plan state-in-storage 1.4: the storage keeps the chain CRC of the
 // log at its applied index. A start whose state belongs to another log,
 // or to a longer log, stops the vote and keeps both CRCs as the proof.
 TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")

@@ -1436,7 +1436,7 @@ std::vector<std::byte> meta_value_in(const std::filesystem::path& directory)
 
 }
 
-// Plan lmdb-only-source 2.1 item 5: the step check runs at the first read
+// Plan storage-only-source 2.1 item 5: the step check runs at the first read
 // of each step, not only at the start. A disk that loses a write while the
 // node runs is found at the next step, and the node stops voting.
 TEST_CASE("a key lost while the node runs is found at the next step")
@@ -1646,7 +1646,7 @@ sp_t leader_with_two_entries()
 
 }
 
-// Plan lmdb-only-source 2.5 item 2: the leader counts an Accepted only when
+// Plan storage-only-source 2.5 item 2: the leader counts an Accepted only when
 // its chain CRC equals the chain CRC of the own log at that index. A
 // follower whose log differs below the index does not help to decide.
 TEST_CASE("a leader does not decide on an accepted with another chain CRC")

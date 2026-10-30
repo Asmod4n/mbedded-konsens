@@ -49,7 +49,7 @@
 // check_decided_logs; ballot_above_promise of node.hpp.
 //
 // Provisional names of the vote with the chain CRC
-// (doc/plan-lmdb-only-source.md 2.5): the members decided_chain_crc,
+// (doc/plan-storage-only-source.md 2.5): the members decided_chain_crc,
 // last_chain_crc and accepted_chain_crc of the messages; get_chain_crc of
 // the storage; peer_seen, peer_step_back and take_peer_step_backs of
 // sequence_paxos.
@@ -63,11 +63,11 @@
 // section 9, and the decisions of the owner of 2026-10-21): the form B
 // with a value, in which every call that collects returns a transaction and
 // node::commit takes it; the class transaction (source: ISO SQL
-// transaction, LMDB MDB_txn), its members commit_count_ and number_,
+// transaction), its members commit_count_ and number_,
 // throw_if_another_commit, and current_transaction and commit_count_ of
 // node.hpp; the classes write_error (source: POSIX write) and sync_error
 // (source: POSIX fsync, Java SyncFailedException) of storage.hpp, which a
-// write and an LMDB commit that fail throw; max_batch_size and its value
+// write and a commit of the storage that fail throw; max_batch_size and its value
 // 1024; the private members waiting_ops_, incoming_, write_unfinished_,
 // received_batch_, message_batch_, released_messages_ and
 // released_replies_; write_waiting_ops_or_throw,
@@ -75,12 +75,12 @@
 // throw_if_ops_wait, drop_incoming_and_outgoing and
 // log_or_buffered_proposals_contain of sequence_paxos.hpp; keep_and_handle,
 // handle_one, batch_of, throw_if_batch_exceeds_max_batch_size and
-// drop_held_messages_and_replies of node.hpp; mdb_txn (source: LMDB
-// MDB_txn) and commit_or_throw of persistent_storage.cpp; batches::commit,
+// drop_held_messages_and_replies of node.hpp; commit_or_throw of
+// persistent_storage.cpp; batches::commit,
 // batches::deliver and batches::tick_and_commit of test/batches.hpp;
 // batches, largest_batch and batch_seed_offset of test/simulation.hpp;
 // largest_batch of counter_stress. The names with a source: commit (ISO
-// SQL COMMIT, mdb_txn_commit), handle_incoming (omni_paxos.rs:353),
+// SQL COMMIT), handle_incoming (omni_paxos.rs:353),
 // buffered_proposals (Omni-Paxos).
 
 namespace {

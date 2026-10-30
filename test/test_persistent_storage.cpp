@@ -215,7 +215,7 @@ TEST_CASE("get_entries returns the stored part of the range")
     CHECK_THROWS_AS((void)t->read_entries(1, 0), std::logic_error);
 }
 
-// Plan lmdb-only-source 2.1 item 2: every read of a step goes through its
+// Plan storage-only-source 2.1 item 2: every read of a step goes through its
 // write transaction, so a read sees the writes of the same step before the
 // commit, and a read-only transaction does not see them.
 TEST_CASE("a read in a transaction sees the writes of the same transaction")
@@ -277,7 +277,7 @@ TEST_CASE("a second open transaction and a use after the commit are wrong uses")
     CHECK(storage.begin_read_only().has_value());
 }
 
-// Plan lmdb-only-source 2.1 item 3: the read-only transaction is kept and
+// Plan storage-only-source 2.1 item 3: the read-only transaction is kept and
 // reused, and it stands in the same thread as a write transaction. A reuse
 // after a commit reads the new state.
 TEST_CASE("a kept read-only transaction reads the state of the last commit at each use")
@@ -424,7 +424,7 @@ TEST_CASE("a missing key in the middle of a range is missing_entry")
     CHECK((*last)->index == 3u);
 }
 
-// Plan lmdb-only-source 2.3 item 2: the meta record exists from the open on.
+// Plan storage-only-source 2.3 item 2: the meta record exists from the open on.
 // A storage that lost it is damaged, and the read says so.
 TEST_CASE("a storage that lost its meta record gives missing_meta_record")
 {
@@ -446,7 +446,7 @@ TEST_CASE("a storage that lost its meta record gives missing_meta_record")
     CHECK(t->set_promise({1, 1, 0, 1}) == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
 }
 
-// Plan lmdb-only-source 2.9: the format of the files changed, and no store
+// Plan storage-only-source 2.9: the format of the files changed, and no store
 // of an older format exists outside the tests. The open refuses a format
 // that it does not know, and a store with data and no format.
 TEST_CASE("open refuses another format and a store with data and no format")
@@ -543,7 +543,7 @@ TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format
     }
 }
 
-// Plan lmdb-only-source 2.3 item 1: after a cut, the chain continues from
+// Plan storage-only-source 2.3 item 1: after a cut, the chain continues from
 // the entry before the cut, so two logs with the same entries have the same
 // chain CRC whatever was cut before.
 TEST_CASE("the chain CRC after a cut is the chain CRC of the same log written at once")
@@ -565,7 +565,7 @@ TEST_CASE("the chain CRC after a cut is the chain CRC of the same log written at
     CHECK(meta_of(cut) == konsens::meta_record{});
 }
 
-// Plan lmdb-only-source 2.2 item 2: each raise of the decided index from o
+// Plan storage-only-source 2.2 item 2: each raise of the decided index from o
 // to d sets the state committed on the entries o to d - 1, and the entries
 // from d on stay in work. A decided index above the log length is
 // missing_entry (the start-checks plan, item 2.5).
@@ -592,10 +592,9 @@ TEST_CASE("set_decided_index commits the entries below it and nothing above")
     CHECK(t->set_decided_index(5) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
 }
 
-// An entry of more than about 2000 bytes lay on LMDB overflow pages. A
+// An entry that is larger than a page of SQLite lies on overflow pages. A
 // raise of the decided index over two or more such entries in one
-// transaction once wrote each new state under a key that pointed into a page
-// of the previous put, so the next entry was lost or failed its CRC.
+// transaction must keep each entry and its state.
 TEST_CASE("a raise of the decided index over large entries keeps every entry")
 {
     const temporary_directory dir;
@@ -974,7 +973,7 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     CHECK(r->find_session(7).value() == session);
 }
 
-// Plan state-in-lmdb 1.2: an erase removes a key and a session, and an
+// Plan state-in-storage 1.2: an erase removes a key and a session, and an
 // erase of an absent key is no error, as for std::map.
 TEST_CASE("the storage erases a key and a session")
 {
