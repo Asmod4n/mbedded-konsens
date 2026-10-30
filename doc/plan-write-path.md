@@ -570,3 +570,49 @@ The review is in doc/review-plan-write-path.md ("Review of arm P").
 - P7: with S2, a step that continues an open transaction runs three
   checks.
 - P8: the name `read_meta_between_steps` stays until the owner decides.
+
+## 20. Arms U and M: Unix sockets and multishot receive in konsensd
+
+Source: the owner asked for Unix sockets and multishot io_uring
+operations (2026-10-30). konsensd now uses single-shot accept and
+recv, and arms a new recv after each completion
+(program/serve.cpp:159-172, 580-600). Each node is one process with one
+thread; one `io_uring_submit_and_wait_timeout` per turn of the loop.
+
+Two arms, each its own binary, so each part is measured alone:
+- U: the addresses in the configuration may name a Unix socket. The
+  form is `unix:<path>`, as gRPC and nginx write it (provisional; the
+  owner decides the name). `resolve` returns a `sockaddr_un` for that
+  form. `listener_on` removes nothing on the disk; a socket file that
+  exists makes the bind fail, as now for a port in use. TCP_NODELAY is
+  set only on TCP sockets. Nothing else changes.
+- M: U, plus multishot accept (`io_uring_prep_multishot_accept`) for
+  both listeners and multishot recv (`io_uring_prep_recv_multishot`)
+  with one provided buffer ring (`io_uring_setup_buf_ring`) for the
+  connections that receive. A completion with IORING_CQE_F_BUFFER
+  names its buffer; the bytes go to the frame or HTTP buffer of the
+  connection as now, and the buffer goes back to the ring at once. A
+  completion without IORING_CQE_F_MORE re-arms the operation. ENOBUFS
+  re-arms after the buffers are back. `connection::in` goes away in M.
+  Names of the buffer ring and its sizes are named constants.
+- Both work on TCP too. M is measured on Unix sockets.
+
+Bench: cluster.sh writes `unix:` addresses under the run directory when
+UNIX=1. The driver dials a `unix:` target through `net.Dial("unix")`.
+The probe uses `curl --unix-socket`.
+
+Tests: test_config and test_address (or the test that covers
+`resolve`) check the `unix:` form: a path, an empty path (malformed),
+a path longer than `sun_path` (malformed). The program tests (ptest.sh,
+three_nodes) run once with TCP and once with `unix:` addresses, for U
+and for M. The address check covers every member of the set of forms:
+host:port, [v6]:port, unix:path.
+
+Measured as section 2 says: arms R1 with S2 (TCP), U with S2, M with
+S2, and an A/A copy of M.
+
+Questions for the review: the order of a multishot recv completion and
+a close of the connection; the bound of buffers per connection when a
+peer sends faster than the node reads; whether a provided buffer ring
+works on the slipstream engine (if not, M refuses to start there as S
+does).
