@@ -217,3 +217,33 @@ findings, 6 blocking) is applied as follows.
 - Caused: owner question B named a round that does not exist. It was
   withdrawn on 2026-10-30. Question B and R4, R5 are void. M2 maps each
   fdatasync to its step before any new question about the path.
+
+## 12. Result of M2
+
+bench/results/2026-10-30-061200Z-write-path-steps.txt. At 1 in flight
+the path of one write holds three fdatasync calls in sequence:
+
+1. The leader sends `work`. No commit syncs here, and the follower
+   answers without a sync.
+2. The leader appends the done record and syncs. Then it sends the
+   AcceptDecide.
+3. Each follower syncs and sends the Accepted.
+4. The leader decides, applies the result, syncs, and then releases the
+   client reply.
+5. The follower applies on the Decide and syncs. This sync is not on
+   the path.
+
+A step costs 0.3 to 3.2 ms under strace, and 1.4 to 1.9 ms of a step
+with a sync is not the sync.
+
+New arm F. The client reply leaves before the commit of its apply. The
+reply depends on the done record, which is durable on a majority after
+step 3. It does not depend on the apply. A read still waits until the
+committed state reaches the read index. If the apply commit fails, the
+process ends, and the reply was right because the entry is decided.
+Known practice: a state machine of a replicated log is rebuilt from the
+log, so its apply needs no sync before the reply (Raft dissertation,
+chapter 5, from memory, not checked; CockroachDB applies without a
+sync, from memory, not checked). The review checks arm F before the
+build. With arms A and F, step 2 and 3 run in parallel and step 4 has
+no sync on the path. The measurement says what that gives.
