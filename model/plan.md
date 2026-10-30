@@ -280,18 +280,18 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
 19. B3: Cardinality(DOMAIN snapshot) ≤ |Keys|.
 20. Q5 b is a new design with no source in Omni-Paxos. The proposal
     stays a.
-21. Owner (LMDB thread, 2026-10-16): The user sets a maximum file
+21. Owner (storage thread, 2026-10-16): The user sets a maximum file
     size. Compaction runs so that it is not visible in the latency.
     Consequence for the model: The snapshot can occur at each decided
     index, not only at multiples of K. This includes rule K and a
     trigger by size. S8 applies to each index and does not change. B1
     applies only in the run with rule K. The reduction of the file
-    (copy with MDB_CP_COMPACT) is local and is not part of the
+    (a compact copy) is local and is not part of the
     protocol. No model checks latency. It is measured on the C++
     code. If the file reaches the bound nevertheless, the leader
     rejects new proposals (window W). It does not break the bound.
-22. Owner (LMDB thread, 17:42): Nothing is fixed for the file. LMDB
-    stays LMDB and is observed in a development environment. The
+22. Owner (storage thread, 17:42): Nothing is fixed for the file. The
+    storage is observed in a development environment. The
     model keeps the snapshot in the protocol. The rejection of new
     proposals at the reached file size (item 21) is provisional. It
     depends on this observation.
@@ -299,8 +299,8 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
     decides:
     - S10: An installed snapshot never lowers promise and n_accepted.
       The snapshot in the model holds only the folded state, never
-      promise or ballot. A snapshot as a full LMDB env would break
-      this.
+      promise or ballot. A snapshot as a full copy of the store would
+      break this.
     - F6 Rolled-back disk: A node returns to an older, valid durable
       state (lost fsync, backup). Rule R detects only empty storage.
       Expectation: run F6 violates S2, as run G does. A defence needs
@@ -309,11 +309,12 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
     - A snapshot at the same indexes on all nodes affects all of them
       at the same time. Item 21 already allows different indexes for
       each node. The model checks both forms.
-24. Owner (17:49): LMDB is a detail of the implementation. Only the
-    owner of the DB knows about it. Consequence: A snapshot travels
-    as CBOR of the folded state, never as an LMDB file
-    (mdb_env_copyfd2 is not used for InstallSnapshot). Thus S10 holds
-    by the form. The model checks it nevertheless.
+24. Owner (17:49): the storage is a detail of the implementation. Only
+    the owner of the DB knows about it. Consequence: A snapshot travels
+    as CBOR of the folded state, never as a file of the store. Thus S10
+    holds by the form. The model checks it nevertheless. The LMDB form
+    of items 21, 22 and 24 is in the git history before branch
+    remove-lmdb.
 25. Owner (review thread, 17:52): The library does check by itself:
     CRC32C by hardware instruction, for each log entry, the meta DB
     (promise) and the snapshot block. Index and kind are part of the
@@ -360,7 +361,7 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
     - A client that crashed: its object is released through
       heartbeats. This belongs to the actor part, not to model S.
     - An entry counts as stored only after the synchronous commit of
-      LMDB (default, with no flags). step blocks the calling thread.
+      the storage. step blocks the calling thread.
       The library starts no thread. In the model, this is the atomic
       action from item 12 of review 1.
     Order now: run a and G, then F6a/b/c, then (c) reconfiguration,
