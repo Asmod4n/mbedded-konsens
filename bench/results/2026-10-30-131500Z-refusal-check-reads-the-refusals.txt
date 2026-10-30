@@ -1,0 +1,50 @@
+What was measured
+- The rate of one cluster over nine samples in a row, as in 2026-10-30-123000Z-write-path-slows-with-each-sample.txt: 4096 writes of 64 bytes per sample, 64 in flight, no restart between samples. Same bed, container, seccomp profile and compiler.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh), option sync_by_the_caller off in both: konsensd_g16S2 (3fa6039, fa81e1156f810499) and konsensd_g16R1 (2a8cd3b, b44668830471453d). Order S2 R1 S2 R1. spread.sh 3716129a03e6b8af.
+
+Cause found before this run
+- callgrind on all three nodes on tmpfs (vg3.sh): on the node that was leader at the end, selection::find_the_entries_that_a_majority_refused took 2 266 instructions per write in sample 1 and 738 854 in sample 9. It walked each done record that the leader appended in its ballot, in each step. That set has no bound.
+- 2a8cd3b walks the refusals instead. The result is the same list.
+- The same run on tmpfs showed the drop as on the disk (9 544 to 1 491 writes/s for S2), so the disk was not the cause.
+
+Writes/s per sample
+- konsensd_g16S2 sample=1 4057
+- konsensd_g16S2 sample=2 4069
+- konsensd_g16S2 sample=3 4010
+- konsensd_g16S2 sample=4 3961
+- konsensd_g16S2 sample=5 3371
+- konsensd_g16S2 sample=6 3019
+- konsensd_g16S2 sample=7 2781
+- konsensd_g16S2 sample=8 2176
+- konsensd_g16S2 sample=9 2022
+- konsensd_g16R1 sample=1 4205
+- konsensd_g16R1 sample=2 4103
+- konsensd_g16R1 sample=3 4532
+- konsensd_g16R1 sample=4 4689
+- konsensd_g16R1 sample=5 4452
+- konsensd_g16R1 sample=6 4511
+- konsensd_g16R1 sample=7 4338
+- konsensd_g16R1 sample=8 4527
+- konsensd_g16R1 sample=9 4567
+- konsensd_g16S2 sample=1 4830
+- konsensd_g16S2 sample=2 4391
+- konsensd_g16S2 sample=3 4370
+- konsensd_g16S2 sample=4 3806
+- konsensd_g16S2 sample=5 3401
+- konsensd_g16S2 sample=6 3033
+- konsensd_g16S2 sample=7 3255
+- konsensd_g16S2 sample=8 2615
+- konsensd_g16S2 sample=9 1821
+- konsensd_g16R1 sample=1 3709
+- konsensd_g16R1 sample=2 4295
+- konsensd_g16R1 sample=3 4313
+- konsensd_g16R1 sample=4 4285
+- konsensd_g16R1 sample=5 4119
+- konsensd_g16R1 sample=6 4531
+- konsensd_g16R1 sample=7 4484
+- konsensd_g16R1 sample=8 4222
+- konsensd_g16R1 sample=9 4572
+
+Result
+- S2 falls from 4 057 to 2 022 and from 4 830 to 1 821 writes/s over nine samples. R1 stays between 3 709 and 4 689 writes/s, and sample 9 is 4 567 and 4 572.
+- The cells of the earlier arm runs ran their samples on one cluster each. Their medians hold this drop, and a faster arm wrote more and lost more. The arm results before 2a8cd3b at 64 in flight are not comparable with each other.
