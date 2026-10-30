@@ -412,3 +412,17 @@ R10. `the_log_is_synced(n)` opens a step and returns a transaction, as
 - Caused: every konsensd number of the write path so far, the CPU per
   write included, is a number of the engine of slipstreamIO. Arm S
   cannot run in the bench container as it is.
+
+### Change after the build (arm S)
+
+R11. The messages of Execute-Verify (`work`, `answer`, `try_again`,
+     `refused`) are not held. They carry no sequence number
+     (message.hpp:65-74 applies to Sequence Paxos messages). None of
+     them states a durable write: `work` asks a follower to run a
+     request, `answer` gives a result that the done record and the check
+     of each follower decide on later, and a refusal only stops an
+     accept. A `work` that reaches a follower before its promise is
+     dropped by `keep_the_tasks` and sent again. Without R11 every
+     AcceptDecide of a leader with a sync out waits behind a held
+     `work`, and the early path of arm A is lost. Provisional; it goes to
+     the owner with the numbers of arm S.

@@ -305,9 +305,7 @@ TEST_CASE("a sync report between commit_phase_one and commit_phase_two is a wron
 // (src/persistent_storage.cpp); each commit writes at least one frame, so
 // more commits than that on the follower run at least one checkpoint. The
 // leader and the other follower form a majority, so the cluster decides
-// while the sync of the follower is out. The sync of a follower is the one
-// that is delayed, because a leader with a sync out holds the work of
-// execute-verify for every follower, and its AcceptDecide waits behind it.
+// while the sync of the follower is out.
 TEST_CASE("checkpoints that run while a sync is out keep the descriptor on the WAL")
 {
     constexpr std::uint64_t checkpoint_frames = 1000;

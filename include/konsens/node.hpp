@@ -839,7 +839,7 @@ private:
         for (auto& m : seq_paxos_.take_outgoing_messages()) {
             step.messages.emplace_back(std::move(m));
         }
-        std::ranges::move(execute_verify_outgoing_, std::back_inserter(step.messages));
+        std::ranges::move(execute_verify_outgoing_, std::back_inserter(released_messages_));
         execute_verify_outgoing_.clear();
         if (held_steps_.empty() && step.sync_number <= seq_paxos_.get_synced_sync_number()) {
             std::ranges::move(step.messages, std::back_inserter(released_messages_));
