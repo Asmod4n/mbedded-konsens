@@ -1146,9 +1146,32 @@ struct persistent_storage::environment {
     bool write_unfinished{};
     std::optional<std::error_code> failure;
     std::vector<std::byte> record{};
+    std::optional<meta_record> writer_meta;
 
     link of_writer() noexcept { return {writer_db.get(), &writer, &failure}; }
     link of_reader() noexcept { return {reader_db.get(), &reader, nullptr}; }
+
+    std::expected<meta_record, std::error_code> read_the_meta()
+    {
+        if (writer_meta) {
+            return *writer_meta;
+        }
+        auto m = read_meta(of_writer());
+        if (m) [[likely]] {
+            writer_meta = *m;
+        }
+        return m;
+    }
+
+    std::expected<void, std::error_code> write_the_meta(const meta_record& m)
+    {
+        writer_meta.reset();
+        auto w = write_meta(of_writer(), m);
+        if (w) [[likely]] {
+            writer_meta = m;
+        }
+        return w;
+    }
 
     void end_the_reader() noexcept
     {
@@ -1161,6 +1184,7 @@ struct persistent_storage::environment {
         roll_back(writer_db.get(), writer);
         nested_open = false;
         writer_open = false;
+        writer_meta.reset();
     }
 
     void roll_back_the_nested() noexcept
@@ -1314,7 +1338,7 @@ std::expected<meta_record, std::error_code> persistent_storage::transaction::get
     if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
         return std::unexpected(f.error());
     }
-    return read_meta(env_->of_writer());
+    return env_->read_the_meta();
 }
 
 std::expected<std::vector<entry>, read_failure>
@@ -1389,14 +1413,14 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
     env_->log_written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto l = env_->of_writer();
-    auto m = read_meta(l);
+    auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
         return put;
     }
-    return write_meta(l, *m);
+    return env_->write_the_meta(*m);
 }
 
 std::expected<void, std::error_code>
@@ -1411,7 +1435,7 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
     env_->log_written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto l = env_->of_writer();
-    auto m = read_meta(l);
+    auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
@@ -1430,7 +1454,7 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
     if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
         return put;
     }
-    return write_meta(l, *m);
+    return env_->write_the_meta(*m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_promise(const ballot promise)
@@ -1442,13 +1466,12 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_promis
     }
     env_->written = true;
     env_->log_written = true;
-    const auto l = env_->of_writer();
-    auto m = read_meta(l);
+    auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     m->promise = promise;
-    return write_meta(l, *m);
+    return env_->write_the_meta(*m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_accepted_round(const ballot accepted_round)
@@ -1460,13 +1483,12 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_accept
     }
     env_->written = true;
     env_->log_written = true;
-    const auto l = env_->of_writer();
-    auto m = read_meta(l);
+    auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     m->accepted_round = accepted_round;
-    return write_meta(l, *m);
+    return env_->write_the_meta(*m);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_decided_index(const std::uint64_t decided_idx)
@@ -1478,7 +1500,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
     }
     env_->written = true;
     const auto l = env_->of_writer();
-    auto m = read_meta(l);
+    auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
@@ -1491,7 +1513,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
         }
     }
     m->decided_idx = decided_idx;
-    return write_meta(l, *m);
+    return env_->write_the_meta(*m);
 }
 
 std::expected<void, std::error_code>
@@ -1587,14 +1609,13 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_applie
         return f;
     }
     env_->written = true;
-    const auto l = env_->of_writer();
-    auto m = read_meta(l);
+    auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     m->applied_idx = applied_idx;
     m->applied_chain_crc = applied_chain_crc;
-    return write_meta(l, *m);
+    return env_->write_the_meta(*m);
 }
 
 std::expected<persistent_storage::nested_transaction, std::error_code> persistent_storage::transaction::begin_nested()
@@ -1640,6 +1661,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::commit_wit
     throw_if_nested_is_open(env_->nested_open);
     auto& env = *std::exchange(env_, nullptr);
     env.writer_open = false;
+    env.writer_meta.reset();
     if (env.failure) [[unlikely]] {
         return std::unexpected(*env.failure);
     }
@@ -1838,6 +1860,7 @@ std::expected<persistent_storage::transaction, std::error_code> persistent_stora
     env_->writer_open = true;
     env_->written = false;
     env_->log_written = false;
+    env_->writer_meta.reset();
     return transaction{env_.get()};
 }
 

@@ -263,3 +263,19 @@ this plan before the build.
 - True: the helper of that test ended the process on the first error,
   and the output did not show the error.
 - Caused: the wrong form above was built in the tree.
+
+## 14. Arm D1: the meta record of a write transaction stays in memory
+
+- Source: M1 (section 11): the leader reads the `meta` row 4.39 times
+  per write; one write transaction reads it many times.
+- Form: the environment of the storage keeps the meta record of the
+  open write transaction after its first read. A write of the meta
+  record through the transaction replaces it. The begin, the commit and
+  the rollback of a write transaction drop it. The reader connection
+  does not use it.
+- The CRC of the meta record is checked on the first read of each
+  transaction, as before.
+- Test: a rolled back transaction does not leave its meta record for
+  the next transaction; a write is seen by the next read of the same
+  transaction.
+- Measured as section 2 says, against F2.

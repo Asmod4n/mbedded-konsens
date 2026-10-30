@@ -208,6 +208,34 @@ TEST_CASE("a commit without a sync is read back and survives a close and a reope
     CHECK(std::ranges::equal(**found, bytes_of("v")));
 }
 
+// A write transaction keeps its meta record in memory after the first read.
+// A transaction that is rolled back must not leave its meta record for the
+// next transaction, and a write must be seen by the next read in the same
+// transaction.
+TEST_CASE("the meta record of a rolled back transaction does not reach the next transaction")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    write(storage, [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("a")})); });
+    {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->get_meta().has_value());
+        REQUIRE(t->append_entries(std::vector{normal_entry("b")}));
+        REQUIRE(t->set_decided_index(2));
+        const auto m = t->get_meta();
+        REQUIRE(m.has_value());
+        CHECK(m->log_len == 2u);
+        CHECK(m->decided_idx == 2u);
+    }
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    CHECK(m->log_len == 1u);
+    CHECK(m->decided_idx == 0u);
+}
+
 // A user opens a new directory and reads first. A new storage has an empty
 // log and a meta record of zero values. The open writes that record, so
 // that a storage with no meta record is a damaged storage.
