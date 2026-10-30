@@ -1027,3 +1027,98 @@ TEST_CASE("a StopSign that is not decided is removed by a new leader")
         CHECK(decided_of(*n) == std::vector{make_entry(1)});
     }
 }
+
+namespace {
+
+sp_t make_synced_by_the_caller(const node_id pid)
+{
+    return *sp_t::with({1, pid, peers_of(pid), {}, konsens::start_kind::first, 0, true}, sqlite_storage::open_new(),
+                       first_nonce);
+}
+
+void report_the_sync(sp_t& sp)
+{
+    if (sp.get_last_sync_number() > sp.get_synced_sync_number()) {
+        REQUIRE(sp.the_log_is_synced(sp.get_last_sync_number()));
+        static_cast<void>(sp.commit());
+    }
+}
+
+}
+
+// R1 of section 15 of doc/plan-write-path.md: the synced length of the log
+// counts only the prefix that is durable and still the same. Node 3 syncs
+// its entry 1 of round 1, and node 2 then accepts entry 2 at the same index
+// in round 2. When node 3 leads again, it adopts entry 2 over its synced
+// entry 1. With node 1 alone beside it, it may decide only after its own
+// sync of entry 2; a synced length that kept the old entry 1 would let it
+// count its cache as a vote.
+TEST_CASE("a new leader that adopts a suffix over synced entries decides only after its sync")
+{
+    auto a = make_synced_by_the_caller(1);
+    auto b = make_synced_by_the_caller(2);
+    auto c = make_synced_by_the_caller(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(make_entry(1)));
+    deliver_among(nodes, {false, false, true});
+    report_the_sync(c);
+    CHECK(c.get_synced_len() == 1);
+    CHECK(c.get_decided_idx().value() == 0);
+    REQUIRE(b.handle_leader(ballot_of(2, 2)));
+    deliver_among(nodes, {true, true, false});
+    REQUIRE(b.get_state() == std::pair{role::leader, phase::accept});
+    REQUIRE(b.append(make_entry(2)));
+    deliver_among(nodes, {true, true, false});
+    report_the_sync(a);
+    REQUIRE(c.handle_leader(ballot_of(3, 3)));
+    deliver_among(nodes, {true, false, true});
+    REQUIRE(c.get_state() == std::pair{role::leader, phase::accept});
+    CHECK(c.get_synced_len() == 0);
+    CHECK(c.get_decided_idx().value() == 0);
+    report_the_sync(c);
+    deliver_among(nodes, {true, false, true});
+    CHECK(c.get_decided_idx().value() == 1);
+    CHECK(decided_of(c) == std::vector{make_entry(2)});
+}
+
+// R2: a sync report may make several indexes chosen at once; the leader
+// decides the highest, the majority-th largest accepted index, and not
+// only the index of the last Accepted.
+TEST_CASE("a sync report decides the highest chosen index")
+{
+    auto a = make_synced_by_the_caller(1);
+    auto b = make_synced_by_the_caller(2);
+    auto c = make_synced_by_the_caller(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_among(nodes, {true, false, true});
+    report_the_sync(c);
+    deliver_among(nodes, {true, false, true});
+    REQUIRE(c.append(make_entry(1)));
+    deliver_among(nodes, {true, false, true});
+    REQUIRE(c.append(make_entry(2)));
+    deliver_among(nodes, {true, false, true});
+    CHECK(c.get_decided_idx().value() == 0);
+    report_the_sync(c);
+    CHECK(c.get_decided_idx().value() == 2);
+}
+
+// With sync_by_the_caller off a step with log writes takes no sync number:
+// the commit syncs, as before.
+TEST_CASE("without sync_by_the_caller no step takes a sync number")
+{
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(make_entry(1)));
+    deliver_all(nodes);
+    for (auto* n : nodes) {
+        CHECK(n->get_last_sync_number() == 0);
+    }
+    CHECK(c.get_decided_idx().value() == 1);
+}

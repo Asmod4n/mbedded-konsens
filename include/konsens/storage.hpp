@@ -243,6 +243,8 @@ template <typename S>
 concept storage = storage_write<typename S::transaction> && storage_read<typename S::read_only_transaction> &&
                   requires(S& s, const S& cs) {
                       { s.begin() } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
+                      { cs.wal_file_descriptor() } -> std::same_as<int>;
+                      { s.the_sync_failed() } -> std::same_as<void>;
                       {
                           cs.begin_read_only()
                       } -> std::same_as<std::expected<typename S::read_only_transaction, std::error_code>>;

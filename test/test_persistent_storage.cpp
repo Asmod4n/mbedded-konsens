@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -1261,6 +1262,47 @@ TEST_CASE("the store, its WAL and the node storage have the mode 0600")
             CHECK(std::filesystem::status(dir.path() / name).permissions() == owner_only);
         }
     }
+}
+
+// R8 of section 15 of doc/plan-write-path.md: the caller syncs the WAL
+// through the descriptor that the storage keeps. The sync covers the log
+// only if the descriptor names the file that SQLite writes, so the test
+// compares the device and the inode with the file at the path. The
+// descriptor is read only and does not pass to a child process.
+TEST_CASE("the WAL descriptor names the -wal file of the store, read only and closed on exec")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector one{normal_entry("one")};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
+    const int fd = storage.wal_file_descriptor();
+    REQUIRE(fd >= 0);
+    struct stat by_descriptor {};
+    struct stat by_path {};
+    REQUIRE(::fstat(fd, &by_descriptor) == 0);
+    REQUIRE(::stat((dir.path() / sqlite_damage::wal_file_name).c_str(), &by_path) == 0);
+    CHECK(by_descriptor.st_dev == by_path.st_dev);
+    CHECK(by_descriptor.st_ino == by_path.st_ino);
+    CHECK((::fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDONLY);
+    CHECK((::fcntl(fd, F_GETFD) & FD_CLOEXEC) == FD_CLOEXEC);
+    CHECK(::fdatasync(fd) == 0);
+}
+
+// R6: a sync of the caller that failed may have lost dirty pages, and a
+// later commit would stand on them. After the report every write
+// transaction is a wrong use; a read still works, so the node can stop.
+TEST_CASE("after the_sync_failed every begin throws and a read still works")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector one{normal_entry("one")};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
+    storage.the_sync_failed();
+    CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
+    const auto t = storage.begin_read_only();
+    REQUIRE(t);
+    CHECK(t->get_meta().value().log_len == 1);
 }
 
 // Plan clean-stop 2.1 and 4.1: the mark lives in node.db only. A start

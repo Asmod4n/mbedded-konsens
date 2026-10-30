@@ -121,6 +121,8 @@ struct disk_storage {
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), d.get()}; });
     }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return d->store.begin_read_only(); }
+    int wal_file_descriptor() const { return d->store.wal_file_descriptor(); }
+    void the_sync_failed() { d->store.the_sync_failed(); }
 };
 
 inline std::shared_ptr<disk> disk_in(const std::filesystem::path& directory)
@@ -215,6 +217,7 @@ struct cluster {
     std::array<bool, node_count> started{};
     std::vector<node_t> nodes;
     std::uint64_t next_nonce{1};
+    bool sync_by_the_caller{};
 
     // The node storage of a node lives beside its disk, so that a clean
     // stop leaves its mark for the next start. Only the first start of a
@@ -224,6 +227,7 @@ struct cluster {
         next_nonce += 1;
         auto config = config_of(pid_of(i));
         config.first_start = !started.at(i);
+        config.sync_by_the_caller = sync_by_the_caller;
         started.at(i) = true;
         return *node_t::with(config, disk_storage{disks.at(i)}, sqlite_storage::open_node_storage_in(states.at(i)),
                              counter{}, next_nonce);

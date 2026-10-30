@@ -408,6 +408,8 @@ struct recording_storage {
             [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
     }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return inner.begin_read_only(); }
+    int wal_file_descriptor() const { return inner.wal_file_descriptor(); }
+    void the_sync_failed() { inner.the_sync_failed(); }
 };
 
 }

@@ -142,6 +142,8 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> begin();
     [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
     [[nodiscard]] std::expected<void, std::error_code> copy(const std::filesystem::path& directory) const;
+    [[nodiscard]] int wal_file_descriptor() const;
+    void the_sync_failed();
 
     persistent_storage(persistent_storage&&) noexcept;
     persistent_storage& operator=(persistent_storage&&) noexcept;

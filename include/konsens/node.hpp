@@ -44,6 +44,12 @@ struct node_config {
     std::uint64_t resend_message_tick_timeout;
     std::vector<node_id> build_from{};
     bool first_start{};
+    bool sync_by_the_caller{};
+};
+
+struct sync_request {
+    int file_descriptor;
+    std::uint64_t sync_number;
 };
 
 inline start_kind kind_of_the_start(const node_config& config, const std::optional<clean_stop_mark>& mark,
@@ -147,7 +153,7 @@ public:
         }
         auto sp = sequence_paxos<S>::with(
             {config.configuration_id, config.pid, config.peers, config.build_from, *kind,
-             *kind == start_kind::clean ? (*mark)->verified_idx : 0},
+             *kind == start_kind::clean ? (*mark)->verified_idx : 0, config.sync_by_the_caller},
             std::move(internal_storage),
             nonce);
         if (!sp) [[unlikely]] {
@@ -204,6 +210,7 @@ public:
         drop_held_messages_and_replies();
         reply_stopped_to_the_waiting_calls();
         seq_paxos_.sync_the_last_commit();
+        release_the_held_replies_after_the_last_sync();
         const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta(),
                                    seq_paxos_.get_verified_idx()};
         if (auto w = own_storage_.write_the_clean_stop_mark(mark); !w) [[unlikely]] {
@@ -281,7 +288,88 @@ public:
         });
     }
 
+    std::optional<sync_request> take_the_sync_request()
+    {
+        throw_if_stopped();
+        throw_if_phase_two_is_open();
+        if (requested_sync_ || seq_paxos_.get_last_sync_number() <= seq_paxos_.get_synced_sync_number()) {
+            return std::nullopt;
+        }
+        requested_sync_ = seq_paxos_.get_last_sync_number();
+        return sync_request{seq_paxos_.wal_file_descriptor(), *requested_sync_};
+    }
+
+    [[nodiscard]] std::expected<transaction, std::error_code> the_log_is_synced(const std::uint64_t sync_number)
+    {
+        throw_if_stopped();
+        throw_if_phase_two_is_open();
+        throw_if_the_sync_was_not_requested(sync_number);
+        requested_sync_.reset();
+        return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
+            release_the_synced_output(sync_number);
+            if (auto r = seq_paxos_.the_log_is_synced(sync_number); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            return current_transaction();
+        });
+    }
+
+    [[noreturn]] void throw_after_a_failed_sync(const std::uint64_t sync_number, const std::error_code e)
+    {
+        throw_if_stopped();
+        throw_if_phase_two_is_open();
+        throw_if_the_sync_was_not_requested(sync_number);
+        requested_sync_.reset();
+        held_steps_.clear();
+        drop_held_messages_and_replies();
+        seq_paxos_.the_sync_failed();
+        throw sync_error(e, "konsens: the caller failed to sync the log");
+    }
+
 private:
+    void throw_if_the_sync_was_not_requested(const std::uint64_t sync_number) const
+    {
+        if (requested_sync_ != sync_number) [[unlikely]] {
+            throw std::logic_error("konsens: a report of a sync that take_the_sync_request did not give");
+        }
+    }
+
+    std::vector<node_id> peers_with_held_messages() const
+    {
+        std::vector<node_id> peers;
+        for (const auto& step : held_steps_) {
+            for (const auto& m : step.messages) {
+                peers.push_back(std::visit([](const auto& x) { return x.to; }, m));
+            }
+        }
+        return peers;
+    }
+
+    void release_the_synced_output(const std::uint64_t sync_number)
+    {
+        const auto synced = std::ranges::find_if(
+            held_steps_, [sync_number](const held_step& h) { return h.sync_number > sync_number; });
+        for (auto& h : std::ranges::subrange(held_steps_.begin(), synced)) {
+            std::ranges::move(h.messages, std::back_inserter(released_messages_));
+            std::ranges::move(h.replies, std::back_inserter(released_replies_));
+        }
+        held_steps_.erase(held_steps_.begin(), synced);
+    }
+
+    void release_the_held_replies_after_the_last_sync()
+    {
+        for (auto& h : std::exchange(held_steps_, {})) {
+            std::ranges::move(h.replies, std::back_inserter(released_replies_));
+        }
+    }
+
+    void release_the_read_replies_from(const std::size_t first)
+    {
+        const auto reads = std::next(client_replies_.begin(), static_cast<std::ptrdiff_t>(first));
+        std::ranges::move(reads, client_replies_.end(), std::back_inserter(released_replies_));
+        client_replies_.erase(reads, client_replies_.end());
+    }
+
     result end_the_step(const transaction t)
     {
         return throw_on_a_damage([&]() -> result {
@@ -317,7 +405,7 @@ private:
 
     void release_the_output_before_phase_two()
     {
-        for (auto& m : seq_paxos_.take_the_messages_before_the_sync()) {
+        for (auto& m : seq_paxos_.take_the_messages_before_the_sync(peers_with_held_messages())) {
             released_messages_.emplace_back(std::move(m));
         }
         std::ranges::move(replies_before_the_sync_, std::back_inserter(released_replies_));
@@ -341,7 +429,11 @@ private:
                 return std::unexpected(promise.error());
             }
             drop_writes_of_an_old_promise(*promise);
+            const auto replies_before_the_reads = client_replies_.size();
             serve_reads(*promise);
+            if (sync_by_the_caller_) {
+                release_the_read_replies_from(replies_before_the_reads);
+            }
             release_the_output();
             return {};
         });
@@ -717,7 +809,47 @@ private:
         return out;
     }
 
-    void release_the_output() { release(take_held_output()); }
+    void release_the_output()
+    {
+        if (!sync_by_the_caller_) {
+            release(take_held_output());
+            return;
+        }
+        hold_the_output_until_its_sync();
+    }
+
+    struct held_step {
+        std::uint64_t sync_number;
+        std::vector<message> messages;
+        std::vector<client_reply> replies;
+    };
+
+    void hold_the_output_until_its_sync()
+    {
+        for (auto& m : ble_.take_outgoing_messages()) {
+            released_messages_.emplace_back(std::move(m));
+        }
+        std::ranges::move(replies_before_the_sync_, std::back_inserter(released_replies_));
+        replies_before_the_sync_.clear();
+        std::ranges::move(log_records_, std::back_inserter(released_log_records_));
+        log_records_.clear();
+        received_batch_.clear();
+        message_batch_.clear();
+        held_step step{seq_paxos_.get_last_sync_number(), {}, std::exchange(client_replies_, {})};
+        for (auto& m : seq_paxos_.take_outgoing_messages()) {
+            step.messages.emplace_back(std::move(m));
+        }
+        std::ranges::move(execute_verify_outgoing_, std::back_inserter(step.messages));
+        execute_verify_outgoing_.clear();
+        if (held_steps_.empty() && step.sync_number <= seq_paxos_.get_synced_sync_number()) {
+            std::ranges::move(step.messages, std::back_inserter(released_messages_));
+            std::ranges::move(step.replies, std::back_inserter(released_replies_));
+            return;
+        }
+        if (!step.messages.empty() || !step.replies.empty()) {
+            held_steps_.push_back(std::move(step));
+        }
+    }
 
     void release(held_output&& out)
     {
@@ -774,7 +906,8 @@ private:
          ballot_leader_election ble, M machine, const std::uint64_t nonce)
         : seq_paxos_(std::move(seq_paxos)), own_storage_(std::move(own_storage)), ble_(std::move(ble)),
           ble_config_(ble_config_of(config)), election_clock_{0, config.election_tick_timeout},
-          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce)
+          resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce),
+          sync_by_the_caller_(config.sync_by_the_caller)
     {
         nodes_ = config.peers;
         nodes_.push_back(config.pid);
@@ -1852,6 +1985,9 @@ private:
     std::uint64_t last_read_{};
     std::unique_ptr<std::uint64_t> commit_count_ = std::make_unique<std::uint64_t>();
     std::uint64_t nonce_;
+    bool sync_by_the_caller_;
+    std::vector<held_step> held_steps_;
+    std::optional<std::uint64_t> requested_sync_;
     bool build_started_{};
     bool waits_for_the_operator_{};
     bool faulted_{};

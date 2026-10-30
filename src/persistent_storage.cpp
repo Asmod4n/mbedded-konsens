@@ -16,6 +16,7 @@
 #include <crc32c/crc32c.h>
 #include <fcntl.h>
 #include <sqlite3.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "byte_order.hpp"
@@ -29,6 +30,7 @@ constexpr mode_t file_mode = 0600;
 constexpr uid_t root_user_id = 0;
 constexpr std::string_view store_file_name = "konsens.db";
 constexpr std::string_view node_file_name = "node.db";
+constexpr std::string_view wal_suffix = "-wal";
 constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
 constexpr std::string_view fault_proof_key = "fault_proof";
@@ -951,6 +953,52 @@ std::expected<void, std::error_code> create_with_file_mode(const std::filesystem
     return {};
 }
 
+class file_descriptor {
+public:
+    file_descriptor() noexcept = default;
+    explicit file_descriptor(const int fd) noexcept : fd_{fd} {}
+    file_descriptor(file_descriptor&& other) noexcept : fd_{std::exchange(other.fd_, -1)} {}
+    file_descriptor& operator=(file_descriptor&& other) noexcept
+    {
+        std::swap(fd_, other.fd_);
+        return *this;
+    }
+    ~file_descriptor()
+    {
+        if (fd_ != -1) {
+            ::close(fd_);
+        }
+    }
+
+    int get() const noexcept { return fd_; }
+
+private:
+    int fd_ = -1;
+};
+
+bool names_the_same_file(const struct stat& a, const struct stat& b) noexcept
+{
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+}
+
+std::expected<file_descriptor, std::error_code> open_the_wal_read_only(const std::filesystem::path& file)
+{
+    const auto wal = std::filesystem::path{file.string() + std::string{wal_suffix}};
+    file_descriptor fd{::open(wal.c_str(), O_RDONLY | O_CLOEXEC)};
+    if (fd.get() == -1) [[unlikely]] {
+        return std::unexpected(std::error_code{errno, std::generic_category()});
+    }
+    struct stat by_descriptor {};
+    struct stat by_path {};
+    if (::fstat(fd.get(), &by_descriptor) == -1 || ::stat(wal.c_str(), &by_path) == -1) [[unlikely]] {
+        return std::unexpected(std::error_code{errno, std::generic_category()});
+    }
+    if (!names_the_same_file(by_descriptor, by_path)) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::no_such_file_or_directory));
+    }
+    return fd;
+}
+
 std::expected<void, std::error_code> create_new_with_file_mode(const std::filesystem::path& file)
 {
     const int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, file_mode);
@@ -1133,6 +1181,7 @@ std::expected<void, std::error_code> check_or_write_format(const link& l)
 }
 
 struct persistent_storage::environment {
+    file_descriptor wal;
     connection writer_db;
     connection reader_db;
     statements writer;
@@ -1822,8 +1871,8 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (!reader) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
-    auto env = std::make_unique<environment>(std::move(*writer_db), std::move(*reader_db), std::move(*writer),
-                                             std::move(*reader));
+    auto env = std::make_unique<environment>(file_descriptor{}, std::move(*writer_db), std::move(*reader_db),
+                                             std::move(*writer), std::move(*reader));
     sqlite3_wal_hook(env->writer_db.get(), count_frames, &env->frames);
     if (auto format = check_or_write_format(env->of_writer()); !format) [[unlikely]] {
         env->roll_back_the_writer();
@@ -1832,8 +1881,25 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (auto synced = sync_the_wal(env->writer_db.get()); !synced) [[unlikely]] {
         return std::unexpected(synced.error());
     }
+    auto wal = open_the_wal_read_only(file);
+    if (!wal) [[unlikely]] {
+        return std::unexpected(wal.error());
+    }
+    env->wal = std::move(*wal);
     env->failure.reset();
     return persistent_storage{std::move(env)};
+}
+
+int persistent_storage::wal_file_descriptor() const
+{
+    throw_if_moved_from();
+    return env_->wal.get();
+}
+
+void persistent_storage::the_sync_failed()
+{
+    throw_if_moved_from();
+    env_->write_unfinished = true;
 }
 
 std::expected<persistent_storage::transaction, std::error_code> persistent_storage::begin()

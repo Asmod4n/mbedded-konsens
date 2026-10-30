@@ -403,6 +403,8 @@ struct counted_storage {
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), commits.get()}; });
     }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return store.begin_read_only(); }
+    int wal_file_descriptor() const { return store.wal_file_descriptor(); }
+    void the_sync_failed() { store.the_sync_failed(); }
 };
 
 static_assert(konsens::storage<counted_storage>);
