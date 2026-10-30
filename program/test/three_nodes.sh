@@ -47,12 +47,36 @@ start() {
     pids[$p]=$!
 }
 
+# curl exits with 7 when the connect is refused.
+refuses() {
+    curl -s -o /dev/null --max-time 1 "$@"
+    [ $? = 7 ]
+}
+
+# After the exit of a node, its listeners can accept for a short time,
+# so a start at once can find its addresses in use. The test waits until
+# both addresses refuse a connect.
+released() {
+    local p=$1 i
+    for i in $(seq 50); do
+        if [ "$form" = unix ]; then
+            refuses --unix-socket "$dir/peer$p.sock" http://localhost/ &&
+                refuses --unix-socket "$dir/client$p.sock" http://localhost/ && return 0
+        else
+            refuses "http://$(peer_address "$p")/" && refuses "$(client_url "$p")/" && return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 stop() {
     local p=$1 status
     kill -TERM "${pids[$p]}"
     wait "${pids[$p]}"
     status=$?
     unset "pids[$p]"
+    released "$p" || return 1
     return $status
 }
 
@@ -83,6 +107,22 @@ put_until_stored() {
     done
     return 1
 }
+
+# Sends bytes as they are to the peer port of a node. curl has no form
+# that sends a NUL, so the unix form takes only bytes without one.
+send_to_the_peer_port() {
+    local p=$1 bytes=$2 encoded=$3
+    if [ "$form" = unix ]; then
+        curl -s --max-time 2 --unix-socket "$dir/peer$p.sock" "gopher://localhost/_$encoded" > /dev/null
+    else
+        exec 3<> "/dev/tcp/127.0.0.1/$((base + p))"
+        printf "$bytes" >&3
+        sleep 0.2
+        exec 3>&-
+    fi
+}
+
+alive() { kill -0 "${pids[$1]}"; }
 
 holds() {
     [ "$(get "$1" "$2")" = 200 ] && [ "$(cat "$dir/body")" = "$3" ]
@@ -143,6 +183,18 @@ check "a delete at node 2" test "$(status_of $(client_socket 2) -X DELETE "$(cli
 check "a read after the delete gives 404" test "$(get 1 greeting)" = 404
 check "an empty value round trip" put_until_stored 2 empty ""
 check "the empty value reads back" holds_soon 1 empty ""
+
+# The node closes a peer connection that sends a frame head above the
+# bound, or a hello that does not decode, inside the handler of the
+# receive. The connection must stay alive until that handler returns,
+# and the node must keep serving.
+send_to_the_peer_port 1 '\xff\xff\xff\xff' '%FF%FF%FF%FF'
+check "node 1 lives after a frame head above the bound" alive 1
+if [ "$form" = tcp ]; then
+    send_to_the_peer_port 1 '\x00\x00\x00\x01x' ''
+    check "node 1 lives after a hello that does not decode" alive 1
+fi
+check "node 1 serves a write after the refused peers" put_until_stored 1 after-refused yes
 
 # A clean stop keeps the vote of a node.
 check "node 2 stops cleanly" stop 2
@@ -215,6 +267,7 @@ check "--first-start after a clean stop serves a write" put_until_stored 3 after
 kill -KILL "${pids[3]}"
 wait "${pids[3]}"
 unset "pids[3]"
+check "the addresses of the killed node are released" released 3
 "$konsensd" --config "$dir/node3.toml" --first-start 2>> "$dir/log3"
 check "--first-start on the store of a killed node fails" test $? != 0
 start 3
@@ -223,5 +276,8 @@ check "the retired node answers 503" test "$(get 3 a)" = 503
 check "the other two serve a write" put_until_stored 1 after-kill yes
 check "the other two serve a read" holds_soon 2 after-kill yes
 check "the retired node exits with 0" stop 3
+
+# A build with AddressSanitizer writes its report to the log of the node.
+check "no log holds a report of AddressSanitizer" test -z "$(grep -l AddressSanitizer "$dir"/log*)"
 
 end

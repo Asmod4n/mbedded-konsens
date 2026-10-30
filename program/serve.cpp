@@ -116,6 +116,7 @@ struct loop {
     std::unordered_map<std::uint64_t, call_in_flight> closed_calls;
     std::unordered_map<std::uint64_t, std::uint64_t> expiries;
     std::uint64_t ticks;
+    std::vector<std::uint64_t> closing;
 };
 
 std::uint64_t user_data_of(const op o, const std::uint64_t id)
@@ -221,10 +222,19 @@ void begin_the_close(loop& l, const std::uint64_t id, connection& c)
     if (!c.closing) {
         c.closing = true;
         ::shutdown(c.fd, SHUT_RDWR);
+        l.closing.push_back(id);
     }
-    if (c.pending == 0) {
+}
+
+void finish_the_closes_without_pending_operations(loop& l)
+{
+    std::erase_if(l.closing, [&l](const std::uint64_t id) {
+        if (l.connections.at(id)->pending != 0) {
+            return false;
+        }
         finish_the_close(l, id);
-    }
+        return true;
+    });
 }
 
 void keep_the_step(loop& l, const std::expected<konsens::transaction, std::error_code>& t, const std::string_view call)
@@ -770,7 +780,7 @@ int serve(const config& c, const start_options options)
         return exit_failed;
     }
     std::println(std::cerr, "konsensd: node {} started{}", c.pid, n->retired() ? " retired" : "");
-    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}, 0};
+    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}, 0, {}};
     for (const auto& p : c.peers) {
         const auto a = resolve(p.address);
         if (!a) [[unlikely]] {
@@ -819,6 +829,7 @@ int serve(const config& c, const start_options options)
         io_uring_cq_advance(&l.ring, seen);
         for (const auto& e : l.ready) {
             handle_a_completion(l, e);
+            finish_the_closes_without_pending_operations(l);
         }
         const auto now = clock::now();
         if (now >= next_tick) {
