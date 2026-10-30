@@ -401,3 +401,14 @@ R9. Safety: under form B a single crash retires the node. The sync per
     keeps the log that a retired node gives to a build.
 R10. `the_log_is_synced(n)` opens a step and returns a transaction, as
     `tick()` does. A call between the two commit phases is a wrong use.
+
+## 16. Wrong assumption: the bench runs konsensd on io_uring
+
+- Assumed: konsensd in the bench container uses io_uring of the kernel.
+- True: the default seccomp profile of podman refuses every io_uring
+  system call with ENOSYS. slipstreamIO then uses its own engine. A probe
+  gives -95 for IORING_OP_FSYNC in the container and 0 on the host
+  (bench/results/2026-10-30-090000Z-io-uring-in-podman.txt).
+- Caused: every konsensd number of the write path so far, the CPU per
+  write included, is a number of the engine of slipstreamIO. Arm S
+  cannot run in the bench container as it is.
