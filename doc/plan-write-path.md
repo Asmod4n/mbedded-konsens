@@ -1174,3 +1174,15 @@ across buffers. IOU_PBUF_RING_INC with larger buffers makes that case
 rarer, and needs a check of the engine of slipstreamIO. Point 3 needs
 entry to hold a view during the step, which changes the public type
 entry. The measurement above decides whether the copies cost enough.
+
+Owner decision (2026-10-30 18:38): a frame that does not fit in a
+bundle goes to a temporary file that is mapped into memory, and not to
+a block from malloc. The kernel then caches the bytes, and user space
+does not.
+
+Proposed form, not built and not measured: when the header of a frame
+gives a length larger than a buffer, the receive sets a temporary file
+to that length (ftruncate), maps it (mmap), copies the bytes that are
+already in the buffer to the start of the mapping, and receives the
+rest with a plain recv into the mapping. The decoder reads the mapping
+as one contiguous span. The cost of the page faults is open.
