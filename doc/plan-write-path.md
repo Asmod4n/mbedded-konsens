@@ -1212,3 +1212,6 @@ IOSQE_BUFFER_SELECT. Second arm: io_uring_prep_splice from the socket
 through a pipe into the file; not checked whether TCP moves pages or
 copies there. Not checked: whether io_uring_register_buffers takes a
 mapping of a regular file.
+
+Owner (2026-10-30 18:43): splice and registered buffers are slow. The
+plan has neither as an arm. The one form is the recv into the mapping.
