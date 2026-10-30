@@ -1244,3 +1244,11 @@ open_tasks_after copies every open entry of tasks_ into a new vector
 at each step (include/konsens/node.hpp:1427-1435), and
 append_the_done_records copies them again. At 64 in flight an entry is
 copied at each step that it stays open.
+
+Owner (2026-10-30 18:48): by default a user has 8 MiB of RLIMIT_MEMLOCK
+for the whole machine. Checked: `ulimit -l` gives 8192 (KiB) on this
+host and in the bench container as user 1001. A form that pins memory
+(registered buffers, one buffer ring per connection as in
+mruby-webmachine 74066bb) meets this limit. Not checked: whether the
+data of provided buffers counts against the limit, or only the ring of
+their descriptors.
