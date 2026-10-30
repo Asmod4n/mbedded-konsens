@@ -890,3 +890,39 @@ flight by less than the floor. An instruction count does not say what
 its removal saves.
 
 Name: write_set (Hyperledger Fabric, "write set").
+
+### Changes after review (the simple form, round 1)
+
+The review approved the form with six findings, none blocking.
+1. insert_or_assign of an existing key read the value after it had
+   reset the old one. A value read from the same key and written back
+   then read freed memory. The new value is now built first. A test
+   writes back a value read from the same key.
+2. The checks of the store on a write no longer run in the base: the
+   bound of a session key, a value that SQLite refuses as too big, and
+   the refusal after a failure. Before, such a write failed while the
+   request ran, before a result existed. Now the result can be chosen,
+   and the write fails at apply_the_done_records on every node. A
+   session key past the bound does not reach a write: run_request finds
+   the session first. A value past the bound of SQLite is the open
+   case. This is an error path, and the owner decides it. Provisional:
+   no check in the write set.
+3. write_set stands in its own header, include/konsens/write_set.hpp,
+   as write_set<T>. write_view is now
+   transaction_view<write_set<persistent_storage::transaction>>, so the
+   concept state_machine checks the view that node gives. In node the
+   alias is base_write_set, and begin_the_nested_transaction is
+   begin_an_empty_write_set (renamed through the language server).
+   test/test_write_set.cpp holds the comparison with a SAVEPOINT.
+4. begin_nested, nested_transaction and the SAVEPOINT statements of
+   persistent_storage have no caller in node now. The concept
+   storage_write still asks for begin_nested. Their removal is open
+   work.
+5. The write functions of write_set return a std::expected that never
+   holds an error, because write_the_result takes one interface for the
+   write set and the open transaction. Each write allocates a map node
+   and vectors. An arena or std::flat_map is a later arm; it is not
+   measured.
+6. The reads are the same; the errors are not. A write in the base no
+   longer fails, and begin_an_empty_write_set throws nothing. See
+   item 2.

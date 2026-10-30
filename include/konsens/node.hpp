@@ -29,6 +29,7 @@
 #include "konsens/storage.hpp"
 #include "konsens/verdict.hpp"
 #include "konsens/wire.hpp"
+#include "konsens/write_set.hpp"
 
 namespace konsens {
 
@@ -936,7 +937,7 @@ private:
         }
     }
 
-    using nested_transaction = nested_transaction_of<typename S::transaction>;
+    using base_write_set = write_set<typename S::transaction>;
 
     node(const node_config& config, sequence_paxos<S> seq_paxos, konsens::node_storage own_storage,
          ballot_leader_election ble, M machine, const std::uint64_t nonce)
@@ -980,13 +981,9 @@ private:
         return read_or_throw(read_or_throw(seq_paxos_.internal_storage_.begin_read_only()).get_meta());
     }
 
-    nested_transaction begin_the_nested_transaction()
+    base_write_set begin_an_empty_write_set()
     {
-        auto n = seq_paxos_.txn_->begin_nested();
-        if (!n) [[unlikely]] {
-            throw write_error(n.error(), "konsens: the storage failed to begin a nested transaction");
-        }
-        return std::move(*n);
+        return base_write_set{*seq_paxos_.txn_};
     }
 
     result check_the_applied_state()
@@ -1209,7 +1206,7 @@ private:
         auto verified = seq_paxos_.get_verified_idx();
         std::optional<std::uint64_t> passed;
         std::optional<refusal_reason> reason;
-        std::optional<nested_transaction> base;
+        std::optional<base_write_set> base;
         auto base_below = m->applied_idx + 1;
         for (;;) {
             const auto index = verified + 1;
@@ -1220,7 +1217,7 @@ private:
                 const done_log b{m->applied_idx, std::span<const entry>(*tail).subspan(m->applied_idx - first,
                                                                                       index - 1 - m->applied_idx)};
                 if (!base) {
-                    base.emplace(begin_the_nested_transaction());
+                    base.emplace(begin_an_empty_write_set());
                 }
                 write_the_done_results(b, base_below, index, *base);
                 base_below = index;
@@ -1286,7 +1283,7 @@ private:
         return o->second.bytes;
     }
 
-    std::optional<refusal_reason> check_the_done_record(const done_log& b, const entry& e, nested_transaction& w)
+    std::optional<refusal_reason> check_the_done_record(const done_log& b, const entry& e, base_write_set& w)
     {
         if (!entry_is_a_request(e)) {
             return std::nullopt;
@@ -1519,7 +1516,7 @@ private:
                                           "konsens: a chosen result fails its CRC on this node");
             }
             if (std::ranges::contains(e.out, seq_paxos_.get_pid())) {
-                const auto own = encode_result(run_request(request_of(e), begin_the_nested_transaction()));
+                const auto own = encode_result(run_request(request_of(e), begin_an_empty_write_set()));
                 const fault_proof proof{proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise, e.result_crc,
                                         compute_result_crc(k, own)};
                 if (!results_agree(own, e.result, float_rule_of(machine_))) [[unlikely]] {
@@ -1638,7 +1635,7 @@ private:
         return round_each_float(data_item, *rule.float_denominator).value();
     }
 
-    request_result run_request(const entry& e, const nested_transaction& t) const
+    request_result run_request(const entry& e, const base_write_set& t) const
     {
         if (e.kind != entry_kind::client_request) {
             return {0, {}, {}};
@@ -1648,7 +1645,7 @@ private:
             return {static_cast<std::uint64_t>(std::to_underlying(client_errc::session_expired)), {}, {}};
         }
         if (e.request_number > s->request_number) {
-            auto a = machine_.apply(e.payload, write_view{t});
+            auto a = machine_.apply(e.payload, transaction_view<base_write_set>{t});
             if constexpr (requires { machine_.float_digits; }) {
                 a.reply = round_the_data_item(std::move(a.reply), *float_rule_of(machine_));
                 for (auto& m : a.mutations) {
@@ -1708,9 +1705,9 @@ private:
         refusal_.reset();
     }
 
-    nested_transaction begin_the_base(const done_log& b, const std::uint64_t below)
+    base_write_set begin_the_base(const done_log& b, const std::uint64_t below)
     {
-        auto w = begin_the_nested_transaction();
+        auto w = begin_an_empty_write_set();
         write_the_done_results(b, b.applied_idx + 1, below, w);
         for (auto it = own_.upper_bound(b.log_len()); it != own_.end() && it->first < below; ++it) {
             write_the_result(it->second.request, it->first, it->second.result, w);
@@ -1719,7 +1716,7 @@ private:
     }
 
     static void write_the_done_results(const done_log& b, const std::uint64_t from, const std::uint64_t below,
-                                       nested_transaction& w)
+                                       base_write_set& w)
     {
         for (auto k = from; k <= b.log_len() && k < below; ++k) {
             const auto& e = b.done[k - b.applied_idx - 1];
@@ -1732,7 +1729,7 @@ private:
         }
     }
 
-    own_result run_on_the_base(const entry& e, const std::uint64_t index, nested_transaction& w) const
+    own_result run_on_the_base(const entry& e, const std::uint64_t index, base_write_set& w) const
     {
         auto r = run_request(e, w);
         auto bytes = encode_result(r);
@@ -1784,7 +1781,7 @@ private:
     std::optional<std::uint64_t> run_the_tasks(const done_log& b)
     {
         std::optional<std::uint64_t> first;
-        std::optional<nested_transaction> base;
+        std::optional<base_write_set> base;
         for (auto q = b.log_len() + 1;; ++q) {
             const auto t = tasks_.find(q);
             if (t == tasks_.end()) {

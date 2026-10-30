@@ -930,3 +930,17 @@ has no purpose on these paths; the model holds the base per index
 change; the memory bound is the bound of own_ and of the done records
 above applied_idx; the test needs an oracle that replays the records in
 log order; the form is new and goes to the owner first.
+
+## Review of section 23, the simple form (round 1)
+
+Approved, with six findings, none blocking. Checked equal to the
+SAVEPOINT: reads after insert and erase in each order, empty keys and
+values (an empty value is bound as zeroblob(0) and found as a present
+empty span), sessions through register, update and expire, the life of
+a span (both forms read through the same statement, the write set gives
+spans that live longer), no write to the parent while a base is open,
+the test wrappers (they pass begin_nested, find and find_session
+through), the TLA+ model (BaseWith and NodeBase hold the base as a
+value), and memory (one base for one step). The findings and what was
+done with them stand in doc/plan-write-path.md, "Changes after review
+(the simple form, round 1)".

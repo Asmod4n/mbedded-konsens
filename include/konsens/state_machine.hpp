@@ -8,6 +8,7 @@
 
 #include "konsens/persistent_storage.hpp"
 #include "konsens/storage.hpp"
+#include "konsens/write_set.hpp"
 
 namespace konsens {
 
@@ -48,7 +49,7 @@ private:
     const T* txn_;
 };
 
-using write_view = transaction_view<persistent_storage::nested_transaction>;
+using write_view = transaction_view<write_set<persistent_storage::transaction>>;
 using read_view = transaction_view<persistent_storage::read_only_transaction>;
 
 static_assert(state_view<write_view> && state_view<read_view>);
