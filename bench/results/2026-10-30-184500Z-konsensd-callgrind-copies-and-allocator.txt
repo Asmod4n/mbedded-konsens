@@ -1,0 +1,31 @@
+What: callgrind instruction counts (Ir) of memcpy and of the allocator
+per write, konsensd, three nodes, 64 B values, driver -conc 1
+(1024 writes) and -conc 64 (4096 writes). Instruction counts, not time.
+Code: write-path 799c365 (code as 4314cd3), binary konsensd_g16T,
+g++-16 Release, built with bench-logs/build-konsensd.sh.
+Run: podman --cpus=3, user 1001, seccomp-io-uring.json, image
+localhost/bench-vg, node data on tmpfs, valgrind --tool=callgrind,
+script bench-logs/vg9.sh (copy of vg8.sh with the binary name changed).
+One repetition. Under valgrind the leader changed during warm-up (logs
+show leaders 1, 2, 3); the driver targeted node 3. Not checked: that
+node 3 led for the whole of each dump.
+
+Node 3, conc 1 (dump 1): total 382,695,809 Ir = 373.7 kIr per write.
+  memcpy        7,516,305 Ir  1.96 %   7.3 kIr per write
+  allocator    16.6 M Ir      ~4.4 %  16.2 kIr per write
+    (free 5.58 M, malloc 4.99 M, operator new 2.55 M, _int_malloc
+    1.08 M, sqlite3_free 0.93 M, _int_free_merge_chunk 0.51 M, delete
+    0.64 M, rest 0.37 M)
+Node 3, conc 64 (dump 2): total 953,059,546 Ir = 232.7 kIr per write.
+  memcpy       28,133,456 Ir  2.95 %   6.9 kIr per write
+  allocator   ~160 M Ir      ~16.8 %  39 kIr per write
+    (_int_malloc 38.7 M, free 28.8 M, _int_free_merge_chunk 26.9 M,
+    malloc 24.7 M, operator new 13.6 M, _int_free_maybe_trim 8.5 M,
+    unlink_chunk 5.8 M, __libc_malloc2 4.8 M, _int_free_chunk 3.5 M,
+    sqlite3_free 2.1 M, delete 3.4 M)
+Followers at conc 64: node 1 allocator ~16 %, memcpy 2.98 %; node 2
+allocator ~19 %, memcpy 3.05 %.
+
+Inclusive, node 3, conc 64: handle_a_receive 8.96 % (with take_the_frames_of
+4.94 % and konsens::decode 4.42 %); read_entries 14.17 %; decode_result
+8.59 %; append_entries 12.75 %; execute_verify 30.77 %.

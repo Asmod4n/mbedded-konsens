@@ -1196,3 +1196,19 @@ Owner (2026-10-30 18:40): the temporary file is written through
 io_uring. Two arms, to be measured against each other: a recv into the
 mapping of the file, and a recv into the buffer followed by an io_uring
 write into the file.
+
+Measured (bench/results/2026-10-30-184500Z-konsensd-callgrind-copies-
+and-allocator.txt, instruction counts, not time): at 64 in flight the
+allocator takes about 17 % of the instructions of the leader and memcpy
+3 %. The receive path, decode included, takes 9 %. Most allocations
+come from read_entries and decode_result, which build std::vector
+members.
+
+Owner (2026-10-30 18:42): the receive into the temporary file is the
+reverse of the send of mruby-webmachine from its mapping
+(io_uring_prep_send, src/ring.hpp:500). First form: io_uring_prep_recv
+with MSG_WAITALL into the mapping plus an offset, without
+IOSQE_BUFFER_SELECT. Second arm: io_uring_prep_splice from the socket
+through a pipe into the file; not checked whether TCP moves pages or
+copies there. Not checked: whether io_uring_register_buffers takes a
+mapping of a regular file.
