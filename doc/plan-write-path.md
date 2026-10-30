@@ -1213,5 +1213,10 @@ through a pipe into the file; not checked whether TCP moves pages or
 copies there. Not checked: whether io_uring_register_buffers takes a
 mapping of a regular file.
 
-Owner (2026-10-30 18:43): splice and registered buffers are slow. The
-plan has neither as an arm. The one form is the recv into the mapping.
+Owner (2026-10-30 18:43, 18:45): splice is slow, and registered
+buffers never win against provided buffers. The plan has neither as an
+arm. The one form is the recv into the mapping. mruby-webmachine holds
+the decision (PLAN.md:127 on branch rules-say-what-holds: "Buffers are
+provided, never registered"). Its bench/results on every branch and the
+history of Claude-state hold no measurement of splice or of registered
+buffers (git grep and git log -S, 2026-10-30).
