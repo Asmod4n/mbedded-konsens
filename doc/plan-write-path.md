@@ -212,3 +212,22 @@ before the apply. BFS with small bounds.
 - Caused: an owner question about a second round was sent and withdrawn
   on 2026-10-30. Review round 1, findings 4, 5 and 8, rested on it and
   are void.
+
+## 11. Result of M1
+
+bench/results/2026-10-30-062000Z-write-path-statements.txt (a
+diagnostic patch outside the tree, not the Debug counter of M1; the
+counts come from `sqlite3_stmt_status`). At 64 in flight, per write:
+
+- The leader upserts a `data` row 5.43 times and a `session` row 5.56
+  times; a follower 5.07 and 5.20 times. The apply needs one of each.
+  The rest come from the base of Execute-Verify, which each check
+  writes again in a SAVEPOINT and rolls back
+  (`write_the_done_results`, node.hpp:993 and 1481).
+- The leader reads a `log` row 4.66 times and a `meta` row 4.39 times.
+- The leader makes 1 840 write transactions for 8 193 writes, so 4.45
+  writes per commit.
+
+So arm D starts with the base: it is kept between steps, or the run
+reads the chosen results of the base from memory. The form goes into
+this plan before the build.

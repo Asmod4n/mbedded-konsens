@@ -1,0 +1,80 @@
+What was measured
+- The runs of each prepared SQLite statement (sqlite3_stmt_status SQLITE_STMTSTATUS_RUN and VM_STEP), printed when the statement is finalized at the clean stop.
+- konsensd from commit 8d6914a plus a diagnostic patch outside the tree (sha256 207ffb9713b59314); it also prints one line per step.
+- Three nodes, one btrfs file system per node, 8192 writes of 64 B at 64 in flight plus 1 probe write; 4498 writes/s in this run (one sample, diagnostic build, no A/A floor).
+- g++ 16.2.0 Release, podman --cpus=3, user 1001, kernel 6.18.44-fc-v185. Node 3 was the leader. Steps with work: n1 1034, n2 847, n3 1838.
+- runs/write = runs / 8193. The start of the node is included.
+
+== node 3
+runs/write=5.56 diagstmt runs=45534 vm=1041010 db=log sql=INSERT INTO session (id, record) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET record = excluded.record
+runs/write=5.43 diagstmt runs=44480 vm=800640 db=log sql=INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value
+runs/write=3.21 diagstmt runs=26324 vm=210592 db=log sql=SELECT record FROM log WHERE idx = ?1
+runs/write=2.86 diagstmt runs=23420 vm=234199 db=log sql=SELECT record FROM meta WHERE name = ?1
+runs/write=1.53 diagstmt runs=12544 vm=125438 db=log sql=SELECT record FROM meta WHERE name = ?1
+runs/write=1.45 diagstmt runs=11852 vm=94815 db=log sql=SELECT record FROM log WHERE idx = ?1
+runs/write=1.14 diagstmt runs=9353 vm=93392 db=log sql=SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+runs/write=1.02 diagstmt runs=8322 vm=407775 db=log sql=INSERT INTO log (idx, record) SELECT ?1, ?2 WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)
+runs/write=1.02 diagstmt runs=8322 vm=149796 db=log sql=UPDATE log SET record = ?2 WHERE idx = ?1
+runs/write=1.01 diagstmt runs=8256 vm=66048 db=log sql=SELECT record FROM session WHERE id = ?1
+runs/write=1.00 diagstmt runs=8193 vm=73737 db=log sql=SELECT value FROM data WHERE key = ?1
+runs/write=0.77 diagstmt runs=6272 vm=18816 db=log sql=COMMIT
+runs/write=0.77 diagstmt runs=6272 vm=18816 db=log sql=BEGIN
+runs/write=0.76 diagstmt runs=6266 vm=62606 db=log sql=SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+runs/write=0.58 diagstmt runs=4720 vm=408240 db=log sql=SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+runs/write=0.22 diagstmt runs=1840 vm=9200 db=log sql=BEGIN IMMEDIATE
+runs/write=0.17 diagstmt runs=1389 vm=4167 db=log sql=ROLLBACK
+runs/write=0.11 diagstmt runs=939 vm=24398 db=log sql=INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
+runs/write=0.10 diagstmt runs=860 vm=3440 db=log sql=SAVEPOINT nested
+runs/write=0.10 diagstmt runs=860 vm=3440 db=log sql=ROLLBACK TO nested
+runs/write=0.10 diagstmt runs=860 vm=3440 db=log sql=RELEASE nested
+runs/write=0.06 diagstmt runs=451 vm=1353 db=log sql=COMMIT
+runs/write=0.00 diagstmt runs=6 vm=60 db=log sql=DELETE FROM session WHERE id = ?1
+runs/write=0.00 diagstmt runs=2 vm=18 db=node sql=SELECT record FROM meta WHERE name = ?1
+runs/write=0.00 diagstmt runs=1 vm=8 db=log sql=SELECT record FROM session WHERE id = ?1
+runs/write=0.00 diagstmt runs=1 vm=8 db=log sql=SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+runs/write=0.00 diagstmt runs=1 vm=8 db=log sql=SELECT count(*) FROM sqlite_schema
+runs/write=0.00 diagstmt runs=1 vm=53 db=log sql=SELECT (SELECT count(*) FROM meta) + (SELECT count(*) FROM log) + (SELECT count(*) FROM session) + (SELECT count(*) FROM data)
+runs/write=0.00 diagstmt runs=1 vm=5 db=node sql=PRAGMA synchronous
+runs/write=0.00 diagstmt runs=1 vm=5 db=node sql=PRAGMA journal_mode = WAL
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA synchronous
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA synchronous
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA page_size
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA journal_mode = WAL
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA journal_mode = WAL
+runs/write=0.00 diagstmt runs=1 vm=18 db=node sql=INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
+== node 1
+runs/write=5.20 diagstmt runs=42639 vm=973777 db=log sql=INSERT INTO session (id, record) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET record = excluded.record
+runs/write=5.07 diagstmt runs=41522 vm=747396 db=log sql=INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value
+runs/write=1.90 diagstmt runs=15602 vm=124816 db=log sql=SELECT record FROM log WHERE idx = ?1
+runs/write=1.27 diagstmt runs=10382 vm=103819 db=log sql=SELECT record FROM meta WHERE name = ?1
+runs/write=1.02 diagstmt runs=8322 vm=407775 db=log sql=INSERT INTO log (idx, record) SELECT ?1, ?2 WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)
+runs/write=1.02 diagstmt runs=8322 vm=149796 db=log sql=UPDATE log SET record = ?2 WHERE idx = ?1
+runs/write=1.02 diagstmt runs=8319 vm=66552 db=log sql=SELECT record FROM session WHERE id = ?1
+runs/write=1.00 diagstmt runs=8193 vm=73737 db=log sql=SELECT value FROM data WHERE key = ?1
+runs/write=0.39 diagstmt runs=3172 vm=306852 db=log sql=SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+runs/write=0.38 diagstmt runs=3104 vm=30896 db=log sql=SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+runs/write=0.26 diagstmt runs=2096 vm=20958 db=log sql=SELECT record FROM meta WHERE name = ?1
+runs/write=0.22 diagstmt runs=1839 vm=14711 db=log sql=SELECT record FROM log WHERE idx = ?1
+runs/write=0.13 diagstmt runs=1048 vm=3144 db=log sql=COMMIT
+runs/write=0.13 diagstmt runs=1048 vm=3144 db=log sql=BEGIN
+runs/write=0.13 diagstmt runs=1043 vm=10374 db=log sql=SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+runs/write=0.13 diagstmt runs=1036 vm=5180 db=log sql=BEGIN IMMEDIATE
+runs/write=0.11 diagstmt runs=938 vm=24372 db=log sql=INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
+runs/write=0.09 diagstmt runs=736 vm=2944 db=log sql=SAVEPOINT nested
+runs/write=0.09 diagstmt runs=736 vm=2944 db=log sql=ROLLBACK TO nested
+runs/write=0.09 diagstmt runs=736 vm=2944 db=log sql=RELEASE nested
+runs/write=0.08 diagstmt runs=624 vm=1872 db=log sql=ROLLBACK
+runs/write=0.05 diagstmt runs=412 vm=1236 db=log sql=COMMIT
+runs/write=0.00 diagstmt runs=5 vm=50 db=log sql=DELETE FROM session WHERE id = ?1
+runs/write=0.00 diagstmt runs=2 vm=18 db=node sql=SELECT record FROM meta WHERE name = ?1
+runs/write=0.00 diagstmt runs=1 vm=8 db=log sql=SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+runs/write=0.00 diagstmt runs=1 vm=8 db=log sql=SELECT count(*) FROM sqlite_schema
+runs/write=0.00 diagstmt runs=1 vm=53 db=log sql=SELECT (SELECT count(*) FROM meta) + (SELECT count(*) FROM log) + (SELECT count(*) FROM session) + (SELECT count(*) FROM data)
+runs/write=0.00 diagstmt runs=1 vm=5 db=node sql=PRAGMA synchronous
+runs/write=0.00 diagstmt runs=1 vm=5 db=node sql=PRAGMA journal_mode = WAL
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA synchronous
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA synchronous
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA page_size
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA journal_mode = WAL
+runs/write=0.00 diagstmt runs=1 vm=5 db=log sql=PRAGMA journal_mode = WAL
+runs/write=0.00 diagstmt runs=1 vm=18 db=node sql=INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
