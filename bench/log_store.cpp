@@ -41,14 +41,16 @@ int on_wal(void*, sqlite3* db, const char*, const int frames)
 
 int main(int argc, char** argv)
 {
-    if (argc != 5) {
-        std::fprintf(stderr, "usage: log_store lmdb|sqlite <path> <value bytes> <writes per commit>\n");
+    if (argc != 5 && argc != 6) {
+        std::fprintf(stderr, "usage: log_store lmdb|sqlite <path> <value bytes> <writes per commit> [sync|nometasync|nosync]\n");
         return 2;
     }
     const std::string kind = argv[1];
     const std::string path = argv[2];
     const int size = std::atoi(argv[3]);
     const int batch = std::atoi(argv[4]);
+    const std::string mode = argc == 6 ? argv[5] : "sync";
+    const unsigned int lmdb_flags = MDB_NOSUBDIR | (mode == "nometasync" ? MDB_NOMETASYNC : 0u) | (mode == "nosync" ? MDB_NOSYNC : 0u);
     std::vector<unsigned char> entry(static_cast<std::size_t>(size + entry_overhead));
     std::mt19937_64 rng{std::random_device{}()};
     MDB_env* env = nullptr;
@@ -58,7 +60,7 @@ int main(int argc, char** argv)
     if (kind == "lmdb") {
         must(mdb_env_create(&env) == 0, "create");
         must(mdb_env_set_mapsize(env, map_size) == 0, "mapsize");
-        must(mdb_env_open(env, path.c_str(), MDB_NOSUBDIR, 0600) == 0, "open");
+        must(mdb_env_open(env, path.c_str(), lmdb_flags, 0600) == 0, "open");
         MDB_txn* t = nullptr;
         must(mdb_txn_begin(env, nullptr, 0, &t) == 0, "begin");
         must(mdb_dbi_open(t, nullptr, MDB_INTEGERKEY, &dbi) == 0, "dbi");
@@ -68,6 +70,7 @@ int main(int argc, char** argv)
         must(sqlite3_exec(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=0;"
                               "CREATE TABLE IF NOT EXISTS log (idx INTEGER PRIMARY KEY, record BLOB NOT NULL) STRICT;",
                           nullptr, nullptr, nullptr) == SQLITE_OK, "setup");
+        if (mode == "nosync") must(sqlite3_exec(db, "PRAGMA synchronous=OFF", nullptr, nullptr, nullptr) == SQLITE_OK, "off");
         sqlite3_wal_hook(db, on_wal, nullptr);
         must(sqlite3_prepare_v3(db, "BEGIN IMMEDIATE", -1, SQLITE_PREPARE_PERSISTENT, &begin, nullptr) == SQLITE_OK, "p");
         must(sqlite3_prepare_v3(db, "COMMIT", -1, SQLITE_PREPARE_PERSISTENT, &commit, nullptr) == SQLITE_OK, "p");

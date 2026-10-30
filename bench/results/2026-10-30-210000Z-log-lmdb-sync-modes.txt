@@ -1,0 +1,49 @@
+Log only: LMDB 1.0.2 (MDB_INTEGERKEY, MDB_APPEND) with MDB_NOMETASYNC and MDB_NOSYNC against SQLite with synchronous=FULL and OFF
+
+What was measured
+- bench/log_store.cpp at this commit, the setup of 2026-10-30-205000Z, with a fifth argument for the sync mode. 3 rounds; each cell the median of 31 samples of 192 entries. The second "lmdb nosync" row of each round is the A/A arm.
+- strace -c of the default arms (64 per commit, 99 commits, one run): LMDB makes 100 fdatasync and 212 pwrite64; its meta page goes through a descriptor with O_DSYNC, so a commit syncs twice. SQLite makes 106 fdatasync.
+
+Medians over the 3 rounds (entries/s)
+| arm | 1 per commit | 64 per commit |
+| LMDB default (205000Z) | 624 | 33294 |
+| LMDB NOMETASYNC | 1072 | 55353 |
+| SQLite FULL | 1249 | 65572 |
+| LMDB NOSYNC | 192023 | 2489271 |
+| LMDB NOSYNC A/A | 197590 | 2533282 |
+| SQLite OFF | 140522 | 1148710 |
+- A/A of LMDB NOSYNC: 2.9 % at 1, 1.8 % at 64.
+- Without a sync LMDB appends 1.37 times (1) and 2.17 times (64) as many entries as SQLite. With a sync the disk decides; LMDB with its default needs two syncs per commit.
+- MDB_NOMETASYNC leaves the meta page of the last commit unsynced until the next commit; it is not the durability of SQLite FULL.
+
+Rows
+round=1 lmdb nometasync batch=1 median_writes_per_s=874 min=733 max=1527
+round=1 sqlite sync batch=1 median_writes_per_s=1157 min=903 max=1464
+round=1 lmdb nosync batch=1 median_writes_per_s=197115 min=173744 max=202458
+round=1 sqlite nosync batch=1 median_writes_per_s=146049 min=124278 max=152882
+round=1 lmdb nosync batch=1 median_writes_per_s=196242 min=183601 max=201533
+round=1 lmdb nometasync batch=64 median_writes_per_s=47166 min=35204 max=68773
+round=1 sqlite sync batch=64 median_writes_per_s=65572 min=45855 max=86564
+round=1 lmdb nosync batch=64 median_writes_per_s=2489271 min=1838077 max=2640555
+round=1 sqlite nosync batch=64 median_writes_per_s=1170218 min=909690 max=1233093
+round=1 lmdb nosync batch=64 median_writes_per_s=2561400 min=2373770 max=2615020
+round=2 lmdb nometasync batch=1 median_writes_per_s=1072 min=732 max=1536
+round=2 sqlite sync batch=1 median_writes_per_s=1249 min=930 max=1533
+round=2 lmdb nosync batch=1 median_writes_per_s=131837 min=123987 max=200757
+round=2 sqlite nosync batch=1 median_writes_per_s=101566 min=81481 max=153100
+round=2 lmdb nosync batch=1 median_writes_per_s=198195 min=185326 max=202028
+round=2 lmdb nometasync batch=64 median_writes_per_s=65528 min=60277 max=75287
+round=2 sqlite sync batch=64 median_writes_per_s=79394 min=64670 max=85092
+round=2 lmdb nosync batch=64 median_writes_per_s=2483604 min=1679628 max=2656336
+round=2 sqlite nosync batch=64 median_writes_per_s=1143790 min=900863 max=1212864
+round=2 lmdb nosync batch=64 median_writes_per_s=2494900 min=1224974 max=2567085
+round=3 lmdb nometasync batch=1 median_writes_per_s=1136 min=912 max=1677
+round=3 sqlite sync batch=1 median_writes_per_s=1271 min=907 max=1766
+round=3 lmdb nosync batch=1 median_writes_per_s=192023 min=177442 max=196815
+round=3 sqlite nosync batch=1 median_writes_per_s=140522 min=117909 max=150192
+round=3 lmdb nosync batch=1 median_writes_per_s=197590 min=177750 max=205200
+round=3 lmdb nometasync batch=64 median_writes_per_s=55353 min=41221 max=73577
+round=3 sqlite sync batch=64 median_writes_per_s=64548 min=50594 max=84321
+round=3 lmdb nosync batch=64 median_writes_per_s=2522333 min=2153215 max=2641027
+round=3 sqlite nosync batch=64 median_writes_per_s=1148710 min=722960 max=1196642
+round=3 lmdb nosync batch=64 median_writes_per_s=2533282 min=1576976 max=2652740
