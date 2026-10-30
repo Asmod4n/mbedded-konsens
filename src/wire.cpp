@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <cbor/item_size.hpp>
+#include <cbor/schema.hpp>
 #include <cbor/structs.hpp>
 
 namespace konsens {
@@ -19,6 +20,18 @@ struct header {
     node_id from;
     node_id to;
 };
+
+}
+
+}
+
+CBOR_DEFINE_TYPE(konsens::header, cbor::tag{34843}, CBOR_MEMBER(konsens::header, method),
+                 CBOR_MEMBER(konsens::header, kind), CBOR_MEMBER(konsens::header, from),
+                 CBOR_MEMBER(konsens::header, to));
+
+namespace konsens {
+
+namespace {
 
 class wire_error_category final : public std::error_category {
 public:
@@ -106,7 +119,7 @@ std::expected<received, std::error_code> decode_body(const std::shared_ptr<const
                                                      const std::string_view body, const header& h)
 {
     using body_type = body_of_kind<I>;
-    auto decoded = cbor::structs<body_type>::decode(owner, body);
+    auto decoded = cbor::packed<body_type>::decode(owner, body);
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error());
     }
@@ -129,11 +142,11 @@ std::expected<received, std::error_code> decode_body_of_kind(const std::shared_p
 template <typename Body>
 std::expected<std::string, std::error_code> encode_parts(const header& h, const Body& body)
 {
-    auto out = cbor::structs<header>::encode(h);
+    auto out = cbor::packed<header>::encode(h);
     if (!out) [[unlikely]] {
         return std::unexpected(out.error());
     }
-    if (const auto appended = cbor::structs<Body>::encode(body, *out); !appended) [[unlikely]] {
+    if (const auto appended = cbor::packed<Body>::encode(body, *out); !appended) [[unlikely]] {
         return std::unexpected(appended.error());
     }
     return std::move(*out);
@@ -197,7 +210,7 @@ std::expected<received, std::error_code> decode(std::string bytes)
     if (*body_size != body.size()) [[unlikely]] {
         return std::unexpected(wire_errc::extraneous_data);
     }
-    const auto decoded = cbor::structs<header>::decode(owner, all.substr(0, *header_size));
+    const auto decoded = cbor::packed<header>::decode(owner, all.substr(0, *header_size));
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error());
     }

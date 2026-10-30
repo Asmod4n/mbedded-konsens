@@ -9,6 +9,8 @@
 #include <variant>
 #include <vector>
 
+#include <cbor/schema.hpp>
+
 #include "konsens/storage.hpp"
 #include "konsens/verdict.hpp"
 
@@ -261,3 +263,58 @@ struct ble_message {
 using message = std::variant<paxos_message, ble_message>;
 
 }
+
+CBOR_DEFINE_TYPE(konsens::sequence_number, cbor::tag{34819}, CBOR_MEMBER(konsens::sequence_number, session),
+                 CBOR_MEMBER(konsens::sequence_number, counter));
+CBOR_DEFINE_TYPE(konsens::log_sync, cbor::tag{34820}, CBOR_MEMBER(konsens::log_sync, suffix),
+                 CBOR_MEMBER(konsens::log_sync, sync_idx));
+CBOR_DEFINE_TYPE(konsens::prepare_req, cbor::tag{34821}, CBOR_MEMBER(konsens::prepare_req, n));
+CBOR_DEFINE_TYPE(konsens::prepare, cbor::tag{34822}, CBOR_MEMBER(konsens::prepare, n),
+                 CBOR_MEMBER(konsens::prepare, decided_idx), CBOR_MEMBER(konsens::prepare, n_accepted),
+                 CBOR_MEMBER(konsens::prepare, accepted_idx));
+CBOR_DEFINE_TYPE(konsens::promise, cbor::tag{34823}, CBOR_MEMBER(konsens::promise, n),
+                 CBOR_MEMBER(konsens::promise, n_accepted), CBOR_MEMBER(konsens::promise, decided_idx),
+                 CBOR_MEMBER(konsens::promise, accepted_idx), CBOR_MEMBER(konsens::promise, log_sync),
+                 CBOR_MEMBER(konsens::promise, decided_chain_crc), CBOR_MEMBER(konsens::promise, last_chain_crc));
+CBOR_DEFINE_TYPE(konsens::accept_sync, cbor::tag{34824}, CBOR_MEMBER(konsens::accept_sync, n),
+                 CBOR_MEMBER(konsens::accept_sync, seq_num), CBOR_MEMBER(konsens::accept_sync, decided_idx),
+                 CBOR_MEMBER(konsens::accept_sync, log_sync), CBOR_MEMBER(konsens::accept_sync, decided_chain_crc));
+CBOR_DEFINE_TYPE(konsens::accept_decide, cbor::tag{34825}, CBOR_MEMBER(konsens::accept_decide, n),
+                 CBOR_MEMBER(konsens::accept_decide, seq_num), CBOR_MEMBER(konsens::accept_decide, decided_idx),
+                 CBOR_MEMBER(konsens::accept_decide, entries), CBOR_MEMBER(konsens::accept_decide, decided_chain_crc));
+CBOR_DEFINE_TYPE(konsens::accepted, cbor::tag{34826}, CBOR_MEMBER(konsens::accepted, n),
+                 CBOR_MEMBER(konsens::accepted, accepted_idx), CBOR_MEMBER(konsens::accepted, accepted_chain_crc));
+CBOR_DEFINE_TYPE(konsens::decide, cbor::tag{34827}, CBOR_MEMBER(konsens::decide, n),
+                 CBOR_MEMBER(konsens::decide, seq_num), CBOR_MEMBER(konsens::decide, decided_idx),
+                 CBOR_MEMBER(konsens::decide, decided_chain_crc));
+CBOR_DEFINE_TYPE(konsens::not_accepted, cbor::tag{34828}, CBOR_MEMBER(konsens::not_accepted, n));
+CBOR_DEFINE_TYPE(konsens::proposal_forward, cbor::tag{34829}, CBOR_MEMBER(konsens::proposal_forward, entries));
+CBOR_DEFINE_TYPE(konsens::read_index_request, cbor::tag{34830}, CBOR_MEMBER(konsens::read_index_request, read));
+CBOR_DEFINE_TYPE(konsens::heartbeat, cbor::tag{34831}, CBOR_MEMBER(konsens::heartbeat, n),
+                 CBOR_MEMBER(konsens::heartbeat, id));
+CBOR_DEFINE_TYPE(konsens::heartbeat_ack, cbor::tag{34832}, CBOR_MEMBER(konsens::heartbeat_ack, n),
+                 CBOR_MEMBER(konsens::heartbeat_ack, id));
+CBOR_DEFINE_TYPE(konsens::read_index_reply, cbor::tag{34833}, CBOR_MEMBER(konsens::read_index_reply, reads),
+                 CBOR_MEMBER(konsens::read_index_reply, read_index));
+CBOR_DEFINE_TYPE(konsens::answer, cbor::tag{34834}, CBOR_MEMBER(konsens::answer, n),
+                 CBOR_MEMBER(konsens::answer, pointer), CBOR_MEMBER(konsens::answer, from_idx),
+                 CBOR_MEMBER(konsens::answer, base_crc), CBOR_MEMBER(konsens::answer, results),
+                 CBOR_MEMBER(konsens::answer, second_run));
+CBOR_DEFINE_TYPE(konsens::try_again, cbor::tag{34835}, CBOR_MEMBER(konsens::try_again, n),
+                 CBOR_MEMBER(konsens::try_again, index));
+CBOR_DEFINE_TYPE(konsens::refused, cbor::tag{34836}, CBOR_MEMBER(konsens::refused, n),
+                 CBOR_MEMBER(konsens::refused, index), CBOR_MEMBER(konsens::refused, reason));
+CBOR_DEFINE_TYPE(konsens::work, cbor::tag{34837}, CBOR_MEMBER(konsens::work, n), CBOR_MEMBER(konsens::work, index),
+                 CBOR_MEMBER(konsens::work, request), CBOR_MEMBER(konsens::work, entry_crc));
+CBOR_DEFINE_TYPE(konsens::build_request, cbor::tag{34838}, CBOR_MEMBER(konsens::build_request, nonce),
+                 CBOR_MEMBER(konsens::build_request, from_idx));
+CBOR_DEFINE_TYPE(konsens::build_response, cbor::tag{34839}, CBOR_MEMBER(konsens::build_response, nonce),
+                 CBOR_MEMBER(konsens::build_response, from_idx), CBOR_MEMBER(konsens::build_response, entries),
+                 CBOR_MEMBER(konsens::build_response, last_chain_crc),
+                 CBOR_MEMBER(konsens::build_response, decided_idx),
+                 CBOR_MEMBER(konsens::build_response, decided_chain_crc));
+CBOR_DEFINE_TYPE(konsens::build_refused, cbor::tag{34840}, CBOR_MEMBER(konsens::build_refused, nonce));
+CBOR_DEFINE_TYPE(konsens::heartbeat_request, cbor::tag{34841}, CBOR_MEMBER(konsens::heartbeat_request, round));
+CBOR_DEFINE_TYPE(konsens::heartbeat_reply, cbor::tag{34842}, CBOR_MEMBER(konsens::heartbeat_reply, round),
+                 CBOR_MEMBER(konsens::heartbeat_reply, ballot), CBOR_MEMBER(konsens::heartbeat_reply, leader),
+                 CBOR_MEMBER(konsens::heartbeat_reply, happy));

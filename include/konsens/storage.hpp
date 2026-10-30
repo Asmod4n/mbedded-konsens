@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <cbor/schema.hpp>
+
 namespace konsens {
 
 struct ballot {
@@ -254,3 +256,13 @@ concept storage = storage_write<typename S::transaction> && storage_read<typenam
 
 template <>
 struct std::is_error_code_enum<konsens::storage_errc> : std::true_type {};
+
+CBOR_DEFINE_TYPE(konsens::ballot, cbor::tag{34816}, CBOR_MEMBER(konsens::ballot, config_id),
+                 CBOR_MEMBER(konsens::ballot, n), CBOR_MEMBER(konsens::ballot, priority),
+                 CBOR_MEMBER(konsens::ballot, pid));
+CBOR_DEFINE_TYPE(konsens::entry, cbor::tag{34817}, CBOR_MEMBER(konsens::entry, kind),
+                 CBOR_MEMBER(konsens::entry, payload), CBOR_MEMBER(konsens::entry, session),
+                 CBOR_MEMBER(konsens::entry, request_number), CBOR_MEMBER(konsens::entry, client_id),
+                 CBOR_MEMBER(konsens::entry, pid), CBOR_MEMBER(konsens::entry, result),
+                 CBOR_MEMBER(konsens::entry, result_crc), CBOR_MEMBER(konsens::entry, out),
+                 CBOR_MEMBER(konsens::entry, rejected));

@@ -6,6 +6,8 @@
 #include <span>
 #include <vector>
 
+#include <cbor/schema.hpp>
+
 #include "konsens/state_machine.hpp"
 #include "konsens/storage.hpp"
 
@@ -60,3 +62,6 @@ struct float_rule {
                                  const std::optional<float_rule>& rule);
 
 }
+
+CBOR_DEFINE_TYPE(konsens::indexed_result, cbor::tag{34818}, CBOR_MEMBER(konsens::indexed_result, index),
+                 CBOR_MEMBER(konsens::indexed_result, result), CBOR_MEMBER(konsens::indexed_result, crc));
