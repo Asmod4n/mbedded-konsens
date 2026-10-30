@@ -489,3 +489,60 @@ Q8. The nested transaction of the Execute-Verify base is a savepoint in
     the open transaction (no change; lang_savepoint.html is not in
     refs/sqlite/ and was not checked).
 Q9. The latency of reads is measured with S2.
+
+## 18. Wrong assumption: the arm results at 64 in flight before 2a8cd3b
+
+- Assumed: the samples of one cell measure the same thing, and their
+  spread is noise between runs.
+- True: the rate of one cluster fell with each sample. The leader
+  walked each done record of its ballot in each step
+  (`find_the_entries_that_a_majority_refused`), and that set has no
+  bound (2026-10-30-123000Z-write-path-slows-with-each-sample.txt,
+  2026-10-30-131500Z-refusal-check-reads-the-refusals.txt).
+- Caused: the medians at 64 in flight of F2, D1, S and S2 before
+  2a8cd3b hold the drop. A faster arm wrote more and lost more. The
+  D1 and S "gains" and the spread of S and S2 came from it.
+- Still open: the set of appended done records and the set of
+  refusals keep growing in memory for the length of one ballot.
+
+## 19. Arm P: the promise between checks comes from memory
+
+Source: callgrind at 1 in flight on all three nodes, form S2 on top of
+2a8cd3b. The leader runs 697k instructions per write and 6.4 steps per
+write. `sequence_paxos::get_promise` takes 25 % of them: about 13.7k
+instructions per call, two calls per step (`finish_the_step` and
+`execute_verify`). Each call runs `read_checked_meta`: the meta row,
+the last entry and the entry state of `decided_idx`. Outside a write
+transaction it also begins a read-only transaction.
+
+The checks now run 4 times per step: `begin_step`, the two calls of
+`get_promise`, and `commit_phase_one`.
+
+Form:
+1. `sequence_paxos` keeps the meta record of the last check that ended
+   a transaction: the record that `commit_phase_one` checked, once
+   `commit_phase_two` committed it or once the transaction had no
+   writes. A rollback, `stop_voting` and an error drop it.
+2. `read_meta_between_steps` returns, in this order: inside a write
+   transaction, the meta of that transaction (`txn_->get_meta()`; the
+   transaction checked it in `begin_step` and holds only its own writes
+   since); outside, the kept record; with no kept record, the checked
+   read as now.
+3. `begin_step` and `commit_phase_one` keep their checks. Each write
+   transaction is checked at its begin and at its end, as now.
+4. The four getters (`get_promise`, `get_accepted_round`,
+   `get_decided_idx`, `get_accepted_idx`) use item 2 without a change
+   of their declarations.
+
+Tests:
+- After a commit, `get_promise` returns the promise that the step
+  wrote, with no read of the storage (a storage that counts its reads).
+- After a rollback, the next `get_promise` makes the checked read.
+- A damage of the meta row between two steps is found by the next
+  `begin_step`, and the node stops voting.
+
+Measured as section 2 says, against R1 with S2 and against R1.
+
+Question for the review: whether a value in memory between two steps
+misses a damage that a checked read finds now, and whether any path
+writes the storage outside a transaction of `sequence_paxos`.
