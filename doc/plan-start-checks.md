@@ -5,7 +5,7 @@ Source: doc/storage-fault-matrix.md on branch storage-fault-matrix
 `malformed_record` for proposal 3; this plan proposes a new code. The
 owner decided the open points of reviews 3 and 4 on 2026-10-24; the
 names stay provisional (section 6). The owner decided on 2026-10-24
-14:44 that LMDB is the only source of data. The fields that
+14:44 that the storage is the only source of data. The fields that
 sequence_paxos keeps in memory (section 1) contradict that rule, so
 this plan is revised after the plan of that change.
 The owner decided on 2026-10-24 that a full map ends the node and that
@@ -21,16 +21,13 @@ where.
 
 Line numbers are at commit 4c57d44.
 
-- `read_entries` reads by key, with MDB_SET_RANGE from `from`, and
+- `read_entries` reads by key from `from`, and
   stops at the first key at or above `to`
   (`src/persistent_storage.cpp:449-488`). A missing key is skipped. A
   caller reads up to the count of entries, so after a missing key k
   below the last key, a range read returns one entry less, and the last
   key is never read. A read of one index other than k returns the true
   entry.
-- After a missing key below the last key, the next append with
-  MDB_APPEND at the count meets the existing last key and fails with
-  MDB_KEYEXIST (`put_entry` `:207`; `lmdb.h:1572-1575`).
 - The meta values are read once, in `with` (`sequence_paxos.hpp:262-266`),
   and then kept in memory. A meta value that is lost while the node runs
   is read only at the next start.
@@ -85,11 +82,9 @@ Line numbers are at commit 4c57d44.
   `test/simulation.hpp:510,532,881`, `test/node_cluster.hpp:139`,
   `test/test_node.cpp:74,140,152,229`, `test/test_client.cpp:139,170`,
   `test/test_read_index.cpp:59`, `test/test_group_commit.cpp:181`.
-- LMDB forbids a second environment of the same files in one process
-  (`deps/lmdb/libraries/liblmdb/lmdb.h:104-107`): when one closes, the
-  fcntl locks of the other break. `test/fuse/test_device_faults.cpp:166`
-  damages a store in a forked child.
 - No bench case opens a store (`bench/konsens_bench.cpp:1705-1721`).
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 2. Change of the code
 
@@ -184,12 +179,12 @@ Line numbers are at commit 4c57d44.
    A correct state always gives the full range, because the waiting ops
    are written before each read.
    `get_last_entry_crc` (`persistent_storage.cpp:535-566`) reads the
-   key at MDB_LAST and does not compare it with `accepted_idx_ - 1`.
+   last key and does not compare it with `accepted_idx_ - 1`.
    After a lost last key, a recovery answer that is not the primary
    (`:890`) reads no log and sends the CRC of the entry before.
    `find_hardware_fault` (`:962-976`) then names a healthy node.
-   Open. The owner decided on 2026-10-24 14:44 that LMDB is the only
-   source of data and that no answer comes from a copy in memory. Then
+   Open. The owner decided on 2026-10-24 14:44 that the storage is the
+   only source of data and that no answer comes from a copy in memory. Then
    the length and the CRC come from one read transaction, and this
    case does not exist. That change has its own plan; items 2.5 and
    2.7 are revised after it.
@@ -251,8 +246,7 @@ such damage reduces to cases that the model has:
 - A lost meta value is read only at the next start: one of the kinds
   above.
 - A key lost below the last key is found by the next read that covers
-  it (items 2.2 and 2.7), or by the next append (MDB_KEYEXIST), or at
-  the next start.
+  it (items 2.2 and 2.7), or at the next start.
 - A lost last key is found by the next read up to the accepted index
   (item 2.7) or by the next append (item 2.5), whichever comes first.
   - `handle_prepare` reads only when it sends a sync (`:710-722`). A
@@ -268,12 +262,15 @@ such damage reduces to cases that the model has:
   2.8.
 The model has no damage at run time. These code checks carry the
 argument alone.
-A read error of LMDB that ends the process is a crash in the model,
+A read error of the storage that ends the process is a crash in the
+model,
 and MC_s_crash covers it (section 7).
 Without item 2.5, the next append writes at the old last index, and at
 the next start the node reads a log with no gap and a wrong entry. The
 checks at the start cannot find that; it is the case of the mutation
 run MC_s_nocheck_missing_entry_safety, which breaks S2.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 3.3 Mutation
 
@@ -379,9 +376,7 @@ All runs are simulations of 15 min:
 
 ## 4. Tests
 
-The tests damage a closed LMDB directory with LMDB itself, in a forked
-child (`lmdb.h:104-107`). test_persistent_storage links `lmdb` for
-this, as the bench does.
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 - Before the checks: the helper at `test_sequence_paxos.cpp:221-231`
   writes a promise and an accepted round. Every harness checks
@@ -404,7 +399,7 @@ this, as the bench does.
   - "an append with an accepted index other than the count is
     missing_entry".
 - test_sequence_paxos, with `write_atomically` through `storage_of`
-  (`:158-166`), no raw LMDB and no CRC code:
+  (`:158-166`), no raw access to the store and no CRC code:
   - "a log with no accepted round is inconsistent_storage";
   - "an accepted round above the promise is inconsistent_storage";
   - "a decided index above the log is inconsistent_storage";
@@ -428,7 +423,7 @@ this, as the bench does.
   - "an append after a lost last key throws write_error" (item 2.5);
   - "a decided index above the stored log length throws write_error
     and commits nothing" (item 2.5);
-  - "a read error of LMDB throws and is not a stop of the vote"
+  - "a read error of the storage throws and is not a stop of the vote"
     (section 7);
   - "a seed node at the first start starts with no recovery";
   - "a seed node with a used store starts the recovery".
@@ -440,8 +435,8 @@ this, as the bench does.
   KONSENS_FUSE_TESTS=ON, KONSENS_TEST_TMPDIR=/dev/shm.
 - counter_stress seeds 1 to 300 with `--cbor --power-loss 50`.
 - ASan and UBSan once before the merge.
-- The cost of the read check: bench cases `get_entries_lmdb` and
-  `read_lmdb`, before and after, in every build, by the rules of a
+- The cost of the read check: bench cases `get_entries` and
+  `read`, before and after, in every build, by the rules of a
   measurement. No number is written before the run.
 
 ## 6. Provisional names
@@ -460,7 +455,7 @@ specification names these faults. The owner decides the names.
 - At a read, `missing_entry` is a value in `read_failure` with the
   index, and sequence_paxos stops the vote. sequence_paxos finds that
   fault, not the file system.
-- A read error that LMDB reports is thrown as a type derived from
+- A read error that the storage reports is thrown as a type derived from
   `std::system_error` and ends the process, as a write error does
   (owner, 2026-10-24 14:39). The calls of `stop_voting` for such
   errors (`:713`, `:719`, `:886`, `:893` and the others of section 1)

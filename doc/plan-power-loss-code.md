@@ -102,7 +102,7 @@ gets the rest. This plan gets one review before the build.
   error value; a changed source gives a new Recovery round; `get_state`
   starts at `accepted_idx` or at `decided_idx` as section 2 says.
 - `counter_stress` gets a fault "every node restarts" and runs seeds 1
-  to 300 on memory and on LMDB; S1, S2, S2b, S3, S5 and S7 hold after
+  to 300 on memory and on `persistent_storage`; S1, S2, S2b, S3, S5 and S7 hold after
   each step.
 - A test of the wire form: `recovery_response`, `get_state` and
   `new_state` through encode and decode.

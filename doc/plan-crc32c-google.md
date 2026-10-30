@@ -62,7 +62,7 @@ This plan gets one review before the build.
 
 ## 4. Measurement
 
-bench `crc32c` and `commit_lmdb`, `write_lmdb`: old (466f26e+) against
+bench `crc32c` and `commit`, `write`: old (466f26e+) against
 new, each in its own binary, A/A first, 31 samples, 7 rounds.
 
 ## 5. Not in this plan

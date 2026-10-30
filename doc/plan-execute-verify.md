@@ -265,8 +265,8 @@ violation and a review approves the parts that changed from form 5.
 
 ## 3. A fault of the own node throws, with a proof that stays
 
-1. A damage that a step finds (`error_is_a_damage`), a read error of LMDB
-   (owner, 2026-10-24 14:39), and a throw of 2.3.5, 2.7.4 and 2.8.1 write
+1. A damage that a step finds (`error_is_a_damage`), a read error of the
+   storage (owner, 2026-10-24 14:39), and a throw of 2.3.5, 2.7.4 and 2.8.1 write
    a proof into the node storage: the kind, the index, the CRCs or the
    digests, and the ballot. The proof is one field of the `repair_record`.
    A failure of that write throws `sync_error`.
@@ -300,7 +300,7 @@ violation and a review approves the parts that changed from form 5.
 
 1. A constant `ExecuteVerify` (Boolean). FALSE keeps every present
    configuration as it is. The configurations of section 5 set
-   `StateInLmdb`, `RepairFromPeer` and `StartDamageCounts`.
+   `StateInStorage`, `RepairFromPeer` and `StartDamageCounts`.
 2. `Result(v, b)` gives a result for value `v` on base `b`, a sequence of
    (value, result) pairs. A result is a pair (value, jitter), jitter in
    {0, 1, 2}; two results agree when their values are equal and their

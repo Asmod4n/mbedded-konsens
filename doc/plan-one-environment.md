@@ -4,8 +4,8 @@ Source: the owner, 2026-10-26, from 07:14 to 11:38. Section 18 lists
 each decision with its time.
 
 1. The log and the state (the state machine and the client table)
-   stand in one LMDB environment with two named databases, `meta` and
-   `data`. The node storage stays a second environment.
+   stand in one database file with two tables, `meta` and `data`. The
+   node storage stays a second file.
 2. A request that reaches any node goes to the leader. The node that
    receives it stores nothing.
 3. The leader sends "work" to the nodes. Each node writes the tombstone
@@ -32,24 +32,18 @@ one review by a second agent, the go of the owner, then the code.
 
 Why (measured at fa14f44, bench/results/2026-10-26-021654Z.txt, g++ 16
 Release, A/A 4.4 %): a write of 1 KiB through three nodes
-(`write_lmdb`) takes 4.70 ms. A plain LMDB put with its commit
-(`lmdb_put`, 1 KiB) takes 0.33 ms. The write makes 27 commits of the
+(`write`) takes 4.70 ms. The write makes 27 commits of the
 log storage over the three nodes (`commits_per_op`); the commits of the
 state storage come on top and the bench does not count them. The
 apply commits the state environment as a second sync on each node
 (`include/konsens/node.hpp:1085`).
 
+The LMDB form of this section is in the git history before branch remove-lmdb.
+
 ## 1. Facts checked in this session
 
-Line numbers of the code are at fa14f44. Line numbers of LMDB are at
-LMDB_1.0.2 (c279e04, the submodule `deps/lmdb`), read in a checkout of
-that commit outside the tree.
+Line numbers of the code are at fa14f44.
 
-- The log environment has the named databases `log` and `meta`
-  (`src/persistent_storage.cpp:27`, `:31-32`). The state environment
-  has `state`, `sessions` and `applied` (`:37-41`). The node storage
-  has `node` (`:47-48`). All three open with `MDB_NOTLS |
-  MDB_REMAP_CHUNKS` (`:30`, `:1052`, `:1168`, `:1563`).
 - `node::with` takes the log storage, a `node_storage` and a
   `state_storage` (`node.hpp:104-106`). `node_config` has
   `max_in_flight` (`node.hpp:46`), and `with` refuses 0 (`:108-111`).
@@ -61,66 +55,18 @@ that commit outside the tree.
 - The applied record holds the applied index, the chain CRC at it and
   the pointer `p` of the verdict function (`:1084`,
   `src/persistent_storage.cpp:42-44`).
-- LMDB: "only one write transaction may be active at a time"
-  (`lmdb.h:25`). A parent transaction issues no operation while it has
-  an active child transaction (`lmdb.h:1132-1137`). So a write
-  transaction of the state cannot stay open in the same environment
-  while a step writes the log.
-- LMDB: `mdb_txn_begin` takes `MDB_NOSYNC` and `MDB_NOMETASYNC` for one
-  transaction (`lmdb.h:1144-1147`). `mdb_txn_commit` skips the data
-  sync for such a transaction (`mdb.c:4607-4609`) and writes the meta
-  page after it (`:4616`).
-- LMDB: with `MDB_NOSYNC`, "a system crash can corrupt the database or
-  lose the last transactions", unless the file system keeps the order
-  of writes (`lmdb.h:648-661`). With `MDB_NOMETASYNC`, LMDB keeps the
-  integrity, and a system crash may undo the last transaction
-  (`lmdb.h:640-647`). The reuse of free pages takes the oldest reader
-  as its bound (`mdb_find_oldest`, `mdb.c:2642-2656`, used at
-  `:2804-2826`). The bound does not look at the last sync, so a commit
-  with no sync can reuse a page that the last durable meta page still
-  names.
-- LMDB: `mdb_env_sync` flushes every commit before it (`lmdb.h:872-890`,
-  `mdb_env_sync0` `mdb.c:3113`). So one sync makes every earlier
-  commit of the environment durable.
-- ext4 with `data=ordered` (the mount of the bench, `/lmdb`), XFS and
+- ext4 with `data=ordered` (the mount of the bench), XFS and
   btrfs without `flushoncommit` do not keep the order of overwrites of
   file data; ZFS and btrfs with `flushoncommit` keep it
   (/mnt/project-files/actor-raft/fs-write-order.md: kernel
   documentation of ext4, btrfs mount options, OpenZFS txg.c, Pillai et
   al. OSDI 2014 and FAST 2017).
-- LMDB: a commit syncs the data pages first and writes the meta page
-  after it (`mdb.c:4601-4616`). Without `MDB_NOSYNC` and
-  `MDB_NOMETASYNC`, the meta page goes through `me_mfd`, a descriptor
-  opened with `O_DSYNC` (`mdb.c:4945-4949`, `:5340`, `:6387`). So a
-  normal commit makes two flushes: `fdatasync` of the data, then a
-  write with `O_DSYNC` of the meta page.
-- LMDB_1.0.2 has `mdb_txn_prepare` (`lmdb.h:1208-1229`, `mdb.c:4646-4652`):
-  it writes the data pages and syncs them unless the transaction has
-  `MDB_NOSYNC` (`mdb.c:4607-4613`), and does not write the meta page. A
-  later `mdb_txn_commit` writes only the meta page (`mdb.c:4407-4408`,
-  `:4616`). `mdb_env_get_fd` gives the descriptor of the data file
-  (`lmdb.h:958`).
-- So `MDB_NOSYNC` with one `fdatasync` from outside after the commit
-  gives durability once that sync ends. It does not keep the integrity
-  if the power fails before the sync ends: the meta page can reach the
-  disk before the data pages that it names (`lmdb.h:648-661`). The order
-  that keeps the integrity is: `mdb_txn_prepare` with `MDB_NOSYNC`, then
-  `fdatasync` from outside, then `mdb_txn_commit` (the meta page, with
-  no sync). The meta page of that commit is durable after the next
-  `fdatasync`. Not tested in this session; section 15 item 7 tests it.
-- If each commit is prepared and synced before the next one begins,
-  the pages of the durable snapshot are not reused: the bound of
-  `mdb_find_oldest` is the transaction before the one that writes
-  (`mdb.c:2645`), and the free pages of that transaction stay. Read from
-  the code; not tested.
 - slipstreamIO has no operation for a sync yet; it needed none so far
   (owner 2026-10-26 07:34). It gets one for the binary.
-- A prepared transaction keeps the writer lock until its commit:
-  `_mdb_txn_commit` returns after the prepare at `mdb.c:4610-4613`, and
-  only `mdb_txn_end` at `:4630` releases the lock (`:3762`). So no other
-  write transaction begins while the sync of a prepared step runs.
 - The client reply at fa14f44 waits for the decide of the `results`
   entry: the second round of plan-execute-verify.md 2.9.1.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 2. The form of a task
 
@@ -222,11 +168,11 @@ the whole record.
      durable yet while messages wait on it (Q1 of section 3.5). The
      step asks for a bare `fdatasync` and gives the group that waits.
 4. The runs of the work happen in a child transaction of the step
-   (section 5.2). The child ends before the parent commits
-   (`lmdb.h:1132-1137`).
+   (section 5.2). The child ends before the parent commits.
 5. The two write transactions in one thread of plan-storage-only-source.md
-   2.1 item 3 (owner 2026-10-25 03:53) and their test go. The kept read
-   transaction and `MDB_NOTLS` stay.
+   2.1 item 3 (owner 2026-10-25 03:53) and their test go.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 3.5 The sync, outside the library
 
@@ -246,32 +192,17 @@ the whole record.
    - "done" from the leader: at once, while its own sync runs (Raft
      dissertation 10.2.1; owner card 2026-10-26 11:38). The leader
      counts itself only after its own sync, so safety does not change.
-3. The commit with LMDB. The step prepares its write
-   transaction with `MDB_NOSYNC` (`mdb_txn_prepare`). The group "sync"
-   is the `fdatasync` of the data pages. After it, the library commits
-   the meta page with no sync. The meta page is durable after the next
-   `fdatasync`. Two forms follow:
-   - Q1 (owner card 2026-10-26 10:51): one `fdatasync` for each step. The messages of a
-     step wait on the sync of the next step. That sync also makes the
-     meta page of the step before durable. Under load the next step
-     follows at once. An idle node asks for a bare sync ("sync only",
-     3.4 item 2). The bench of 2026-10-24 ran this form
-     (bench/results/2026-10-24-145849Z-lmdb-txn-nometasync.txt). It
-     measured 13 to 32 % less time for each message.
-   - Q2, not taken: two `fdatasync` for each step, data then meta page,
-     linked. The messages wait for the second one.
-   - Not taken: `MDB_NOSYNC` with one sync after the commit. A power loss
-     before the end of the sync can leave a meta page whose data pages
-     are not on the disk (section 1).
-4. The prepared transaction keeps the writer lock of LMDB until the
-   library commits its meta page after the sync (section 1). So the next
-   step of the node begins its write only after the sync. Messages that
-   arrive during the sync wait for that step (section 6).
+3. The commit: plan-sqlite-storage.md section 6 replaces this item.
+   The owner chose Q1 (card 2026-10-26 10:51): one `fdatasync` for each
+   step. Q2, two `fdatasync` for each step, was not taken.
+4. plan-sqlite-storage.md section 6 replaces this item.
 5. A failed sync throws `sync_error` in the caller's call that reports
    the result of the sync, and the process ends, as now (owner,
    2026-10-21). Nothing repeats the sync.
 6. Dependency: slipstreamIO needs an operation for `fdatasync` in its
    engine, with the link to a send. Section 1 says what is not checked.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 3.6 The count of syncs
 
@@ -299,12 +230,10 @@ The work record adds, on each node:
 
 The goal of the owner (one sync for each task and node) holds only for
 Q1 under load, where one sync serves each step and a step holds several
-tasks. A normal LMDB commit at fa14f44 makes two flushes (section 1).
-Section 15 measures the counts; none of these numbers is measured.
-Measured once on the session VM (ext4 on virtio, LMDB 1.0.2, 64 B
-values, one thread): a synced commit with 1 put takes 249 us (median),
-with 1024 puts 611 us, 1.7 M puts/s
-(/mnt/project-files/actor-raft/syncbench/2026-10-26T1100Z-lmdb-sync.md).
+tasks. Section 15 measures the counts; none of these numbers is
+measured.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 4. The order of log and state
 
@@ -364,13 +293,12 @@ Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
    record. The done record replaces the tombstone in its transaction.
 2. A file system that keeps the order of writes (ZFS; btrfs with the
    mount option `flushoncommit`) takes the tombstone in a commit with
-   `MDB_NOSYNC`. A power loss can lose the tombstone, but it cannot
-   corrupt the file (lmdb.h:648-661;
-   /mnt/project-files/actor-raft/fs-write-order.md).
+   no sync. A power loss can lose the tombstone
+   (/mnt/project-files/actor-raft/fs-write-order.md).
 3. Any other file system (ext4 with data=ordered, XFS, btrfs without
    `flushoncommit`): the tombstone rides in the commit of section 3.5
    item 3 (prepare, `fdatasync` of the data pages, then the meta page).
-   This is the integrity of `MDB_NOMETASYNC`. A step that writes only
+   A step that writes only
    tombstones then costs one sync; under load the tombstones ride in the
    commit of a step that syncs anyway.
 4. The start reads the type of the file system and the mount options of
@@ -392,6 +320,9 @@ Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
    the same key.
 7. The tombstones stand in `meta` only, never in `data` (owner
    2026-10-26 15:30).
+
+plan-sqlite-storage.md section 3 replaces items 2 to 4: the tombstone
+rides in the commit of its step, which syncs. The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 5.2 The base and the run
 
@@ -496,14 +427,15 @@ own.
 2. 2.4 item 10: when the chain CRC at the applied index differs from the
    repaired log, the node takes the full copy of item 3. Else it keeps
    its state.
-3. The full copy after `MDB_BAD_CHECKSUM` (2.4 item 9): the peer runs
-   `mdb_env_copyfd2` without `MDB_CP_COMPACT` over the one environment.
-   The copy is one snapshot of the log, the state, the client table and
+3. The full copy after a damage code of the storage (2.4 item 9) is
+   the copy of plan-sqlite-storage.md 7.5. The copy is one snapshot of the log, the state, the client table and
    the meta record. The order "state first, then log" goes. The receiver
    checks the copy as now and also checks `applied <= decided <= log
    length` in it. The switch through the name of the directory in the
    node storage stays.
 4. A copy for a new node (owner 2026-10-24) is the same copy.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 9. Start checks
 
@@ -537,9 +469,8 @@ In one read transaction:
 1. `node::with` takes one store (log and state) and the node storage, in
    place of three storages. The class `state_storage` goes; its views
    stay (`write_view`, `read_view`).
-2. The store opens from a directory and a size. No LMDB name stands in
-   the interface: not "environment", not "named database", not
-   "map size" (the open question on `map_size` stays open).
+2. The store opens from a directory and a size. No name of the engine
+   of the store stands in the interface.
 3. `node_config` loses `max_in_flight`.
 4. The `state_machine` concept does not change.
 
@@ -628,9 +559,8 @@ worker each. The results are in
 
 ### 13.4 What the model does not show
 
-- That LMDB keeps the integrity of the file. The order of prepare, sync
-  and commit of section 3.5 is outside the model; section 15 item 7
-  tests it.
+- That the storage keeps the integrity of the file. The commit and the
+  sync are outside the model.
 - The check of the session table. `StateIsFold` folds with the same
   function as the node, so it checks which entries the state holds and
   in which order, not that the node takes a request only once.
@@ -672,8 +602,8 @@ way in the image localhost/cxx-matrix-fuse, each arm in its own binary,
 run alternately, 7 rounds, medians compared, the A/A of each case
 first. The arm before is fa14f44. No number is written before the run.
 
-1. `write_lmdb` at 64 B, 1 KiB and 64 KiB; `read_lmdb`; `commit_lmdb`.
-2. `write_batch_size_lmdb` at 1, 16 and 256.
+1. `write` at 64 B, 1 KiB and 64 KiB; `read`; `commit`.
+2. `write_batch_size` at 1, 16 and 256.
 3. The pipeline cases at 0 ms and 20 ms delay, 10000/s and 20000/s, the
    work put and loop. The arm before takes `max_in_flight` 1, 8 and 64;
    the arm after has no such argument.
@@ -683,16 +613,11 @@ first. The arm before is fa14f44. No number is written before the run.
    is one sync for each task and node.
 6. A hypothesis file outside the tree before the code: the cost of the
    base in a child transaction (section 5.2) against the open
-   transaction of fa14f44, for 1, 8 and 64 tasks in work; and the cost of
-   a commit with `MDB_NOSYNC` and with `MDB_NOMETASYNC` (section 5.1).
-7. A test file outside the tree: a power cut on the FUSE file system
-   error_fs between `mdb_txn_prepare` with `MDB_NOSYNC`, the
-   `fdatasync` and `mdb_txn_commit`, at each point, and the open after
-   it; the same for `MDB_NOSYNC` with one sync after the commit.
-   Not checked: whether error_fs can drop the writes after the last
-   sync; if not, it gets that switch first.
+   transaction of fa14f44, for 1, 8 and 64 tasks in work.
+7. A power cut on the FUSE file system error_fs: plan-sqlite-storage.md
+   8.4 lists these tests. The LMDB form of this section is in the git history before branch remove-lmdb.
 8. The form Q1 of section 3.5 against the normal commit:
-   `commit_lmdb`, `write_lmdb`, `write_batch_size_lmdb`, with the sync
+   `commit`, `write`, `write_batch_size`, with the sync
    through io_uring in the bench.
 9. On real hardware of the owner (a cluster, owner 2026-10-26 11:15):
    the power cut of item 7 with a real loss of power, on ZFS, on btrfs
@@ -708,7 +633,7 @@ first. The arm before is fa14f44. No number is written before the run.
   the copy) and item 10 (the full copy is one environment); 2.6 items 1,
   3, 4, 5, 7 and 8 (own environment, commit after the decide, run before
   the decide in an open transaction, the pipeline with `max_in_flight`,
-  the abort on a cut, two environments without `MDB_WRITEMAP`: now one);
+  the abort on a cut, two environments: now one);
   questions 11 and 12 of that plan.
 - plan-storage-only-source.md 2.1 item 2 (the messages of a step leave
   only after its commit): "work", "ran", "decide" and the heartbeats
@@ -728,10 +653,10 @@ first. The arm before is fa14f44. No number is written before the run.
   resend timeout) stays, and "work" is sent again in the same way
   (5.3).
 - State file, decisions in force: "an entry counts as stored only
-  after a synchronous LMDB commit" (now: after the sync of section 3.5);
+  after a synchronous commit" (now: after the sync of section 3.5);
   "the decide index keeps its own
-  synchronous commit" (2026-10-22); "the log has its own LMDB
-  environment, apart from the state; each node has one batch in work at
+  synchronous commit" (2026-10-22); "the log has its own store, apart
+  from the state; each node has one batch in work at
   a time"; "two write transactions (log and state) in one thread"
   (2026-10-25 03:53).
 

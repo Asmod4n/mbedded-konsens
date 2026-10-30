@@ -127,11 +127,11 @@ Each finding has a place, a fault and a change.
     Heartbeat, HeartbeatAck, ReadIndexReply). Both agents edit
     `message.hpp`, `storage.hpp`, `sequence_paxos.hpp` and `node.hpp` at
     the same time.
-    **Change:** step 0 adds the entry kinds, the encoding in LMDB, the
+    **Change:** step 0 adds the entry kinds, the encoding in the store, the
     message types and the empty API in one commit. Agent R and agent S
     start from that commit. The read heartbeat is a Paxos message with
     a name that differs from `heartbeat_request` of BLE. The plan says
-    that LMDB files of v0 are not read.
+    that the store files of v0 are not read.
 
 13. **Place:** whole plan.
     **Fault:** the plan has no open question. The owner decides each

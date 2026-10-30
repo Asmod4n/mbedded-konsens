@@ -8,7 +8,7 @@ the owner can test the same evening. This version applies the review
 
 The owner builds the library, starts three nodes in one process,
 writes entries, reads the decided entries, stops a node, reopens its
-LMDB and sees the data.
+store and sees the data.
 
 ## 2. What the model checks for v0
 
@@ -17,7 +17,7 @@ LMDB and sees the data.
 | Sequence Paxos, with max(old, new) for decided_idx | base_monotone (3 nodes, ballot n <= 2, log <= 2, no fault) | complete, 13,489,555 distinct states, no violation; the S7 counter-check breaks |
 | One crash, one loss, one duplicate | a-F3, a-F1-loss, a-F1-duplicate (small bounds, Recovery off) | complete, no violation; not run again on the current model |
 | Ballot Leader Election | none | not in the model |
-| CRC32C, LMDB reopen | none | not in the model; `Crash` assumes that the durable state survives |
+| CRC32C, reopen of the store | none | not in the model; `Crash` assumes that the durable state survives |
 
 The proof for the code is a simulation test of 3 nodes with one crash
 and reopen, one loss and one duplicate. After each step it checks S1,
@@ -26,7 +26,7 @@ goes to the owner at once.
 
 ## 3. Scope of v0
 
-- SequencePaxos on MemoryStorage and on PersistentStorage (LMDB,
+- SequencePaxos on MemoryStorage and on PersistentStorage (a
   synchronous commit). Names after Omni-Paxos.
 - BallotLeaderElection with a fixed priority from the configuration.
   It is needed when the owner stops the leader. The code cites the
@@ -37,7 +37,7 @@ goes to the owner at once.
   `refs/` in the same commit.
 - The API: a node takes a message or a tick and returns the messages
   to send. The user does the network IO. Messages are C++ types.
-- Error paths, as decided by the owner: a failed `mdb_txn_commit` ends
+- Error paths, as decided by the owner: a failed commit ends
   the process. A full disk is the error value "no space". A CRC
   mismatch is reported with its evidence, and the node stops voting.
 
@@ -56,7 +56,7 @@ Fil-C build.
 |---|---|
 | `include/konsens/` | Public headers. |
 | `src/` | SequencePaxos, BallotLeaderElection, PersistentStorage, MemoryStorage, CRC32C. |
-| `test/` | Unit tests, the simulation test, the LMDB reopen test. |
+| `test/` | Unit tests, the simulation test, the reopen test of the store. |
 | `examples/three_nodes.cpp` | Three nodes in one process. |
 | `refs/rfc3720.txt` | The specification of CRC32C. |
 
@@ -65,7 +65,8 @@ Fil-C build.
 - CMake, g++ 13.3 of Ubuntu 24.04, C++23, every
   warning an error, a debug build with ASan and UBSan. clang++ 18.1
   with libstdc++ 13 has no `std::expected`, so clang comes in v0.1.
-- `liblmdb-dev` and `doctest-dev` from Ubuntu (installed).
+- `doctest-dev` from Ubuntu (installed). The LMDB form of this item is in
+  the git history before branch remove-lmdb.
 - Branch: `claude/project-thread-4xjeai`, the branch of this session.
 
 ## 6. Order

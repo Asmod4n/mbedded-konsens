@@ -45,7 +45,7 @@ the branch of this session.
 
 ## 5. Order
 
-0. Step 0, one commit: the new entry kinds, their LMDB encoding, the
+0. Step 0, one commit: the new entry kinds, their encoding in the store, the
    new messages and the empty API (F12).
 1. Agent R after step 0: recovery after start, with tests.
 2. Agent S after step 0, at the same time: the state machine
@@ -93,7 +93,7 @@ The ids are the findings of the review.
   the client table and passes only the payloads of requests. The node
   applies the decided log from index 0 at each start and after each
   recovery. The applied index never falls.
-- F12. Step 0 (section 5). v0 LMDB files are not read by v0.1.
+- F12. Step 0 (section 5). v0.1 does not read the store files of v0.
 - F14. `expire_session(session)` at the leader appends ExpireSession.
   The caller decides the timeout.
 - F15. The simulation gets a rollback: a restart from an earlier copy

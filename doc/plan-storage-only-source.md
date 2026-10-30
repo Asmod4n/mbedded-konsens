@@ -1,7 +1,7 @@
-# Plan: LMDB is the only source of the durable values
+# Plan: the storage is the only source of the durable values
 
 Source: the owner, 2026-10-24 14:44 and 14:45: the only source of data
-is LMDB; no answer comes from memory; only the log knows the log. The
+is the storage; no answer comes from memory; only the log knows the log. The
 owner decided at 14:46 that this change comes before the start checks
 (doc/plan-start-checks.md on branch start-checks).
 
@@ -13,12 +13,12 @@ The owner, 19:38: outside a transaction, a node knows only the state
 of its state machine (role, phase); every fact about the log is read
 in a transaction.
 
-The owner, 14:49: LMDB runs in its fast and safe modes. So a step runs
-in one LMDB write transaction (section 2).
+The owner, 14:49: the storage runs in its fast and safe modes. So a
+step runs in one write transaction of the storage (section 2).
 
-The owner, 20:48 and 20:50: nothing is read from LMDB except through
-LMDB. LMDB has page checksums and a sync, and that is enough. So the
-node reads no page back from the disk itself.
+The owner, 20:48 and 20:50: nothing is read from the storage except
+through the storage. The node reads no page back from the disk itself.
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 The form of a client work, from the owner, 15:27 to 15:39, 15:55, 20:29
 and 20:47:
@@ -86,40 +86,6 @@ src` is empty, so they apply to the head of this branch.
 - `get_log_len` is the count of entries (`read_log_len`, `:192-200`),
   not the last key plus one. Keys count from 0, so the decided index `d`
   means that the entries with the keys 0 to `d - 1` are decided.
-- The environment opens with no flags (`src/persistent_storage.cpp:403`):
-  no `MDB_WRITEMAP`, no `MDB_NOTLS`.
-- A thread uses one transaction at a time, plus its child transactions
-  (`lmdb.h:98`). More than one read transaction in one thread needs
-  `MDB_NOTLS` (`lmdb.h:668-672`).
-- A write transaction of LMDB reads its own changes: `mdb_page_get`
-  looks in the dirty list of the transaction and of its parents first
-  (`mdb.c`, `mdb_page_get`, LMDB_1.0.2).
-- LMDB_1.0.2 allows one nested write transaction under a write
-  transaction, but not with `MDB_WRITEMAP` (`mdb_txn_begin`,
-  `mdb.c:3497-3506`).
-- A normal commit syncs the data first and writes the meta page after
-  it (`mdb_txn_commit`, `mdb.c:4606-4616`: `mdb_env_sync0`, then
-  `mdb_env_write_meta`).
-- LMDB_1.0.2 has page checksums (`mdb_env_set_checksum`, `lmdb.h:1118`)
-  and page encryption (`mdb_env_set_encrypt`, `lmdb.h:1108`). LMDB checks
-  a checksum only on the path of `MDB_REMAP_CHUNKS` (`mdb_rpage_encsum`,
-  `mdb.c:6862-6886`, called at `:7215-7233`). Without that flag, LMDB
-  writes the checksum (`:4296`), checks its size at open (`:5646`), and
-  checks no page on a read.
-- With `MDB_REMAP_CHUNKS`, LMDB maps chunks of 16 pages, each with its
-  own `mmap`; `me_map` holds only the two meta pages (`mdb.c:5104-5127`).
-  It checks a page when the bit of its chunk in `muse` is clear, so once
-  in a transaction (`:6872`). `mdb_txn_end` clears the bit only at the
-  last reference to the chunk, and the chunk stays mapped (`:3773-3792`).
-  So a page that another live transaction holds is not checked again.
-  A failed check returns `MDB_BAD_CHECKSUM` (`lmdb.h:524`, `mdb.c:7367`).
-  Not checked: whether LMDB checks the two meta pages with a checksum.
-- The checksum with `MDB_REMAP_CHUNKS`, in one bench on this machine
-  (g++ 16 -O2, `MDB_NOTLS`, noise floor 11.0 %): the step costs no more;
-  a read of the step after it costs +15 % (64 B) and +12 % (1024 B) with
-  256 messages per step, and nothing above the noise with 1 and 16
-  (bench/results/2026-10-24-194139Z-lmdb-page-checksum-remap.txt). Other
-  builds: not measured.
 - The benches of a read-back from the disk (162320Z, 165704Z, 165906Z,
   195244Z, 203303Z in bench/results/) and of the page cache (163112Z)
   stay as records. The owner decided against the read-back at 20:50, so
@@ -133,14 +99,16 @@ src` is empty, so they apply to the head of this branch.
   06a52bf: the node sends the value of its field
   (doc/review-plan-start-checks-4.md, finding 1; not checked again).
 
+The LMDB form of this section is in the git history before branch remove-lmdb.
+
 ## 2. Change of the code
 
-### 2.1 LMDB is the only source
+### 2.1 The storage is the only source
 
 1. `sequence_paxos` has no field for promise, accepted round, decided
    index or log length, and no list of waiting ops. The four values
-   come from LMDB.
-2. A step runs in one LMDB write transaction. The first call of a step
+   come from the storage.
+2. A step runs in one write transaction of the storage. The first call of a step
    begins it. Every read and every write of the step goes through it,
    so a read sees the writes of the same step. `commit` commits it
    once, and the messages of the step leave only after that commit,
@@ -150,19 +118,9 @@ src` is empty, so they apply to the head of this branch.
 3. Between two steps, a read (the public getters, `node.hpp:127`,
    `:221`, `:374`, `:466`) runs in a read transaction and calls the step
    check of item 5 first, so no value leaves the node without the
-   check. The read transaction is kept and reused with `mdb_txn_reset`
-   and `mdb_txn_renew`, as LMDB documents for that use. It is reset
-   before the write transaction of a step begins. The environment
-   opens with `MDB_NOTLS`, because a kept read transaction and the
-   write transaction stand in one thread. `lmdb.h:98-100` says that a
-   thread uses one transaction at a time; `MDB_NOTLS` lifts this for
-   read-only transactions only (`lmdb.h:1124-1126`). The write
-   transaction of the log and the open write transaction of the state
-   (2.6 item 5) stand in two environments in one thread. Each
-   environment has its own writer (`me_txn0`), and the bench of
-   2026-10-24 ran this form, but the documentation does not cover it.
-   The owner keeps this form, with a test (2026-10-25 03:53; section
-   4).
+   check. The write transaction of the log and the open write
+   transaction of the state (2.6 item 5) stand in one thread. The owner
+   keeps this form, with a test (2026-10-25 03:53; section 4).
 4. In one transaction, the storage gives the log length as the last
    key plus one, and compares it with the count of entries through the
    continuity function of the start-checks plan (its item 2.1). When
@@ -174,25 +132,21 @@ src` is empty, so they apply to the head of this branch.
    A damage that they find makes the node stop voting. It then repairs
    its log from a peer (2.4) and runs the recovery of VR Revisited, as
    at a start (owner, 2026-10-24 19:21). The model of this is round 8.
-6. A read that returns `MDB_BAD_CHECKSUM` is a damage of item 5
-   (owner, 2026-10-24 21:27). The transaction is then aborted: LMDB
-   gives `MDB_BAD_TXN` to every later call in it. This is the form that
-   LMDB gives; the test of 2026-10-24 shows it (bench/results/
-   2026-10-24-213531Z-lmdb-bad-checksum-repair.txt). Every other read error of LMDB throws
-   a type derived from `std::system_error` (owner, 2026-10-24 14:39).
-7. `cached_promise_message_` (`:728`) is built again from LMDB on a
+6. A read that returns a damage code of the storage
+   (plan-sqlite-storage.md 6.1) is a damage of item 5 (owner,
+   2026-10-24 21:27). Every other read error of the storage throws a
+   type derived from `std::system_error` (owner, 2026-10-24 14:39).
+7. `cached_promise_message_` (`:728`) is built again from the storage on a
    resend (`:440`), not kept.
 8. The storage concept (`storage.hpp:121-129`) changes from
    `write_atomically(ops)` and separate getters to a transaction that
-   reads and writes. Its members take their names from LMDB (commit,
-   abort). The type is `storage::transaction` (owner, 2026-10-24 19:23);
-   `konsens::transaction` (`node.hpp:70`) stays. No LMDB name leaves the
-   library.
+   reads and writes. The type is `storage::transaction` (owner,
+   2026-10-24 19:23); `konsens::transaction` (`node.hpp:70`) stays.
 9. A write error of a step throws `write_error`, as now.
 10. Every new error branch is `[[unlikely]]`.
-11. The environment sets the page checksum and `MDB_REMAP_CHUNKS`
-    (owner, 2026-10-24 19:45). The node reads no page back from the
-    disk itself (owner, 20:50).
+11. The node reads no page back from the disk itself (owner, 20:50).
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 2.2 The state of an entry
 
@@ -253,9 +207,7 @@ src` is empty, so they apply to the head of this branch.
      (`rollback`);
    - an older version of a leaf page in the middle of the log, with the
      same keys, entries of an earlier ballot and a valid page checksum.
-   LMDB writes a changed page to a new place and reuses freed pages, so
-   an older version of a page can stand on the disk. Model round 5
-   checks the first two. At a start, the recovery of VR Revisited covers
+   Model round 5 checks the first two. At a start, the recovery of VR Revisited covers
    them; while the node runs, items 6 and 7 cover part of the first two.
    The third is not modelled. The README states all three (owner,
    2026-10-24 19:19: the README warns).
@@ -273,8 +225,8 @@ src` is empty, so they apply to the head of this branch.
 7. The state machine of each node keeps, in memory, the highest
    promise, the highest pair of accepted round and log length, and the
    highest decided index that its own transactions read or wrote (owner,
-   2026-10-24 19:51). It is a check, not a source: each step reads LMDB
-   and compares. A value below the mark is a damage (2.1 item 5). A
+   2026-10-24 19:51). It is a check, not a source: each step reads the
+   storage and compares. A value below the mark is a damage (2.1 item 5). A
    restart forgets the mark; the recovery covers that case. The repair
    of 2.4 sets the mark from the repaired state. A node of a new
    configuration starts with no mark. TigerBeetle keeps `commit_max` in
@@ -283,11 +235,13 @@ src` is empty, so they apply to the head of this branch.
    round 8, with no crash, wipe, resend, loss, reconfiguration, StopSign
    or forced single node. Round 9 adds them.
 
+The LMDB form of this section is in the git history before branch remove-lmdb.
+
 ### 2.4 The repair from a peer
 
 The owner chose this form, 2026-10-24 21:27. Items 1 to 7 hold for a
-damage in pages that LMDB reads without error, such as a chain CRC that
-differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
+damage that the storage reads without error, such as a chain CRC that
+differs. Item 9 holds for a damage code of the storage.
 
 1. A node that found a damage sends a recovery request, as at a start.
 2. A peer that votes and does not recover answers with its log length
@@ -314,49 +268,27 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    for the operator. A restart, a crash, a sleep of the machine or a
    lost network is no damage: the recovery after each start has no
    limit. A damage that the start checks find counts too (owner,
-   2026-10-25 03:54): LMDB commits are atomic, so with honest hardware
-   a start finds no damage. The model has this as `StartDamageCounts`
-   (round 14). The count stands
-   in a third environment of the node, which also holds the hidden
-   identity of the node. No repair copies or replaces it, so a copy
+   2026-10-25 03:54): commits of the storage are atomic, so with honest
+   hardware a start finds no damage. The model has this as
+   `StartDamageCounts` (round 14). The count stands in the node storage,
+   which also holds the hidden identity of the node. No repair copies or replaces it, so a copy
    from a peer brings neither the count nor the identity of the peer.
-   A rollback of that environment can give back an older count; the
+   A rollback of the node storage can give back an older count; the
    README states this. The model keeps `repairs` outside the durable
    tuple, so no fault changes it. The model does not show the operator
    who lets a waiting node vote again: a node in `refused` stays there.
-9. A write transaction cannot change or delete a key on a page with a
-   wrong checksum: it reads the page and gets `MDB_BAD_CHECKSUM`. A
-   wrong branch page hides its whole subtree, and `mdb_drop` fails on
-   it (test of 2026-10-24). So after `MDB_BAD_CHECKSUM` the node
-   replaces the whole environment with the copy that LMDB makes: the
-   peer runs `mdb_env_copyfd2` without `MDB_CP_COMPACT` into the
-   connection. The peer first walks every entry of its own environment
-   and of the free list (a cursor on database 0, as `mdb_stat.c:182-183`
-   does), because the copy checks no checksum (`mdb.c:11631-11744`). The
-   requester writes the copy into a new directory, syncs the files and
-   the directory, and walks every entry and the free list of the copy
-   through LMDB, with the step check. For the state environment the
-   peer sends that copy first and the copy of the log after it, so the
-   applied index of the copy is not above its decided index. The state
-   environment stores the chain CRC of the entry at its applied index;
-   the requester compares it with the log copy at that index. Then the
-   requester commits the name of the new directory in the environment
-   of the node (item 8). That commit is the switch: a start opens the
-   directory that it names, and a crash before it leaves the old pair.
-   The old directory is deleted after the commit. The copy carries every
-   page, so it is as large as the file of the peer (137 MB for 100000
-   entries of 1 KiB, against 0.7 MB for the missing range alone;
-   bench/results/2026-10-24-231534Z-lmdb-repair-and-pipeline.txt).
-   `MDB_CP_COMPACT` is not used: with page checksums its copy does not
-   open (`mdb.c:11555-11566` writes no checksum size to page 0,
-   `:5645-5651` checks it).
-10. A repair by entries (items 1 to 7) keeps the state environment
-    when its applied entries agree with the decided prefix of the
-    repaired log; the chain CRC at the applied index shows it. Else it
-    also takes the state environment of the peer, in the form of item
-    9. When the kept state is ahead of the decided index of the peer,
+9. After a damage code of the storage, the node replaces the whole
+   store with a full copy from the peer (plan-sqlite-storage.md 7.5).
+   The requester syncs the copy and its directory, and checks the copy
+   with the step check before the switch in the node storage (item 8).
+10. A repair by entries (items 1 to 7) keeps the state when its applied
+    entries agree with the decided prefix of the repaired log; the chain
+    CRC at the applied index shows it. Else it also takes the state of
+    the peer, in the form of item 9. When the kept state is ahead of the decided index of the peer,
     the node keeps it: its entries are decided (model `StateFollows`,
     `StateIsDecided`, round 13).
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 2.5 The vote
 
@@ -378,16 +310,16 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    and not from the medium. The README says this, as it says for a
    volatile cache now.
 
-### 2.6 The state machine in LMDB
+### 2.6 The state machine in the storage
 
-1. The state of the state machine and the client table stand in LMDB,
-   in their own environment (owner, 2026-10-24 20:47). The applied index
-   stands in the same environment.
+1. The state of the state machine and the client table stand in the
+   storage (owner, 2026-10-24 20:47). The applied index stands there
+   too.
 2. `apply` and `query` of the `state_machine` concept take a
    `storage::transaction`. The node answers a read in a read transaction
-   of that environment.
-3. A decided entry changes the state in a write transaction of that
-   environment. It commits after the decide, so after the commit of the
+   of the storage.
+3. A decided entry changes the state in a write transaction of the
+   storage. It commits after the decide, so after the commit of the
    step that raised the decided index (Jepsen decision of 2026-10-17
    11:24, owner 20:29).
 4. Execute-Verify: the leader and each follower run the work of an
@@ -415,11 +347,6 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    configuration struct. Not measured yet: the runs for each request,
    the processor time, and a costlier work of an entry; section 5
    measures them before the bound gets a default.
-   A write transaction that stays open over many steps keeps the mark
-   of each page that it checked once (`mdb.c:6872-6880`). A page that
-   later steps read again in that transaction is not checked again. So
-   the window of section 3.4 grows with the time that the state
-   transaction stays open.
 6. The client gets the result that stands in the decided entry. The run
    after the decide gives the same result, because the entry runs on the
    same state: the state after the entries before it in the log. At the
@@ -443,8 +370,8 @@ differs. Item 9 holds for `MDB_BAD_CHECKSUM`.
    again. A run counts only in the ballot in which the node accepted
    the entry (model rounds 12 and 13, `StateCurrent`, mutation
    `NoAbortOnCut`).
-8. Both environments keep no `MDB_WRITEMAP`, so nested write
-   transactions stay possible.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 2.7 Group commit
 
@@ -518,7 +445,7 @@ this.
 - `VerifyPromise` has no model evidence: no run showed a promise whose
   verified decided index differs from the highest one, and the check
   compares with the log after the sync. It stays as a defence.
-- `StateInLmdb` (round 13): `applied[i]`, the entries of the committed
+- `StateInStorage` (round 13): `applied[i]`, the entries of the committed
   state, and `in_txn[i]`, the entries that ran in the open state
   transaction. `StateRun` runs the next entry of the log, up to
   `MaxInFlight` entries before their decide. `StateApply` commits up to
@@ -532,8 +459,8 @@ this.
   `NoPartialDecide`, `NoCutOfOpen`. The mutation `NoAbortOnCut` must
   break `StateIsDecided`. A result is a function of the entries before
   it, so the same entries give the same result. The client table is
-  part of the state and is not modelled apart. The state environment
-  has no faults in the model.
+  part of the state and is not modelled apart. The state has no faults
+  in the model.
 - `EntryRunsOnOnePrefix` (round 12): a node that accepted in the ballot
   of a decided entry, and holds the same value at that index, holds the
   same entries before it. Review 3 found that this follows from S5.
@@ -588,14 +515,11 @@ after each round.
 
 ### 3.4 What the model does not show
 
-- That the code reads LMDB as the model says. The tests of section 4
-  show it.
-- That LMDB checks every page that a step reads. Section 1 shows the
-  limit: a page in a chunk that another live transaction holds is not
-  checked again.
+- That the code reads the storage as the model says. The tests of
+  section 4 show it.
 - The cost of the reads. Section 5 measures it.
-- A page that an open write transaction checked once is not checked
-  again in it (2.6 item 5).
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 4. Tests
 
@@ -643,9 +567,9 @@ after each round.
 
 `RunningStorageFault`, `StepChecks`, `VerifyCrc`, `ChainCheck`,
 `MetaRecord`, `HighWater`, `RepairFromPeer`, `PeerCheck`,
-`VerifyPromise`, `StateInLmdb`, `MaxInFlight`, `max_in_flight`,
-`StateRepair`, `applied`, `in_txn`, `StateCurrent`, the environment of
-the node (2.4 item 8), `repairs`, `AutoRepairs`,
+`VerifyPromise`, `StateInStorage`, `MaxInFlight`, `max_in_flight`,
+`StateRepair`, `applied`, `in_txn`, `StateCurrent`, the node storage
+(2.4 item 8), `repairs`, `AutoRepairs`,
 `OperatorAllowsRepair`, `stale_meta`, `rollback`, `in_work`,
 `committed`, meta record, chain CRC, step check, high-water mark. None
 has a source outside this tree. In Kafka, "high watermark" names the
@@ -661,22 +585,24 @@ there. The owner decides the names.
 3. Decided, 2026-10-24 19:21: a node that stopped voting while it ran
    repairs from a peer (2.1 item 5).
 4. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 8).
-5. Decided, 2026-10-24 19:45: page checksums with `MDB_REMAP_CHUNKS`,
-   beside the CRC of each entry and the chain CRC (2.1 item 11).
+5. Decided, 2026-10-24 19:45: page checksums beside the CRC of each
+   entry and the chain CRC. The LMDB form of this decision is in the git
+   history before branch remove-lmdb. A checksum on each page with SQLite
+   is an open point (plan-sqlite-storage.md section 9).
 6. Decided, 2026-10-24 20:29: the state changes only after the decide,
    from the log; no second log (2.6 item 3).
 7. Decided, 2026-10-24 20:47 and 20:50: the state machine and the client
-   table stand in LMDB (2.6); the node reads no page back from the disk
+   table stand in the storage (2.6); the node reads no page back from the disk
    itself (2.1 item 11). With this, the pointer rounding of review 2,
    finding 6, does not arise.
 8. Decided, 2026-10-24 21:27: a follower whose chain CRC at `d` differs
    from the leader's has a damage (2.5 item 3).
-9. Decided, 2026-10-24 21:27: `MDB_BAD_CHECKSUM` is a damage that the
-   repair fixes (2.1 item 6).
+9. Decided, 2026-10-24 21:27: a damage code of the storage is a damage
+   that the repair fixes (2.1 item 6).
 10. Decided, 2026-10-24 21:27: the repair takes only the entries that
     differ (2.4). Decided, 20:55 to 20:57: one automatic repair, then
-    the operator (2.4 item 8). After `MDB_BAD_CHECKSUM`, the plain
-    copy of LMDB replaces the whole file (2.4 item 9).
+    the operator (2.4 item 8). After a damage code of the storage, a
+    full copy replaces the whole file (2.4 item 9).
 11. Decided after the bench of 2026-10-24 23:15: batches in flight
     before the decide, with a run again after a partial decide (2.6
     item 5).
@@ -688,9 +614,10 @@ there. The owner decides the names.
     from the entry is a damage, with the repair of 2.4 (2.6 item 6).
 
 The owner, 21:27 and 21:30, left these four to the session: take what
-LMDB gives, and where LMDB gives no direct form, work out three
-proposals and test which is best. Items 9 and 10 take the form of LMDB.
-For item 11 LMDB gives no form; three forms were measured. For item 8
+the storage gives, and where it gives no direct form, work out three
+proposals and test which is best. Items 9 and 10 take the form of the
+storage. For item 11 the storage gives no form; three forms were
+measured. For item 8
 the model ran three forms (keep, damage, stop) in rounds 10 and 11. No
 run reached a mismatch with every check on, and without the high-water
 mark S1 failed before any node acted on one

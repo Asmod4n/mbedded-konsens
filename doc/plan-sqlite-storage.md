@@ -1,4 +1,4 @@
-# Plan: SQLite replaces LMDB
+# Plan: the storage on SQLite
 
 Source: the owner, 2026-10-26 17:20. The task is
 Claude-state `tasks/2ba55cf6-5a97-424a-ad89-8298662983c0.org` on the
@@ -6,15 +6,14 @@ branch `tasks/org-migration` (bc335a1).
 
 1. SQLite holds all persistent data: the log, the meta record, the
    state, the client table, `auth`, the node storage, the backups and
-   the archives. No LMDB stays. A mixed form is not taken.
-2. The reason of the owner: LMDB has no recovery for a damaged
-   database. `mdb_dump` stops at the first damaged data.
+   the archives. A mixed form is not taken.
+2. The reason of the owner: SQLite has a recovery for a damaged
+   database (`.recover`, section 1).
 3. Each statement is prepared once when the store opens. A step only
    binds values and runs the statements (owner, 17:24). What this
    gains is measured, not estimated.
 
-Part A lists what LMDB does for the library now and which rule each
-use carries. Part B is the form with SQLite. Section 9 lists the
+Part A lists the rules that the store before SQLite carried. Part B is the form with SQLite. Section 9 lists the
 decisions of the owner and the open points. Section 11 lists the
 findings of review 1 and what changed.
 
@@ -113,46 +112,47 @@ package; whether a change inside a savepoint that is rolled back
 appears in a changeset; a writable shared `mmap` of the `-shm` file on
 `error_fs`.
 
-## Part A: what LMDB does now
+## Part A: the rules of the store before SQLite
 
-## 2. The uses of LMDB
+## 2. The rules that the store carried
 
-| use | where | rule it carries |
-|---|---|---|
-| one writer, `MDB_NOTLS` reader kept | `src/persistent_storage.cpp` | one write transaction for each step (plan-one-environment.md 3.4) |
-| `mdb_txn_prepare`, `MDB_NOSYNC`, `mdb_env_get_fd` | `persistent_storage.cpp:1236-1256`, `sequence_paxos.hpp:407,996,1949` | the library makes no sync; the caller syncs and then commits (3.5) |
-| child transaction | `begin_nested` | the runs of the work roll back alone (5.2) |
-| `throw_if_nested_is_open` | `persistent_storage.cpp:670-675` | the parent takes no operation while its child is open |
-| `MDB_RESERVE` puts with a CRC tail | `put_checked`, `put_session` | CRC32C for each record (section 10 of that plan) |
-| `MDB_APPEND` | `persistent_storage.cpp:557` | an index below the last one is refused |
-| span into the map from `find` | `find_value`, `persistent_storage.cpp:725-738` | a value is read without a copy |
-| `mdb_env_set_checksum` with a module | `src/lmdb_checksum.cpp`, `tools/lmdb_checksum_module.cpp` | a damaged page is found at read time |
-| `MDB_MAP_FULL` as a value | `to_error_code`, `commit_or_throw` | a full store is an error value, not a crash |
-| `map_size` | `persistent_storage.hpp:156`, `examples/counter.cpp:83`, `examples/three_nodes.cpp:78`, `examples/counter_stress.cpp:104` | the bound of the store |
-| a failed commit throws `sync_error` | `commit_or_throw` | a failed sync ends the process (owner 2026-10-21) |
-| `mdb_env_copy2` | `persistent_storage.cpp:1498` | a full copy for repair and a new node |
-| a second environment | `node_storage` | the repair count, the proof, the hidden identity |
-| file mode 0600 | `persistent_storage.cpp:28` | only the user reads the store and the hidden identity |
-| format version, empty-store check | `persistent_storage.cpp:38`, `:694-722` | `storage_errc::unsupported_format` |
-| destructor with an open transaction ends the process | `persistent_storage.cpp:1367-1372` | a wrong use fails loudly |
-| `effective_user_id` check | `open` | no start as root |
-| `lmdb_category` | `src/lmdb_category.hpp`, `bench/konsens_bench.cpp:41,955` | LMDB codes as `std::error_code` |
-| submodules `deps/lmdb`, `deps/lmdb-0.9`, `mdb_dump`, `mdb_load` | `CMakeLists.txt:12-33`, `test/lsan-mdb_dump-0.9.txt` | the upgrade test |
-| faults for `data.mdb` | `test/fuse/error_fs.cpp:17-28`, `:59` | the fault tests |
-| `KONSENS_TEST_TMPDIR` | `CMakeLists.txt:157` | tests on tmpfs |
+- One write transaction for each step (plan-one-environment.md 3.4).
+- The library makes no sync; the caller syncs and then commits
+  (plan-one-environment.md 3.5). Section 6 replaces this rule.
+- The runs of the work roll back alone (plan-one-environment.md 5.2).
+- The parent takes no operation while its child is open.
+- CRC32C for each record (section 10 of plan-one-environment.md).
+- An index below the last one is refused.
+- A value is read without a copy.
+- A damaged page is found at read time.
+- A full store is an error value, not a crash.
+- The store has a bound.
+- A failed sync ends the process (owner, 2026-10-21).
+- A full copy serves for a repair and for a new node.
+- A store of its own holds the repair count, the proof and the hidden
+  identity.
+- Only the user reads the store and the hidden identity (file mode
+  0600).
+- A store of another format gives `storage_errc::unsupported_format`.
+- A destructor with an open transaction ends the process: a wrong use
+  fails loudly.
+- No start as root.
+- The fault tests and the tests on tmpfs (`KONSENS_TEST_TMPDIR`).
 
-The interface does not name LMDB: the concept `storage`
+The LMDB form of this section is in the git history before branch remove-lmdb.
+
+The interface does not name the engine of the store: the concept `storage`
 (`include/konsens/storage.hpp:237-245`) is the boundary. The concept
 changes in three places: `find` (section 5.3), the sync (section 6.2),
 and `map_size` (section 6.6).
 
 ## 3. Older plans that this plan replaces
 
-plan-hide-lmdb.md, plan-lmdb-converter.md, plan-storage-only-source.md,
-plan-lmdb-submodule.md, plan-simulation-on-lmdb.md and
-plan-state-in-storage.md describe the LMDB form. Their rules that do not
-name LMDB stay: the CRCs, the start checks, the repair by entries, the
-proof of a fault and the root check.
+plan-hide-lmdb.md, plan-lmdb-converter.md, plan-lmdb-submodule.md and
+plan-simulation-on-lmdb.md are deleted; they are in the git history.
+plan-storage-only-source.md and plan-state-in-storage.md stay. These
+rules of the six plans stay: the CRCs, the start checks, the repair by
+entries, the proof of a fault and the root check.
 
 plan-one-environment.md stays, except these items. Each is replaced by
 the section named.
@@ -160,13 +160,13 @@ the section named.
 | item of plan-one-environment.md | replaced by |
 |---|---|
 | 3.4 item 2, "sync only" | gone: no descriptor; an idle node has nothing to sync |
-| 3.5 items 1, 3, 4 and 6 (io_uring, `mdb_txn_prepare`, the writer lock through the sync, slipstreamIO) | section 6 |
+| 3.5 items 1, 3, 4 and 6 (io_uring, the prepare of the commit, the writer lock through the sync, slipstreamIO) | section 6 |
 | 3.5 item 2, "done" while the leader syncs (owner decision 18 item 4) | section 6.3, decided (section 9) |
 | 3.6, the count of syncs | section 6.4 |
 | 4.3 item 1, the decided index without a sync | each commit syncs (section 6.1) |
-| 5.1 items 2 to 4 and 9 item 6 (the tombstone by file system, `MDB_NOSYNC`) | the tombstone rides in the commit of its step, which syncs |
+| 5.1 items 2 to 4 and 9 item 6 (the tombstone by file system) | the tombstone rides in the commit of its step, which syncs |
 | 8.1 item 1, the vote after f + 1 answers as the only rule after a start | section 7.3 (`RecoveryWaitsForLeader`) |
-| 8.2 item 3, the copy with `mdb_env_copy2` | section 7.5 |
+| 8.2 item 3, the full copy | section 7.5 |
 | 15 items 6 to 8 | section 10 |
 | owner decisions 18 items 5 and 6 | section 6, decided (section 9) |
 
@@ -249,8 +249,7 @@ Proposal: one check for safety, with one named bound (2^63-1), at each
 place where an index or an id enters the library. A value above it is
 an error value. The key column stays `INTEGER`. The other form keeps a
 big-endian `BLOB` key, as now (`persistent_storage.cpp:137-142`).
-The insert of the log checks that the index is the next one, as
-`MDB_APPEND` did.
+The insert of the log checks that the index is the next one.
 
 ### 4.2.1 Points from the thread on SQLite for clients (to weigh)
 
@@ -420,8 +419,8 @@ time.
 6. The bound of the store: `map_size` goes. `PRAGMA max_page_count`
    gives the bound in pages; the parameter of `open` gives it in bytes,
    and the library converts it. Over the bound, SQLite gives
-   `SQLITE_FULL`. As with a full LMDB map (owner, 2026-10-24), the node
-   then ends; a switch of the binary, off by default, opens the store
+   `SQLITE_FULL`. The node then ends, as the owner decided for a full
+   store (2026-10-24); a switch of the binary, off by default, opens the store
    again with twice the bound. The stop below X % of free space (owner,
    2026-10-26 15:25) comes before that bound.
 7. Torn sectors (owner card 18:23): each database file opens with the
@@ -462,8 +461,7 @@ request enters, and gives an error value above the bound.
    section 6.1 says.
 3. A damaged frame in the middle of the WAL drops that commit and every
    later one without an error (section 1). The store then holds an
-   older state that is whole in itself. With LMDB the page checksum
-   gave `MDB_BAD_CHECKSUM`. The older state is not always whole: a
+   older state that is whole in itself. The older state is not always whole: a
    PASSIVE checkpoint copies frames into the database file and keeps
    them in the WAL (`wal.c:2254-2337`). After a damaged frame the
    recovery sets `nBackfill` to 0 (`wal.c:1579-1580`), and the
@@ -525,25 +523,24 @@ request enters, and gives an error value above the bound.
    a table without one. The conflict handler of
    `sqlite3changeset_apply` returns `SQLITE_CHANGESET_ABORT`.
 
+The LMDB form of this section is in the git history before branch remove-lmdb.
+
 ## 8. Build and tests
 
 1. SQLite comes from the package of the distribution
    (`libsqlite3-dev`). The framework neither ships nor builds SQLite
    (owner, 2026-10-27 08:14 and 08:32, after the version comparison
-   of section 4.3 item 10). The submodules `deps/lmdb` and `deps/lmdb-0.9`,
-   `mdb_dump`, `mdb_load`, the checksum module, `lmdb_category`,
-   `test/lsan-mdb_dump-0.9.txt` and `test_lmdb_upgrade` go. RULES.md
-   names LMDB as an exception to the rule on packages; the owner
-   changes that text.
+   of section 4.3 item 10). The submodules, the tools and the tests of
+   the store before SQLite go.
    The decimal extension of SQLite (`ext/misc/decimal.c`) comes as a
    submodule from the source of SQLite (owner, 2026-10-26 18:34). The
    package `libsqlite3` does not hold it; only the shell does
    (`shell.c.in:279` in 3.53.4). It is one more exception to the rule
    on packages, beside CRC32C and libhydrogen.
 2. The interface tests of the concept `storage` change with the
-   concept (sections 5.3 and 6.2). The tests that name LMDB
-   (`lmdb_cluster.hpp`, `lmdb_damage.hpp`, `lmdb_storage.hpp`) get
-   SQLite forms.
+   concept (sections 5.3 and 6.2). The test helpers of the store
+   before SQLite get SQLite forms (`sqlite_cluster.hpp`,
+   `sqlite_damage.hpp`, `sqlite_storage.hpp`).
 3. `error_fs` gets the SQLite files (store, `-wal`, `-shm`) and a switch
    that drops every write after the last sync of each file.
 4. New tests:
@@ -564,6 +561,8 @@ request enters, and gives an error value above the bound.
    The VM of the session cannot cut its power and cannot tear a
    sector; these tests run through `error_fs`.
 5. Tests keep `KONSENS_TEST_TMPDIR`.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 8.1 Measured: who syncs
 
@@ -724,8 +723,8 @@ Checked 2026-10-26 on the web. etcd and MongoDB are not cited (owner).
 
 ## 10. What is measured
 
-Both arms as bench/run.sh runs them: the LMDB store at fa14f44 and the
-SQLite store, the same durability (each commit synced), stores on ext4.
+Both arms as bench/run.sh runs them: the store before SQLite at fa14f44
+and the SQLite store, the same durability (each commit synced), stores on ext4.
 The cases of plan-one-environment.md section 15, the batch sizes 1, 16
 and 1024, the cost of a checkpoint, the copy in `find`, the log as a
 `WITHOUT ROWID` table and as a rowid table, and `psow=0` against the
@@ -850,7 +849,7 @@ The build of the first step (2026-10-27) changed three points of this plan.
    `read_error` for it on the reader. The code of the exception is the
    errno that `sqlite3_system_errno` gives, in `std::generic_category`.
    `SQLITE_FULL` stays an error value `no_space_on_device`, and the node
-   raises it as `write_error`, as it did for a full LMDB map.
+   raises it as `write_error`.
 3. "done" before the commit of the leader (6.3) is not in the first
    step. The node gives every message and every reply after its commit.
 

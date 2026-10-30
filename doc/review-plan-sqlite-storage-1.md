@@ -5,8 +5,8 @@ Reviewer: a second agent. No file of the repository was changed.
 
 ## Task, as I understood it
 
-Goal: find the faults in the plan "SQLite replaces LMDB". Check each
-claim against the LMDB store, plan-one-environment.md, the SQLite source
+Goal: find the faults in the plan "the storage on SQLite". Check each
+claim against the store before SQLite, plan-one-environment.md, the SQLite source
 at `version-3.53.4` (b09c88c), the measurement and the rules.
 
 Place: the plan, `src/persistent_storage.cpp`,
@@ -51,13 +51,13 @@ measurement.
 
 ## Findings
 
+The LMDB form of the findings below is in the git history before branch remove-lmdb.
+
 ### 1. Blocking: `find` returns a span that the next step of the statement frees
 
 Section 4.4, 5. The concept returns
 `std::optional<std::span<const std::byte>>` from `find`
-(`storage.hpp:179`, `state_machine.hpp:37-45`). With LMDB the span
-points into the map and stays valid for the transaction
-(`find_value`, `persistent_storage.cpp:725-738`). With SQLite, the pointer of
+(`storage.hpp:179`, `state_machine.hpp:37-45`). With SQLite, the pointer of
 `sqlite3_column_blob` is valid only until the next `sqlite3_step`,
 `sqlite3_reset` or `sqlite3_finalize` of that statement. Section 4.4
 calls `sqlite3_reset` after each step, and one prepared statement
@@ -209,7 +209,6 @@ decode (`wal.c:1510-1511`), wherever it stands. A bit flip in a synced
 frame drops that commit and all later commits until the next
 checkpoint. SQLite reports no error. The start check of
 plan-one-environment.md 9 sees an older, self-consistent store.
-With LMDB, the page checksum gave `MDB_BAD_CHECKSUM` for such a page.
 
 Proposal: section 1 and 7 name this. The plan states which rule keeps
 Paxos safe when a store silently goes back to an older state (the vote
@@ -220,11 +219,9 @@ that holds several commits and restarts the node.
 
 ### 8. Should fix: the error codes of SQLite have no table, and the damage claim was not checked
 
-Section 6.5, 6.6, 7.1. Section 7.1 says `SQLITE_CORRUPT` is "a damage
-as `MDB_BAD_CHECKSUM` now". `error_is_a_damage`
-(`sequence_paxos.hpp:83-88`) lists no LMDB code. The test accepts
-`MDB_BAD_CHECKSUM` or `MDB_BAD_TXN` (`test_persistent_storage.cpp:308-341`).
-So the claim is not shown by the code.
+Section 6.5, 6.6, 7.1. Section 7.1 says that `SQLITE_CORRUPT` is a
+damage. `error_is_a_damage` (`sequence_paxos.hpp:83-88`) lists no code
+of the store. So the claim is not shown by the code.
 
 Proposal: one table in the plan, from SQLite code to konsens error:
 `SQLITE_CORRUPT*` and `SQLITE_NOTADB` to a damage code that
@@ -237,8 +234,7 @@ error goes to whoever can repair it" decides each row.
 
 ### 9. Should fix: the read connection takes a new snapshot for each statement
 
-Section 5.2. The LMDB reader is one snapshot from `mdb_txn_renew` to
-`mdb_txn_reset` (`persistent_storage.cpp:1473-1495`). A SQLite
+Section 5.2. A SQLite
 connection in autocommit mode takes a snapshot for each statement.
 `get_meta` and `get_entries` of one `read_only_transaction` can then see
 two states. A deferred `BEGIN` takes its snapshot at the first read,
@@ -261,7 +257,7 @@ on every method of the parent.
 
 Proposal: section 5.1 names the three statements and keeps the guard.
 
-### 11. Should fix: items of the LMDB inventory are missing
+### 11. Should fix: items of the inventory are missing
 
 Section 2. Not listed:
 
@@ -272,23 +268,18 @@ Section 2. Not listed:
   creates each database file with mode 0600 before `sqlite3_open_v2`.
 - The format version and the check that a new store is empty
   (`persistent_storage.cpp:39`, `:694-722`, `storage_errc::unsupported_format`).
-- `MDB_APPEND` in `put_entries` (`persistent_storage.cpp:557`): LMDB
-  refuses an index below the last one. An `INSERT` accepts it.
+- `put_entries` (`persistent_storage.cpp:557`) refuses an index below
+  the last one. An `INSERT` accepts it.
 - The parameter `map_size` of `open` (`persistent_storage.hpp:156`) and
   its callers (`examples/counter.cpp:83`, `examples/three_nodes.cpp:78`,
-  `examples/counter_stress.cpp:104`). `MDB_MAP_FULL` comes from this
+  `examples/counter_stress.cpp:104`). A full store comes from this
   bound, not from the disk. Section 6.6 names "the limit X of free
   space" but not what replaces `map_size` (`PRAGMA max_page_count` is
   the SQLite form).
-- `lmdb_category` (`src/lmdb_category.hpp`), used by
-  `bench/konsens_bench.cpp:41,955`; the programs `mdb_dump` and
-  `mdb_load` (`CMakeLists.txt:26-33`); `test/lsan-mdb_dump-0.9.txt`.
 - `test/fuse/error_fs.cpp` injects write and read faults only for the
-  file `data.mdb` (`error_fs.cpp:17-28`, `:59`).
+  one data file of the store (`error_fs.cpp:17-28`, `:59`).
 - The destructor of the store ends the process when a transaction is
   open (`persistent_storage.cpp:1367-1372`).
-- The copy uses `mdb_env_copy2` (`persistent_storage.cpp:1498`), not
-  `mdb_env_copyfd2` as the table says.
 
 ### 12. Should fix: the plan does not list what `FULL` removes from plan-one-environment.md
 
@@ -298,7 +289,7 @@ longer apply: 3.4 item 2 ("sync only", a bare `fdatasync` of a
 descriptor that no longer exists); 3.5 items 1, 4 and 6 (io_uring, the
 writer lock through the sync, slipstreamIO); 4.3 item 1 (the decided
 index now has a sync); 5.1 items 2 to 4 and 9 item 6 (the tombstone by
-file system, `MDB_NOSYNC`, `lmdb.h:648-661`); 15 items 6 to 8; and the
+file system); 15 items 6 to 8; and the
 owner decisions 18 items 4, 5 and 6.
 
 Decision 18 item 4 (the leader sends "done" while its own sync runs)
@@ -346,7 +337,7 @@ version and one binary version, and the handshake compares them.
 
 Section 8.3. "A power cut between commit and sync" has no "between"
 when SQLite syncs inside `commit`. `error_fs` gives `EIO` for `fsync`,
-`ENOSPC` for writes of `data.mdb`, and `EIO` for reads in a range
+`ENOSPC` for writes of the data file, and `EIO` for reads in a range
 (`error_fs.cpp:17-28`). It cannot drop writes after the last sync, and
 it cannot tear a sector. plan-one-environment.md 15 item 7 already
 marks this as not checked.
@@ -498,10 +489,10 @@ durable.
 
 Proposal: one sentence in 6.2 for the later form.
 
-### 27. Minor: the rule for packages names LMDB
+### 27. Minor: the rule for packages names the store before SQLite
 
-Section 8.1. RULES.md lists LMDB as an exception to "What builds the
-tree is the distribution's package". After the change the exception
+Section 8.1. RULES.md lists the store before SQLite as an exception to
+"What builds the tree is the distribution's package". After the change the exception
 has no object. Section 8.2 says the interface tests run "unchanged",
 but the concept changes (findings 1 and 12).
 

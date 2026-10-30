@@ -13,7 +13,7 @@ review before the build.
   no bench target.
 - `storage.hpp:107-113`: `write_atomically(std::span<const storage_op>)`
   is the one write of a store. `persistent_storage` commits it with a
-  synchronous LMDB commit.
+  synchronous commit.
 - `wire.hpp`: `encode(const message&)` and `decode(std::string)`.
 - `node.hpp`: `tick`, `handle`, `client_request`, `client_query`,
   `take_outgoing_messages`, `take_client_replies`.
@@ -34,15 +34,15 @@ review before the build.
      `decode_decide`.
    - `handle_accept_decide`, `handle_decide`: a follower in
      (Follower, Accept) on a store that counts the bytes.
-   - `commit_memory`, `commit_lmdb`: `write_atomically` of one
+   - `commit_memory`, `commit`: `write_atomically` of one
      `append_entries` with one entry, on `memory_storage` and on
      `persistent_storage` in a directory that the run names.
-   - `write_memory`, `write_lmdb`: three nodes in one process, the
+   - `write_memory`, `write`: three nodes in one process, the
      network a queue; one `client_request` at a follower until its
      reply.
-   - `read_memory`, `read_lmdb`: one `client_query` at a follower until
+   - `read_memory`, `read`: one `client_query` at a follower until
      its reply.
-   - `write_batch_memory`, `write_batch_lmdb`: 64 requests sent before
+   - `write_batch_memory`, `write_batch`: 64 requests sent before
      the first round, the time until the last reply, divided by 64.
 3. `bench/run.sh`: builds the bench in podman (image
    localhost/cxx-matrix, g++ 16, Release `-O2 -DNDEBUG`), runs each case
@@ -54,7 +54,8 @@ review before the build.
 4. The run length is 31 samples, as measured for this machine
    (state file, 2026-10-20). The A/A difference of the run is its noise
    floor and stands in the file.
-5. The disk of the LMDB cases is the disk of the session. The file
+5. The disk of the cases on `persistent_storage` is the disk of the
+   session. The file
    names it (file system and device from `/proc/mounts`).
 
 ## 3. Tests
@@ -98,10 +99,9 @@ The review (approve with changes, 13 findings) is applied as follows.
   file says that the parts do not add up to a write, because a round
   also carries heartbeats and resends.
 - R7: the decode cases copy the bytes outside the timed part.
-- R8: the LMDB directory is on a mount of the host directory under the
+- R8: the store directory is on a mount of the host directory under the
   scratchpad, owned by user bench. The file gives the file system and
-  the mount options seen inside the container. `map_size` comes from
-  samples, operations and payload.
+  the mount options seen inside the container.
 - R9: the commit cases open a fresh store for each sample outside the
   timed part; the cluster cases record the log length at the first and
   the last sample.
@@ -116,70 +116,47 @@ The review (approve with changes, 13 findings) is applied as follows.
 - R13: `handle_*` compares the bytes counted with the bytes sent;
   `commit_*` compares `get_log_len` after each commit.
 
-## 7. Plain LMDB as the baseline
+## 7. The store alone as the baseline
 
 Source: the owner, 2026-10-22 06:19 (UTC+2): write one value and read
-one value with LMDB alone, then the same through the library.
+one value with the store alone, then the same through the library.
 
-1. Case `lmdb_put`: one `mdb_txn_begin`, one `mdb_put` of the payload
-   under an 8-byte key that rises by one, one `mdb_txn_commit`; the env
-   opens as `persistent_storage::open` does (flags 0, mode 0600, the
-   same map size), a fresh env for each sample outside the timed part.
-   Check: after each sample `mdb_stat` gives the number of puts.
-2. Case `lmdb_get`: one read-only `mdb_txn_begin`, one `mdb_get` of a
-   key that was written before the timer starts, one `mdb_txn_abort`.
-   Check: the value equals the payload.
-3. Payloads: 64 B, 1 KiB, 64 KiB for `lmdb_put`; 1 KiB for `lmdb_get`.
-4. The table of the result puts each library case beside its baseline:
-   `lmdb_put` / `commit_lmdb` / `write_lmdb` / `write_batch_lmdb` and
-   `lmdb_get` / `read_lmdb`. The file says that `write_lmdb` runs three
-   nodes in one process, so it holds the commits of all three nodes one
-   after the other, and that a cluster on three machines commits on the
-   followers at the same time.
-5. The bench links LMDB directly for these two cases only; no LMDB
-   name enters the library.
+The file says that `write` runs three nodes in one process, so it holds
+the commits of all three nodes one after the other, and that a cluster
+on three machines commits on the followers at the same time.
+
+The bench has no baseline case for SQLite (bench/konsens_bench.cpp,
+2026-10-30). The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 8. Changes after the review
 
 The review (needs changes, 8 findings) is applied as follows.
 
-- R1: two put arms, both with a big-endian key that rises by one.
-  `lmdb_put` puts the raw payload with flags 0.
-  `lmdb_put_like_storage` reserves the payload plus the record overhead
-  of `put_entry` with `MDB_APPEND | MDB_RESERVE`, and calls `mdb_stat`
-  once, as `write_atomically` does.
-- R2: the env opens with maxdbs 2 and one named DBI with `MDB_CREATE`,
-  outside the timed part. The map size is
-  `map_bytes_for(ops, payload_bytes)`. The env flags are 0, so each
-  commit syncs, as in the library.
-- R3: `read_lmdb` answers from the state machine in memory after one
-  read-index round, so the table puts it beside `read_memory`, not
-  beside `lmdb_get`.
-- R4: case `get_entries_lmdb` calls `persistent_storage::get_entries(i,
-  i + 1)` on an entry written before the timer. It stands beside
-  `lmdb_get`. Both run with 64 B, 1 KiB and 64 KiB. Check: the bytes
-  equal the payload.
-- R5: the bench gets `lmdb.h` through the PUBLIC dependency of
-  `konsens`; item 7.5 goes. Open point: the dependency is PUBLIC
-  because persistent_storage.hpp:60 shows `MDB_env`.
+- R1, R2 and R5: removed.
+- R3: `read` answers from the state machine in memory after one
+  read-index round, so the table puts it beside `read_memory`.
+- R4: case `get_entries` calls `persistent_storage::get_entries(i,
+  i + 1)` on an entry written before the timer. It runs with 64 B,
+  1 KiB and 64 KiB. Check: the bytes equal the payload.
 - R6: the bench counts the calls of `write_atomically` per op. The file
-  writes "N LMDB commits in series" with N as measured.
+  writes "N commits in series" with N as measured.
 - R7: `commit_and_collect` times each `n.commit(*t)` and sums the time
   per node. The rows give `leader_ns_per_op` and `follower_ns_per_op`.
   The file says that the latency on three machines is about the leader
   time plus the slowest follower time plus the network, and that this
   bench does not measure that latency.
-- R8: `mdb_stat` after each put sample gives the number of puts.
+- R8: removed.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 9. Three nodes in parallel
 
 Source: the owner, 2026-10-22 06:22 and 06:23 (UTC+2): the three nodes
-run in parallel in one process, and each node has its own LMDB
-database.
+run in parallel in one process, and each node has its own store.
 
 1. A second harness `threaded_cluster` beside `cluster`. Each node runs
    on its own `std::jthread`. The node, its storage and its inbox
-   belong to that thread alone. Each node opens its own LMDB env in its
+   belong to that thread alone. Each node opens its own store in its
    own directory.
 2. The inbox of a node is a `std::mutex`, a `std::condition_variable`
    and a vector of encoded messages and client calls. A thread waits on
@@ -192,8 +169,8 @@ database.
 3. The election runs before the threads start, on the same nodes, with
    `cluster::elect`. No `tick` runs in the timed part. The case fails
    when the leader changes in the timed part.
-4. Cases, beside the serial ones: `write_lmdb_threads`,
-   `write_batch_lmdb_threads`, `read_lmdb_threads`, and the same three
+4. Cases, beside the serial ones: `write_threads`,
+   `write_batch_threads`, `read_threads`, and the same three
    on memory. The client sends to a follower, as in the serial cases.
    The main thread starts the clock, puts the call into the inbox of
    that follower, waits on its own condition variable for the reply,
@@ -215,7 +192,7 @@ database.
 
 The review (needs changes, 15 findings) is applied as follows.
 
-- The serial cases already open one LMDB env per node, in its own
+- The serial cases already open one store per node, in its own
   directory (bench:765-767).
 - R1: the node thread waits with `std::condition_variable_any::wait`
   with the stop token and the predicate "inbox not empty".
@@ -246,15 +223,14 @@ The review (needs changes, 15 findings) is applied as follows.
   condition variable. The main thread waits until it is zero, then
   stops and joins, then checks log length, decided index and leader.
 - R11: the jthreads are the last members of `threaded_cluster`, so they
-  join before the nodes close their envs. Nodes stay in a vector that
+  join before the nodes close their stores. Nodes stay in a vector that
   does not grow after the start.
-- R12: the file puts `write_lmdb_threads` beside `lmdb_put` times N
-  commits in series, N as measured, and says that the three envs share
-  one disk.
+- R12: the file says that the three stores share one disk.
 - R13: the file records 4 threads, of which at most 3 are runnable. It
   says that the memory cases mostly measure the wakeup of threads.
-- R14: one Debug build of its own with `-fsanitize=thread`. The
-  distribution's liblmdb is not instrumented. The bench links
-  `Threads::Threads`.
+- R14: one Debug build of its own with `-fsanitize=thread`. The bench
+  links `Threads::Threads`.
 - R15: `threaded_cluster` and the `*_threads` names go to the owner as
   questions.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.

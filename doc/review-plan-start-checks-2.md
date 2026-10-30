@@ -19,7 +19,6 @@ Review of plan and model at f02a0fc by a second agent, 2026-10-24.
 3. **Should fix.** The missing_entry model is not what `read_entries` does.
    - `read_entries` works by key (persistent_storage.cpp:449-488), and `to` is the count.
    - Take a log of n keys that loses key k < n-1. A range read up to the count returns n-2 entries, and key n-1 is never read. A single-index read of position p ≠ k returns the true entry, not a shifted one.
-   - The next append with MDB_APPEND at the count hits the existing key n-1 and gets MDB_KEYEXIST (put_entry :207; lmdb.h:1572-1575). A truncation over the hole gets MDB_NOTFOUND (delete_entries).
    - Round 3's S2 trace (node reads `<<v1>>` after losing key 0) is not reproduced by the code. `get_entries(0,1)` returns empty there.
    - Plan section 1 ("the entries after it move down by one position") and the model comment ("as read_entries does now") are too strong. With the checks this does not matter, because every k < Len is found. The nocheck traces only show the need.
    - Proposal: correct the text. State that LogWithout is an approximation used only for the nocheck mutation.
@@ -82,4 +81,4 @@ Scratch files (copies only, nothing in the repository):
 - scratchpad/review-sc/B/out/chk.log
 - scratchpad/review-sc/B/SequencePaxos.tla
 
-Not checked: the claim that `mdb_cursor_get` works with no `data` argument (decided in the first review). The LMDB text I cited is from the checked-out submodule, because 4c57d44 holds the submodule only as a gitlink.
+The LMDB form of this review is in the git history before branch remove-lmdb.

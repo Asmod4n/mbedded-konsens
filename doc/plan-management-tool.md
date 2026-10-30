@@ -64,8 +64,8 @@ ascaridol at 8dd27ee:
   and `rb-delete` from the page to one Ruby block as (method, path,
   params). The block returns HTML.
 - `Ascaridol.poll_add` watches a socket in the run loop of the window.
-- It depends on mruby-cbor, mruby-lmdb, mruby-mustache and
-  mruby-socket.
+- It depends on mruby-cbor, mruby-mustache and mruby-socket. The LMDB
+  form of this item is in the git history before branch remove-lmdb.
 
 ## 2. Form
 
@@ -94,8 +94,8 @@ what it shows from a node (owner, 2026-10-26 15:42: with no state in
 the server or the client, any server of a pool can answer).
 The only state the tool needs is the permission to connect and to run
 management commands (owner, 15:43). Before TLS, the VPN is that
-permission (question 6.7). Later it is kept in a named database of its
-own in the LMDB environment, for authentication and authorization only
+permission (question 6.7). Later it is kept in a table of its own in the
+store (`auth`, plan-sqlite-storage.md 4.1), for authentication and authorization only
 (owner, 15:45).
 The model of that database is decided in plan one-environment 3.1
 (c3645c4): Unix users and groups, a TLS client certificate with CN =

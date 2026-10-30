@@ -3,7 +3,7 @@
 Source: the owner, 2026-10-24. Card "Echtes Gerät": a failed fsync and a
 failed read are tested on a real device, not with a wrapper of the
 storage. Card "FUSE": this VM has no device mapper, so a FUSE file system
-is the device under LMDB. This plan gets one review before the build.
+is the device under the storage. This plan gets one review before the build.
 
 ## 1. Facts checked in this session
 
@@ -12,25 +12,14 @@ is the device under LMDB. This plan gets one review before the build.
 - Ubuntu in the image localhost/cxx-matrix has libfuse3-dev and fuse3,
   version 3.18.3-1. No fault file system is a package of the
   distribution.
-- A probe outside the tree, g++/gcc 16, LMDB 1.0.2, libfuse 3.18.3: a
-  passthrough file system of the high-level API in its own process,
-  mounted with `fuse_main` without `-f`, under podman with
-  `--device /dev/fuse --cap-add SYS_ADMIN`:
-  - 100 commits on a clean mount pass.
-  - A mount whose fsync returns EIO: mdb_txn_commit returns EIO.
-  - A mount whose reads from byte 8192 on return EIO: mdb_env_open in a
-    child passes, and the read of the entries ends the child with
-    SIGBUS.
 - A first probe that ran the FUSE server as a thread in the process that
   maps the file hung at the first fault of a page. The processes stay in
   state D. The server must run in a process of its own.
 - fuse_main without `-f` returns in the parent only after the mount is
   done (fuse_daemonize). waitpid of the parent therefore waits for the
   mount, with no loop.
-- persistent_storage throws sync_error when mdb_txn_commit fails
-  (src/persistent_storage.cpp:131). LMDB writes the meta page only after
-  the sync of the data pages, so a failed sync leaves the last committed
-  state on the disk.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 2. Change
 
@@ -60,8 +49,7 @@ is the device under LMDB. This plan gets one review before the build.
 4. CMakeLists.txt: an option `KONSENS_FUSE_TESTS`, off by default. When
    it is on, pkg-config must find fuse3, else the configure fails. The
    option builds error_fs and the test, and registers the test. The test
-   gets the path of error_fs as a compile definition, as
-   test_lmdb_upgrade does.
+   gets the path of error_fs as a compile definition.
 5. README, part Testing: the packages libfuse3-dev and fuse3, the
    option, and that the test needs /dev/fuse and the right to mount.
    In podman: `--device /dev/fuse --cap-add SYS_ADMIN`.
@@ -81,7 +69,7 @@ is the device under LMDB. This plan gets one review before the build.
 - No lost write and no torn write. The simulation covers a lost write
   with its rollback.
 - No test for a failed write(2): the existing test with RLIMIT_FSIZE
-  covers a failed write of LMDB.
+  covers a failed write of the storage.
 
 ## 5. Provisional names
 
@@ -94,11 +82,9 @@ Result: changes needed. The build takes these changes:
 
 1. The read fault covers a range, as a line "start length error" of a
    device-mapper table: `error_reads_offset` and `error_reads_length`,
-   and only for data.mdb. A fault from an offset on can also hit the
-   root page of the main database, which a later commit can put after
-   the overflow pages.
+   and only for the data file of the store.
 2. The test finds the range: the large entry carries a pattern; after
-   the unmount the test finds the pattern in the backing data.mdb. The
+   the unmount the test finds the pattern in the backing data file. The
    range is the whole pages inside the payload.
 3. The kernel can read ahead past the range. The test runs at the real
    offsets of a persistent_storage file, so the build shows whether a
@@ -108,8 +94,8 @@ Result: changes needed. The build takes these changes:
    gives it; the fixture blocks on the read of that byte.
 5. The child of the SIGBUS test sets SIGBUS to SIG_DFL (ASan has its own
    handler), sets RLIMIT_CORE to 0 and ends with _exit.
-6. A second mutation, outside the tree and run once: LMDB that ignores
-   the failed sync in mdb_txn_commit. The check "a clean mount shows the
+6. A second mutation, outside the tree and run once: a store that
+   ignores the failed sync of its commit. The check "a clean mount shows the
    log of before" must then fail.
 7. error_fs and the test get KONSENS_WARNINGS. fuse3 comes from
    pkg_check_modules with IMPORTED_TARGET, so its headers are system
@@ -118,10 +104,10 @@ Result: changes needed. The build takes these changes:
    a call of the test that REQUIREs exit status 0. The destructor of the
    fixture unmounts only a mount that is still there. The path of
    fusermount3 comes from find_program.
-9. open of persistent_storage commits a write transaction. On a database
-   that exists, that commit writes nothing (mdb.c:4555-4557), so open
-   passes on the error_fsync mount.
+9. Removed.
 10. The test gets a ctest TIMEOUT.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 7. Result
 
@@ -136,8 +122,4 @@ Result: changes needed. The build takes these changes:
   with SIGBUS.
 - Mutation, run once: error_fs without its faults. Both tests fail: no
   sync_error, and the child does not end by a signal.
-- Mutation, run once: LMDB that writes the meta page after a failed
-  sync. The test still passed: the meta page goes through the file with
-  O_DSYNC, its write fails on the error_fsync mount, and LMDB writes the
-  old meta page back (mdb_env_write_meta). With that write back removed
-  too, "a clean mount shows the log of before" fails.
+The LMDB form of this section is in the git history before branch remove-lmdb.

@@ -13,11 +13,11 @@ machine. The reviewer ran no TLC and no build.
    parts that the model already checks".
    **Fault:** the sentence is false. Line 3 of `SequencePaxos.tla`
    says "no BLE". The model has `HandleLeader(i, k)` in place of BLE,
-   with at most two calls (`MaxElection = 2`). CRC32C, LMDB and the
-   reopen are not in the model either. `Crash(i)` only assumes that
+   with at most two calls (`MaxElection = 2`). CRC32C, the store and
+   its reopen are not in the model either. `Crash(i)` only assumes that
    the durable state survives.
    **Change:** use the table below. Add the line: "Not checked by the
-   model: BallotLeaderElection, CRC32C, LMDB and its reopen. The C++
+   model: BallotLeaderElection, CRC32C, the store and its reopen. The C++
    tests are the only check of these parts."
 
    | Part | Run (complete) | Bounds | Not covered |
@@ -63,7 +63,7 @@ machine. The reviewer ran no TLC and no build.
      owner stops the leader.
    - CRC32C, software form only.
    - The example `three_nodes.cpp`: write, read the decided entries,
-     stop a node, reopen its LMDB, see the data.
+     stop a node, reopen its store, see the data.
    - The simulation with 3 nodes, one crash with reopen, one loss and
      one duplicate. These are the faults that the complete runs check.
      It checks S1, S2, S2b, S3, S5 and S7.
@@ -90,11 +90,10 @@ machine. The reviewer ran no TLC and no build.
 8. **Place:** section 5, the test framework.
    **Fault:** mbedded-cbor uses doctest through
    `find_package(doctest REQUIRED)`. `doctest-dev` is not installed.
-   The apt candidate is 2.4.11-1. `liblmdb-dev` is not installed. The
-   candidate is 0.9.31-1build1.
-   **Change:** add step 0, "install `doctest-dev` and `liblmdb-dev`".
-   The owner approves the install. Use `find_package` for doctest and
-   `pkg_check_modules(lmdb)` for LMDB.
+   The apt candidate is 2.4.11-1.
+   **Change:** add step 0, "install `doctest-dev`". The owner approves
+   the install. Use `find_package` for doctest. The LMDB form of this
+   finding is in the git history before branch remove-lmdb.
 
 9. **Place:** section 3, CRC32C "the hardware instruction where it
    exists".
@@ -109,8 +108,8 @@ machine. The reviewer ran no TLC and no build.
 10. **Place:** sections 3 and 6, the specifications.
     **Fault:** "A grammar is read, not remembered" requires the text of
     each specification in the tree, in the same commit as the first
-    function that reads it. The tree has no CRC32C specification. It
-    has no LMDB API reference. `refs/omnipaxos/ORIGIN.md` names commit
+    function that reads it. The tree has no CRC32C specification.
+    `refs/omnipaxos/ORIGIN.md` names commit
     532ff79, but the tree has no BLE source.
     **Change:** step 1 downloads the CRC32C polynomial and check
     vectors from RFC 3720 (section 12.1 and appendix B.4) into
@@ -120,8 +119,8 @@ machine. The reviewer ran no TLC and no build.
     the tests.
 
 11. **Place:** section 3, PersistentStorage.
-    **Fault:** the plan has no error path for LMDB, for example
-    `MDB_MAP_FULL`, a failed commit or a corrupt entry (CRC mismatch).
+    **Fault:** the plan has no error path for the store, for example a
+    full store, a failed commit or a corrupt entry (CRC mismatch).
     The owner decides an error path.
     **Change:** add an open question for the owner with a provisional
     form. A failed commit or a CRC mismatch is a value of

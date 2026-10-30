@@ -1,7 +1,7 @@
-# Plan: the state machine in LMDB (stage D of plan-storage-only-source.md)
+# Plan: the state machine in the storage (stage D of plan-storage-only-source.md)
 
 This plan gives the code form of section 2.6 of
-doc/plan-storage-only-source.md. The model is `StateInLmdb`, `StateRun`,
+doc/plan-storage-only-source.md. The model is `StateInStorage`, `StateRun`,
 `StateApply`, `StateAbort`, `StateCurrent` and `StateFollows`
 (model/tla/SequencePaxos.tla, rounds 12 to 14). The owner chose, on
 2026-10-25 07:22 and 07:23: the state machine reads through a view
@@ -23,12 +23,10 @@ their own, its TLC runs and a review; D1 is built first.
 - D3: the open state transaction over many steps, `max_in_flight`, the
   abort on a cut and the run again after a partial decide.
 
-## 1. The state environment (D1)
+## 1. The state storage (D1)
 
-1. A new class `state_storage` (provisional) opens its own LMDB
-   environment in a directory of its own, with the page checksum and
-   `MDB_REMAP_CHUNKS`, and without `MDB_WRITEMAP` (2.6 item 8). It has
-   three databases: `state` (the keys and values of the machine),
+1. A new class `state_storage` (provisional) holds three kinds of
+   record: `state` (the keys and values of the machine),
    `sessions` (the client table: session id to the last request number
    and its reply) and `applied` (one record with a CRC: the applied
    index and the chain CRC of the log at the applied index, 2.4 item 9).
@@ -38,8 +36,8 @@ their own, its TLC runs and a review; D1 is built first.
    `insert_or_assign(key, value)`, `erase(key)`,
    `insert_or_assign_session(session, record)`, `erase_session(session)`,
    `set_applied(index, chain_crc)` and `commit() &&`. The names come
-   from `std::map` and from LMDB (commit). No LMDB name leaves the
-   library: the types are named for the library.
+   from `std::map` and from SQL (commit). The types are named for the
+   library.
 3. `node::with` takes a `state_storage` after the `node_storage`. The
    node owns it. At a start the node reads the applied index from it
    and runs the decided entries after it.
@@ -54,6 +52,8 @@ their own, its TLC runs and a review; D1 is built first.
    name in the node storage, and the node opens the state storage from
    that name. Until then, `node::with` takes the opened storage, as for
    the log (stage E left out item 9 too).
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 2. The concept (D1)
 
@@ -80,9 +80,8 @@ concept state_machine = std::movable<M> &&
    std::optional<std::span<const std::byte>>`. `transaction_view`
    (provisional) gives it over a transaction of the state storage:
    `write_view` over the open write transaction for `apply`, `read_view`
-   over a read transaction for `query`. The span stays valid until the
-   transaction ends; the machine writes nothing during `apply`, so LMDB
-   keeps the page. The machine has no state of its own, so both members
+   over a read transaction for `query`. The span stays valid as long as
+   plan-sqlite-storage.md 5.3 says. The machine has no state of its own, so both members
    are const. A machine takes the view as `const state_view auto&`.
 2. The name `mutation` comes from FoundationDB. A mutation with no
    value erases the key.
@@ -92,6 +91,8 @@ concept state_machine = std::movable<M> &&
    `read_error`, a type derived from `std::system_error` (owner,
    2026-10-25 09:26). No machine can turn it into a reply. A write to the
    state storage that fails throws `write_error`.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ## 3. Apply after the decide (D1)
 

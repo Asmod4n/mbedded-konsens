@@ -15,7 +15,7 @@ The code is at 06a52bf. The model is `model/tla/SequencePaxos.tla` at
 
 An entry is acknowledged when the leader has decided it. The leader
 decides an entry when a majority of the nodes has written it with a
-synchronous LMDB commit. A node sends a message or a reply only after
+synchronous commit. A node sends a message or a reply only after
 the commit that the message depends on (`node.hpp:153-166`).
 
 The target: the contract holds while at most f of the 2f + 1 nodes
@@ -30,19 +30,20 @@ value), 2.9 (a wipe) and 2.10 (a clone).
 
 The safety properties are S1, S2, S2b, S3, S5 and S7 of the model
 (`SequencePaxos.tla:2132-2164`, `:2312`). The simulation tests and
-counter_stress check the same properties on LMDB.
+counter_stress check the same properties on the storage.
 
 A node stops when it cannot keep the contract:
 
 - Each error of `write_atomically` throws `write_error`. A failed sync
-  throws `sync_error`. A full LMDB map throws `write_error` with
+  throws `sync_error`. A full store throws `write_error` with
   `no_space_on_device`. The node sends nothing of that batch and takes
   no further commit (`sequence_paxos.hpp:576-588`,
   `persistent_storage.cpp:125-134`).
 - A read that fails, or a CRC that does not agree, stops the voting of
   the node (`stop_voting`, `sequence_paxos.hpp:556`). The node stays
   silent until an operator repairs it (PAR, owner 2026-10-17).
-- A read error under the LMDB map gives SIGBUS, and the process ends.
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 The consensus and the read index use no clock. Only the lease of the
 witness measures a local duration (owner, 2026-10-19). Clock faults
@@ -111,10 +112,12 @@ are therefore outside this matrix.
 |---|---|
 | Fault | The disk lacks an entry that the node acknowledged, and it holds later data. Causes: a damaged B-tree, or a disk that drops a page write and keeps a later one. |
 | Required | The node detects it and stops voting. |
-| Assumptions | LMDB writes a commit as a whole or not at all, while the disk writes each page that LMDB syncs. |
+| Assumptions | The storage writes a commit as a whole or not at all, while the disk writes each page that the storage syncs. |
 | Tests | None. |
 | Model | Not modeled. A rollback restores a whole earlier record only. |
-| Gap | `read_entries` returns a shorter vector with no indexes (`persistent_storage.cpp:468-486`). Its callers place entry k + 1 at index k: `create_log_sync` (`sequence_paxos.hpp:609-617`), `handle_recovery` (`:891-896`), `handle_get_state` (`:987-991`) and `apply_decided_entries` (`node.hpp:392-403`). This shifts the log with no error, and it can break S1. `get_log_len` counts the entries and does not read the last index (`persistent_storage.cpp:199`). Some detection exists. The next append gets MDB_KEYEXIST from MDB_APPEND (`:207`). A truncation over the hole gets MDB_NOTFOUND (`:233-236`). Both throw `write_error`. `get_last_entry_crc` reads the true last key (`:550-566`). `find_hardware_fault` can then flag a peer with the same (round, accepted index) (`sequence_paxos.hpp:962-975`). A lost page write that leaves an old entry with a valid CRC is not detected. The CRC is in the entry and not in a reference to it (state file, section 1). |
+| Gap | `read_entries` returns a shorter vector with no indexes (`persistent_storage.cpp:468-486`). Its callers place entry k + 1 at index k: `create_log_sync` (`sequence_paxos.hpp:609-617`), `handle_recovery` (`:891-896`), `handle_get_state` (`:987-991`) and `apply_decided_entries` (`node.hpp:392-403`). This shifts the log with no error, and it can break S1. `get_log_len` counts the entries and does not read the last index (`persistent_storage.cpp:199`). Some detection exists. `get_last_entry_crc` reads the true last key (`:550-566`). `find_hardware_fault` can then flag a peer with the same (round, accepted index) (`sequence_paxos.hpp:962-975`). A lost page write that leaves an old entry with a valid CRC is not detected. The CRC is in the entry and not in a reference to it (state file, section 1). |
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 2.7 An entry is damaged
 
@@ -122,10 +125,12 @@ are therefore outside this matrix.
 |---|---|
 | Fault | The bytes of a stored entry change. |
 | Required | The CRC32C of the record does not agree. The node stops voting. It reports the index, the stored CRC and the computed CRC. At recovery, two nodes with the same (round, accepted index) and a different last CRC are a hardware fault with evidence. |
-| Assumptions | CRC32C detects the change. LMDB reads its B-tree pages with no check. |
+| Assumptions | CRC32C detects the change. |
 | Tests | test_persistent_storage: "a flipped byte in a stored entry is a CRC mismatch at its index". test_sequence_paxos: "a different CRC32C of one last entry stops voting with the evidence", and the flipped last entry under recovery. test_device_faults: a failed read gives SIGBUS. |
 | Model | Not modeled. plan.md counts it as a `Wipe` of the node. |
-| Gap | The check runs only when an entry is read. An entry that no one reads stays damaged with no report until a scrub (not built). The B-tree pages have no check. LMDB page checksums are not taken (section 5, item 4). |
+| Gap | The check runs only when an entry is read. An entry that no one reads stays damaged with no report until a scrub (not built). The B-tree pages have no checksum (section 5, item 4). |
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 2.8 Metadata is damaged or missing
 
@@ -166,10 +171,12 @@ are therefore outside this matrix.
 |---|---|
 | Fault | A write fails, a sync fails, the disk or the map is full, or a read fails. |
 | Required | Each failed write and each failed sync throws and ends the node. The program never repeats the sync. A full map throws `write_error` too. A failed read ends the process with SIGBUS. |
-| Assumptions | A failed sync leaves the last commit on the disk. LMDB writes the meta page after the data pages. |
+| Assumptions | A failed sync leaves the last commit on the disk. |
 | Tests | test_device_faults on FUSE: fsync, write and read. test_persistent_storage: a full map, a failed commit. test_sequence_paxos: a failed write inside a batch and at the commit. |
 | Model | Not modeled. A node that ends is a crash. |
 | Gap | A full disk at the start: `open` commits a transaction (`persistent_storage.cpp:421`) and can throw `sync_error`. No test covers this. A full map ends the node, also for its reads. The owner has not decided whether a node keeps serving reads then. |
+
+The LMDB form of this section is in the git history before branch remove-lmdb.
 
 ### 2.12 Memory changes a value before its CRC
 
@@ -242,7 +249,7 @@ These are proposals. The owner decides each one.
    mark that the empty disk does not have: the start of a cluster, or
    the join of a node, writes a member record in a step of its own. A
    node with no member record does not vote and does not answer
-   Recovery. A new node that gets a compact LMDB copy (`copy`) gets no
+   Recovery. A new node that gets a copy of the store (`copy`) gets no
    member record with it. The decided configuration that adds it
    writes the record. The hidden identity of 2.10 can be part of the
    same record.
@@ -253,11 +260,8 @@ These are proposals. The owner decides each one.
    is one cursor read at the start. It must be measured.
 3. A check of continuity in `read_entries` (2.6): each index equals the
    one before plus one. Else the read gives `malformed_record`.
-4. LMDB page checksums (2.7): not taken. The owner rejected
-   mdb_env_set_checksum and MDB_REMAP_CHUNKS on 2026-10-16. LMDB checks
-   a page checksum only with MDB_REMAP_CHUNKS, and then the caller must
-   copy each value after a get (mdb.c:7796-7798). Measurement:
-   bench/results/2026-10-24-102121Z.txt on branch page-checksums.
+4. Page checksums (2.7): a checksum on each page with SQLite is an
+   open point (plan-sqlite-storage.md section 9). The LMDB form of this section is in the git history before branch remove-lmdb.
 5. A chain of CRCs (section 4) also for 2.6.
 6. A complete run of each row with "no complete run", on the current
    model, after the owner chooses the bounds.
@@ -274,7 +278,7 @@ source in fehlerquellen.md, not in the state file.
 
 After the owner decides section 5, one plan covers:
 
-- a test for each check of proposals 2 and 3, with an LMDB file that
+- a test for each check of proposals 2 and 3, with a store file that
   the test damages;
 - a test that a wiped node does not vote, if rule R enters the code;
 - a rollback in counter_stress;

@@ -1,4 +1,4 @@
-# Plan: counter_stress checks S2b, S3 and S5, also on LMDB
+# Plan: counter_stress checks S2b, S3 and S5, also on the storage
 
 Source: the open work of the state file: counter_stress checks only
 S1, S2 and S7, and runs on memory only. The owner, 2026-10-22 11:09
@@ -20,8 +20,8 @@ review before the build.
 - counter_stress runs on `konsens::memory_storage` only
   (counter_stress.cpp:56, 344). A restart keeps the storage (353-365);
   a power loss restarts every node (367-376).
-- test/test_simulation_lmdb.cpp:31-49 opens one `persistent_storage`
-  per node in a temporary directory and reopens it at a restart.
+- A simulation test on `persistent_storage` opens one store per node in
+  a temporary directory and reopens it at a restart.
 
 ## 2. Change
 
@@ -37,18 +37,22 @@ review before the build.
      `decided_history` is in that set.
    - S5: two nodes with the same nonzero accepted round have logs where
      one is a prefix of the other.
-2. A flag `--lmdb`: each node runs on `persistent_storage` in its own
-   temporary directory; a restart and a power loss close the env and
+2. A flag: each node runs on `persistent_storage` in its own
+   temporary directory; a restart and a power loss close the store and
    open it again. The stress becomes a template on the storage type;
    `main` picks the type from the flag. A run as root is refused by the
    library, so the flag works only as a user that is not root.
 3. The default run, the output line and the exit codes stay as they
    are.
 
+The flag list of examples/counter_stress.cpp has no such flag now;
+`sqlite_cluster` (counter_stress.cpp:210) runs the nodes on
+`persistent_storage`. The LMDB form of this section is in the git history before branch remove-lmdb.
+
 ## 3. Tests
 
-- Seeds 1 to 300: plain, `--cbor`, `--power-loss 50`, and `--lmdb`
-  (with and without `--cbor`), as a user that is not root.
+- Seeds 1 to 300: plain, `--cbor`, `--power-loss 50`, and on
+  `persistent_storage` (with and without `--cbor`), as a user that is not root.
 - One mutation for each new check, outside the tree: a leader that
   drops the last decided entry (S2b), a client entry with a changed
   payload (S3), a follower that accepts a different entry in the same
@@ -63,7 +67,7 @@ of the build. No claim of speed is made.
 
 ## 5. Names
 
-`--lmdb` after the library it selects. No new public name.
+The flag takes the name of the library it selects. No new public name.
 
 ## 6. Changes after the review
 
@@ -89,7 +93,7 @@ The review (approve with changes, 10 findings) is applied as follows.
   the storage. It is not a loss of the disk cache. S5 holds under it.
 - R5: a restart destroys the old node first and then opens the
   storage again, through a stop and start pair for each storage type,
-  as test/simulation.hpp:502-507 and test_simulation_lmdb.cpp:31-47 do.
+  as test/simulation.hpp:502-507 does.
 - R6: the counter-checks port the mutations of the model:
   `SyncIgnored` (S2b), `LeaderReplacesValue` (S3), `SeqNumUnchecked`
   (S5). The check order is S7, S1, S2b, S3, S5. A mutation that fails
@@ -98,11 +102,12 @@ The review (approve with changes, 10 findings) is applied as follows.
 - R7: S5 compares two logs only from the lower of their decided
   indices. S2b reads the leader log only from its checked index up to
   the last entry it must hold.
-- R8: section 4 goes. No claim of speed is made. One `--lmdb` seed is
-  timed first, and the number of LMDB seeds follows from that time.
+- R8: section 4 goes. No claim of speed is made. One seed on
+  `persistent_storage` is timed first, and the number of such seeds
+  follows from that time.
   Parallel runs stay within the processors.
-- R9: the `--lmdb` seeds run as a user that is not root, through
-  setpriv. `--lmdb` gets no CTest. The temporary directories take the
+- R9: the seeds on `persistent_storage` run as a user that is not root,
+  through setpriv. They get no CTest. The temporary directories take the
   form of three_nodes.cpp:62-87, moved into one header of the examples
   that both examples include. The map size has a named constant.
 - R10: counter_stress has no comments; the reasons stand in this plan

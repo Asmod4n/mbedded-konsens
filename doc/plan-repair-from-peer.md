@@ -9,10 +9,10 @@ and does not recover, and then the recovery. This plan reaches the same
 tuple: the log of the source, its promise, its accepted round and its
 decided index.
 
-Not in this plan: item 9 (the copy of the whole environment after
-`MDB_BAD_CHECKSUM`), item 10 (the state environment, stage D) and the
-hidden identity of item 8. After `MDB_BAD_CHECKSUM` the node stays out
-of the vote, as now.
+Not in this plan: item 9 (the full copy after a damage code of the
+storage), item 10 (the state, stage D) and the hidden identity of item
+8. After a damage code of the storage the node stays out of the vote,
+as now.
 
 ## 1. Which errors are a damage
 
@@ -118,8 +118,8 @@ the accepted round of the source.
 
 ## 4. The count, in the node storage
 
-1. A new class `node_storage` (provisional) opens its own LMDB
-   environment in a directory of its own. It holds one record with a
+1. A new class `node_storage` (provisional) opens its own store in a
+   directory of its own. It holds one record with a
    CRC: the count of automatic repairs and a mark that a repair is
    open. Members: `get_repair_record()`, `count_a_repair()` (adds one,
    sets the mark, commits), `close_the_repair()` (clears the mark,
@@ -151,7 +151,7 @@ the accepted round of the source.
 
 - "a repair takes only the entries that differ, and sets the mark":
   a follower with a flipped entry in the middle, damaged in a forked
-  child (test/lmdb_damage.hpp). It repairs from the leader; the entries
+  child. It repairs from the leader; the entries
   below the first differing index keep their bytes and the log equals
   the leader's.
 - "a repair refuses an entry whose chain CRC does not follow": a
