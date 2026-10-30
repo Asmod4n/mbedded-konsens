@@ -995,8 +995,9 @@ changes:
 5. The error number is in the stored result. value_too_large comes
    after stopped, and program/test/test_rest.cpp gains it, because that
    test covers every value of client_errc.
-6. refs/rfc9110.txt is added in the same commit as the first function
-   that answers 413 (from doc-rfc-std 20230121-1, refs/rfc-origin.md).
+6. refs/rfc9110.txt comes from doc-rfc-std 20230121-1
+   (refs/rfc-origin.md). It went in one commit before the function that
+   answers 413 (8bfa3d3), not in the same commit as the rule asks.
    konsensd takes a body up to default_max_body_bytes, 1 MiB; a body
    from max_value_size to 1 MiB goes through consensus before the 413.
 7. A value is not the only write that can pass a limit of the store:
@@ -1018,3 +1019,20 @@ changes:
 8. A full store still fails at the write of the apply and throws
    write_error, as any write of the apply can. The form does not change
    this.
+
+### As built (section 24)
+
+- include/konsens/storage.hpp: max_key_size 10 000, max_value_size
+  100 000, max_result_size 10 000 000 bytes (provisional, FoundationDB).
+- include/konsens/client.hpp: key_too_large, value_too_large and
+  result_too_large after stopped.
+- node::find_a_size_past_its_bound checks the result of the machine
+  after the rounding of floats; run_request gives its error with no
+  mutation and no reply. error_of passes the three errors through.
+- persistent_storage::open refuses a SQLite whose length limit is below
+  max_result_size, with errc::value_too_large.
+- konsensd answers the three errors with 413.
+- Tests: test_client ("a value one byte past max_value_size is refused
+  as value_too_large and changes nothing"), test_rest (the three
+  codes), and the runs of test_execute_verify and
+  test_persistent_storage.

@@ -125,6 +125,10 @@ problem problem_of(const std::error_code& e)
     if (e == client_errc::rejected) {
         return {status_conflict, "the cluster rejected the write", false};
     }
+    if (e == client_errc::key_too_large || e == client_errc::value_too_large ||
+        e == client_errc::result_too_large) {
+        return {status_content_too_large, "a key or a value of the write is too large", false};
+    }
     if (e == client_errc::stopped) {
         return {status_service_unavailable, "the node stopped; the outcome of the write is unknown", false};
     }

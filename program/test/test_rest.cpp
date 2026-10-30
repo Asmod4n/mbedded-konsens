@@ -139,6 +139,9 @@ TEST_CASE("problem_of gives the status of each client error")
     CHECK(of(client_errc::retired) == problem{503, "the node cannot take the call now", true});
     CHECK(of(client_errc::rejected) == problem{409, "the cluster rejected the write", false});
     CHECK(of(client_errc::stopped) == problem{503, "the node stopped; the outcome of the write is unknown", false});
+    CHECK(of(client_errc::key_too_large) == problem{413, "a key or a value of the write is too large", false});
+    CHECK(of(client_errc::value_too_large) == problem{413, "a key or a value of the write is too large", false});
+    CHECK(of(client_errc::result_too_large) == problem{413, "a key or a value of the write is too large", false});
     CHECK(of(client_errc::session_expired).status == 500);
     CHECK(of(client_errc::stale_request).status == 500);
     CHECK(konsensd::problem_of(std::make_error_code(std::errc::io_error)).status == 500);

@@ -1856,6 +1856,10 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (auto bound = set_max_page_count(writer_db->get(), max_size); !bound) [[unlikely]] {
         return std::unexpected(bound.error());
     }
+    if (static_cast<std::size_t>(sqlite3_limit(writer_db->get(), SQLITE_LIMIT_LENGTH, -1)) < max_result_size)
+        [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::value_too_large));
+    }
     if (auto schema = create_the_schema_of_an_empty_file(writer_db->get()); !schema) [[unlikely]] {
         return std::unexpected(schema.error());
     }

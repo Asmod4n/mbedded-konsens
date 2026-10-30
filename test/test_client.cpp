@@ -297,6 +297,31 @@ TEST_CASE("two clients: a loss, a resend and a duplicate execute each request on
     }
 }
 
+// Plan write-path 24: a value past max_value_size fails while the request
+// runs, before its result is chosen. With the base in a write set it would
+// otherwise fail first when every node applies it. The client gets
+// value_too_large, and the state keeps the value of the request before.
+TEST_CASE("a value one byte past max_value_size is refused as value_too_large and changes nothing")
+{
+    auto c = elected();
+    const auto s = registered(c, 1, client_a);
+    const std::vector<std::byte> largest(konsens::max_value_size, std::byte{'x'});
+    batches::commit(c.at(1), c.at(1).client_request(client_a, s, 1, largest));
+    c.deliver(once);
+    auto replies = c.at(1).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].response == largest);
+
+    batches::commit(c.at(1), c.at(1).client_request(client_a, s, 2, bytes_of("y")));
+    c.deliver(once);
+    replies = c.at(1).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(failed_with(replies[0].response, client_errc::value_too_large));
+    for (const auto& n : c.nodes) {
+        CHECK(concatenation_of(n) == largest);
+    }
+}
+
 // F14 and the model action ExpireSession: the leader in Accept appends
 // ExpireSession only for an open session, and only once. A request of an
 // expired session is not executed (Raft 6.3, SESSION_EXPIRED).
