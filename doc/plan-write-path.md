@@ -1252,3 +1252,5 @@ host and in the bench container as user 1001. A form that pins memory
 mruby-webmachine 74066bb) meets this limit. Not checked: whether the
 data of provided buffers counts against the limit, or only the ring of
 their descriptors.
+Owner (2026-10-30 18:48): the rings themselves already need this limit.
+No form of this plan pins more memory.
