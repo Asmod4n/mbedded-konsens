@@ -130,7 +130,7 @@ B. Execute-Verify makes two rounds before a client gets its reply: the
 - Each arm: the client tests, the konsensd tests (three_nodes), seeds 1
   to 300 of counter_stress, test_simulation. Release with g++ 15, g++ 16
   and clang 22. ASan and UBSan once before the merge
-  (memory build-und-tests).
+  .
 
 ## 7. Model
 
@@ -159,3 +159,50 @@ must fail.
   /mnt/zn*/b/n: made again by the scripts. Deleted after the owner has
   seen this list.
 - $S/wt-write: the worktree of this branch.
+
+## 10. Changes after the review
+
+The review (doc/review-plan-write-path.md: approve with changes, 17
+findings, 6 blocking) is applied as follows.
+
+- R1: fact 1.5 and arm A are wrong about the count. The leader counts
+  its own accepted index before the commit (sequence_paxos.hpp:1330,
+  1432, 1615-1616). Arm A is safe only while no message is handled
+  between the release of the early messages and the commit. `node`
+  throws `std::logic_error` on any call in that interval. The model
+  mutation is "an Accepted is handled between the release and the
+  write".
+- R2: for each follower, only the prefix of its messages in the order
+  of the step that holds only AcceptDecide and Decide leaves early. So
+  no message with a sequence number overtakes a held one
+  (message.hpp:65-74). Tests: a Decide then an AcceptDecide to one
+  follower in one step; an AcceptSync then an AcceptDecide.
+- R3: the release is just before `txn.commit()` (sequence_paxos.hpp:455),
+  after `read_checked_meta`. konsensd queues the early messages and
+  calls `io_uring_submit` before the commit. The error path of
+  `serve_clients_in_the_step` after the release is checked in the code
+  before the build, and the plan names its form then.
+- R4, R5: option 2 of question B loses plan-execute-verify.md 2.7.7 (a
+  fault in the count, compare or copy of the leader reaches the client)
+  and, with floats, 2.9.1 (a later leader can choose other bytes than
+  the reply). The question names both losses. The model runs with
+  `Flip` and `Spread`.
+- R6: the model is model/tla/SequencePaxos.tla of this repository, with
+  `Flip` and the `MC_ev_*` configurations.
+- Bed: each run also measures three raw SQLite processes at once, one
+  on each file system. That is the bound for three nodes on this host.
+- CPU: the three nodes use 221 to 222 us of CPU per write at 64 in
+  flight. Half of raw SQLite needs at most 78 us on 3 processors. The
+  profile (bench/results/2026-10-30-060200Z-write-path-callgrind.txt)
+  shows 42.9 calls of `sqlite3_step` per write on the leader and 31.2 on
+  a follower. Arm D starts with the statements per write.
+- 1 in flight: half of raw SQLite allows at most two commits in
+  sequence. M2 maps each fdatasync to the writes it holds and to the
+  messages that wait for it.
+- Smaller fixes: the share is 0.75 to 0.76 of one processor; both beds
+  are on one host disk; g16aa is g++ 16 with -march=x86-64-v3; a g++ 15
+  column is added; M1 counts in a Debug build only, not under strace;
+  the frame count of `sqlite3_wal_hook` is checked in the SQLite
+  documentation before M3 uses it; section 6 reads "ASan and UBSan once
+  before the merge"; the run length is read from the state file where it
+  is kept.
