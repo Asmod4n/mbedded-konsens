@@ -926,3 +926,54 @@ The review approved the form with six findings, none blocking.
 6. The reads are the same; the errors are not. A write in the base no
    longer fails, and begin_an_empty_write_set throws nothing. See
    item 2.
+
+## 24. A bound on the size of a value
+
+Facts:
+- With the write set (section 23, the simple form), a write of the base
+  no longer reaches the store while the request runs. A value that the
+  store refuses then fails first at apply_the_done_records, after its
+  result is chosen, and on every node (review finding 2).
+- A full store (max_size) cannot be found before the write, because
+  SQLite counts its pages when it writes. A value past the length limit
+  of SQLite can be found before.
+
+Consensus of known systems: a fixed bound on the size of a value, and a
+client error when a write passes it. FoundationDB, "Known Limitations":
+"Keys cannot exceed 10,000 bytes in size. Values cannot exceed 100,000
+bytes in size. Errors will be raised by the client if these limits are
+exceeded." The error is value_too_large, code 2103 ("Value length
+exceeds limit", "Error Codes"). When FoundationDB checks it, at the set
+or at the commit, is not checked.
+
+Form:
+1. A named constant max_value_size in include/konsens/node.hpp, beside
+   max_batch_size. Provisional value 100 000 bytes (FoundationDB); the
+   owner decides the number (card of 2026-10-30).
+2. It is a constant of the library and not a field of node_config.
+   Execute-Verify compares the results of all nodes; a node with
+   another bound would compute another result and refuse. A change of
+   the constant changes the results of the cluster and comes only with
+   a major version.
+3. run_request checks each mutation that the machine gives. If a value
+   is longer than max_value_size, the result is the error
+   client_errc::value_too_large with no mutation and no reply. The
+   check is one function, and run_request is its only caller.
+4. client_errc gains value_too_large after stopped, so the numbers of
+   the other codes stay. Its message: "A value of the request is longer
+   than max_value_size". konsensd answers it as RFC 9290 with status
+   413 (RFC 9110 15.5.14, Content Too Large).
+
+What the form does not do: it bounds no key and no reply, and it does
+not find a full store. A bound on keys (FoundationDB: 10 000 bytes) is
+open for the owner.
+
+The model: a result is a value in the model; an error result is one of
+them. The model needs no change.
+
+Tests:
+- test_execute_verify: a put of max_value_size bytes is applied; a put
+  of max_value_size + 1 bytes gives value_too_large on the leader and on
+  the followers, the result is chosen, and nothing is written.
+- program/test: konsensd answers such a put with 413 and a problem
+  document.
