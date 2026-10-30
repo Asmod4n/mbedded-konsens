@@ -373,6 +373,7 @@ struct recording_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
+        bool has_log_writes() const { return t_.has_log_writes(); }
 
         auto append_entries(const std::span<const konsens::entry> entries)
         {
@@ -388,6 +389,10 @@ struct recording_storage {
         auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
         auto set_config_first_idx(const std::uint64_t index) { return t_.set_config_first_idx(index); }
         std::expected<void, std::error_code> commit() && { return std::move(t_).commit(); }
+        std::expected<void, std::error_code> commit_without_a_sync() &&
+        {
+            return std::move(t_).commit_without_a_sync();
+        }
 
     private:
         persistent_storage::transaction t_;

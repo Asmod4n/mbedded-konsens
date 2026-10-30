@@ -35,6 +35,7 @@ constexpr std::string_view fault_proof_key = "fault_proof";
 constexpr std::string_view clean_stop_key = "clean_stop";
 constexpr std::string_view config_first_key = "config_first";
 constexpr std::uint32_t format_version = 5;
+constexpr int synchronous_normal = 1;
 constexpr int synchronous_full = 2;
 constexpr int checkpoint_frames = 1000;
 constexpr std::uint64_t largest_key = std::numeric_limits<std::int64_t>::max();
@@ -1010,7 +1011,7 @@ int count_frames(void* frames, sqlite3*, const char*, const int frame_count) noe
     return SQLITE_OK;
 }
 
-std::expected<connection, std::error_code> open_connection(const std::filesystem::path& file)
+std::expected<connection, std::error_code> open_connection(const std::filesystem::path& file, const int synchronous)
 {
     sqlite3* raw = nullptr;
     const int opened = sqlite3_open_v2(uri_of(file).c_str(), &raw, open_flags, nullptr);
@@ -1030,20 +1031,34 @@ std::expected<connection, std::error_code> open_connection(const std::filesystem
     if (*journal_mode != "wal") [[unlikely]] {
         return std::unexpected(std::make_error_code(std::errc::not_supported));
     }
-    if (auto set = execute(db.get(), "PRAGMA synchronous = FULL"); !set) [[unlikely]] {
+    const auto pragma = synchronous == synchronous_full ? "PRAGMA synchronous = FULL" : "PRAGMA synchronous = NORMAL";
+    if (auto set = execute(db.get(), pragma); !set) [[unlikely]] {
         return std::unexpected(set.error());
     }
-    const auto synchronous = read_integer(db.get(), "PRAGMA synchronous");
-    if (!synchronous) [[unlikely]] {
-        return std::unexpected(synchronous.error());
+    const auto level = read_integer(db.get(), "PRAGMA synchronous");
+    if (!level) [[unlikely]] {
+        return std::unexpected(level.error());
     }
-    if (*synchronous != synchronous_full) [[unlikely]] {
+    if (*level != synchronous) [[unlikely]] {
         return std::unexpected(std::make_error_code(std::errc::not_supported));
     }
     if (auto set = execute(db.get(), "PRAGMA wal_autocheckpoint = 0"); !set) [[unlikely]] {
         return std::unexpected(set.error());
     }
     return db;
+}
+
+std::expected<void, std::error_code> sync_the_wal(sqlite3* db)
+{
+    sqlite3_file* wal = nullptr;
+    if (const int got = sqlite3_file_control(db, "main", SQLITE_FCNTL_JOURNAL_POINTER, &wal);
+        got != SQLITE_OK || wal == nullptr || wal->pMethods == nullptr) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::not_supported));
+    }
+    if (const int synced = wal->pMethods->xSync(wal, SQLITE_SYNC_NORMAL); synced != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(to_error_code(synced, db));
+    }
+    return {};
 }
 
 std::expected<void, std::error_code> run_checkpoint(sqlite3* db)
@@ -1127,6 +1142,7 @@ struct persistent_storage::environment {
     bool nested_open{};
     bool reader_open{};
     bool written{};
+    bool log_written{};
     bool write_unfinished{};
     std::optional<std::error_code> failure;
     std::vector<std::byte> record{};
@@ -1370,6 +1386,7 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
         return f;
     }
     env_->written = true;
+    env_->log_written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto l = env_->of_writer();
     auto m = read_meta(l);
@@ -1391,6 +1408,7 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
         return f;
     }
     env_->written = true;
+    env_->log_written = true;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto l = env_->of_writer();
     auto m = read_meta(l);
@@ -1423,6 +1441,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_promis
         return f;
     }
     env_->written = true;
+    env_->log_written = true;
     const auto l = env_->of_writer();
     auto m = read_meta(l);
     if (!m) [[unlikely]] {
@@ -1440,6 +1459,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_accept
         return f;
     }
     env_->written = true;
+    env_->log_written = true;
     const auto l = env_->of_writer();
     auto m = read_meta(l);
     if (!m) [[unlikely]] {
@@ -1483,6 +1503,7 @@ persistent_storage::transaction::set_config_first_idx(const std::uint64_t config
         return f;
     }
     env_->written = true;
+    env_->log_written = true;
     return put_checked(env_->of_writer(), config_first_key, to_little_endian(config_first_idx));
 }
 
@@ -1597,7 +1618,23 @@ bool persistent_storage::transaction::has_writes() const
     return env_->written;
 }
 
+bool persistent_storage::transaction::has_log_writes() const
+{
+    throw_if_no_environment(env_);
+    return env_->log_written;
+}
+
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&
+{
+    throw_if_no_environment(env_);
+    sqlite3* const db = env_->writer_db.get();
+    if (auto c = std::move(*this).commit_without_a_sync(); !c) [[unlikely]] {
+        return c;
+    }
+    return sync_the_wal(db);
+}
+
+std::expected<void, std::error_code> persistent_storage::transaction::commit_without_a_sync() &&
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested_open);
@@ -1741,7 +1778,7 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (auto created = create_with_file_mode(file); !created) [[unlikely]] {
         return std::unexpected(created.error());
     }
-    auto writer_db = open_connection(file);
+    auto writer_db = open_connection(file, synchronous_normal);
     if (!writer_db) [[unlikely]] {
         return std::unexpected(writer_db.error());
     }
@@ -1755,7 +1792,7 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (!writer) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
-    auto reader_db = open_connection(file);
+    auto reader_db = open_connection(file, synchronous_full);
     if (!reader_db) [[unlikely]] {
         return std::unexpected(reader_db.error());
     }
@@ -1769,6 +1806,9 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (auto format = check_or_write_format(env->of_writer()); !format) [[unlikely]] {
         env->roll_back_the_writer();
         return std::unexpected(format.error());
+    }
+    if (auto synced = sync_the_wal(env->writer_db.get()); !synced) [[unlikely]] {
+        return std::unexpected(synced.error());
     }
     env->failure.reset();
     return persistent_storage{std::move(env)};
@@ -1797,6 +1837,7 @@ std::expected<persistent_storage::transaction, std::error_code> persistent_stora
     }
     env_->writer_open = true;
     env_->written = false;
+    env_->log_written = false;
     return transaction{env_.get()};
 }
 
@@ -1873,7 +1914,7 @@ std::expected<node_storage, std::error_code> node_storage::open(const std::files
     if (auto created = create_with_file_mode(file); !created) [[unlikely]] {
         return std::unexpected(created.error());
     }
-    auto db = open_connection(file);
+    auto db = open_connection(file, synchronous_full);
     if (!db) [[unlikely]] {
         return std::unexpected(db.error());
     }

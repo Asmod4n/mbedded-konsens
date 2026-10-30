@@ -231,3 +231,35 @@ counts come from `sqlite3_stmt_status`). At 64 in flight, per write:
 So arm D starts with the base: it is kept between steps, or the run
 reads the chosen results of the base from memory. The form goes into
 this plan before the build.
+
+## 12. Form of F2 as built
+
+- The writer connection of konsens.db opens with synchronous=NORMAL.
+  The reader and node.db keep synchronous=FULL.
+- `commit()` commits and then syncs the WAL through `xSync` of the
+  file that `SQLITE_FCNTL_JOURNAL_POINTER` gives
+  (refs/sqlite/c3ref/c_fcntl_begin_atomic_write.html). So a commit is
+  durable as with FULL.
+- `commit_without_a_sync()` only commits. Sequence Paxos calls it when
+  the transaction wrote nothing of the log and of the votes
+  (`has_log_writes()`).
+- The open syncs the WAL after it writes the format.
+- `stop()` syncs the last commit before it writes the clean-stop mark.
+- pragma.html: "Transactions are durable across application crashes
+  regardless". Only a power loss or a crash of the system can roll a
+  commit without a sync back.
+
+## 13. Wrong assumptions of F2
+
+- Assumed: `PRAGMA synchronous` can change the level for one
+  transaction, inside that transaction.
+- True: SQLite returns "Safety level may not be changed inside a
+  transaction". Every test failed with "SQL logic error".
+- Caused: one build and one test round. The form of section 12
+  replaced it.
+
+- Assumed: a first test in one file showed that the pragma inside the
+  transaction works.
+- True: the helper of that test ended the process on the first error,
+  and the output did not show the error.
+- Caused: the wrong form above was built in the tree.

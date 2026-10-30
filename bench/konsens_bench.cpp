@@ -368,6 +368,7 @@ struct counted_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
+        bool has_log_writes() const { return t_.has_log_writes(); }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
@@ -381,6 +382,11 @@ struct counted_storage {
         {
             *commits_ += 1;
             return std::move(t_).commit();
+        }
+        std::expected<void, std::error_code> commit_without_a_sync() &&
+        {
+            *commits_ += 1;
+            return std::move(t_).commit_without_a_sync();
         }
 
     private:

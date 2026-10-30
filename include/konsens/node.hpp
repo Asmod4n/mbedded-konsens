@@ -203,6 +203,7 @@ public:
         }
         drop_held_messages_and_replies();
         reply_stopped_to_the_waiting_calls();
+        seq_paxos_.sync_the_last_commit();
         const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta(),
                                    seq_paxos_.get_verified_idx()};
         if (auto w = own_storage_.write_the_clean_stop_mark(mark); !w) [[unlikely]] {

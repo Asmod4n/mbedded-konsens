@@ -475,11 +475,35 @@ public:
         auto u = std::move(*pending_commit_);
         pending_commit_.reset();
         write_unfinished_ = true;
-        if (auto c = std::move(u.txn).commit(); !c) [[unlikely]] {
+        const bool synced = u.txn.has_log_writes();
+        if (auto c = synced ? std::move(u.txn).commit() : std::move(u.txn).commit_without_a_sync(); !c) [[unlikely]] {
             throw write_error(c.error(), "konsens: the storage failed to commit the step");
         }
         write_unfinished_ = false;
+        a_commit_waits_for_its_sync_ = !synced;
         mark_ = raise_mark(mark_, mark_of(u.meta));
+    }
+
+    void sync_the_last_commit()
+    {
+        if (!a_commit_waits_for_its_sync_) {
+            return;
+        }
+        auto t = internal_storage_.begin();
+        if (!t) [[unlikely]] {
+            throw write_error(t.error(), "konsens: the storage failed to begin the sync of the last commit");
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            throw write_error(m.error(), "konsens: the storage failed to read the meta for the sync of the last commit");
+        }
+        if (auto w = t->set_decided_index(m->decided_idx); !w) [[unlikely]] {
+            throw write_error(w.error(), "konsens: the storage failed to write the meta for the sync of the last commit");
+        }
+        if (auto c = std::move(*t).commit(); !c) [[unlikely]] {
+            throw write_error(c.error(), "konsens: the storage failed to sync the last commit");
+        }
+        a_commit_waits_for_its_sync_ = false;
     }
 
     std::vector<paxos_message> take_the_messages_before_the_sync()
@@ -1935,6 +1959,7 @@ private:
         meta_record meta;
     };
     std::optional<pending_commit> pending_commit_;
+    bool a_commit_waits_for_its_sync_{};
     high_water_mark mark_{};
     std::pair<role, phase> state_{role::follower, phase::none};
     leader_state leader_state_{};

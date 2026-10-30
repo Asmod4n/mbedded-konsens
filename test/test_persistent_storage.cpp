@@ -144,6 +144,70 @@ TEST_CASE("entries and meta values survive a close and a reopen")
     CHECK(entries_of(storage, 0, 3) == written);
 }
 
+// A step that only applies decided entries commits without a sync. The
+// consensus layer tells such a step from the others by has_log_writes, so
+// every write that changes the log or the votes must count, and the writes
+// of the apply must not.
+TEST_CASE("only the writes of the log and of the votes count as log writes")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    write(storage, [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("a"), normal_entry("b")})); });
+    const std::array<std::function<void(konsens::persistent_storage::transaction&)>, 5> log_writes{
+        [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("c")})); },
+        [](auto& t) { REQUIRE(t.append_on_prefix(1, std::vector{normal_entry("d")})); },
+        [](auto& t) { REQUIRE(t.set_promise({1, 2, 0, 1})); },
+        [](auto& t) { REQUIRE(t.set_accepted_round({1, 2, 0, 1})); },
+        [](auto& t) { REQUIRE(t.set_config_first_idx(1)); },
+    };
+    for (const auto& w : log_writes) {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        CHECK_FALSE(t->has_log_writes());
+        w(*t);
+        CHECK(t->has_log_writes());
+        REQUIRE(std::move(*t).commit().has_value());
+    }
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    REQUIRE(t->set_decided_index(1));
+    REQUIRE(t->insert_or_assign(bytes_of("k"), bytes_of("v")));
+    REQUIRE(t->insert_or_assign_session(1, {1, bytes_of("r")}));
+    REQUIRE(t->set_applied(1, 0));
+    REQUIRE(t->erase(bytes_of("k")));
+    REQUIRE(t->erase_session(1));
+    CHECK(t->has_writes());
+    CHECK_FALSE(t->has_log_writes());
+    REQUIRE(std::move(*t).commit().has_value());
+}
+
+// A commit without a sync is a commit: the values are there for a reader at
+// once, and after a clean close and a reopen. Only a power loss may undo it.
+TEST_CASE("a commit without a sync is read back and survives a close and a reopen")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        write(storage, [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("a")})); });
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->set_decided_index(1));
+        REQUIRE(t->insert_or_assign(bytes_of("k"), bytes_of("v")));
+        REQUIRE(std::move(*t).commit_without_a_sync().has_value());
+        CHECK(meta_of(storage).decided_idx == 1u);
+        write(storage, [](auto& w) { REQUIRE(w.append_entries(std::vector{normal_entry("b")})); });
+    }
+    const auto storage = open_storage(dir.path());
+    CHECK(meta_of(storage).decided_idx == 1u);
+    CHECK(meta_of(storage).log_len == 2u);
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    const auto found = r->find(bytes_of("k"));
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK(std::ranges::equal(**found, bytes_of("v")));
+}
+
 // A user opens a new directory and reads first. A new storage has an empty
 // log and a meta record of zero values. The open writes that record, so
 // that a storage with no meta record is a damaged storage.
