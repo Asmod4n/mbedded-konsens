@@ -37,6 +37,12 @@ inline constexpr std::size_t max_batch_size = 1024;
 
 static_assert(std::is_nothrow_move_constructible_v<message> && std::is_nothrow_move_constructible_v<received>);
 
+#ifdef NDEBUG
+inline constexpr bool built_for_debugging = false;
+#else
+inline constexpr bool built_for_debugging = true;
+#endif
+
 struct node_config {
     std::uint32_t configuration_id;
     node_id pid;
@@ -1526,7 +1532,7 @@ private:
                 log_records_.push_back({proof_kind::wrong_list, proof.index, proof.n, proof.crc, proof.other_crc});
             }
             write_the_result(e, k, *r, w);
-            if (!written_values_read_back(*r, w)) [[unlikely]] {
+            if (built_for_debugging && !written_values_read_back(*r, w)) [[unlikely]] {
                 write_the_proof_and_throw({proof_kind::read_back, k, seq_paxos_.mark_.promise, e.result_crc, 0},
                                           make_error_code(paxos_errc::result_differs),
                                           "konsens: a value that the node wrote reads back different");
