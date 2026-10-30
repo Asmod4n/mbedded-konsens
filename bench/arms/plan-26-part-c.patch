@@ -1,0 +1,126 @@
+diff --git a/src/persistent_storage.cpp b/src/persistent_storage.cpp
+index 34dfe20..7f52a41 100644
+--- a/src/persistent_storage.cpp
++++ b/src/persistent_storage.cpp
+@@ -6,6 +6,7 @@
+ #include <exception>
+ #include <format>
+ #include <limits>
++#include <map>
+ #include <optional>
+ #include <span>
+ #include <stdexcept>
+@@ -1180,6 +1181,8 @@ std::expected<void, std::error_code> check_or_write_format(const link& l)
+ 
+ }
+ 
++constexpr std::size_t entries_in_memory_most = 4096;
++
+ struct persistent_storage::environment {
+     file_descriptor wal;
+     connection writer_db;
+@@ -1196,6 +1199,36 @@ struct persistent_storage::environment {
+     std::optional<std::error_code> failure;
+     std::vector<std::byte> record{};
+     std::optional<meta_record> writer_meta;
++    std::map<std::uint64_t, entry> cached;
++    std::map<std::uint64_t, entry> pending;
++    std::optional<std::uint64_t> pending_cut;
++
++    const entry* find_the_entry(const std::uint64_t k) const
++    {
++        if (const auto p = pending.find(k); p != pending.end()) {
++            return &p->second;
++        }
++        if (pending_cut && k >= *pending_cut) {
++            return nullptr;
++        }
++        const auto c = cached.find(k);
++        return c == cached.end() ? nullptr : &c->second;
++    }
++
++    void keep_the_pending_entries()
++    {
++        if (pending_cut) {
++            cached.erase(cached.lower_bound(*pending_cut), cached.end());
++        }
++        for (auto& [k, e] : pending) {
++            cached.insert_or_assign(k, std::move(e));
++        }
++        pending.clear();
++        pending_cut.reset();
++        while (cached.size() > entries_in_memory_most) {
++            cached.erase(cached.begin());
++        }
++    }
+ 
+     link of_writer() noexcept { return {writer_db.get(), &writer, &failure}; }
+     link of_reader() noexcept { return {reader_db.get(), &reader, nullptr}; }
+@@ -1234,6 +1267,8 @@ struct persistent_storage::environment {
+         nested_open = false;
+         writer_open = false;
+         writer_meta.reset();
++        pending.clear();
++        pending_cut.reset();
+     }
+ 
+     void roll_back_the_nested() noexcept
+@@ -1398,6 +1433,19 @@ persistent_storage::transaction::read_entries(const std::uint64_t from, const st
+     if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+         return std::unexpected(read_failure{f.error(), from, 0, 0});
+     }
++    if (from < to) {
++        std::vector<entry> found;
++        for (auto k = from; k < to; ++k) {
++            const auto* const e = env_->find_the_entry(k);
++            if (e == nullptr) {
++                break;
++            }
++            found.push_back(*e);
++        }
++        if (found.size() == to - from) {
++            return found;
++        }
++    }
+     return read_entries_in(env_->of_writer(), from, to);
+ }
+ 
+@@ -1466,9 +1514,13 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
+     if (!m) [[unlikely]] {
+         return std::unexpected(m.error());
+     }
++    const auto start = m->log_len;
+     if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
+         return put;
+     }
++    for (std::size_t i = 0; i < entries.size(); ++i) {
++        env_->pending.insert_or_assign(start + i, entries[i]);
++    }
+     return env_->write_the_meta(*m);
+ }
+ 
+@@ -1499,10 +1551,16 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx,
+         }
+         m->log_len = prefix_len;
+         m->last_chain_crc = *chain;
++        env_->pending_cut = std::min(env_->pending_cut.value_or(prefix_len), prefix_len);
++        env_->pending.erase(env_->pending.lower_bound(prefix_len), env_->pending.end());
+     }
++    const auto start = m->log_len;
+     if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
+         return put;
+     }
++    for (std::size_t i = 0; i < entries.size(); ++i) {
++        env_->pending.insert_or_assign(start + i, entries[i]);
++    }
+     return env_->write_the_meta(*m);
+ }
+ 
+@@ -1726,6 +1784,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::commit_wit
+         return std::unexpected(e);
+     }
+     env.write_unfinished = false;
++    env.keep_the_pending_entries();
+     return {};
+ }
+ 
