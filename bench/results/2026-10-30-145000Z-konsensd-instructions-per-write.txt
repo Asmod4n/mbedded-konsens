@@ -1,0 +1,25 @@
+konsensd: instructions and SQLite statements per write, by callgrind
+
+What was measured
+- konsensd 1011ddc, g++ 16 Release (build-konsensd.sh), binary konsensd_g16HS2u e4a23155a4362697. Three nodes, Unix sockets, sync_by_the_caller = true, election_ticks = 100.
+- Each node runs under valgrind --tool=callgrind (image localhost/bench-vg). The data directories are tmpfs, so the counts hold the CPU work and no wait on a disk.
+- 1024 writes of 64 B at 1 in flight are counted after a warm run of 1024; then 4096 writes of 64 B at 64 in flight. callgrind_control resets the counts before each part and dumps them after it.
+- Script outside the tree: vg7.sh 741cffa7b6a697a7, vgwrap.sh 3b77eb20dcdb4533.
+
+Instructions (Ir) per write
+| Node | 1 in flight | 64 in flight |
+| leader (n3) | 412 000 | 233 000 |
+| follower (n1) | 350 000 | 215 000 |
+- Totals: leader 421 954 083 and 954 768 343; follower 358 446 214 and 882 507 717.
+
+Calls on the leader, per write
+| Call | 1 in flight | 64 in flight |
+| sqlite3_step | 84 | 34.5 |
+| sequence_paxos::begin_step | 15.9 | 1.9 |
+- sqlite3_step 86 090 and 141 290 calls; begin_step 16 237 and 7 913 calls.
+
+Inclusive share of the leader at 1 in flight (callgrind_annotate --inclusive=yes)
+- commit_the_step 88 %, sqlite3_step 58 %, read_checked_meta 22 %, propose_before_the_step 20 %, begin_step 16 %, execute_verify 16 %, check_the_done_records 15 %, read_record 14 %, sqlite3VdbeHalt 13 %, get_entry_state 11 %, get_entries 11 %.
+Inclusive share of the leader at 64 in flight
+- commit_the_step 90 %, sqlite3_step 53 %, execute_verify 30 %, propose_before_the_step 24 %, check_the_done_records 24 %, write_the_result 23 %, run_the_tasks 22 %, insert_or_assign 16 %, handle_acceptdecide 14 %, append_entries 13 %.
+- A share says where instructions go. It does not say what a removal saves.
