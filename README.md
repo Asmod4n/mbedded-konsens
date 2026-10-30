@@ -302,6 +302,14 @@ shows node 1 of three. Each node has its own `pid` and `peer_address`;
 | `node.max_store_bytes` | The largest store. | 64 GiB |
 | `peers.pid`, `peers.address` | Another node of the cluster. | |
 
+An address is `host:port`, `[v6]:port` or `unix:<path>`. The path of a
+Unix socket has 1 to 107 bytes and no NUL. A relative path starts at the
+working directory of the node. The node makes the socket file with the
+mode 0777 minus its umask. At the start, the node removes a socket file
+on which nothing accepts. A socket file on which a process accepts, or a
+file that is not a socket, stops the start. A clean stop removes the
+socket file.
+
 Start each node once with `--first-start`, on all three machines. Stop
 it with Ctrl-C when the three nodes have elected a leader:
 

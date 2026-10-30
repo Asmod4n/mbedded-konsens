@@ -176,3 +176,17 @@ TEST_CASE("a wrong type names its line")
     CHECK(error_of("peers = 3\n" + replaced(smallest, "[[peers]]\npid = 2\naddress = \"192.0.2.2:7151\"", "")) ==
           config_errc::wrong_type);
 }
+
+// The config keeps an address as text. A unix: address reaches resolve
+// unchanged, and only resolve reads its form.
+TEST_CASE("a unix: address is read as text")
+{
+    const auto c = konsensd::parse_config(
+        replaced(replaced(replaced(smallest, "\"[::]:7151\"", "\"unix:/run/konsensd/peer.sock\""), "\"[::]:7152\"",
+                          "\"unix:client.sock\""),
+                 "\"192.0.2.2:7151\"", "\"unix:/run/konsensd/2.sock\""));
+    REQUIRE(c);
+    CHECK(c->peer_address == "unix:/run/konsensd/peer.sock");
+    CHECK(c->client_address == "unix:client.sock");
+    CHECK(c->peers == std::vector<konsensd::peer>{{2, "unix:/run/konsensd/2.sock"}});
+}

@@ -1,28 +1,41 @@
 #!/bin/bash
 # Three konsensd processes on loopback, with curl as the client (plan 7.5).
 # The test exists because only the running program shows that the loop,
-# the frames, HTTP and the sessions work together over TCP.
+# the frames, HTTP and the sessions work together. The third argument
+# names the form of the addresses: tcp (the default) or unix. The unix
+# form also shows that a restart after a clean stop and after SIGKILL
+# binds the socket file again.
 set -u
 
 konsensd=$1
 base=${2:-17150}
+form=${3:-tcp}
 dir=$(mktemp -d)
 failed=0
 declare -A pids
 
-peer_port() { echo $((base + $1)); }
-client_url() { echo "http://127.0.0.1:$((base + 10 + $1))"; }
+if [ "$form" = unix ]; then
+    peer_address() { echo "unix:$dir/peer$1.sock"; }
+    client_address() { echo "unix:$dir/client$1.sock"; }
+    client_url() { echo "http://localhost"; }
+    client_socket() { echo "--unix-socket $dir/client$1.sock"; }
+else
+    peer_address() { echo "127.0.0.1:$((base + $1))"; }
+    client_address() { echo "127.0.0.1:$((base + 10 + $1))"; }
+    client_url() { echo "http://127.0.0.1:$((base + 10 + $1))"; }
+    client_socket() { :; }
+fi
 
 write_config() {
     local p=$1 q
     {
         printf '[cluster]\nname = "test"\nconfiguration_id = 1\n\n[node]\n'
         printf 'pid = %s\ndata_directory = "%s/data%s"\n' "$p" "$dir" "$p"
-        printf 'peer_address = "127.0.0.1:%s"\n' "$(peer_port "$p")"
-        printf 'client_address = "127.0.0.1:%s"\n' $((base + 10 + p))
+        printf 'peer_address = "%s"\n' "$(peer_address "$p")"
+        printf 'client_address = "%s"\n' "$(client_address "$p")"
         for q in 1 2 3; do
             [ "$q" = "$p" ] && continue
-            printf '\n[[peers]]\npid = %s\naddress = "127.0.0.1:%s"\n' "$q" "$(peer_port "$q")"
+            printf '\n[[peers]]\npid = %s\naddress = "%s"\n' "$q" "$(peer_address "$q")"
         done
     } > "$dir/node$p.toml"
 }
@@ -58,8 +71,8 @@ status_of() {
     curl -s --max-time 5 -o "$dir/body" -w '%{http_code}' "$@"
 }
 
-put() { status_of -X PUT --data-binary "$3" "$(client_url "$1")/kv/$2"; }
-get() { status_of "$(client_url "$1")/kv/$2"; }
+put() { status_of $(client_socket "$1") -X PUT --data-binary "$3" "$(client_url "$1")/kv/$2"; }
+get() { status_of $(client_socket "$1") "$(client_url "$1")/kv/$2"; }
 
 # A write waits for an elected leader: a 503 asks the client to try again.
 put_until_stored() {
@@ -126,7 +139,7 @@ check "a read at node 2 sees it" holds_soon 2 greeting hello
 check "a read at node 3 sees it" holds_soon 3 greeting hello
 check "a write at node 3" put_until_stored 3 a one
 check "a read at node 1 sees it" holds_soon 1 a one
-check "a delete at node 2" test "$(status_of -X DELETE "$(client_url 2)/kv/greeting")" = 204
+check "a delete at node 2" test "$(status_of $(client_socket 2) -X DELETE "$(client_url 2)/kv/greeting")" = 204
 check "a read after the delete gives 404" test "$(get 1 greeting)" = 404
 check "an empty value round trip" put_until_stored 2 empty ""
 check "the empty value reads back" holds_soon 1 empty ""
@@ -177,7 +190,7 @@ l=$(leader)
 follower=$(( l % 3 + 1 ))
 check "follower $follower stops cleanly" stop "$follower"
 check "10000 writes on one connection" test "$(curl -s --max-time 120 -o /dev/null -w '%{http_code}\n' \
-    -X PUT --data-binary bulk "$(client_url "$l")/kv/bulk[1-10000]" | sort -u)" = 204
+    $(client_socket "$l") -X PUT --data-binary bulk "$(client_url "$l")/kv/bulk[1-10000]" | sort -u)" = 204
 start "$follower"
 check "the follower reads the last write" holds_soon "$follower" bulk10000 bulk
 

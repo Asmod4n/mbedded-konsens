@@ -177,4 +177,6 @@ if(KONSENS_PROGRAM)
         add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
     add_test(NAME three_nodes COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd>)
+    add_test(NAME three_nodes_unix
+             COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd> 17150 unix)
 endif()

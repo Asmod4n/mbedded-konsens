@@ -27,6 +27,7 @@
 #include "address.hpp"
 #include "frame.hpp"
 #include "key_value.hpp"
+#include "listener.hpp"
 #include "rest.hpp"
 #include "konsens/node.hpp"
 #include "konsens/persistent_storage.hpp"
@@ -42,7 +43,6 @@ using clock = std::chrono::steady_clock;
 
 constexpr unsigned ring_entries = 256;
 constexpr std::size_t receive_bytes = std::size_t{1} << 16;
-constexpr int listen_backlog = 64;
 constexpr std::uint64_t max_queued_peer_bytes = std::uint64_t{1} << 26;
 constexpr int op_shift = 56;
 constexpr std::uint64_t id_mask = (std::uint64_t{1} << op_shift) - 1;
@@ -516,8 +516,10 @@ void start_a_connect(loop& l, const konsens::node_id pid, const socket_address& 
     if (fd < 0) [[unlikely]] {
         return;
     }
-    const int one = 1;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    if (uses_tcp(to)) {
+        const int one = 1;
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    }
     const std::uint64_t id = added_connection(l, fd, link::outgoing_peer, pid);
     l.outgoing.insert_or_assign(pid, id);
     io_uring_sqe* s = sqe_of(l);
@@ -702,26 +704,6 @@ void handle_a_completion(loop& l, const io_uring_cqe& cqe)
     }
 }
 
-std::expected<int, std::string> listener_on(const std::string& address)
-{
-    const auto a = resolve(address);
-    if (!a) [[unlikely]] {
-        return std::unexpected(std::format("the address {} does not resolve", address));
-    }
-    const int fd = ::socket(a->storage.ss_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) [[unlikely]] {
-        return std::unexpected(std::format("no socket for {}", address));
-    }
-    const int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    if (::bind(fd, reinterpret_cast<const sockaddr*>(&a->storage), a->length) != 0 ||
-        ::listen(fd, listen_backlog) != 0) [[unlikely]] {
-        ::close(fd);
-        return std::unexpected(std::format("no listener on {}", address));
-    }
-    return fd;
-}
-
 std::expected<node_t, std::string> started_node(const config& c, const start_options options)
 {
     const auto log_directory = c.data_directory / "log";
@@ -798,13 +780,17 @@ int serve(const config& c, const start_options options)
         l.peer_addresses.emplace(p.pid, *a);
     }
     const auto peers = listener_on(c.peer_address);
-    const auto clients = listener_on(c.client_address);
-    if (!peers || !clients) [[unlikely]] {
-        std::println(std::cerr, "konsensd: {}", peers ? clients.error() : peers.error());
+    if (!peers) [[unlikely]] {
+        std::println(std::cerr, "konsensd: no listener on {}: {}", c.peer_address, reason_of(peers.error()));
         return exit_failed;
     }
-    l.peer_listener = *peers;
-    l.client_listener = *clients;
+    const auto clients = listener_on(c.client_address);
+    if (!clients) [[unlikely]] {
+        std::println(std::cerr, "konsensd: no listener on {}: {}", c.client_address, reason_of(clients.error()));
+        return exit_failed;
+    }
+    l.peer_listener = peers->fd;
+    l.client_listener = clients->fd;
     if (const int r = io_uring_queue_init(ring_entries, &l.ring, 0); r < 0) [[unlikely]] {
         std::println(std::cerr, "konsensd: the ring does not start: {}", r);
         return exit_failed;
@@ -853,6 +839,12 @@ int serve(const config& c, const start_options options)
     }
     const int status = stopped(l);
     io_uring_queue_exit(&l.ring);
+    for (const auto* file : {&peers->socket_file, &clients->socket_file}) {
+        std::error_code e;
+        if (!file->empty() && !std::filesystem::remove(*file, e)) [[unlikely]] {
+            std::println(std::cerr, "konsensd: the socket file {} stays: {}", file->string(), e.message());
+        }
+    }
     return status;
 }
 
