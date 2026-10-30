@@ -1137,3 +1137,40 @@ src/ring.hpp), read 2026-10-30:
 
 So this form carries "a view, and its buffer stays out of the ring until
 the work on it is done". It gives no form for a frame across buffers.
+
+Consensus search (2026-10-30):
+- Seastar, core/iostream-impl.hh, input_stream::read_exactly: when the
+  bytes lie in the current buffer, the caller gets a shared view
+  (`_buf.share(0, n)`). When they span buffers, read_exactly_part
+  allocates one buffer of n bytes and copies each part into it
+  (`std::copy_n`).
+- Seastar, net/packet.hh: a packet is a list of fragments with one
+  shared deleter. linearize copies the fragments into one block where a
+  header spans two fragments (get_header).
+- mruby-webmachine: a view, and the buffer stays out of the ring until
+  the send is done (see above).
+- io_uring_provided_buffers(7): with no buffer left, a recv fails with
+  -ENOBUFS and a multishot recv ends. The page asks that buffers go
+  back to the ring promptly.
+- The kernel headers in the build image (linux/io_uring.h:889-899,
+  520-542) have IOU_PBUF_RING_INC: a large buffer is consumed in parts,
+  and IORING_CQE_F_BUF_MORE marks that the buffer gives more
+  completions. IORING_RECVSEND_BUNDLE (:441) gives several buffers in
+  one completion. The engine of slipstreamIO answers -EOPNOTSUPP for a
+  bundle (deps/slipstreamIO/src/engine_posix.c:527-533).
+
+The sources agree on one form:
+1. A frame in one buffer is a view, and its buffer stays out of the
+   ring until the work on the frame is done.
+2. A frame across buffers is copied once into one block. The decoder
+   reads one contiguous span, so it needs that block.
+3. A buffer goes back to the ring when the step ends, so a view does
+   not live past the step. What the library keeps past the step
+   (fact 7) is copied, or is read again from the database.
+
+Evaluation for konsensd, not measured yet: point 1 removes copies 1, 2
+and 3 for a frame in one buffer. Point 2 keeps one copy for a frame
+across buffers. IOU_PBUF_RING_INC with larger buffers makes that case
+rarer, and needs a check of the engine of slipstreamIO. Point 3 needs
+entry to hold a view during the step, which changes the public type
+entry. The measurement above decides whether the copies cost enough.
