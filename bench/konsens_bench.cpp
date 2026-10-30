@@ -368,6 +368,7 @@ struct counted_storage {
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
         bool has_log_writes() const { return t_.has_log_writes(); }
+        std::uint64_t count_of_entry_writes() const { return t_.count_of_entry_writes(); }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {

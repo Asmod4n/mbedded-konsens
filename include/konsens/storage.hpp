@@ -233,6 +233,7 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             { t.set_config_first_idx(index) } -> std::same_as<std::expected<void, std::error_code>>;
                             { std::as_const(t).has_writes() } -> std::same_as<bool>;
                             { std::as_const(t).has_log_writes() } -> std::same_as<bool>;
+                            { std::as_const(t).count_of_entry_writes() } -> std::same_as<std::uint64_t>;
                             { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
                             {
                                 std::move(moved).commit_without_a_sync()

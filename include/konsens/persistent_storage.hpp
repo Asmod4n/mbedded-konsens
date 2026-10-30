@@ -117,6 +117,7 @@ public:
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] bool has_writes() const;
         [[nodiscard]] bool has_log_writes() const;
+        [[nodiscard]] std::uint64_t count_of_entry_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
         [[nodiscard]] std::expected<void, std::error_code> commit_without_a_sync() &&;
 

@@ -7,6 +7,7 @@
 #include <expected>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -475,6 +476,7 @@ public:
         }
         auto txn = std::move(*txn_);
         txn_.reset();
+        open_log_.reset();
         the_transaction_holds_ended_steps_ = false;
         if (!txn.has_writes()) {
             mark_ = raise_mark(mark_, mark_of(*m));
@@ -519,6 +521,7 @@ public:
         }
         pending_commit_.emplace(std::move(*txn_), *m);
         txn_.reset();
+        open_log_.reset();
         the_transaction_holds_ended_steps_ = false;
         commit_phase_two();
     }
@@ -990,11 +993,11 @@ public:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto log = read_range(*txn_, std::min(from_idx, m->log_len), m->log_len);
+        const auto log = read_the_open_log(from_idx, m->log_len);
         if (!log) [[unlikely]] {
             return stop_voting(log.error());
         }
-        return std::ranges::contains(*log, e);
+        return std::ranges::contains(log->entries, e);
     }
     node_id get_pid() const { return pid_; }
     std::uint64_t get_verified_idx() const { return verified_idx_; }
@@ -1095,11 +1098,13 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto verified = find_the_verified_idx(*txn_, from, m->log_len);
-        if (!verified) [[unlikely]] {
-            return stop_voting(verified.error());
+        const auto first = std::min(from, m->log_len);
+        const auto log = read_the_open_log(first, m->log_len);
+        if (!log) [[unlikely]] {
+            return stop_voting(log.error());
         }
-        verified_idx_ = *verified;
+        const auto done = std::ranges::find_if(log->entries, entry_is_a_request);
+        verified_idx_ = first + static_cast<std::uint64_t>(std::distance(log->entries.begin(), done));
         return {};
     }
 
@@ -1140,6 +1145,27 @@ private:
             return std::unexpected(chain.error());
         }
         return accepted{n, bound, *chain};
+    }
+
+    struct open_log_view {
+        std::shared_ptr<const std::vector<entry>> owner;
+        std::span<const entry> entries;
+    };
+
+    std::expected<open_log_view, std::error_code> read_the_open_log(const std::uint64_t from, const std::uint64_t log_len)
+    {
+        const auto first = std::min(from, log_len);
+        const auto writes = txn_->count_of_entry_writes();
+        if (!open_log_ || open_log_->entry_writes != writes || first < open_log_->from ||
+            open_log_->from + open_log_->entries->size() != log_len) {
+            auto entries = read_range(*txn_, first, log_len);
+            if (!entries) [[unlikely]] {
+                return std::unexpected(entries.error());
+            }
+            open_log_.emplace(first, writes, std::make_shared<const std::vector<entry>>(std::move(*entries)));
+        }
+        const std::span<const entry> all{*open_log_->entries};
+        return open_log_view{open_log_->entries, all.subspan(first - open_log_->from)};
     }
 
     template <typename T>
@@ -1212,6 +1238,7 @@ private:
             return stop_voting(t.error());
         }
         txn_.emplace(std::move(*t));
+        open_log_.reset();
         step_open_ = true;
         const auto m = read_checked_meta(*txn_);
         if (!m) [[unlikely]] {
@@ -1239,6 +1266,7 @@ private:
     void roll_back_the_transaction()
     {
         txn_.reset();
+        open_log_.reset();
         step_open_ = false;
         the_transaction_holds_ended_steps_ = false;
     }
@@ -2075,6 +2103,13 @@ private:
     std::vector<node_id> nodes_;
     S internal_storage_;
     std::optional<typename S::transaction> txn_;
+
+    struct open_log_read {
+        std::uint64_t from;
+        std::uint64_t entry_writes;
+        std::shared_ptr<const std::vector<entry>> entries;
+    };
+    std::optional<open_log_read> open_log_;
     bool step_open_{};
     bool the_transaction_holds_ended_steps_{};
     struct pending_commit {

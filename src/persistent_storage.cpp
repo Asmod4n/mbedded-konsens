@@ -1114,6 +1114,7 @@ struct persistent_storage::environment {
     bool reader_open{};
     bool written{};
     bool log_written{};
+    std::uint64_t entry_writes{};
     bool write_unfinished{};
     std::optional<std::error_code> failure;
     std::vector<std::byte> record{};
@@ -1364,6 +1365,7 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
     }
     env_->written = true;
     env_->log_written = true;
+    env_->entry_writes += 1;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto l = env_->of_writer();
     auto m = env_->read_the_meta();
@@ -1386,6 +1388,7 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
     }
     env_->written = true;
     env_->log_written = true;
+    env_->entry_writes += 1;
     throw_if_an_entry_has_a_field_of_another_kind(entries);
     const auto l = env_->of_writer();
     auto m = env_->read_the_meta();
@@ -1590,6 +1593,12 @@ bool persistent_storage::transaction::has_log_writes() const
 {
     throw_if_no_environment(env_);
     return env_->log_written;
+}
+
+std::uint64_t persistent_storage::transaction::count_of_entry_writes() const
+{
+    throw_if_no_environment(env_);
+    return env_->entry_writes;
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&

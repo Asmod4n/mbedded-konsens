@@ -1181,11 +1181,11 @@ private:
         if (!m) [[unlikely]] {
             return seq_paxos_.stop_voting(m.error());
         }
-        const auto log = sequence_paxos<S>::read_range(*seq_paxos_.txn_, std::min(from_idx, m->log_len), m->log_len);
+        const auto log = seq_paxos_.read_the_open_log(from_idx, m->log_len);
         if (!log) [[unlikely]] {
             return seq_paxos_.stop_voting(log.error());
         }
-        return std::ranges::any_of(*log, same);
+        return std::ranges::any_of(log->entries, same);
     }
 
     result check_the_done_records()
@@ -1204,11 +1204,11 @@ private:
             refusal_.reset();
         }
         const auto first = std::min(seq_paxos_.get_verified_idx(), m->applied_idx);
-        const auto tail = sequence_paxos<S>::read_range(*seq_paxos_.txn_, std::min(first, m->log_len), m->log_len);
+        const auto tail = seq_paxos_.read_the_open_log(first, m->log_len);
         if (!tail) [[unlikely]] {
             return seq_paxos_.stop_voting(tail.error());
         }
-        const auto at = [&tail, first](const std::uint64_t k) -> const entry& { return (*tail)[k - first - 1]; };
+        const auto at = [&tail, first](const std::uint64_t k) -> const entry& { return tail->entries[k - first - 1]; };
         auto verified = seq_paxos_.get_verified_idx();
         std::optional<std::uint64_t> passed;
         std::optional<refusal_reason> reason;
@@ -1220,8 +1220,8 @@ private:
                 break;
             }
             if (index > m->decided_idx && index > m->applied_idx) {
-                const done_log b{m->applied_idx, std::span<const entry>(*tail).subspan(m->applied_idx - first,
-                                                                                      index - 1 - m->applied_idx)};
+                const done_log b{m->applied_idx,
+                                 tail->entries.subspan(m->applied_idx - first, index - 1 - m->applied_idx)};
                 if (!base) {
                     base.emplace(begin_an_empty_write_set());
                 }
@@ -1499,12 +1499,13 @@ private:
         if (m->applied_idx >= m->decided_idx) {
             return {};
         }
-        const auto entries = sequence_paxos<S>::read_range(w, m->applied_idx, m->decided_idx);
-        if (!entries) [[unlikely]] {
-            return seq_paxos_.stop_voting(entries.error());
+        const auto log = seq_paxos_.read_the_open_log(m->applied_idx, m->log_len);
+        if (!log) [[unlikely]] {
+            return seq_paxos_.stop_voting(log.error());
         }
+        const auto entries = log->entries.first(m->decided_idx - m->applied_idx);
         for (auto k = m->applied_idx + 1; k <= m->decided_idx; ++k) {
-            const auto& e = (*entries)[k - m->applied_idx - 1];
+            const auto& e = entries[k - m->applied_idx - 1];
             if (entry_is_a_stop_sign(e) && k > seq_paxos_.get_config_first_idx()) [[unlikely]] {
                 next_config_ = read_the_next_configuration(e);
             }
@@ -1893,12 +1894,11 @@ private:
             return seq_paxos_.stop_voting(m.error());
         }
         const auto promise = m->promise;
-        const auto log =
-            sequence_paxos<S>::read_range(*seq_paxos_.txn_, std::min(m->applied_idx, m->log_len), m->log_len);
+        const auto log = seq_paxos_.read_the_open_log(m->applied_idx, m->log_len);
         if (!log) [[unlikely]] {
             return seq_paxos_.stop_voting(log.error());
         }
-        const done_log b{m->log_len - log->size(), *log};
+        const done_log b{m->log_len - log->entries.size(), log->entries};
         const auto pointer = b.log_len();
         follow_the_leader(b);
         keep_the_tasks(promise, pointer);

@@ -93,6 +93,7 @@ struct disk_storage {
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
         bool has_log_writes() const { return t_.has_log_writes(); }
+        std::uint64_t count_of_entry_writes() const { return t_.count_of_entry_writes(); }
         auto append_entries(const std::span<const entry> entries)
         {
             d_->appended.push_back(entries.size());
