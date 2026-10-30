@@ -100,15 +100,6 @@ std::expected<std::vector<konsens::entry>, std::error_code> entries_of(const kon
     return t->get_entries(from, to);
 }
 
-std::optional<konsens::entry_state> state_of(const konsens::persistent_storage& storage, const std::uint64_t index)
-{
-    const auto t = storage.begin_read_only();
-    REQUIRE(t.has_value());
-    const auto state = t->get_entry_state(index);
-    REQUIRE(state.has_value());
-    return *state;
-}
-
 using sqlite_damage::change_with_sqlite;
 
 void delete_entry(const std::filesystem::path& directory, const std::uint64_t index)
@@ -658,11 +649,10 @@ TEST_CASE("the chain CRC after a cut is the chain CRC of the same log written at
     CHECK(meta_of(cut) == konsens::meta_record{});
 }
 
-// Plan lmdb-only-source 2.2 item 2: each raise of the decided index from o
-// to d sets the state committed on the entries o to d - 1, and the entries
-// from d on stay in work. A decided index above the log length is
+// The decided index lives in the meta record only; a raise writes no
+// entry again (owner, 2026-10-30). A decided index above the log length is
 // missing_entry (the start-checks plan, item 2.5).
-TEST_CASE("set_decided_index commits the entries below it and nothing above")
+TEST_CASE("set_decided_index stores the index and keeps every entry")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
@@ -671,24 +661,17 @@ TEST_CASE("set_decided_index commits the entries below it and nothing above")
         REQUIRE(t.append_entries(four));
         REQUIRE(t.set_decided_index(1));
     });
-    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 1) == konsens::entry_state::in_work);
+    CHECK(meta_of(storage).decided_idx == 1);
     write(storage, [&](auto& t) { REQUIRE(t.set_decided_index(3)); });
-    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 1) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 2) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 3) == konsens::entry_state::in_work);
-    CHECK(state_of(storage, 4) == std::nullopt);
+    CHECK(meta_of(storage).decided_idx == 3);
     CHECK(entries_of(storage, 0, 4) == four);
     auto t = storage.begin();
     REQUIRE(t.has_value());
     CHECK(t->set_decided_index(5) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
 }
 
-// An entry of more than about 2000 bytes lay on LMDB overflow pages. A
-// raise of the decided index over two or more such entries in one
-// transaction once wrote each new state under a key that pointed into a page
-// of the previous put, so the next entry was lost or failed its CRC.
+// Large entries span several pages of SQLite. A raise of the decided index
+// over them must leave each one whole.
 TEST_CASE("a raise of the decided index over large entries keeps every entry")
 {
     const temporary_directory dir;
@@ -698,16 +681,13 @@ TEST_CASE("a raise of the decided index over large entries keeps every entry")
                               normal_entry(large + "d"), normal_entry(std::string(2100, 'e'))};
     write(storage, [&](auto& t) { REQUIRE(t.append_entries(entries)); });
     write(storage, [&](auto& t) { REQUIRE(t.set_decided_index(5)); });
-    for (const auto index : std::views::iota(std::uint64_t{0}, std::uint64_t{5})) {
-        CHECK(state_of(storage, index) == konsens::entry_state::committed);
-    }
+    CHECK(meta_of(storage).decided_idx == 5);
     CHECK(entries_of(storage, 0, 5) == entries);
 }
 
-// append_on_prefix can write the log again from index 0. An entry that it
-// writes below the decided index is a decided entry, so it is written
-// committed.
-TEST_CASE("an entry written below the decided index is committed")
+// append_on_prefix can write the log again from index 0, below the decided
+// index. The decided index and the entries stay.
+TEST_CASE("an entry written below the decided index keeps the decided index")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
@@ -717,9 +697,8 @@ TEST_CASE("an entry written below the decided index is committed")
         REQUIRE(t.set_decided_index(2));
         REQUIRE(t.append_on_prefix(0, three));
     });
-    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 1) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 2) == konsens::entry_state::in_work);
+    CHECK(meta_of(storage).decided_idx == 2);
+    CHECK(entries_of(storage, 0, 3) == three);
 }
 
 // A full store is an error value of a write, which the node raises as

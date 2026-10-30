@@ -36,7 +36,7 @@ constexpr std::string_view format_key = "format";
 constexpr std::string_view fault_proof_key = "fault_proof";
 constexpr std::string_view clean_stop_key = "clean_stop";
 constexpr std::string_view config_first_key = "config_first";
-constexpr std::uint32_t format_version = 5;
+constexpr std::uint32_t format_version = 6;
 constexpr int synchronous_normal = 1;
 constexpr int synchronous_full = 2;
 constexpr int checkpoint_frames = 1000;
@@ -57,12 +57,9 @@ constexpr std::string_view node_schema =
 constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
 constexpr std::size_t crc_size = sizeof(std::uint32_t);
-constexpr std::size_t state_size = sizeof(entry_state);
 constexpr std::size_t entry_crc_offset = 0;
 constexpr std::size_t chain_crc_offset = entry_crc_offset + crc_size;
-constexpr std::size_t state_offset = chain_crc_offset + crc_size;
-constexpr std::size_t state_crc_offset = state_offset + state_size;
-constexpr std::size_t record_tail_size = state_crc_offset + crc_size;
+constexpr std::size_t record_tail_size = chain_crc_offset + crc_size;
 
 constexpr std::size_t config_id_offset = 0;
 constexpr std::size_t n_offset = config_id_offset + sizeof(ballot::config_id);
@@ -199,14 +196,6 @@ std::uint32_t crc_of(const std::span<const std::byte> bytes) noexcept
     return crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
 }
 
-std::uint32_t compute_state_crc(const std::uint64_t index, const entry_state state) noexcept
-{
-    std::array<std::byte, index_size + state_size> bytes{};
-    std::ranges::copy(to_little_endian(index), bytes.begin());
-    bytes.back() = std::byte{std::to_underlying(state)};
-    return crc_of(bytes);
-}
-
 bool key_fits_in_an_sqlite_integer(const std::uint64_t key) noexcept
 {
     return key <= largest_key;
@@ -264,7 +253,6 @@ struct stored_record {
     std::span<const std::byte> encoded;
     std::uint32_t entry_crc;
     std::uint32_t chain_crc;
-    entry_state state;
 };
 
 std::expected<stored_record, read_failure> check_record(const std::uint64_t index,
@@ -281,28 +269,11 @@ std::expected<stored_record, read_failure> check_record(const std::uint64_t inde
         return std::unexpected(read_failure{storage_errc::crc_mismatch, index, stored, computed});
     }
     const auto chain = from_little_endian<std::uint32_t>(tail.subspan<chain_crc_offset, crc_size>());
-    const auto state_byte = std::to_integer<std::uint8_t>(tail[state_offset]);
-    if (state_byte > std::to_underlying(entry_state::committed)) [[unlikely]] {
-        return std::unexpected(read_failure{storage_errc::malformed_record, index, 0, 0});
-    }
-    const auto state = static_cast<entry_state>(state_byte);
-    const auto stored_state_crc = from_little_endian<std::uint32_t>(tail.subspan<state_crc_offset, crc_size>());
-    const auto computed_state_crc = compute_state_crc(index, state);
-    if (stored_state_crc != computed_state_crc) [[unlikely]] {
-        return std::unexpected(read_failure{storage_errc::crc_mismatch, index, stored_state_crc, computed_state_crc});
-    }
-    return stored_record{value, encoded, stored, chain, state};
-}
-
-void write_state(const std::uint64_t index, const entry_state state, const std::span<std::byte> record) noexcept
-{
-    const auto tail = record.last<record_tail_size>();
-    tail[state_offset] = std::byte{std::to_underlying(state)};
-    std::ranges::copy(to_little_endian(compute_state_crc(index, state)), tail.subspan<state_crc_offset>().begin());
+    return stored_record{value, encoded, stored, chain};
 }
 
 std::uint32_t encode_record(const std::uint64_t index, const entry& e, const std::uint32_t previous_chain_crc,
-                            const entry_state state, const std::span<std::byte> out) noexcept
+                            const std::span<std::byte> out) noexcept
 {
     const auto encoded = out.first(out.size() - record_tail_size);
     encode_entry(e, encoded);
@@ -310,7 +281,6 @@ std::uint32_t encode_record(const std::uint64_t index, const entry& e, const std
     const auto tail = out.last<record_tail_size>();
     std::ranges::copy(to_little_endian(compute_entry_crc(index, encoded)), tail.subspan<entry_crc_offset>().begin());
     std::ranges::copy(to_little_endian(chain), tail.subspan<chain_crc_offset>().begin());
-    write_state(index, state, out);
     return chain;
 }
 
@@ -338,7 +308,6 @@ struct statements {
     statement get_entries_from;
     statement get_last_entry;
     statement append_entry;
-    statement update_entry;
     statement delete_entries_between;
     statement get_value;
     statement put_value;
@@ -370,7 +339,6 @@ std::expected<statements, int> prepare_statements(sqlite3* db)
         std::pair{&s.append_entry,
                   std::string_view{"INSERT INTO log (idx, record) SELECT ?1, ?2 "
                                    "WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)"}},
-        std::pair{&s.update_entry, std::string_view{"UPDATE log SET record = ?2 WHERE idx = ?1"}},
         std::pair{&s.delete_entries_between, std::string_view{"DELETE FROM log WHERE idx >= ?1 AND idx < ?2"}},
         std::pair{&s.get_value, std::string_view{"SELECT value FROM data WHERE key = ?1"}},
         std::pair{&s.put_value,
@@ -673,15 +641,6 @@ std::expected<std::optional<stored_record>, std::error_code> read_record(const l
     return *record;
 }
 
-std::expected<std::optional<entry_state>, std::error_code> read_entry_state(const link& l, const std::uint64_t index)
-{
-    auto r = read_record(l, index).transform([](const std::optional<stored_record>& found) {
-        return found.transform([](const stored_record& x) { return x.state; });
-    });
-    sqlite3_reset(l.s->get_entry.get());
-    return r;
-}
-
 std::expected<std::optional<std::uint32_t>, std::error_code> read_chain_crc(const link& l, const std::uint64_t index)
 {
     auto r = read_record(l, index).transform([](const std::optional<stored_record>& found) {
@@ -701,8 +660,7 @@ std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, 
             return std::unexpected(std::make_error_code(std::errc::value_too_large));
         }
         record.resize(encoded_size_of(e) + record_tail_size);
-        const auto state = index < m.decided_idx ? entry_state::committed : entry_state::in_work;
-        const auto chain = encode_record(index, e, m.last_chain_crc, state, record);
+        const auto chain = encode_record(index, e, m.last_chain_crc, record);
         sqlite3_reset(s);
         if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
             return std::unexpected(fail(l, bound));
@@ -757,42 +715,6 @@ std::expected<std::uint32_t, std::error_code> chain_crc_before(const link& l, co
         return std::unexpected(make_error_code(storage_errc::missing_entry));
     }
     return chain->value();
-}
-
-std::expected<void, std::error_code> set_entry_states(const link& l, std::vector<std::byte>& rewritten,
-                                                      const std::uint64_t from, const std::uint64_t to,
-                                                      const std::uint64_t decided_idx)
-{
-    sqlite3_stmt* const update = l.s->update_entry.get();
-    for (auto index = from; index < to; ++index) {
-        const auto record = read_record(l, index);
-        if (!record) [[unlikely]] {
-            return std::unexpected(record.error());
-        }
-        if (!record->has_value()) [[unlikely]] {
-            return std::unexpected(make_error_code(storage_errc::missing_entry));
-        }
-        const auto state = index < decided_idx ? entry_state::committed : entry_state::in_work;
-        if (record->value().state == state) {
-            sqlite3_reset(l.s->get_entry.get());
-            continue;
-        }
-        const auto stored = record->value().bytes;
-        rewritten.assign(stored.begin(), stored.end());
-        sqlite3_reset(l.s->get_entry.get());
-        write_state(index, state, rewritten);
-        sqlite3_reset(update);
-        if (const int bound = bind_key(update, 1, index); bound != SQLITE_OK) [[unlikely]] {
-            return std::unexpected(fail(l, bound));
-        }
-        if (const int bound = bind_bytes(update, 2, rewritten); bound != SQLITE_OK) [[unlikely]] {
-            return std::unexpected(fail(l, bound));
-        }
-        if (auto r = run(l, update); !r) [[unlikely]] {
-            return r;
-        }
-    }
-    return {};
 }
 
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
@@ -1319,13 +1241,6 @@ persistent_storage::read_only_transaction::get_last_entry() const
     return read_last_entry(env_->of_reader());
 }
 
-std::expected<std::optional<entry_state>, std::error_code>
-persistent_storage::read_only_transaction::get_entry_state(const std::uint64_t index) const
-{
-    throw_if_no_environment(env_);
-    return read_entry_state(env_->of_reader(), index);
-}
-
 std::expected<std::optional<std::uint32_t>, std::error_code>
 persistent_storage::read_only_transaction::get_chain_crc(const std::uint64_t index) const
 {
@@ -1415,17 +1330,6 @@ std::expected<std::optional<last_entry>, std::error_code> persistent_storage::tr
         return std::unexpected(f.error());
     }
     return read_last_entry(env_->of_writer());
-}
-
-std::expected<std::optional<entry_state>, std::error_code>
-persistent_storage::transaction::get_entry_state(const std::uint64_t index) const
-{
-    throw_if_no_environment(env_);
-    throw_if_nested_is_open(env_->nested_open);
-    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
-        return std::unexpected(f.error());
-    }
-    return read_entry_state(env_->of_writer(), index);
 }
 
 std::expected<std::optional<std::uint32_t>, std::error_code>
@@ -1548,18 +1452,12 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_decide
         return f;
     }
     env_->written = true;
-    const auto l = env_->of_writer();
     auto m = env_->read_the_meta();
     if (!m) [[unlikely]] {
         return std::unexpected(m.error());
     }
     if (decided_idx > m->log_len) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::missing_entry));
-    }
-    if (decided_idx > m->decided_idx) {
-        if (auto c = set_entry_states(l, env_->record, m->decided_idx, decided_idx, decided_idx); !c) [[unlikely]] {
-            return c;
-        }
     }
     m->decided_idx = decided_idx;
     return env_->write_the_meta(*m);

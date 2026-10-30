@@ -561,27 +561,10 @@ TEST_CASE("a first start does not recover")
 
 namespace {
 
-std::vector<konsens::entry_state> states_of(const persistent_storage& s)
+std::pair<std::uint64_t, std::uint64_t> decided_and_length_of(const persistent_storage& s)
 {
-    const auto t = s.begin_read_only();
-    REQUIRE(t.has_value());
-    const auto m = t->get_meta();
-    REQUIRE(m.has_value());
-    std::vector<konsens::entry_state> states;
-    for (std::uint64_t i = 0; i < m->log_len; ++i) {
-        const auto state = t->get_entry_state(i);
-        REQUIRE(state.has_value());
-        REQUIRE(state->has_value());
-        states.push_back(**state);
-    }
-    return states;
-}
-
-std::vector<konsens::entry_state> committed_below(const std::uint64_t decided_idx, const std::uint64_t log_len)
-{
-    std::vector<konsens::entry_state> states(log_len, konsens::entry_state::in_work);
-    std::fill_n(states.begin(), decided_idx, konsens::entry_state::committed);
-    return states;
+    const auto m = sqlite_storage::meta_of(s);
+    return {m.decided_idx, m.log_len};
 }
 
 const std::vector<entry> one_two{make_entry(1), make_entry(2)};
@@ -741,10 +724,11 @@ TEST_CASE("a resent promise carries the stored values")
     CHECK(resent[0] == stored);
 }
 
-// Plan 2.2 item 2: each step that raises the decided index sets the state
-// committed on the entries below it, in the same transaction. One test for
-// each writer of the decided index in sequence_paxos.
-TEST_CASE("each writer of the decided index sets the state of its entries")
+// The decided index in the meta record is the only mark of a committed
+// entry (owner, 2026-10-30, after Raft, TigerBeetle and FoundationDB). Each
+// step that raises it writes it with the log in the same transaction. One
+// test for each writer of the decided index in sequence_paxos.
+TEST_CASE("each writer of the decided index stores it in the meta record")
 {
     SUBCASE("handle_majority_promises")
     {
@@ -754,7 +738,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({1, 3,
                            konsens::promise{ballot_of(1, 3), ballot_of(1, 1), 1, 2, konsens::log_sync{one_two, 0},
                                             chain_of(one_two, 1), last_crc_of(one_two)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{1, 2});
     }
     SUBCASE("accept_sync")
     {
@@ -762,7 +746,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(
             sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 1, {one_two, 0}, chain_of(one_two, 1)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{1, 2});
     }
     SUBCASE("accept_decide")
     {
@@ -770,7 +754,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 1, one_two, chain_of(one_two, 1)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{1, 2});
     }
     SUBCASE("decide")
     {
@@ -778,9 +762,9 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
         REQUIRE(sp.commit());
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(0, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{0, 2});
         REQUIRE(sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, chain_of(one_two, 2)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{2, 2});
     }
     SUBCASE("accepted at the leader")
     {
@@ -792,7 +776,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.append(make_entry(2)));
         committed_messages_of(sp);
         REQUIRE(sp.handle({1, 3, konsens::accepted{ballot_of(1, 3), 2, last_crc_of(one_two)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{2, 2});
     }
     SUBCASE("handle_build_response")
     {
@@ -804,7 +788,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         committed_messages_of(sp);
         REQUIRE(sp.handle({2, 1, konsens::build_response{first_nonce, 0, log, last_crc_of(log), 2, last_crc_of(log)}}));
         REQUIRE(!sp.building());
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{2, 2});
     }
 }
 
@@ -901,7 +885,7 @@ TEST_CASE("the majority of promises does not decide on another chain CRC")
     const auto& st = committed_storage_of(sp);
     CHECK(sqlite_storage::log_of(st) == one_two);
     CHECK(sqlite_storage::meta_of(st).decided_idx == 0);
-    CHECK(states_of(st) == committed_below(0, 2));
+    CHECK(decided_and_length_of(st) == std::pair<std::uint64_t, std::uint64_t>{0, 2});
 }
 
 // Plan 2.3 item 6: on one connection a peer sends its ballots in order, and

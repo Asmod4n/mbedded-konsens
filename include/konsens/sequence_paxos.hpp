@@ -1172,24 +1172,6 @@ private:
         if (!meta_values_are_consistent(*m) || is_below_mark(mark_of(*m), mark_)) [[unlikely]] {
             return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
         }
-        if (m->decided_idx > 0) {
-            const auto state = t.get_entry_state(m->decided_idx - 1);
-            if (!state) [[unlikely]] {
-                return std::unexpected(state.error());
-            }
-            if (state->value_or(entry_state::in_work) != entry_state::committed) [[unlikely]] {
-                return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
-            }
-        }
-        if (m->decided_idx < m->log_len) {
-            const auto state = t.get_entry_state(m->decided_idx);
-            if (!state) [[unlikely]] {
-                return std::unexpected(state.error());
-            }
-            if (state->value_or(entry_state::committed) != entry_state::in_work) [[unlikely]] {
-                return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
-            }
-        }
         return m;
     }
 

@@ -38,8 +38,6 @@ public:
         [[nodiscard]] std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from,
                                                                                      std::uint64_t to) const;
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
-        [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
-        get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
         get_chain_crc(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
@@ -93,8 +91,6 @@ public:
         [[nodiscard]] std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from,
                                                                                      std::uint64_t to) const;
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
-        [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
-        get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
         get_chain_crc(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
