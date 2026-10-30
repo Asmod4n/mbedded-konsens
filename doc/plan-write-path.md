@@ -279,3 +279,92 @@ this plan before the build.
   the next transaction; a write is seen by the next read of the same
   transaction.
 - Measured as section 2 says, against F2.
+
+## 15. Arm S: the caller syncs the WAL through io_uring
+
+Source: the owner chose "build it as an arm" on 2026-10-30. Measured
+before (2026-10-30-080500Z-write-path-waits.txt): at 64 in flight the
+one thread of a node waits 31 to 42 % of the time for fdatasync and
+computes 26 to 40 %, one after the other.
+
+Practice: hashicorp/raft PR 579 (draft, not merged, no numbers) keeps
+appends in memory and flushes them in batches from a background task.
+No consensus was found. The form here keeps one thread in the library
+and in konsensd.
+
+### Form
+
+1. A node option `sync_by_the_caller` (provisional name, default off).
+   Off: everything stays as now.
+2. On: `commit_phase_two` commits every step without a sync. A step that
+   wrote the log or the votes gets a sync number n (one more than the
+   last). The node keeps n as `last_sync_number`.
+3. Output of a step with sync number n is held until the caller reports
+   a sync that covers n. Exceptions, as with arm A and F1: the prefix of
+   AcceptDecide and Decide per peer, and the F1 replies.
+4. Order: a later step adds its output behind the held output of each
+   peer. A message of a later step never overtakes a held message to
+   the same peer. A later step's AcceptDecide or Decide leaves early only
+   when nothing is held for that peer.
+5. A step without log writes that comes after a held step: its output is
+   held behind the held output too, with the same number as the last
+   held step. So no message depends on a state that is not durable.
+6. The caller asks `take_the_sync_request()` (provisional). It gives
+   {file descriptor of the WAL, n} when n is above the last reported
+   sync and no sync is out. The caller submits fdatasync of that file
+   descriptor through io_uring (IORING_FSYNC_DATASYNC) and goes on with
+   other steps.
+7. The caller reports the end with `the_log_is_synced(n)`
+   (provisional). The node releases the held output of every step up to
+   n. A failed fdatasync is reported as an error and ends the node with
+   a sync error. The node never repeats a sync.
+8. The leader counts its own accepted index only up to the log length of
+   the last synced step. So `set_accepted_idx(pid_, ...)` takes
+   min(length now, synced length). The report of a sync raises the
+   synced length and is a step: it may decide (decide_if_chosen) and
+   send Decide.
+9. The storage opens the WAL file a second time, read only, after the
+   open, and keeps that descriptor. fdatasync of any descriptor of a
+   file syncs the data of the file. SQLite keeps the WAL file while its
+   connection is open; a checkpoint resets it in place. A checkpoint is
+   synced by SQLite itself (pragma.html, NORMAL).
+10. `stop()` waits for no sync: it syncs the last commit itself
+    (sync_the_last_commit), as F2 does.
+11. konsensd: one fsync in flight at a time. All steps that commit while
+    it runs join the next sync (group commit). A step that waits on
+    nothing is not delayed.
+
+### Safety
+
+- A follower sends Accepted and Promise only after its own sync covers
+  the step (item 3).
+- The leader decides only on a majority of synced accepts (item 8).
+- A client reply of F1 depends on a decided record, durable on a
+  majority.
+- A crash loses only steps above the last sync. Their output did not
+  leave, except AcceptDecide and Decide (as with arm A) and F1 replies
+  (durable elsewhere).
+
+### Tests
+
+- A unit test with a storage that counts syncs: with the option on, a
+  step with log writes holds its Accepted until `the_log_is_synced`.
+- The leader does not decide on its own unsynced append: three nodes,
+  one follower down, the other follower accepts; no decide before the
+  leader reports its sync.
+- Order: a held Accepted and a later AcceptDecide to the same peer leave
+  in step order.
+- A failed sync ends the node with a sync error.
+- test_simulation with the option on for every node, seeds as before.
+- three_nodes with konsensd and the option on.
+
+### Model
+
+model/tla/SequencePaxos.tla: the leader's own accept counts only after a
+separate `Sync` action. Mutation that must fail: the leader counts its
+own accept before `Sync`. BFS with small bounds.
+
+### Measurement
+
+As section 2, arm S against D1, with an A/A pair. Cells 1 and 64 in
+flight.
