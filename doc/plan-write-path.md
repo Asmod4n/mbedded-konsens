@@ -426,3 +426,39 @@ R11. The messages of Execute-Verify (`work`, `answer`, `try_again`,
      AcceptDecide of a leader with a sync out waits behind a held
      `work`, and the early path of arm A is lost. Provisional; it goes to
      the owner with the numbers of arm S.
+
+## 17. Arm S2: one write transaction for each sync
+
+Source: arm S gave +21 % at 1 in flight and no gain shown at 64 in
+flight, with 1.6 to 2 times the CPU per write
+(2026-10-30-094500Z-konsensd-arm-s.txt). S makes about 1.7 times the
+pwrite64 of D1 per write (2026-10-30-100000Z-arm-s-system-calls.txt):
+it commits each turn of the loop, and each commit writes its own WAL
+frames.
+
+Form:
+1. With `sync_by_the_caller` on, a step that ends while a sync is out
+   does not commit. The write transaction stays open, and the next
+   step continues in it (`begin_step` reuses an open transaction).
+2. The step after the report of the sync commits the open transaction,
+   and the caller then asks for the next sync. So each sync covers
+   exactly one commit, and each commit holds every step since the last
+   sync.
+3. The output of a step in the open transaction is held as in arm S,
+   with the sync number that the commit of the transaction gets. The
+   early prefix of AcceptDecide and Decide (arm A), the F1 replies, the
+   messages of Execute-Verify (R11) and the messages of Ballot Leader
+   Election leave as in arm S.
+4. A read-only transaction sees only committed state. A read waits
+   until the committed state reaches its read index, as now.
+5. `stop()` commits the open transaction and syncs it before the mark.
+6. A failure inside a step rolls back the open transaction, so it rolls
+   back every step since the last commit. Their output is held and is
+   dropped with it.
+
+Questions for the review: whether a step reads its own uncommitted
+writes in every path (the reader connection serves only reads of
+clients); whether item 6 can drop output that already left (the early
+prefix); whether a nested transaction (Execute-Verify base) inside a
+long transaction is safe; whether a checkpoint is delayed without a
+bound.
