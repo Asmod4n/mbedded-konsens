@@ -38,7 +38,7 @@ state storage come on top and the bench does not count them. The
 apply commits the state environment as a second sync on each node
 (`include/konsens/node.hpp:1085`).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 1. Facts checked in this session
 
@@ -66,7 +66,7 @@ Line numbers of the code are at fa14f44.
 - The client reply at fa14f44 waits for the decide of the `results`
   entry: the second round of plan-execute-verify.md 2.9.1.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 2. The form of a task
 
@@ -172,7 +172,7 @@ the whole record.
 5. The two write transactions in one thread of plan-storage-only-source.md
    2.1 item 3 (owner 2026-10-25 03:53) and their test go.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 3.5 The sync, outside the library
 
@@ -202,7 +202,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
 6. Dependency: slipstreamIO needs an operation for `fdatasync` in its
    engine, with the link to a send. Section 1 says what is not checked.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 3.6 The count of syncs
 
@@ -233,7 +233,7 @@ Q1 under load, where one sync serves each step and a step holds several
 tasks. Section 15 measures the counts; none of these numbers is
 measured.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 4. The order of log and state
 
@@ -322,7 +322,7 @@ Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
    2026-10-26 15:30).
 
 plan-sqlite-storage.md section 3 replaces items 2 to 4: the tombstone
-rides in the commit of its step, which syncs. The LMDB form of this section is in the git history before branch remove-lmdb.
+rides in the commit of its step, which syncs. The former form of this section is in the git history at ebd9f42.
 
 ### 5.2 The base and the run
 
@@ -435,7 +435,7 @@ own.
    node storage stays.
 4. A copy for a new node (owner 2026-10-24) is the same copy.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 9. Start checks
 
@@ -615,7 +615,7 @@ first. The arm before is fa14f44. No number is written before the run.
    base in a child transaction (section 5.2) against the open
    transaction of fa14f44, for 1, 8 and 64 tasks in work.
 7. A power cut on the FUSE file system error_fs: plan-sqlite-storage.md
-   8.4 lists these tests. The LMDB form of this section is in the git history before branch remove-lmdb.
+   8.4 lists these tests. The former form of this section is in the git history at ebd9f42.
 8. The form Q1 of section 3.5 against the normal commit:
    `commit`, `write`, `write_batch_size`, with the sync
    through io_uring in the bench.

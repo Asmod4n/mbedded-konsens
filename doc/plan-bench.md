@@ -126,7 +126,7 @@ the commits of all three nodes one after the other, and that a cluster
 on three machines commits on the followers at the same time.
 
 The bench has no baseline case for SQLite (bench/konsens_bench.cpp,
-2026-10-30). The LMDB form of this section is in the git history before branch remove-lmdb.
+2026-10-30). The former form of this section is in the git history at ebd9f42.
 
 ## 8. Changes after the review
 
@@ -147,7 +147,7 @@ The review (needs changes, 8 findings) is applied as follows.
   bench does not measure that latency.
 - R8: removed.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 9. Three nodes in parallel
 
@@ -233,4 +233,4 @@ The review (needs changes, 15 findings) is applied as follows.
 - R15: `threaded_cluster` and the `*_threads` names go to the owner as
   questions.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.

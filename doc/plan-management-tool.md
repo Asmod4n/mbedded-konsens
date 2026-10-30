@@ -64,8 +64,8 @@ ascaridol at 8dd27ee:
   and `rb-delete` from the page to one Ruby block as (method, path,
   params). The block returns HTML.
 - `Ascaridol.poll_add` watches a socket in the run loop of the window.
-- It depends on mruby-cbor, mruby-mustache and mruby-socket. The LMDB
-  form of this item is in the git history before branch remove-lmdb.
+- It depends on mruby-cbor, mruby-mustache and mruby-socket. The former
+  form of this item is in the git history at ebd9f42.
 
 ## 2. Form
 

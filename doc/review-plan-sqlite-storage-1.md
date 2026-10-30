@@ -51,7 +51,7 @@ measurement.
 
 ## Findings
 
-The LMDB form of the findings below is in the git history before branch remove-lmdb.
+The former form of the findings below is in the git history at ebd9f42.
 
 ### 1. Blocking: `find` returns a span that the next step of the statement frees
 

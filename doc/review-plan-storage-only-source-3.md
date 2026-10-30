@@ -37,6 +37,6 @@ Task: I review the plan doc/plan-storage-only-source.md and the TLA+ changes sin
 15. Removed.
 16. Removed.
 
-Findings 8 (a), 15 and 16, the list of cited source lines and the check of the copy named only LMDB. Their LMDB form is in the git history before branch remove-lmdb.
+Findings 8 (a), 15 and 16, the list of cited source lines and the check of the copy named only the former storage. Their former form is in the git history at ebd9f42.
 
 **Not checked:** the MC_hw_* and mutation cfgs one by one; the bench of section 1 (194139Z); the round-9 traces.

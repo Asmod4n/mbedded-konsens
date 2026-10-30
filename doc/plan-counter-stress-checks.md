@@ -47,7 +47,7 @@ review before the build.
 
 The flag list of examples/counter_stress.cpp has no such flag now;
 `sqlite_cluster` (counter_stress.cpp:210) runs the nodes on
-`persistent_storage`. The LMDB form of this section is in the git history before branch remove-lmdb.
+`persistent_storage`. The former form of this section is in the git history at ebd9f42.
 
 ## 3. Tests
 

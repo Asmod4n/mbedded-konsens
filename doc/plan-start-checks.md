@@ -84,7 +84,7 @@ Line numbers are at commit 4c57d44.
   `test/test_read_index.cpp:59`, `test/test_group_commit.cpp:181`.
 - No bench case opens a store (`bench/konsens_bench.cpp:1705-1721`).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 2. Change of the code
 
@@ -270,7 +270,7 @@ the next start the node reads a log with no gap and a wrong entry. The
 checks at the start cannot find that; it is the case of the mutation
 run MC_s_nocheck_missing_entry_safety, which breaks S2.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 3.3 Mutation
 
@@ -376,7 +376,7 @@ All runs are simulations of 15 min:
 
 ## 4. Tests
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 - Before the checks: the helper at `test_sequence_paxos.cpp:221-231`
   writes a promise and an accepted round. Every harness checks

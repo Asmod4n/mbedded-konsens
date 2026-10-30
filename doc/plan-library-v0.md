@@ -65,8 +65,8 @@ Fil-C build.
 - CMake, g++ 13.3 of Ubuntu 24.04, C++23, every
   warning an error, a debug build with ASan and UBSan. clang++ 18.1
   with libstdc++ 13 has no `std::expected`, so clang comes in v0.1.
-- `doctest-dev` from Ubuntu (installed). The LMDB form of this item is in
-  the git history before branch remove-lmdb.
+- `doctest-dev` from Ubuntu (installed). The former form of this item is in
+  the git history at ebd9f42.
 - Branch: `claude/project-thread-4xjeai`, the branch of this session.
 
 ## 6. Order

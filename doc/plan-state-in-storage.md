@@ -53,7 +53,7 @@ their own, its TLC runs and a review; D1 is built first.
    that name. Until then, `node::with` takes the opened storage, as for
    the log (stage E left out item 9 too).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 2. The concept (D1)
 
@@ -92,7 +92,7 @@ concept state_machine = std::movable<M> &&
    2026-10-25 09:26). No machine can turn it into a reply. A write to the
    state storage that fails throws `write_error`.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 3. Apply after the decide (D1)
 

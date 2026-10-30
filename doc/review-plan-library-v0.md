@@ -92,8 +92,8 @@ machine. The reviewer ran no TLC and no build.
    `find_package(doctest REQUIRED)`. `doctest-dev` is not installed.
    The apt candidate is 2.4.11-1.
    **Change:** add step 0, "install `doctest-dev`". The owner approves
-   the install. Use `find_package` for doctest. The LMDB form of this
-   finding is in the git history before branch remove-lmdb.
+   the install. Use `find_package` for doctest. The former form of this
+   finding is in the git history at ebd9f42.
 
 9. **Place:** section 3, CRC32C "the hardware instruction where it
    exists".

@@ -139,7 +139,7 @@ appears in a changeset; a writable shared `mmap` of the `-shm` file on
 - No start as root.
 - The fault tests and the tests on tmpfs (`KONSENS_TEST_TMPDIR`).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 The interface does not name the engine of the store: the concept `storage`
 (`include/konsens/storage.hpp:237-245`) is the boundary. The concept
@@ -148,8 +148,8 @@ and `map_size` (section 6.6).
 
 ## 3. Older plans that this plan replaces
 
-plan-hide-lmdb.md, plan-lmdb-converter.md, plan-lmdb-submodule.md and
-plan-simulation-on-lmdb.md are deleted; they are in the git history.
+Four plans of the former storage are deleted; they are in the git
+history at ebd9f42.
 plan-storage-only-source.md and plan-state-in-storage.md stay. These
 rules of the six plans stay: the CRCs, the start checks, the repair by
 entries, the proof of a fault and the root check.
@@ -523,7 +523,7 @@ request enters, and gives an error value above the bound.
    a table without one. The conflict handler of
    `sqlite3changeset_apply` returns `SQLITE_CHANGESET_ABORT`.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 8. Build and tests
 
@@ -562,7 +562,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
    sector; these tests run through `error_fs`.
 5. Tests keep `KONSENS_TEST_TMPDIR`.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 8.1 Measured: who syncs
 

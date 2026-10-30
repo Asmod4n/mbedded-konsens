@@ -312,9 +312,8 @@ Version 1 named snapshots as stage 4. They now belong to stage 1.
 24. Owner (17:49): the storage is a detail of the implementation. Only
     the owner of the DB knows about it. Consequence: A snapshot travels
     as CBOR of the folded state, never as a file of the store. Thus S10
-    holds by the form. The model checks it nevertheless. The LMDB form
-    of items 21, 22 and 24 is in the git history before branch
-    remove-lmdb.
+    holds by the form. The model checks it nevertheless. The former form
+    of items 21, 22 and 24 is in the git history at ebd9f42.
 25. Owner (review thread, 17:52): The library does check by itself:
     CRC32C by hardware instruction, for each log entry, the meta DB
     (promise) and the snapshot block. Index and kind are part of the

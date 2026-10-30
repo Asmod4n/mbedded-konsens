@@ -18,7 +18,7 @@ step runs in one write transaction of the storage (section 2).
 
 The owner, 20:48 and 20:50: nothing is read from the storage except
 through the storage. The node reads no page back from the disk itself.
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 The form of a client work, from the owner, 15:27 to 15:39, 15:55, 20:29
 and 20:47:
@@ -99,7 +99,7 @@ src` is empty, so they apply to the head of this branch.
   06a52bf: the node sends the value of its field
   (doc/review-plan-start-checks-4.md, finding 1; not checked again).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 2. Change of the code
 
@@ -146,7 +146,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
 10. Every new error branch is `[[unlikely]]`.
 11. The node reads no page back from the disk itself (owner, 20:50).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.2 The state of an entry
 
@@ -235,7 +235,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
    round 8, with no crash, wipe, resend, loss, reconfiguration, StopSign
    or forced single node. Round 9 adds them.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.4 The repair from a peer
 
@@ -288,7 +288,7 @@ differs. Item 9 holds for a damage code of the storage.
     the node keeps it: its entries are decided (model `StateFollows`,
     `StateIsDecided`, round 13).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.5 The vote
 
@@ -371,7 +371,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
    the entry (model rounds 12 and 13, `StateCurrent`, mutation
    `NoAbortOnCut`).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.7 Group commit
 
@@ -519,7 +519,7 @@ after each round.
   section 4 show it.
 - The cost of the reads. Section 5 measures it.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 4. Tests
 
@@ -586,8 +586,8 @@ there. The owner decides the names.
    repairs from a peer (2.1 item 5).
 4. Decided, 2026-10-24 19:23: `storage::transaction` (2.1 item 8).
 5. Decided, 2026-10-24 19:45: page checksums beside the CRC of each
-   entry and the chain CRC. The LMDB form of this decision is in the git
-   history before branch remove-lmdb. A checksum on each page with SQLite
+   entry and the chain CRC. The former form of this decision is in the git
+   history at ebd9f42. A checksum on each page with SQLite
    is an open point (plan-sqlite-storage.md section 9).
 6. Decided, 2026-10-24 20:29: the state changes only after the decide,
    from the log; no second log (2.6 item 3).

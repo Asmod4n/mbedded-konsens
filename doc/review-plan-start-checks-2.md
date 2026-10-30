@@ -81,4 +81,4 @@ Scratch files (copies only, nothing in the repository):
 - scratchpad/review-sc/B/out/chk.log
 - scratchpad/review-sc/B/SequencePaxos.tla
 
-The LMDB form of this review is in the git history before branch remove-lmdb.
+The former form of this review is in the git history at ebd9f42.

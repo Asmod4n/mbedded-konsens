@@ -19,7 +19,7 @@ is the device under the storage. This plan gets one review before the build.
   done (fuse_daemonize). waitpid of the parent therefore waits for the
   mount, with no loop.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 2. Change
 
@@ -107,7 +107,7 @@ Result: changes needed. The build takes these changes:
 9. Removed.
 10. The test gets a ctest TIMEOUT.
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ## 7. Result
 
@@ -122,4 +122,4 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
   with SIGBUS.
 - Mutation, run once: error_fs without its faults. Both tests fail: no
   sync_error, and the child does not end by a signal.
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.

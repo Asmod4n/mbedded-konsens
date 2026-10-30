@@ -56,4 +56,4 @@ Findings:
 
 Verdict: reject in this form. Findings 1, 3, 5, 7 and 8 change the code or the design. Finding 2 needs one more model round before the mark of 2.3 item 7 can count as checked. The owner decides findings 3, 6, 7, 8 and 10. The other findings are fixes to the text.
 
-Findings 1, 5 and 14 named only LMDB. Their LMDB form is in the git history before branch remove-lmdb.
+Findings 1, 5 and 14 named only the former storage. Their former form is in the git history at ebd9f42.

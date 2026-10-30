@@ -39,7 +39,7 @@ Findings:
 14. Model :1048 (recovery) and :777 raise decided_idx with no CheckedDecided. Plan 2.4.5 names only decide, accept_decide and accept_sync. Fix: also name the recovery and new_state paths, or state why they are safe.
 15. The configs set MaxTimeout = 0, MaxLoss = 0 and MaxCrash = 0, so no resend is ever modelled together with a running fault. Fix: run one config with MaxTimeout = 1 after finding 5.
 
-Findings 1, 2, 6 and 8 named only LMDB. Their LMDB form is in the git history before branch remove-lmdb.
+Findings 1, 2, 6 and 8 named only the former storage. Their former form is in the git history at ebd9f42.
 
 Verdict: reject in this form. Findings 4, 5, 6, 9 and 11 change the code or show that the model is too strong. Section 3 needs one more model round with the new fault kinds of finding 4, and the owner decides findings 7, 8, 11 and 12. The other findings are fixes to the text.
 

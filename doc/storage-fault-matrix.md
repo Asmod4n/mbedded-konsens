@@ -43,7 +43,7 @@ A node stops when it cannot keep the contract:
   the node (`stop_voting`, `sequence_paxos.hpp:556`). The node stays
   silent until an operator repairs it (PAR, owner 2026-10-17).
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 The consensus and the read index use no clock. Only the lease of the
 witness measures a local duration (owner, 2026-10-19). Clock faults
@@ -117,7 +117,7 @@ are therefore outside this matrix.
 | Model | Not modeled. A rollback restores a whole earlier record only. |
 | Gap | `read_entries` returns a shorter vector with no indexes (`persistent_storage.cpp:468-486`). Its callers place entry k + 1 at index k: `create_log_sync` (`sequence_paxos.hpp:609-617`), `handle_recovery` (`:891-896`), `handle_get_state` (`:987-991`) and `apply_decided_entries` (`node.hpp:392-403`). This shifts the log with no error, and it can break S1. `get_log_len` counts the entries and does not read the last index (`persistent_storage.cpp:199`). Some detection exists. `get_last_entry_crc` reads the true last key (`:550-566`). `find_hardware_fault` can then flag a peer with the same (round, accepted index) (`sequence_paxos.hpp:962-975`). A lost page write that leaves an old entry with a valid CRC is not detected. The CRC is in the entry and not in a reference to it (state file, section 1). |
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.7 An entry is damaged
 
@@ -130,7 +130,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
 | Model | Not modeled. plan.md counts it as a `Wipe` of the node. |
 | Gap | The check runs only when an entry is read. An entry that no one reads stays damaged with no report until a scrub (not built). The B-tree pages have no checksum (section 5, item 4). |
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.8 Metadata is damaged or missing
 
@@ -176,7 +176,7 @@ The LMDB form of this section is in the git history before branch remove-lmdb.
 | Model | Not modeled. A node that ends is a crash. |
 | Gap | A full disk at the start: `open` commits a transaction (`persistent_storage.cpp:421`) and can throw `sync_error`. No test covers this. A full map ends the node, also for its reads. The owner has not decided whether a node keeps serving reads then. |
 
-The LMDB form of this section is in the git history before branch remove-lmdb.
+The former form of this section is in the git history at ebd9f42.
 
 ### 2.12 Memory changes a value before its CRC
 
@@ -261,7 +261,7 @@ These are proposals. The owner decides each one.
 3. A check of continuity in `read_entries` (2.6): each index equals the
    one before plus one. Else the read gives `malformed_record`.
 4. Page checksums (2.7): a checksum on each page with SQLite is an
-   open point (plan-sqlite-storage.md section 9). The LMDB form of this section is in the git history before branch remove-lmdb.
+   open point (plan-sqlite-storage.md section 9). The former form of this section is in the git history at ebd9f42.
 5. A chain of CRCs (section 4) also for 2.6.
 6. A complete run of each row with "no complete run", on the current
    model, after the owner chooses the bounds.
