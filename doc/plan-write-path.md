@@ -1186,3 +1186,13 @@ to that length (ftruncate), maps it (mmap), copies the bytes that are
 already in the buffer to the start of the mapping, and receives the
 rest with a plain recv into the mapping. The decoder reads the mapping
 as one contiguous span. The cost of the page faults is open.
+
+mruby-webmachine has no form that writes a body to a temporary file
+(git grep over its 10 branches, 2026-10-30; slipstream_tmpfile stands
+only in RULES.md:590). It reads a zip archive from memory
+(src/zip.hpp:74, mz_zip_reader_init_mem) and sends from it.
+
+Owner (2026-10-30 18:40): the temporary file is written through
+io_uring. Two arms, to be measured against each other: a recv into the
+mapping of the file, and a recv into the buffer followed by an io_uring
+write into the file.
