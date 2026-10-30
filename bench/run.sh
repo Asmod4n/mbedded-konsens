@@ -14,7 +14,7 @@ aa_binary=konsens_bench_aa
 
 usage() {
     echo "Usage: bench/run.sh <work_dir> <ccache_dir> [<samples> [<rounds> [<result_dir> [<prefixes> [<arm commit>...]]]]]" >&2
-    echo "The work directory holds the builds, the LMDB stores and the logs." >&2
+    echo "The work directory holds the builds, the stores of the storage and the logs." >&2
     echo "The result file goes to <result_dir>, by default bench/results." >&2
     echo "<prefixes>: a comma-separated list, or 'all'. Only a case whose name starts with one of them runs." >&2
     echo "<arm commit>: a commit of this repository. Its tree is built as one more arm, konsens_bench_<commit>." >&2
@@ -34,8 +34,8 @@ host() {
     repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     results=$(realpath -m "${5:-$repo/bench/results}")
     stamp=$(date -u +%Y-%m-%d-%H%M%SZ)
-    mkdir -p "$work/build" "$work/lmdb" "$work/arms" "$ccache" "$results"
-    find "$work/lmdb" -mindepth 1 -delete
+    mkdir -p "$work/build" "$work/storage" "$work/arms" "$ccache" "$results"
+    find "$work/storage" -mindepth 1 -delete
     commit=$(git -C "$repo" rev-parse HEAD)
     git -C "$repo" status --porcelain > "$work/dirty-paths-$stamp.txt"
     if [[ -s $work/dirty-paths-$stamp.txt ]]; then dirty=dirty; else dirty=clean; fi
@@ -46,7 +46,7 @@ host() {
     done
     podman --version > "$work/podman-version-$stamp.txt"
     podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
-    podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/lmdb:/lmdb" -v "$ccache:/ccache" \
+    podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/storage:/storage" -v "$ccache:/ccache" \
         -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
         "$prefixes" "${arms[@]}"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
@@ -133,15 +133,15 @@ context() {
     echo "# processor $(grep -m 1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//') nproc $(nproc)"
     echo "# cpu flags sha256 $(grep -m 1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)"
     echo "# user $bench_user uid $bench_uid through setpriv, nice $(nice), threads 1 in a serial case; 4 in a case whose name ends in _threads (the main thread and three node threads); 5 in a pipeline or execute_verify case (the main thread, three node threads and a thread that ticks)"
-    echo "# lmdb mount $(awk '$2 == "/lmdb"' /proc/mounts)"
+    echo "# storage mount $(awk '$2 == "/storage"' /proc/mounts)"
     echo "# loadavg at start $(cat /proc/loadavg)"
 }
 
 run_one() {
     local round=$1 name=$2 argument=$3 binary=$4 samples=$5
-    local directory=/lmdb/$round-$name-$argument-$binary other running steal_before steal_after line status=0
+    local directory=/storage/$round-$name-$argument-$binary other running steal_before steal_after line status=0
     local -a arguments=("$name" "$samples" "$argument")
-    if [[ $name == *lmdb* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* ]]; then
+    if [[ $name == commit || $name == get_entries || $name == read || $name == read_threads || $name == write* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* ]]; then
         mkdir "$directory"
         chown "$bench_uid:$bench_uid" "$directory"
         arguments+=("$directory")
@@ -313,24 +313,24 @@ Cases of 06a52bf, with the same names, inputs and operations:
 - crc32c: crc32c::Crc32c over one payload, taken in turn from 16 buffers.
 - encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
   entries of 1024 B. encode_decide, decode_decide: one Decide.
-- commit_lmdb: one write transaction of the log with one append of one
+- commit: one write transaction of the log with one append of one
   entry and its commit, on a fresh store for each sample (06a52bf: one
   write_atomically of one append_entries). This is the commit of a step.
-- write_lmdb: three nodes in one process, messages through encode and
+- write: three nodes in one process, messages through encode and
   decode, the network a queue. One client_request at a follower, timed
   from the call to its reply.
-- read_lmdb: one client_query at a follower after one write, timed from
+- read: one client_query at a follower after one write, timed from
   the call to its reply. This is a read after a step.
-- write_batch_lmdb: 64 client_request calls at a follower before the
+- write_batch: 64 client_request calls at a follower before the
   first round, timed until the last reply, divided by 64.
-- write_batch_size_lmdb (new; the arm 06a52bf has it through
-  bench/arms/06a52bf.patch): as write_batch_lmdb with a payload of 1024 B,
+- write_batch_size (new; the arm 06a52bf has it through
+  bench/arms/06a52bf.patch): as write_batch with a payload of 1024 B,
   at the batch size of the argument (1, 16 or 256).
-- get_entries_lmdb: get_entries(0, 1) of one entry in a read transaction.
-A case whose name holds lmdb runs on the store of its binary: SQLite from
-the commit sqlite-storage on, LMDB in an arm before it. The names stay
-until the two stores are compared.
-- write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
+- get_entries: get_entries(0, 1) of one entry in a read transaction.
+These cases had other names before 2026-10-30. An arm built before
+that knows only the old names, so this script cannot compare it with a
+later arm.
+- write_threads, read_threads, write_batch_threads: the
   same operations with each node on its own thread, no tick.
 Removed at the branch: handle_accept_decide and handle_decide. They ran
 on a store that keeps no entry, and each step of the branch reads its
@@ -396,7 +396,7 @@ inside() {
     select_cases "$prefixes"
     binary_lists
     getent passwd "$bench_user" > /dev/null || useradd -u "$bench_uid" -M "$bench_user"
-    chown "$bench_uid:$bench_uid" /lmdb
+    chown "$bench_uid:$bench_uid" /storage
     context "$commit" "$dirty" "$stamp" > "/work/context-$stamp.txt"
     echo "# cases chosen by the prefixes '$prefixes': ${#cases[@]}" >> "/work/context-$stamp.txt"
     rounds "$samples" "$rounds" > "/work/raw-$stamp.txt"

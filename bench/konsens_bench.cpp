@@ -864,7 +864,7 @@ std::expected<void, failure> set_the_ballot(konsens::persistent_storage& store)
     return {};
 }
 
-case_outcome measure_commit_lmdb(const run_settings& s)
+case_outcome measure_commit(const run_settings& s)
 {
     std::vector<double> ns;
     for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
@@ -892,7 +892,7 @@ case_outcome measure_commit_lmdb(const run_settings& s)
     return case_result{ns, std::string{}};
 }
 
-case_outcome measure_get_entries_lmdb(const run_settings& s)
+case_outcome measure_get_entries(const run_settings& s)
 {
     auto store = open_log(s.directory / "store", max_bytes_for(1, s.payload_bytes), s.user_id);
     if (!store) [[unlikely]] {
@@ -1612,37 +1612,37 @@ case_outcome measure_threaded_cluster(const run_settings& s, const std::uint64_t
     return outcome_of(std::move(*ns), first, traffic_of(c, p->at), s);
 }
 
-case_outcome measure_write_lmdb(const run_settings& s)
+case_outcome measure_write(const run_settings& s)
 {
     return measure_cluster(s, 1, 0, time_writes);
 }
 
-case_outcome measure_read_lmdb(const run_settings& s)
+case_outcome measure_read(const run_settings& s)
 {
     return measure_cluster(s, 0, writes_before_read, time_reads);
 }
 
-case_outcome measure_write_batch_lmdb(const run_settings& s)
+case_outcome measure_write_batch(const run_settings& s)
 {
     return measure_cluster(s, 1, 0, time_write_batches);
 }
 
-case_outcome measure_write_batch_size_lmdb(const run_settings& s)
+case_outcome measure_write_batch_size(const run_settings& s)
 {
     return measure_cluster(s, 1, 0, time_write_batches_of_the_parameter);
 }
 
-case_outcome measure_write_lmdb_threads(const run_settings& s)
+case_outcome measure_write_threads(const run_settings& s)
 {
     return measure_threaded_cluster(s, 1, 0, time_writes);
 }
 
-case_outcome measure_read_lmdb_threads(const run_settings& s)
+case_outcome measure_read_threads(const run_settings& s)
 {
     return measure_threaded_cluster(s, 0, writes_before_read, time_reads);
 }
 
-case_outcome measure_write_batch_lmdb_threads(const run_settings& s)
+case_outcome measure_write_batch_threads(const run_settings& s)
 {
     return measure_threaded_cluster(s, 1, 0, time_write_batches);
 }
@@ -2032,15 +2032,15 @@ constexpr std::array<parameter_ops, 1> encode_accept_decide_ops{{{0, 200}}};
 constexpr std::array<parameter_ops, 1> decode_accept_decide_ops{{{0, 160}}};
 constexpr std::array<parameter_ops, 1> encode_decide_ops{{{0, 150000}}};
 constexpr std::array<parameter_ops, 1> decode_decide_ops{{{0, 40000}}};
-constexpr std::array<parameter_ops, 3> commit_lmdb_ops{{{64, 30}, {1024, 24}, {65536, 16}}};
-constexpr std::array<parameter_ops, 3> write_lmdb_ops{{{64, 5}, {1024, 5}, {65536, 3}}};
-constexpr std::array<parameter_ops, 1> read_lmdb_ops{{{0, 1700}}};
-constexpr std::array<parameter_ops, 3> write_batch_lmdb_ops{{{64, 64}, {1024, 64}, {65536, 64}}};
-constexpr std::array<parameter_ops, 3> write_batch_size_lmdb_ops{{{1, 4}, {16, 32}, {256, 256}}};
-constexpr std::array<parameter_ops, 3> get_entries_lmdb_ops{{{64, 75000}, {1024, 55000}, {65536, 2000}}};
-constexpr std::array<parameter_ops, 3> write_lmdb_threads_ops{{{64, 5}, {1024, 5}, {65536, 3}}};
-constexpr std::array<parameter_ops, 1> read_lmdb_threads_ops{{{0, 115}}};
-constexpr std::array<parameter_ops, 3> write_batch_lmdb_threads_ops{{{64, 192}, {1024, 256}, {65536, 64}}};
+constexpr std::array<parameter_ops, 3> commit_ops{{{64, 30}, {1024, 24}, {65536, 16}}};
+constexpr std::array<parameter_ops, 3> write_ops{{{64, 5}, {1024, 5}, {65536, 3}}};
+constexpr std::array<parameter_ops, 1> read_ops{{{0, 1700}}};
+constexpr std::array<parameter_ops, 3> write_batch_ops{{{64, 64}, {1024, 64}, {65536, 64}}};
+constexpr std::array<parameter_ops, 3> write_batch_size_ops{{{1, 4}, {16, 32}, {256, 256}}};
+constexpr std::array<parameter_ops, 3> get_entries_ops{{{64, 75000}, {1024, 55000}, {65536, 2000}}};
+constexpr std::array<parameter_ops, 3> write_threads_ops{{{64, 5}, {1024, 5}, {65536, 3}}};
+constexpr std::array<parameter_ops, 1> read_threads_ops{{{0, 115}}};
+constexpr std::array<parameter_ops, 3> write_batch_threads_ops{{{64, 192}, {1024, 256}, {65536, 64}}};
 constexpr std::array<parameter_ops, 4> pipeline_10000_ops{{{1, 1000}, {4, 1000}, {16, 1000}, {64, 1000}}};
 constexpr std::array<parameter_ops, 4> pipeline_20000_ops{{{1, 2000}, {4, 2000}, {16, 2000}, {64, 2000}}};
 constexpr std::array<parameter_ops, 4> execute_verify_ops_of_the_branch{{{1, 1000}, {4, 1000}, {16, 1000}, {64, 1000}}};
@@ -2061,17 +2061,17 @@ constexpr auto cases = std::to_array<bench_case>({
      false, true},
     {"encode_decide", measure_encode_decide, encode_decide_ops, argument_kind::payload_bytes, false, true},
     {"decode_decide", measure_decode_decide, decode_decide_ops, argument_kind::payload_bytes, false, true},
-    {"commit_lmdb", measure_commit_lmdb, commit_lmdb_ops, argument_kind::payload_bytes, true, true},
-    {"write_lmdb", measure_write_lmdb, write_lmdb_ops, argument_kind::payload_bytes, true, true},
-    {"read_lmdb", measure_read_lmdb, read_lmdb_ops, argument_kind::payload_bytes, true, true},
-    {"write_batch_lmdb", measure_write_batch_lmdb, write_batch_lmdb_ops, argument_kind::payload_bytes, true, true},
-    {"write_batch_size_lmdb", measure_write_batch_size_lmdb, write_batch_size_lmdb_ops, argument_kind::parameter, true,
+    {"commit", measure_commit, commit_ops, argument_kind::payload_bytes, true, true},
+    {"write", measure_write, write_ops, argument_kind::payload_bytes, true, true},
+    {"read", measure_read, read_ops, argument_kind::payload_bytes, true, true},
+    {"write_batch", measure_write_batch, write_batch_ops, argument_kind::payload_bytes, true, true},
+    {"write_batch_size", measure_write_batch_size, write_batch_size_ops, argument_kind::parameter, true,
      true},
-    {"get_entries_lmdb", measure_get_entries_lmdb, get_entries_lmdb_ops, argument_kind::payload_bytes, true, true},
-    {"write_lmdb_threads", measure_write_lmdb_threads, write_lmdb_threads_ops, argument_kind::payload_bytes, true,
+    {"get_entries", measure_get_entries, get_entries_ops, argument_kind::payload_bytes, true, true},
+    {"write_threads", measure_write_threads, write_threads_ops, argument_kind::payload_bytes, true,
      true},
-    {"read_lmdb_threads", measure_read_lmdb_threads, read_lmdb_threads_ops, argument_kind::payload_bytes, true, true},
-    {"write_batch_lmdb_threads", measure_write_batch_lmdb_threads, write_batch_lmdb_threads_ops,
+    {"read_threads", measure_read_threads, read_threads_ops, argument_kind::payload_bytes, true, true},
+    {"write_batch_threads", measure_write_batch_threads, write_batch_threads_ops,
      argument_kind::payload_bytes, true, true},
     {"pipeline_put_0ms_10000ps", measure_pipeline_put_0ms_10000ps, pipeline_10000_ops, argument_kind::parameter, true, true, false},
     {"pipeline_put_0ms_20000ps", measure_pipeline_put_0ms_20000ps, pipeline_20000_ops, argument_kind::parameter, true, true, false},
@@ -2095,7 +2095,7 @@ constexpr bool batches_are_whole()
             !std::ranges::all_of(c.ops_by_argument, [](const parameter_ops& p) { return p.ops % batch_size == 0; })) {
             return false;
         }
-        if (c.name == "write_batch_size_lmdb" &&
+        if (c.name == "write_batch_size" &&
             !std::ranges::all_of(c.ops_by_argument, [](const parameter_ops& p) { return p.ops % p.parameter == 0; })) {
             return false;
         }
@@ -2118,7 +2118,8 @@ constexpr std::string_view usage =
     "       konsens_bench --list\n"
     "       konsens_bench --each-case-once [--allow-root-for-test]\n"
     "The argument of a case is a payload in bytes or a parameter; --list prints the cases and their arguments.\n"
-    "A case whose name holds lmdb, pipeline, execute_verify, read_back or scan takes the directory of its stores.\n";
+    "A case that uses the storage (commit, get_entries, read, read_threads, write..., pipeline..., execute_verify...,\n"
+    "read_back, scan...) takes the directory of its stores.\n";
 
 std::optional<std::uint64_t> number_of(const std::string_view text)
 {
