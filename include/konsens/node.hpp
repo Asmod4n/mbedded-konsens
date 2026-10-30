@@ -1885,14 +1885,11 @@ private:
             forget_the_runs();
             return {};
         }
-        const auto promise = seq_paxos_.get_promise();
-        if (!promise) [[unlikely]] {
-            return std::unexpected(promise.error());
-        }
         const auto m = seq_paxos_.read_meta();
         if (!m) [[unlikely]] {
             return seq_paxos_.stop_voting(m.error());
         }
+        const auto promise = m->promise;
         const auto log =
             sequence_paxos<S>::read_range(*seq_paxos_.txn_, std::min(m->applied_idx, m->log_len), m->log_len);
         if (!log) [[unlikely]] {
@@ -1901,27 +1898,27 @@ private:
         const done_log b{m->log_len - log->size(), *log};
         const auto pointer = b.log_len();
         follow_the_leader(b);
-        keep_the_tasks(*promise, pointer);
+        keep_the_tasks(promise, pointer);
         check_the_own_results(b);
         const auto first = run_the_tasks(b);
-        const auto answered = std::pair{*promise, pointer};
+        const auto answered = std::pair{promise, pointer};
         if (own_.upper_bound(pointer) != own_.end() && (resend_answer_ || answered_ != answered)) {
-            send_answer(promise->pid, answer_from(*promise, pointer, pointer + 1, 0));
+            send_answer(promise.pid, answer_from(promise, pointer, pointer + 1, 0));
             answered_ = answered;
         } else if (first) {
-            send_answer(promise->pid, answer_from(*promise, pointer, *first, 0));
+            send_answer(promise.pid, answer_from(promise, pointer, *first, 0));
             answered_ = answered;
         }
         if (resend_answer_) {
-            send_the_refusal(*promise);
+            send_the_refusal(promise);
         }
         resend_answer_ = false;
         for (const auto& [from, t] : std::exchange(try_agains_in_, {})) {
-            if (t.n != *promise || t.index <= pointer || !own_.contains(t.index)) {
+            if (t.n != promise || t.index <= pointer || !own_.contains(t.index)) {
                 continue;
             }
             run_again(b, t.index);
-            send_answer(from, answer_from(*promise, pointer, t.index, t.index));
+            send_answer(from, answer_from(promise, pointer, t.index, t.index));
         }
         if (!selection_) {
             answers_in_.clear();
