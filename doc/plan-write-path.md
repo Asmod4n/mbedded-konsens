@@ -206,3 +206,14 @@ findings, 6 blocking) is applied as follows.
   documentation before M3 uses it; section 6 reads "ASan and UBSan once
   before the merge"; the run length is read from the state file where it
   is kept.
+
+## 11. Wrong assumption
+
+- Assumed: Execute-Verify makes two log rounds, the request entry and
+  then a `results` entry (fact 1.5, section 5, review R4 and R5).
+- True: the code (node.hpp:1150-1235) sends `work` to the followers
+  first, collects the answers, and appends one done record that holds
+  the request and the chosen result. One log round is on the path.
+- Caused: owner question B named a round that does not exist. It was
+  withdrawn on 2026-10-30. Question B and R4, R5 are void. M2 maps each
+  fdatasync to its step before any new question about the path.
