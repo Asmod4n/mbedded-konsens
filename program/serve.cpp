@@ -405,7 +405,7 @@ void expire_the_closed_sessions(loop& l)
     });
 }
 
-void release_the_output(loop& l)
+void queue_the_messages(loop& l)
 {
     for (const auto& m : l.node.take_outgoing_messages()) {
         const auto to = std::visit([](const auto& x) { return x.to; }, m);
@@ -423,8 +423,44 @@ void release_the_output(loop& l)
         }
         queue_on(c, frame_of(*bytes));
     }
+}
+
+void release_the_output(loop& l)
+{
+    queue_the_messages(l);
     for (const auto& r : l.node.take_client_replies()) {
         take_a_reply(l, r);
+    }
+}
+
+bool answered_a_write_before_the_sync(loop& l, const konsens::client_reply& r)
+{
+    const auto it = l.connections.find(r.client_id);
+    if (it == l.connections.end() || it->second->kind != link::client || !r.response) {
+        return false;
+    }
+    connection& c = *it->second;
+    if (c.waits_for != awaited::write || !c.call) {
+        return false;
+    }
+    const bool closes = c.call->closes;
+    queue_on(c, response_of(status_no_content, {}, {}, closes));
+    c.call.reset();
+    c.waits_for = awaited::nothing;
+    c.closes_after_the_send = closes;
+    return true;
+}
+
+void release_the_output_before_the_sync(loop& l, std::vector<konsens::client_reply>& later,
+                                        std::vector<std::uint64_t>& answered)
+{
+    queue_the_messages(l);
+    for (auto& r : l.node.take_client_replies()) {
+        if (answered_a_write_before_the_sync(l, r)) {
+            answered.push_back(r.client_id);
+        } else {
+            later.push_back(std::move(r));
+        }
     }
 }
 
@@ -446,9 +482,11 @@ void commit_the_step(loop& l)
     }
     if (l.step) {
         const auto t = *std::exchange(l.step, std::nullopt);
+        std::vector<konsens::client_reply> later;
+        std::vector<std::uint64_t> answered;
         auto r = l.node.commit_phase_one(t);
         if (r) [[likely]] {
-            release_the_output(l);
+            release_the_output_before_the_sync(l, later, answered);
             arm_the_sends(l);
             io_uring_submit(&l.ring);
             r = l.node.commit_phase_two();
@@ -456,6 +494,14 @@ void commit_the_step(loop& l)
         if (!r) [[unlikely]] {
             std::println(std::cerr, "konsensd: the commit gave the error {}", r.error().message());
             answer_the_calls_after_a_failed_commit(l, r.error());
+        }
+        for (const auto& x : later) {
+            take_a_reply(l, x);
+        }
+        for (const auto id : answered) {
+            if (const auto it = l.connections.find(id); it != l.connections.end() && !it->second->closes_after_the_send) {
+                take_the_requests_of(l, id, *it->second);
+            }
         }
     }
     release_the_output(l);
