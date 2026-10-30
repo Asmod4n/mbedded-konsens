@@ -1424,9 +1424,9 @@ private:
         }
     }
 
-    std::vector<entry> open_tasks_after(const std::uint64_t log_len) const
+    std::vector<std::reference_wrapper<const entry>> open_tasks_after(const std::uint64_t log_len) const
     {
-        std::vector<entry> open;
+        std::vector<std::reference_wrapper<const entry>> open;
         for (auto it = tasks_.upper_bound(log_len); it != tasks_.end() && it->first == log_len + open.size() + 1;
              ++it) {
             open.push_back(it->second);

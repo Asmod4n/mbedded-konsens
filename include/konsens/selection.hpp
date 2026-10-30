@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -34,7 +35,7 @@ struct selected_result {
 
 struct leader_log {
     std::uint64_t pointer;
-    std::span<const entry> entries;
+    std::span<const std::reference_wrapper<const entry>> entries;
 };
 
 struct try_again_target {

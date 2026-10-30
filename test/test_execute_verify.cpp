@@ -9,6 +9,7 @@
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -132,16 +133,17 @@ TEST_CASE("the leader finds each appended done record that a majority refused")
 TEST_CASE("the leader selects the result of a majority and asks each other node once to run again")
 {
     const std::vector<entry> log{request(1)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
     auto s = new_selection();
     s.count_answer(3, first_answer({at(1, 7)}));
     s.count_answer(1, first_answer({at(1, 8)}));
     s.count_answer(2, first_answer({at(1, 7)}));
-    const auto targets = s.select_results({0, log});
+    const auto targets = s.select_results({0, refs});
     CHECK(targets == std::vector<konsens::try_again_target>{{1, 1}});
     REQUIRE(s.get_selected().contains(1));
     CHECK(s.get_selected().at(1).node == 2);
     CHECK(s.get_selected().at(1).chosen == at(1, 7));
-    CHECK(s.select_results({0, log}).empty());
+    CHECK(s.select_results({0, refs}).empty());
 }
 
 // Plan 2.6.3: without a majority that agrees, nothing is selected, and the
@@ -149,13 +151,14 @@ TEST_CASE("the leader selects the result of a majority and asks each other node 
 TEST_CASE("a result without a majority is not selected")
 {
     const std::vector<entry> log{request(1)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
     auto s = new_selection();
     s.count_answer(1, first_answer({at(1, 7)}));
     s.count_answer(2, first_answer({at(1, 8)}));
-    CHECK(s.select_results({0, log}).empty());
+    CHECK(s.select_results({0, refs}).empty());
     CHECK(s.get_selected().empty());
     s.count_answer(3, first_answer({at(1, 8)}));
-    CHECK(s.select_results({0, log}) == std::vector<konsens::try_again_target>{{1, 1}});
+    CHECK(s.select_results({0, refs}) == std::vector<konsens::try_again_target>{{1, 1}});
     CHECK(s.get_selected().at(1).node == 2);
 }
 
@@ -166,15 +169,16 @@ TEST_CASE("a result without a majority is not selected")
 TEST_CASE("an answer on another base is not counted")
 {
     const std::vector<entry> log{request(1), request(2)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
     auto s = new_selection();
     s.count_answer(1, first_answer({at(1, 7), at(2, 5)}));
     s.count_answer(2, first_answer({at(1, 7)}));
     s.count_answer(3, {leader_ballot, 0, 2, base_of({{1, 9}}), {at(2, 5)}, 0});
-    CHECK(s.select_results({0, log}).empty());
+    CHECK(s.select_results({0, refs}).empty());
     CHECK(s.get_selected().contains(1));
     CHECK_FALSE(s.get_selected().contains(2));
     s.count_answer(3, {leader_ballot, 0, 2, base_of({{1, 7}}), {at(2, 5)}, 0});
-    CHECK(s.select_results({0, log}).empty());
+    CHECK(s.select_results({0, refs}).empty());
     REQUIRE(s.get_selected().contains(2));
     CHECK(s.get_selected().at(2).node == 1);
 }
@@ -203,13 +207,14 @@ TEST_CASE("a later answer on the same pointer extends the earlier one when its b
 TEST_CASE("a selection above an index whose chosen result differs is dropped")
 {
     const std::vector<entry> log{request(1), request(2)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
     for (const std::uint8_t chosen : {std::uint8_t{7}, std::uint8_t{8}}) {
         CAPTURE(int{chosen});
         auto s = new_selection();
         for (const node_id j : three_nodes) {
             s.count_answer(j, first_answer({at(1, 7), at(2, 5)}));
         }
-        CHECK(s.select_results({0, log}).empty());
+        CHECK(s.select_results({0, refs}).empty());
         REQUIRE(s.get_selected().size() == 2);
         s.move_pointer(1, std::vector<konsens::indexed_result>{at(1, chosen)});
         CHECK(s.get_pointer() == 1);
@@ -225,7 +230,8 @@ TEST_CASE("a selection above an index whose chosen result differs is dropped")
 TEST_CASE("the done record lists a node only when its second run also does not agree")
 {
     const std::vector<entry> log{request(1)};
-    const konsens::leader_log l{0, log};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    const konsens::leader_log l{0, refs};
     for (const std::uint8_t second : {std::uint8_t{0}, std::uint8_t{8}, std::uint8_t{7}}) {
         CAPTURE(int{second});
         auto s = new_selection();
@@ -246,6 +252,31 @@ TEST_CASE("the done record lists a node only when its second run also does not a
     }
 }
 
+// Plan section 26 part A: the leader gives the selection references into
+// the open tasks, which lie in a std::map and not in one block. The run of
+// references ends at the first gap in the indexes, so the entry after the
+// gap is not part of the log that the selection reads.
+TEST_CASE("the done records come from references into a map that has a gap")
+{
+    const std::map<std::uint64_t, entry> tasks{{1, request(1)}, {3, request(3)}};
+    std::vector<std::reference_wrapper<const entry>> refs;
+    for (auto it = tasks.begin(); it != tasks.end() && it->first == refs.size() + 1; ++it) {
+        refs.emplace_back(it->second);
+    }
+    REQUIRE(refs.size() == 1);
+    const konsens::leader_log l{0, refs};
+    auto s = new_selection();
+    s.count_answer(1, first_answer({at(1, 7)}));
+    s.count_answer(2, first_answer({at(1, 7)}));
+    s.count_answer(3, first_answer({at(1, 7)}));
+    CHECK(s.select_results(l).empty());
+    const auto done = s.find_the_done_records(l);
+    REQUIRE(done.size() == 1);
+    CHECK(konsens::request_of(done[0]) == request(1));
+    CHECK(done[0].result == at(1, 7).result);
+    CHECK(&refs[0].get() == &tasks.at(1));
+}
+
 // Plan 2.6.5: a task is rejected only when the counted answers leave no
 // result that a majority could still reach. With one node not counted, its
 // answer could still make a majority, so the leader waits. The done record
@@ -253,7 +284,8 @@ TEST_CASE("the done record lists a node only when its second run also does not a
 TEST_CASE("a rejected done record comes only when no result can reach a majority")
 {
     const std::vector<entry> log{request(1)};
-    const konsens::leader_log l{0, log};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    const konsens::leader_log l{0, refs};
     auto s = new_selection();
     s.count_answer(1, first_answer({at(1, 7)}));
     s.count_answer(2, first_answer({at(1, 8)}));
@@ -282,8 +314,9 @@ TEST_CASE("the done records of a step stop at the first request without a select
     }
     const entry normal{entry_kind::normal, {std::byte{4}}};
     const std::vector<entry> log{request(1), normal, request(3), normal};
-    CHECK(s.select_results({0, log}).empty());
-    const auto done = s.find_the_done_records({0, log});
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    CHECK(s.select_results({0, refs}).empty());
+    const auto done = s.find_the_done_records({0, refs});
     REQUIRE(done.size() == 2);
     CHECK(done[0].result == at(1, 7).result);
     CHECK(done[1] == normal);

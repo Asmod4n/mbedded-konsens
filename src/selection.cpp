@@ -244,7 +244,7 @@ std::optional<entry> selection::find_the_rejected_record(const leader_log& log, 
     for (const auto j : counted) {
         answers.push_back({answers_.at(j).results.at(index), j, {}});
     }
-    auto e = log.entries[index - pointer_ - 1];
+    entry e = log.entries[index - pointer_ - 1].get();
     e.rejected = true;
     e.result = encode_chosen_results(answers);
     e.result_crc = compute_result_crc(index, e.result);
@@ -258,7 +258,7 @@ std::vector<entry> selection::find_the_done_records(const leader_log& log) const
         return done;
     }
     for (auto k = pointer_ + 1; k <= pointer_ + log.entries.size(); ++k) {
-        const auto& task = log.entries[k - pointer_ - 1];
+        const entry& task = log.entries[k - pointer_ - 1].get();
         if (!entry_is_a_request(task)) {
             done.push_back(task);
             continue;
