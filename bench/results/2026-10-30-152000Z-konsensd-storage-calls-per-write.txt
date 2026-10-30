@@ -1,0 +1,84 @@
+konsensd: storage calls per write on the leader, from the callgrind run of 2026-10-30-145000Z
+
+What was measured
+- The callgrind files of 2026-10-30-145000Z-konsensd-instructions-per-write.txt (konsensd 1011ddc, leader n3). The calls= lines of each callee are summed and divided by the writes of the part (1024 at 1 in flight, 4096 at 64 in flight).
+- A second run (vg8) with one change: a step whose transaction wrote nothing takes the meta that begin_step checked, and does not check it again. Binary konsensd_g16RS2u 620c000a44413a3c, patch outside the tree (11ef349b49c76d7e). The change is not committed.
+- Script outside the tree: cgcalls.py dcb8e7be42878202.
+
+Calls per write, 1011ddc, 1 in flight
+  197.29 sqlite3_reset
+   84.07 sqlite3_step
+   35.69 ps::transaction::get_meta() const
+   19.17 ps::transaction::~transaction()
+   15.86 konsens::sequence_paxos<konsens::persistent_storage>::begin_step()
+   14.69 ps::transaction::get_entry_state(unsigned long) const
+   14.12 ps::transaction::transaction(ps::transaction&&)
+   13.45 ps::transaction::get_entries(unsigned long, unsigned long) const
+   13.45 ps::transaction::read_entries(unsigned long, unsigned long) const
+   11.45 std::expected<std::vector<konsens::entry, std::allocator<konsens::entry> >, std::error_cod
+   10.11 std::expected<konsens::meta_record, std::error_code> konsens::sequence_paxos<konsens::pers
+   10.11 ps::transaction::get_last_entry() const
+   10.11 ps::transaction::has_writes() const
+    6.01 ps::nested_transaction::~nested_transaction()
+    5.06 konsens::sequence_paxos<konsens::persistent_storage>::commit_phase_two()
+    5.05 konsens::node<konsens::persistent_storage, konsensd::key_value>::execute_verify()
+    5.05 konsens::sequence_paxos<konsens::persistent_storage>::commit_phase_one()
+    5.05 ps::begin()
+    5.04 ps::transaction::get_chain_crc(unsigned long) const
+    4.01 ps::nested_transaction::nested_transaction(ps::nested_transaction&&)
+    2.01 ps::transaction::has_log_writes() const
+    2.01 ps::transaction::commit_without_a_sync() &&
+    2.00 ps::transaction::begin_nested()
+    1.00 ps::wal_file_descriptor() const
+    1.00 konsens::node<konsens::persistent_storage, konsensd::key_value>::run_request(konsens::entr
+    1.00 void konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_result<ps:
+    1.00 ps::transaction::append_entries(std::span<konsens::entry const, 18446744073709551615ul>)
+    1.00 ps::transaction::set_decided_index(unsigned long)
+    1.00 konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_done_results(ko
+    1.00 konsens::node<konsens::persistent_storage, konsensd::key_value>::check_the_done_record(kon
+
+Calls per write, 1011ddc, 64 in flight
+   45.61 sqlite3_reset
+   34.49 sqlite3_step
+    4.64 void konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_result<ps:
+    4.60 ps::nested_transaction::insert_or_assign_session(unsigned long, konsens::session_record co
+    4.48 ps::nested_transaction::insert_or_assign(std::span<std::byte const, 18446744073709551615ul
+    4.31 ps::transaction::get_meta() const
+    1.93 konsens::sequence_paxos<konsens::persistent_storage>::begin_step()
+    1.27 ps::transaction::~transaction()
+    1.21 ps::transaction::get_entry_state(unsigned long) const
+    1.03 konsens::node<konsens::persistent_storage, konsensd::key_value>::run_request(konsens::entr
+    1.02 ps::transaction::insert_or_assign_session(unsigned long, konsens::session_record const&)
+    1.02 konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_done_results(ko
+    1.02 konsens::node<konsens::persistent_storage, konsensd::key_value>::check_the_done_record(kon
+    1.00 ps::transaction::find(std::span<std::byte const, 18446744073709551615ul>) const
+    1.00 ps::transaction::insert_or_assign(std::span<std::byte const, 18446744073709551615ul>, std:
+    1.00 ps::nested_transaction::find_session(unsigned long) const
+    0.95 ps::transaction::get_entries(unsigned long, unsigned long) const
+    0.95 ps::transaction::read_entries(unsigned long, unsigned long) const
+    0.93 ps::transaction::transaction(ps::transaction&&)
+    0.81 std::expected<std::vector<konsens::entry, std::allocator<konsens::entry> >, std::error_cod
+    0.70 ps::transaction::get_last_entry() const
+    0.70 std::expected<konsens::meta_record, std::error_code> konsens::sequence_paxos<konsens::pers
+    0.70 ps::transaction::has_writes() const
+    0.68 ps::nested_transaction::~nested_transaction()
+    0.45 ps::nested_transaction::nested_transaction(ps::nested_transaction&&)
+    0.36 konsens::sequence_paxos<konsens::persistent_storage>::commit_phase_two()
+    0.36 konsens::node<konsens::persistent_storage, konsensd::key_value>::execute_verify()
+    0.36 konsens::sequence_paxos<konsens::persistent_storage>::commit_phase_one()
+    0.34 ps::begin()
+    0.28 ps::transaction::get_chain_crc(unsigned long) const
+
+Calls per write with the change, 1 in flight / 64 in flight
+   80.27 sqlite3_step
+   20.97 konsens::sequence_paxos<konsens::persistent_storage>::begin_step()
+    6.98 std::expected<konsens::meta_record, std::error_code> konsens::sequence_paxos<konsens::pers
+   34.33 sqlite3_step
+    1.60 konsens::sequence_paxos<konsens::persistent_storage>::begin_step()
+    0.44 std::expected<konsens::meta_record, std::error_code> konsens::sequence_paxos<konsens::pers
+
+Reading
+- At 64 in flight, write_the_result and the session writes run about 4.6 times for each write.
+- At 1 in flight, get_meta runs about 36 times and get_entries about 13 times for each write. 5 transactions begin for each write, and 2 of them commit a write.
+- The change cuts read_checked_meta from 10.1 to 7.0 calls per write at 1 in flight, and sqlite3_step from 84 to 80. It is not kept.
+- Under valgrind the run is slower, so the work that a timer starts (begin_step of a tick) is a larger part of the counts than in a native run.
