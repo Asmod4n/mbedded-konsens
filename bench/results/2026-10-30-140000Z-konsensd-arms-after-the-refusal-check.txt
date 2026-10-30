@@ -1,0 +1,38 @@
+What was measured
+- The arms on top of 2a8cd3b, after the refusal check stopped to grow with the log.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh), all three from 2a8cd3b (b44668830471453d): konsensd_g16R1, option sync_by_the_caller off; konsensd_g16R1cp, the same binary copied (A/A), option off; konsensd_g16R1S2, the same binary copied, option on (form S2).
+- Same bed, settings, samples, container and seccomp profile as 2026-10-30-110000Z-konsensd-arm-s2.txt. arms.sh 4dc1641035e931fa, cluster.sh d9bad1b2fb550242.
+- The columns user_us_per_write and sys_us_per_write read 0 for the two arms with names longer than 15 bytes. cpu.sh looks the process up by its name, and the kernel keeps 15 bytes of it. The rates are not affected.
+
+round=1 arm=konsensd_g16R1 conc=1 median_writes_per_s=431 min=407 max=456 median_latency_us=2181 user_us_per_write=600 sys_us_per_write=1122
+round=1 arm=konsensd_g16R1cp conc=1 median_writes_per_s=401 min=374 max=415 median_latency_us=2369 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16R1S2 conc=1 median_writes_per_s=411 min=378 max=423 median_latency_us=2272 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16R1 conc=64 median_writes_per_s=4506 min=4112 max=4650 median_latency_us=13683 user_us_per_write=128 sys_us_per_write=100
+round=1 arm=konsensd_g16R1cp conc=64 median_writes_per_s=4404 min=4307 max=4481 median_latency_us=14091 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16R1S2 conc=64 median_writes_per_s=6397 min=6316 max=7195 median_latency_us=9390 user_us_per_write=0 sys_us_per_write=0
+round=1 raw_sqlite batch=1 median_writes_per_s=1157
+round=1 raw_sqlite batch=64 median_writes_per_s=74867
+round=2 arm=konsensd_g16R1 conc=1 median_writes_per_s=370 min=347 max=398 median_latency_us=2510 user_us_per_write=500 sys_us_per_write=1200
+round=2 arm=konsensd_g16R1cp conc=1 median_writes_per_s=389 min=376 max=393 median_latency_us=2452 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16R1S2 conc=1 median_writes_per_s=428 min=426 max=439 median_latency_us=2225 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16R1 conc=64 median_writes_per_s=4900 min=4723 max=4929 median_latency_us=12929 user_us_per_write=119 sys_us_per_write=84
+round=2 arm=konsensd_g16R1cp conc=64 median_writes_per_s=4593 min=4457 max=4692 median_latency_us=13596 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16R1S2 conc=64 median_writes_per_s=6256 min=5762 max=6398 median_latency_us=9681 user_us_per_write=0 sys_us_per_write=0
+round=2 raw_sqlite batch=1 median_writes_per_s=1154
+round=2 raw_sqlite batch=64 median_writes_per_s=67661
+round=3 arm=konsensd_g16R1 conc=1 median_writes_per_s=421 min=399 max=468 median_latency_us=2268 user_us_per_write=577 sys_us_per_write=1111
+round=3 arm=konsensd_g16R1cp conc=1 median_writes_per_s=414 min=394 max=445 median_latency_us=2281 user_us_per_write=0 sys_us_per_write=0
+round=3 arm=konsensd_g16R1S2 conc=1 median_writes_per_s=416 min=406 max=440 median_latency_us=2156 user_us_per_write=0 sys_us_per_write=0
+round=3 arm=konsensd_g16R1 conc=64 median_writes_per_s=4282 min=4193 max=4455 median_latency_us=14690 user_us_per_write=119 sys_us_per_write=95
+round=3 arm=konsensd_g16R1cp conc=64 median_writes_per_s=4566 min=4521 max=4734 median_latency_us=13734 user_us_per_write=0 sys_us_per_write=0
+round=3 arm=konsensd_g16R1S2 conc=64 median_writes_per_s=6708 min=6413 max=6937 median_latency_us=9109 user_us_per_write=0 sys_us_per_write=0
+round=3 raw_sqlite batch=1 median_writes_per_s=1279
+round=3 raw_sqlite batch=64 median_writes_per_s=68157
+
+Medians of the three rounds (writes/s)
+- 1 in flight: R1 421, R1 copy 401, R1 with S2 416. Raw SQLite batch 1: 1 157.
+- 64 in flight: R1 4 506, R1 copy 4 566, R1 with S2 6 397. Raw SQLite batch 64: 68 157.
+- The A/A pair differs by 5 % at 1 in flight and by 1 % at 64 in flight. Inside one cell the samples spread by at most 13 %.
+- At 64 in flight S2 is 42 % above R1 (6 397 against 4 506). In each round the lowest sample of S2 lies above the highest sample of R1.
+- At 1 in flight no difference is shown above the A/A floor.
+- Share of raw SQLite: at 1 in flight R1 421 against 1 157 (36 %); at 64 in flight S2 6 397 against 68 157 (9 %).
