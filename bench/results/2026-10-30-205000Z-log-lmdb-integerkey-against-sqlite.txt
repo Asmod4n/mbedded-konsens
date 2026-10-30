@@ -1,0 +1,64 @@
+Log only: LMDB 1.0.2 with MDB_INTEGERKEY and MDB_APPEND against SQLite with an INTEGER PRIMARY KEY table, 1, 12 and 64 entries per commit
+
+What was measured
+- bench/log_store.cpp appends entries of 104 B (64 B value plus 40 B) with rising keys and commits after each batch. Nothing else is written.
+- LMDB 1.0.2 (deps/lmdb of branch lmdb-submodule, mdb.c and midl.c compiled with gcc-16 -O2 into the binary), default flags: each commit syncs. One file, MDB_NOSUBDIR, map 1 GiB.
+- SQLite: distro libsqlite3, WAL, synchronous=FULL, passive checkpoint at 1000 frames, BEGIN IMMEDIATE.
+- lmdb_copy is the same LMDB arm run a second time in each round (A/A).
+- One process, one btrfs loop image compress=zstd:1, podman --cpus=3, user 1001, kernel 6.18.44-fc-v185. 5 rounds; each cell is the median of 31 samples of 192 entries.
+
+Medians over the 5 rounds (entries/s)
+| per commit | LMDB | LMDB again (A/A) | SQLite |
+| 1 | 624 | 625 | 1224 |
+| 12 | 6625 | 5989 | 13571 |
+| 64 | 33294 | 32985 | 75615 |
+- A/A: 0.2 % at 1, 10.6 % at 12, 0.9 % at 64.
+- SQLite appends 1.96 times (1), 2.05 times (12) and 2.27 times (64) as many entries per second as LMDB.
+- Cause not measured. LMDB syncs the data pages and then the meta page in each commit; the WAL of SQLite needs one sync (not counted here).
+
+Rows
+round=1 lmdb batch=1 median_writes_per_s=605 min=346 max=905
+round=1 sqlite batch=1 median_writes_per_s=1219 min=552 max=1603
+round=1 lmdb_copy batch=1 median_writes_per_s=583 min=433 max=743
+round=1 lmdb batch=12 median_writes_per_s=6449 min=5262 max=8588
+round=1 sqlite batch=12 median_writes_per_s=13155 min=7130 max=17540
+round=1 lmdb_copy batch=12 median_writes_per_s=5989 min=3493 max=8554
+round=1 lmdb batch=64 median_writes_per_s=33294 min=22006 max=41986
+round=1 sqlite batch=64 median_writes_per_s=64168 min=45777 max=79789
+round=1 lmdb_copy batch=64 median_writes_per_s=26727 min=14417 max=32250
+round=2 lmdb batch=1 median_writes_per_s=639 min=461 max=805
+round=2 sqlite batch=1 median_writes_per_s=1224 min=944 max=1574
+round=2 lmdb_copy batch=1 median_writes_per_s=653 min=454 max=953
+round=2 lmdb batch=12 median_writes_per_s=6512 min=5238 max=8034
+round=2 sqlite batch=12 median_writes_per_s=13157 min=10975 max=15227
+round=2 lmdb_copy batch=12 median_writes_per_s=5842 min=4109 max=7053
+round=2 lmdb batch=64 median_writes_per_s=31550 min=21830 max=44448
+round=2 sqlite batch=64 median_writes_per_s=57812 min=39157 max=82535
+round=2 lmdb_copy batch=64 median_writes_per_s=27791 min=23980 max=40327
+round=3 lmdb batch=1 median_writes_per_s=631 min=417 max=918
+round=3 sqlite batch=1 median_writes_per_s=1201 min=948 max=1651
+round=3 lmdb_copy batch=1 median_writes_per_s=614 min=483 max=875
+round=3 lmdb batch=12 median_writes_per_s=6625 min=5716 max=8554
+round=3 sqlite batch=12 median_writes_per_s=13571 min=10602 max=16329
+round=3 lmdb_copy batch=12 median_writes_per_s=5968 min=4792 max=9479
+round=3 lmdb batch=64 median_writes_per_s=40209 min=30084 max=46824
+round=3 sqlite batch=64 median_writes_per_s=83726 min=48032 max=101454
+round=3 lmdb_copy batch=64 median_writes_per_s=34544 min=27811 max=40789
+round=4 lmdb batch=1 median_writes_per_s=606 min=425 max=787
+round=4 sqlite batch=1 median_writes_per_s=1343 min=905 max=1524
+round=4 lmdb_copy batch=1 median_writes_per_s=625 min=499 max=1037
+round=4 lmdb batch=12 median_writes_per_s=7244 min=5596 max=10067
+round=4 sqlite batch=12 median_writes_per_s=14598 min=7775 max=16248
+round=4 lmdb_copy batch=12 median_writes_per_s=6427 min=4139 max=7921
+round=4 lmdb batch=64 median_writes_per_s=32379 min=25329 max=37655
+round=4 sqlite batch=64 median_writes_per_s=75615 min=49127 max=82105
+round=4 lmdb_copy batch=64 median_writes_per_s=32985 min=23507 max=37827
+round=5 lmdb batch=1 median_writes_per_s=624 min=429 max=773
+round=5 sqlite batch=1 median_writes_per_s=1297 min=1030 max=1792
+round=5 lmdb_copy batch=1 median_writes_per_s=647 min=472 max=878
+round=5 lmdb batch=12 median_writes_per_s=7073 min=5277 max=9298
+round=5 sqlite batch=12 median_writes_per_s=14534 min=9541 max=16188
+round=5 lmdb_copy batch=12 median_writes_per_s=6295 min=5079 max=7414
+round=5 lmdb batch=64 median_writes_per_s=40417 min=28755 max=47257
+round=5 sqlite batch=64 median_writes_per_s=78714 min=43077 max=93368
+round=5 lmdb_copy batch=64 median_writes_per_s=38913 min=22773 max=43100
