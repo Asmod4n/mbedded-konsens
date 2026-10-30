@@ -977,3 +977,44 @@ Tests:
   the followers, the result is chosen, and nothing is written.
 - program/test: konsensd answers such a put with 413 and a problem
   document.
+
+### Changes after review (section 24, round 1)
+
+The review did not approve the section; one finding blocked. The
+changes:
+1. Blocking: error_of (include/konsens/node.hpp) passes only
+   session_expired and stale_request to the client, and gives every
+   other error number as rejected. value_too_large is added to it, and
+   a test checks the code that the client gets.
+2. The check runs after round_the_data_item, on the bytes that are
+   stored.
+3. Every place that runs a request calls run_request, so the check is
+   the same on every node.
+4. A request that gives value_too_large writes no session record; a
+   retry with the same number gives the same error.
+5. The error number is in the stored result. value_too_large comes
+   after stopped, and program/test/test_rest.cpp gains it, because that
+   test covers every value of client_errc.
+6. refs/rfc9110.txt is added in the same commit as the first function
+   that answers 413 (from doc-rfc-std 20230121-1, refs/rfc-origin.md).
+   konsensd takes a body up to default_max_body_bytes, 1 MiB; a body
+   from max_value_size to 1 MiB goes through consensus before the 413.
+7. A value is not the only write that can pass a limit of the store:
+   a key, a reply and the whole result can too. FoundationDB has a
+   bound for each ("Known Limitations"): "Keys cannot exceed 10,000
+   bytes in size. Values cannot exceed 100,000 bytes in size."
+   "Transaction size cannot exceed 10,000,000 bytes of affected data.
+   Keys, values, and ranges that you write are included as affected
+   data." The errors are key_too_large (2102), value_too_large (2103)
+   and transaction_too_large (2101). The form takes all three, as
+   constants max_key_size, max_value_size and max_result_size, and one
+   check function in run_request; the reply counts toward the result.
+   The errors are client_errc::key_too_large, value_too_large and
+   result_too_large. A static_assert holds max_result_size under the
+   length limit of SQLite (SQLITE_MAX_LENGTH), so no key, value, reply
+   or result of a request can pass it. Provisional: all three numbers
+   are those of FoundationDB; the owner decides the value bound (card of
+   2026-10-30) and may change the others.
+8. A full store still fails at the write of the apply and throws
+   write_error, as any write of the apply can. The form does not change
+   this.
