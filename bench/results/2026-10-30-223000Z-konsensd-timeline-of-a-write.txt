@@ -1,7 +1,7 @@
 Where the time of one write goes, at 1 and at 64 writes in flight
 
 What was measured
-- konsensd at 3a64734 (parts A, B and C of doc/plan-one-read-per-round.md) plus bench/arms/timestamps-of-a-write.patch (sha256 2f654a632e441074). The patch records CLOCK_MONOTONIC in ns in memory for each client request, each received peer message with its kind, each sent peer message with its kind and its log index, each commit (start, end of phase one, end of phase two), each submit and each completion of an fdatasync, and each turn of the loop. Each node writes the record at its stop. All three nodes run on one kernel, so the three clocks are one clock.
+- konsensd at 3a64734 (parts A, B and C of doc/plan-one-read-per-round.md) plus bench/arms/timestamps-of-a-write.patch (sha256 2f654a632e441074 for the runs without the arm; the file now holds the later form 91df7a3746fd8fb5, which also records the index of work and answer). The patch records CLOCK_MONOTONIC in ns in memory for each client request, each received peer message with its kind, each sent peer message with its kind and its log index, each commit (start, end of phase one, end of phase two), each submit and each completion of an fdatasync, and each turn of the loop. Each node writes the record at its stop. All three nodes run on one kernel, so the three clocks are one clock.
 - Build g++-16 Release in localhost/bench-logs, binary konsensd_g16TSS2u. Option sync_by_the_caller = true, Unix sockets.
 - bench/arms/timestamps-of-a-write.sh (sha256 528ed52aff1b73a3): one run of 200 writes at 1 in flight and one run of 4096 writes at 64 in flight, 64 bytes each. podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, three btrfs loop images compress=zstd:1 on one host disk.
 - One run per cell, no repetition. The record costs time, so the absolute rates of these runs are not the rates of the binary without it. The split below is the result.
@@ -22,13 +22,25 @@ Rates of the runs (the record is on)
 - Each node has its fdatasync in flight 83 % of the run.
 - fdatasync p50 2 080 to 2 160 us; 22 writes per sync.
 - A write spans 2.4 complete syncs of each node, and 3.4 sync periods in total.
-- Split of one write, mean over the middle 40 % of the entries:
-  - request to the send of its accept_decide: 3 162 us
-  - accept_decide to the first accepted of a follower: 3 830 us
-  - first accepted to decide: 888 us
-  - request to decide: 7 880 us
-- The leader sends accept_decide in batches, about once per own sync: 305 accept_decide for 4 163 entries. Each batch leaves the leader right after the commit of its open transaction, and that commit comes after the end of the sync that was in flight.
-- Cause in the code: while a sync is in flight, the leader keeps its write transaction open (sequence_paxos.hpp, end_step, the_transaction_holds_ended_steps_). The output of these steps is held until that transaction commits (node.hpp, hold_the_output_until_its_sync). So an entry that comes in during a sync waits for the end of that sync before its accept_decide leaves, and the followers then need one more sync.
+- The leader sends accept_decide in batches, about once per own sync: 305 accept_decide for 4 163 entries. While a sync is in flight, the leader keeps its write transaction open (sequence_paxos.hpp, end_step, the_transaction_holds_ended_steps_), and the output of these steps is held until that transaction commits (node.hpp, hold_the_output_until_its_sync).
+
+Wrong split, withdrawn
+- A first split of this run gave "request to accept_decide 3 162 us". It matched the n-th request with the n-th entry and took 131 entries before the first request. The true count is about 67 (64 registrations and the probe); the rest are entries at the end of the run. The split is wrong and is not used.
+
+64 in flight with the arm accept-before-the-commit (sha256 cc56fdab892c2910) and the record (run of 9 067 writes/s)
+- The record now also carries the index of each work message and the range of each answer message. The split per entry, mean over the middle 40 % of the entries (1 627 entries):
+  - work sent to the first answer sent by a follower: 983 us (second answer 1 275 us)
+  - second answer to the accept_decide: 758 us
+  - accept_decide to the first accepted: 2 525 us
+  - first accepted to decide: 629 us
+  - work to decide: 5 187 us
+- A write spans 1.9 complete syncs of each node.
+
+Bed run of the arm (bench-logs/arms3.sh sha256 e499f559db61c091, 4 rounds, arms alternate, writes/s, 64 bytes)
+- base konsensd_g16ABCS2u (3a64734): 1 in flight 353 440 459 496, 64 in flight 6 987 7 348 7 549 7 951
+- copy of the base: 441 466 490 497; 6 804 7 453 7 741 7 845
+- arm: 310 416 491 505; 7 124 7 573 7 680 8 064
+- Medians at 64: base 7 448.5, copy 7 597 (A/A 2.0 %), arm 7 626.5 (+2.4 % against the base). The difference is not over the noise floor. The arm is not taken.
 
 Fault in the bed found by this run
 - start_konsensd in cluster.sh takes the first node that logs "leader in accept". At the start each of the three nodes becomes leader once. In run 1 the client went to a follower, and each write took one more forward. bench-logs/cluster2.sh (sha256 b5ccbdeaa4a5fac9) takes the node whose last state line is "leader in accept".

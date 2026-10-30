@@ -1,5 +1,5 @@
 diff --git a/program/serve.cpp b/program/serve.cpp
-index 54c9a3b..3305623 100644
+index 54c9a3b..37b5764 100644
 --- a/program/serve.cpp
 +++ b/program/serve.cpp
 @@ -37,6 +37,22 @@
@@ -41,7 +41,7 @@ index 54c9a3b..3305623 100644
      auto t = l.node.client_request(id, *c.session, number, encode_write({op, c.call->key, c.call->body}));
      if (!t) [[unlikely]] {
          answer_with(l, id, c, problem_of(t.error()));
-@@ -520,6 +538,13 @@ void queue_the_messages(loop& l)
+@@ -520,6 +538,15 @@ void queue_the_messages(loop& l)
  {
      for (const auto& m : l.node.take_outgoing_messages()) {
          const auto to = std::visit([](const auto& x) { return x.to; }, m);
@@ -50,12 +50,14 @@ index 54c9a3b..3305623 100644
 +            if (const auto* x = std::get_if<konsens::accept_decide>(&pm->msg)) ix = x->entries.size() * 1000000000000ull + x->decided_idx;
 +            if (const auto* x = std::get_if<konsens::accepted>(&pm->msg)) ix = x->accepted_idx;
 +            if (const auto* x = std::get_if<konsens::decide>(&pm->msg)) ix = x->decided_idx;
++            if (const auto* x = std::get_if<konsens::work>(&pm->msg)) ix = x->index;
++            if (const auto* x = std::get_if<konsens::answer>(&pm->msg)) ix = x->from_idx * 1000000ull + x->results.size();
 +            trace_arm::mark('M', to * 100 + pm->msg.index(), ix);
 +        }
          const auto o = l.outgoing.find(to);
          if (o == l.outgoing.end()) {
              continue;
-@@ -595,13 +620,16 @@ void commit_the_step(loop& l)
+@@ -595,13 +622,16 @@ void commit_the_step(loop& l)
          const auto t = *std::exchange(l.step, std::nullopt);
          std::vector<konsens::client_reply> later;
          std::vector<std::uint64_t> answered;
@@ -72,7 +74,7 @@ index 54c9a3b..3305623 100644
          if (!r) [[unlikely]] {
              std::println(std::cerr, "konsensd: the commit gave the error {}", r.error().message());
              answer_the_calls_after_a_failed_commit(l, r.error());
-@@ -676,6 +704,7 @@ void take_the_frames_of(loop& l, const std::uint64_t id, connection& c)
+@@ -676,6 +706,7 @@ void take_the_frames_of(loop& l, const std::uint64_t id, connection& c)
              begin_the_close(l, id, c);
              return;
          }
@@ -80,7 +82,7 @@ index 54c9a3b..3305623 100644
          l.batch.push_back(std::move(*r));
          if (l.batch.size() == konsens::max_batch_size) {
              commit_the_step(l);
-@@ -743,6 +772,7 @@ void arm_the_sends(loop& l)
+@@ -743,6 +774,7 @@ void arm_the_sends(loop& l)
          }
          const std::string& front = c->out.front();
          io_uring_sqe* s = sqe_of(l);
@@ -88,7 +90,7 @@ index 54c9a3b..3305623 100644
          io_uring_prep_send(s, c->fd, front.data() + c->out_offset, front.size() - c->out_offset, MSG_NOSIGNAL);
          io_uring_sqe_set_data64(s, user_data_of(op::send, id));
          c->pending += 1;
-@@ -757,6 +787,7 @@ void submit_the_sync(loop& l)
+@@ -757,6 +789,7 @@ void submit_the_sync(loop& l)
          return;
      }
      io_uring_sqe* s = sqe_of(l);
@@ -96,7 +98,7 @@ index 54c9a3b..3305623 100644
      io_uring_prep_fsync(s, r->file_descriptor, IORING_FSYNC_DATASYNC);
      io_uring_sqe_set_data64(s, user_data_of(op::sync, r->sync_number));
  }
-@@ -769,6 +800,7 @@ void handle_a_completion(loop& l, const io_uring_cqe& cqe)
+@@ -769,6 +802,7 @@ void handle_a_completion(loop& l, const io_uring_cqe& cqe)
          if (cqe.res < 0) [[unlikely]] {
              l.node.throw_after_a_failed_sync(id, std::error_code{-cqe.res, std::system_category()});
          }
@@ -104,7 +106,7 @@ index 54c9a3b..3305623 100644
          keep_the_step(l, l.node.the_log_is_synced(id), "the_log_is_synced");
          return;
      }
-@@ -950,6 +982,7 @@ int serve(const config& c, const start_options options)
+@@ -950,6 +984,7 @@ int serve(const config& c, const start_options options)
              seen += 1;
          }
          io_uring_cq_advance(&l.ring, seen);
@@ -112,7 +114,7 @@ index 54c9a3b..3305623 100644
          for (const auto& e : l.ready) {
              handle_a_completion(l, e);
              return_the_buffer_of(l, e);
-@@ -973,6 +1006,7 @@ int serve(const config& c, const start_options options)
+@@ -973,6 +1008,7 @@ int serve(const config& c, const start_options options)
          submit_the_sync(l);
          arm_the_sends(l);
      }
