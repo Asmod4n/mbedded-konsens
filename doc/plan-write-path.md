@@ -1254,3 +1254,67 @@ data of provided buffers counts against the limit, or only the ring of
 their descriptors.
 Owner (2026-10-30 18:48): the rings themselves already need this limit.
 No form of this plan pins more memory.
+
+## 26. An entry is copied and decoded once, not once per step
+
+Measured (section 25, leader, conc 64): about 298 calls into operator
+new per write. The receive path makes about 13 of them. Most of the
+rest come from work that each step does again for every entry that is
+still in flight.
+
+Facts (write-path 0d015ac):
+1. open_tasks_after (include/konsens/node.hpp:1427-1435) copies every
+   open entry of tasks_ into a new std::vector<entry>. It runs in
+   append_the_done_records (:1439) and again after the answers are
+   counted (:1930). An entry holds three std::vector members
+   (storage.hpp:38-51), so a copy can allocate three times.
+   Measured: 140,161 entry copies come from these two calls.
+2. leader_log (include/konsens/selection.hpp:35-38) is a pointer and a
+   std::span<const entry>. selection reads log.entries in four places
+   (src/selection.cpp:90-91, 176, 247, 260-261).
+3. check_the_done_records (node.hpp, read_range at its start) reads
+   every record from the verified index to log_len back from SQLite at
+   each step and decodes each one (decode_entry: 133,646 calls).
+4. write_the_done_results (node.hpp:1718-1730), check_the_done_record
+   (:1311) and apply_the_done_records (:1508) each decode the same
+   result bytes again (decode_bytes<request_result>: 99,830 calls).
+
+Form, in three parts. Each part is one commit and one arm.
+
+Part A, no behaviour change. leader_log holds
+`std::span<const std::reference_wrapper<const entry>>`. open_tasks_after
+returns a vector of references into tasks_. A step then allocates one
+vector of pointers in place of one copy of each open entry. The four
+reads in selection.cpp call get(). tasks_ does not change while a
+leader_log lives: append_the_done_records erases from tasks_ only after
+its last use of log. A test checks that select_results and
+find_the_done_records give the same results from a log of references
+as the current form gives from a log of copies, for the sequences of
+test_selection.
+
+Part B, no behaviour change. A done record that a step decodes keeps
+its decoded request_result beside it for that step: done_log carries a
+span of std::optional<request_result> parallel to done, filled once
+when the done records are read. write_the_done_results,
+check_the_done_record and apply_the_done_records read it there.
+
+Part C, a question for the owner. The done records that this node
+appended or received are kept in memory from the append until they are
+applied, and check_the_done_records reads them there and not from
+SQLite. SQLite is read at the start of the node and after a recovery.
+A lost write is then not seen in a release build until the next start;
+the lost-write check of the debug build (decision 2026-10-17) reads the
+record back. Proposal: build part C, with the read-back in the debug
+build. Part C waits for the answer of the owner.
+
+Not in this section: the receive path (section 25), the copy of a done
+record in find_the_done_records (`auto e = task`, src/selection.cpp,
+one copy per done record and not per step).
+
+Measure: for each part, callgrind calls into operator new per write on
+the leader at conc 64 (count, not time), and then the bed of section
+22 at 1 and 64 in flight, base 0d015ac against the part, each arm in
+its own binary, A/A noise first, alternate runs, medians.
+
+The TLA+ model needs no change: no part changes a message, a stored
+record, or the order of a step.
