@@ -1,0 +1,152 @@
+What was measured
+- konsensd_g16 (sha256 02dc8a4ea7798eef, commit edfb54f, Release, GCC 16.2.0) under valgrind 3.27.1 callgrind,
+  three nodes, one btrfs file system per node, 4096 writes of 64 B, 64 in flight, election_ticks = 100.
+- Event: instructions (Ir) only. An instruction count finds hot functions. It is not a time and says no gain.
+- Under valgrind the cluster gave 341 writes/s, so batches differ from a run without valgrind.
+- Image localhost/bench-logs plus the Ubuntu package valgrind; podman --cpus=3, user 1001; kernel 6.18.44-fc-v185.
+- Scripts vg.sh, vgwrap.sh, cluster.sh (outside the tree): 69ba13928288f869 3b77eb20dcdb4533 46f6a41b4edfc158
+- Node 3 was the leader for the run (node 2 led during the start).
+
+=== node 3, exclusive, top 20
+1,334,722,631 (100.0%)  PROGRAM TOTALS
+109,673,426 ( 8.22%)  ???:sqlite3VdbeExec [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 59,253,015 ( 4.44%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:__memset_avx2_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 55,261,831 ( 4.14%)  ???:crc32c::ExtendSse42(unsigned int, unsigned char const*, unsigned long) [/b/bin/konsensd_g16]
+ 53,389,354 ( 4.00%)  ???:std::expected<void, cbor::error> cbor::generic::generic_read<std::vector<std::byte, std::allocator<std::byte> >, true>(cbor::value_sharing::sharing_decoder<true>&, std::vecto
+ 40,782,370 ( 3.06%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:_int_malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 34,892,721 ( 2.61%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:__memcpy_avx_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 30,507,752 ( 2.29%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:_int_free_merge_chunk [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 30,048,433 ( 2.25%)  ???:unsigned long cbor::generic::generic_write<konsens::entry>(std::span<char, 18446744073709551615ul>, unsigned long, konsens::entry const&) [/b/bin/konsensd_g16]
+ 29,016,374 ( 2.17%)  ???:konsens::results_agree(std::span<std::byte const, 18446744073709551615ul>, std::span<std::byte const, 18446744073709551615ul>, std::optional<konsens::float_rule> const&) [/b/
+ 25,396,969 ( 1.90%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 24,188,366 ( 1.81%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S:__memcmp_avx2_movbe [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 23,973,772 ( 1.80%)  ???:std::_Rb_tree_increment(std::_Rb_tree_node_base*) [/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.36]
+ 23,195,310 ( 1.74%)  ???:konsens::selection::counts(konsens::leader_log const&, unsigned long, unsigned long) const [/b/bin/konsensd_g16]
+ 23,089,513 ( 1.73%)  ???:sqlite3VdbeRecordCompareWithSkip [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 21,565,481 ( 1.62%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 17,916,662 ( 1.34%)  ???:0x0000000000036430 [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 17,560,127 ( 1.32%)  ???:sqlite3BtreeTableMoveto [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 14,311,656 ( 1.07%)  ???:konsens::selection::select_results(konsens::leader_log const&) [/b/bin/konsensd_g16]
+ 14,235,772 ( 1.07%)  ???:sqlite3VdbeHalt [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 14,139,402 ( 1.06%)  ???:sqlite3BtreeIndexMoveto [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+
+=== node 3, inclusive, top 45
+1,334,722,631 (100.0%)  PROGRAM TOTALS
+1,334,720,549 (100.0%)  ???:0x0000000000026e20 [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+1,331,945,138 (99.79%)  ???:(below main) [/b/bin/konsensd_g16]
+1,331,945,126 (99.79%)  /usr/src/glibc-2.44-1ubuntu2/csu/../csu/libc-start.c:__libc_start_main@@GLIBC_2.34 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+1,331,944,938 (99.79%)  /usr/src/glibc-2.44-1ubuntu2/csu/../sysdeps/nptl/libc_start_call_main.h:(below main) [/usr/lib/x86_64-linux-gnu/libc.so.6]
+1,331,935,882 (99.79%)  ???:main [/b/bin/konsensd_g16]
+1,331,935,865 (99.79%)  ???:(anonymous namespace)::run(std::span<char*, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+1,331,801,410 (99.78%)  ???:konsensd::serve(konsensd::config const&, konsensd::start_options) [/b/bin/konsensd_g16]
+1,145,191,571 (85.80%)  ???:konsensd::(anonymous namespace)::commit_the_step(konsensd::(anonymous namespace)::loop&) [/b/bin/konsensd_g16]
+  534,271,358 (40.03%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::propose_before_the_step() [/b/bin/konsensd_g16]
+  525,929,090 (39.40%)  ???:sqlite3_step [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+  525,759,444 (39.39%)  ???:0x000000000400c620 [???]
+  511,571,254 (38.33%)  ???:sqlite3VdbeExec [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+  413,953,614 (31.01%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::append_the_done_records(unsigned long) [/b/bin/konsensd_g16]
+  306,354,291 (22.95%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::execute_verify() [/b/bin/konsensd_g16]
+  200,332,001 (15.01%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::check_the_done_records() [/b/bin/konsensd_g16]
+  196,780,022 (14.74%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::run_the_tasks(konsens::node<konsens::persistent_storage, konsensd::key_value>::done_log const&) [/b/bin/kon
+  196,285,201 (14.71%)  ???:void konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_result<konsens::persistent_storage::nested_transaction>(konsens::entry const&, unsigned long
+  133,413,502 (10.00%)  ???:konsens::persistent_storage::nested_transaction::insert_or_assign(std::span<std::byte const, 18446744073709551615ul>, std::span<std::byte const, 18446744073709551615ul>) [/
+  120,150,289 ( 9.00%)  ???:konsens::persistent_storage::transaction::append_entries(std::span<konsens::entry const, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+  118,845,698 ( 8.90%)  ???:konsens::(anonymous namespace)::put_entries(konsens::(anonymous namespace)::link const&, konsens::meta_record&, std::vector<std::byte, std::allocator<std::byte> >&, std::sp
+  112,991,522 ( 8.47%)  ???:konsens::sequence_paxos<konsens::persistent_storage>::accept_entries_leader(std::span<konsens::entry const, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+  106,077,425 ( 7.95%)  ???:konsens::selection::select_results(konsens::leader_log const&) [/b/bin/konsensd_g16]
+  102,221,382 ( 7.66%)  ???:konsens::persistent_storage::transaction::get_entries(unsigned long, unsigned long) const [/b/bin/konsensd_g16]
+  102,157,062 ( 7.65%)  ???:konsens::persistent_storage::transaction::read_entries(unsigned long, unsigned long) const [/b/bin/konsensd_g16]
+  102,083,553 ( 7.65%)  ???:konsens::(anonymous namespace)::read_entries_in(konsens::(anonymous namespace)::link const&, unsigned long, unsigned long) [/b/bin/konsensd_g16]
+  101,797,904 ( 7.63%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::apply_the_done_records() [/b/bin/konsensd_g16]
+   96,301,348 ( 7.22%)  ???:konsensd::(anonymous namespace)::take_the_requests_of(konsensd::(anonymous namespace)::loop&, unsigned long, konsensd::(anonymous namespace)::connection&) [/b/bin/konsensd_
+   92,672,523 ( 6.94%)  ???:std::expected<std::vector<konsens::entry, std::allocator<konsens::entry> >, std::error_code> konsens::sequence_paxos<konsens::persistent_storage>::read_range<konsens::persi
+   89,239,494 ( 6.69%)  ???:sqlite3BtreeInsert [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+   88,800,708 ( 6.65%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_done_results(konsens::node<konsens::persistent_storage, konsensd::key_value>::done_log const&, un
+   82,962,868 ( 6.22%)  ???:konsensd::(anonymous namespace)::send_the_write(konsensd::(anonymous namespace)::loop&, unsigned long, konsensd::(anonymous namespace)::connection&, unsigned long) [/b/bin/
+   79,951,854 ( 5.99%)  ???:0x000000000400c390 [???]
+   79,442,444 ( 5.95%)  ???:0x000000000400c370 [???]
+   78,816,495 ( 5.91%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   78,467,753 ( 5.88%)  ???:operator delete(void*, unsigned long) [/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.36]
+   78,200,151 ( 5.86%)  ???:operator new(unsigned long) [/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.36]
+   76,983,177 ( 5.77%)  ???:0x0000000004c806a0 [???]
+   75,818,331 ( 5.68%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::client_request(unsigned long, unsigned long, unsigned long, std::vector<std::byte, std::allocator<std::byte
+   75,497,536 ( 5.66%)  ???:operator delete(void*) [/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.36]
+   74,899,202 ( 5.61%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   74,012,614 ( 5.55%)  ???:0x0000000004c80f20 [???]
+   73,306,353 ( 5.49%)  ???:konsens::(anonymous namespace)::put_session(konsens::(anonymous namespace)::link const&, std::vector<std::byte, std::allocator<std::byte> >&, unsigned long, konsens::sessio
+   66,581,470 ( 4.99%)  ???:konsens::decode_result(std::span<std::byte const, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+   66,323,576 ( 4.97%)  ???:std::optional<konsens::request_result> konsens::(anonymous namespace)::decode_bytes<konsens::request_result>(std::span<std::byte const, 18446744073709551615ul>) [/b/bin/kon
+   66,322,100 ( 4.97%)  ???:0x0000000004c80480 [???]
+
+=== node 1, exclusive, top 20
+881,276,556 (100.0%)  PROGRAM TOTALS
+89,381,990 (10.14%)  ???:sqlite3VdbeExec [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+57,836,140 ( 6.56%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:__memset_avx2_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+52,966,114 ( 6.01%)  ???:std::expected<void, cbor::error> cbor::generic::generic_read<std::vector<std::byte, std::allocator<std::byte> >, true>(cbor::value_sharing::sharing_decoder<true>&, std::vector
+27,456,997 ( 3.12%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:__memcpy_avx_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+24,076,195 ( 2.73%)  ???:sqlite3VdbeRecordCompareWithSkip [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+21,111,973 ( 2.40%)  ???:crc32c::ExtendSse42(unsigned int, unsigned char const*, unsigned long) [/b/bin/konsensd_g16]
+19,823,972 ( 2.25%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:_int_malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+18,979,936 ( 2.15%)  ???:0x0000000000036430 [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+17,177,219 ( 1.95%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S:__memcmp_avx2_movbe [/usr/lib/x86_64-linux-gnu/libc.so.6]
+16,658,886 ( 1.89%)  ???:std::expected<void, cbor::error> cbor::well_formedness::item_skip<true, cbor::well_formedness::no_marks>(cbor::heads::decoder<true>&, cbor::well_formedness::no_marks&) [clone 
+13,928,728 ( 1.58%)  ???:sqlite3BtreeTableMoveto [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+13,512,224 ( 1.53%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+13,392,277 ( 1.52%)  ???:sqlite3BtreeIndexMoveto [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+11,649,531 ( 1.32%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+10,721,526 ( 1.22%)  ???:sqlite3VdbeHalt [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+10,431,276 ( 1.18%)  ???:0x000000000011d020 [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 9,966,311 ( 1.13%)  ???:sqlite3PagerGet [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 9,942,800 ( 1.13%)  ???:std::expected<void, cbor::error> cbor::generic::struct_read<konsens::entry, true>(cbor::value_sharing::sharing_decoder<true>&, konsens::entry&, unsigned long, unsigned long) [
+ 9,842,770 ( 1.12%)  /usr/src/glibc-2.44-1ubuntu2/malloc/malloc.c:_int_free_merge_chunk [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 9,155,654 ( 1.04%)  ???:sqlite3_step [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+
+=== node 1, inclusive, top 45
+881,276,556 (100.0%)  PROGRAM TOTALS
+881,274,474 (100.0%)  ???:0x0000000000026e20 [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+878,499,063 (99.68%)  ???:(below main) [/b/bin/konsensd_g16]
+878,499,051 (99.68%)  /usr/src/glibc-2.44-1ubuntu2/csu/../csu/libc-start.c:__libc_start_main@@GLIBC_2.34 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+878,498,863 (99.68%)  /usr/src/glibc-2.44-1ubuntu2/csu/../sysdeps/nptl/libc_start_call_main.h:(below main) [/usr/lib/x86_64-linux-gnu/libc.so.6]
+878,489,807 (99.68%)  ???:main [/b/bin/konsensd_g16]
+878,489,790 (99.68%)  ???:(anonymous namespace)::run(std::span<char*, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+878,355,500 (99.67%)  ???:konsensd::serve(konsensd::config const&, konsensd::start_options) [/b/bin/konsensd_g16]
+776,146,179 (88.07%)  ???:konsensd::(anonymous namespace)::commit_the_step(konsensd::(anonymous namespace)::loop&) [/b/bin/konsensd_g16]
+476,799,160 (54.10%)  ???:sqlite3_step [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+476,533,556 (54.07%)  ???:0x000000000400c620 [???]
+466,132,351 (52.89%)  ???:sqlite3VdbeExec [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+285,911,358 (32.44%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::execute_verify() [/b/bin/konsensd_g16]
+228,490,994 (25.93%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::run_the_tasks(konsens::node<konsens::persistent_storage, konsensd::key_value>::done_log const&) [/b/bin/konse
+210,088,566 (23.84%)  ???:void konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_result<konsens::persistent_storage::nested_transaction>(konsens::entry const&, unsigned long, 
+171,007,296 (19.40%)  ???:decltype ({parm#1}()) konsens::node<konsens::persistent_storage, konsensd::key_value>::throw_on_a_damage<konsens::node<konsens::persistent_storage, konsensd::key_value>::keep
+158,186,247 (17.95%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::propose_before_the_step() [/b/bin/konsensd_g16]
+158,083,247 (17.94%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::check_the_done_records() [/b/bin/konsensd_g16]
+143,302,693 (16.26%)  ???:konsens::persistent_storage::nested_transaction::insert_or_assign(std::span<std::byte const, 18446744073709551615ul>, std::span<std::byte const, 18446744073709551615ul>) [/b/
+133,815,791 (15.18%)  ???:std::__detail::__variant::__gen_vtable_impl<std::__detail::__variant::_Multi_array<std::__detail::__variant::__deduce_visit_result<std::expected<void, std::error_code> > (*)(
+132,222,996 (15.00%)  ???:konsens::sequence_paxos<konsens::persistent_storage>::handle_acceptdecide(konsens::accept_decide const&) [/b/bin/konsensd_g16]
+119,865,312 (13.60%)  ???:konsens::persistent_storage::transaction::append_entries(std::span<konsens::entry const, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+118,558,353 (13.45%)  ???:konsens::(anonymous namespace)::put_entries(konsens::(anonymous namespace)::link const&, konsens::meta_record&, std::vector<std::byte, std::allocator<std::byte> >&, std::span
+ 99,857,293 (11.33%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::apply_the_done_records() [/b/bin/konsensd_g16]
+ 94,210,639 (10.69%)  ???:sqlite3BtreeInsert [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 88,954,385 (10.09%)  ???:konsensd::(anonymous namespace)::take_the_frames_of(konsensd::(anonymous namespace)::loop&, unsigned long, konsensd::(anonymous namespace)::connection&) [/b/bin/konsensd_g16]
+ 83,790,533 ( 9.51%)  ???:konsens::decode(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) [/b/bin/konsensd_g16]
+ 77,127,318 ( 8.75%)  ???:konsens::(anonymous namespace)::put_session(konsens::(anonymous namespace)::link const&, std::vector<std::byte, std::allocator<std::byte> >&, unsigned long, konsens::session_
+ 72,532,767 ( 8.23%)  ???:konsens::persistent_storage::transaction::get_entries(unsigned long, unsigned long) const [/b/bin/konsensd_g16]
+ 72,480,759 ( 8.22%)  ???:konsens::persistent_storage::transaction::read_entries(unsigned long, unsigned long) const [/b/bin/konsensd_g16]
+ 72,421,614 ( 8.22%)  ???:konsens::(anonymous namespace)::read_entries_in(konsens::(anonymous namespace)::link const&, unsigned long, unsigned long) [/b/bin/konsensd_g16]
+ 71,379,374 ( 8.10%)  ???:konsens::node<konsens::persistent_storage, konsensd::key_value>::write_the_done_results(konsens::node<konsens::persistent_storage, konsensd::key_value>::done_log const&, unsi
+ 65,424,537 ( 7.42%)  ???:0x00000000000384c0 [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 64,866,900 ( 7.36%)  ???:konsens::persistent_storage::nested_transaction::insert_or_assign_session(unsigned long, konsens::session_record const&) [/b/bin/konsensd_g16]
+ 64,853,418 ( 7.36%)  ???:konsens::decode_result(std::span<std::byte const, 18446744073709551615ul>) [/b/bin/konsensd_g16]
+ 64,598,002 ( 7.33%)  ???:std::optional<konsens::request_result> konsens::(anonymous namespace)::decode_bytes<konsens::request_result>(std::span<std::byte const, 18446744073709551615ul>) [/b/bin/konse
+ 62,912,034 ( 7.14%)  ???:std::expected<std::vector<konsens::entry, std::allocator<konsens::entry> >, std::error_code> konsens::sequence_paxos<konsens::persistent_storage>::read_range<konsens::persist
+ 61,841,633 ( 7.02%)  ???:std::expected<konsens::received, std::error_code> konsens::(anonymous namespace)::decode_body_of_kind<0ul, 1ul, 2ul, 3ul, 4ul, 5ul, 6ul, 7ul, 8ul, 9ul, 10ul, 11ul, 12ul, 13ul
+ 60,683,353 ( 6.89%)  ???:sqlite3BtreeIndexMoveto [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 57,836,140 ( 6.56%)  /usr/src/glibc-2.44-1ubuntu2/string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:__memset_avx2_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 57,703,894 ( 6.55%)  ???:std::expected<void, cbor::error> cbor::generic::generic_read<std::vector<std::byte, std::allocator<std::byte> >, true>(cbor::value_sharing::sharing_decoder<true>&, std::vecto
+ 56,735,289 ( 6.44%)  ???:0x00000000049bc3a0 [???]
+ 55,836,046 ( 6.34%)  ???:sqlite3PagerGet [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 54,990,707 ( 6.24%)  ???:0x0000000000036430 [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 54,308,787 ( 6.16%)  ???:sqlite3VdbeHalt [/usr/lib/x86_64-linux-gnu/libsqlite3.so.3.53.4]
+ 50,075,943 ( 5.68%)  ???:std::expected<void, cbor::error> cbor::generic::generic_read<konsens::request_result, true>(cbor::value_sharing::sharing_decoder<true>&, konsens::request_result&, unsigned lo
+
+=== calls of sqlite3_step: node 3 175735 (42.9 per write), node 1 127756 (31.2 per write), start included
