@@ -1053,3 +1053,56 @@ What follows from it:
 - A full store is reported when a write reaches it. A value that fits
   the length limit of SQLite and fills the store at the apply fails on
   each node that applies it.
+
+## 25. Receive without a copy: views into the buffer pool
+
+Owner decision (2026-10-30 18:30): the receive path holds only views
+into the pool of provided buffers. The one copy is the copy into the
+database.
+
+Facts (konsensd and the library on write-path, 4314cd3):
+1. konsensd receives with multishot recv from provided buffers
+   (program/serve.cpp:195). A peer buffer holds 64 KiB, a client buffer
+   16 KiB (serve.cpp:71-72). Each CQE fills one buffer.
+2. Copy 1: the bytes of each CQE are appended to the buffer of the
+   connection, c.frames.bytes or c.http_in (serve.cpp:705, 708).
+3. The buffer goes back to the ring right after its completion
+   (serve.cpp:955, return_the_buffer_of).
+4. Copy 2: take_frame gives each frame as a new std::string
+   (program/frame.cpp, `std::string frame{rest.substr(...)}`); a client
+   body is copied by bytes_of (program/rest.cpp:114).
+5. Copy 3: konsens::decode takes the frame as an owner, but the fields
+   of entry are std::vector (include/konsens/storage.hpp:39-51), so the
+   payload and the result of each entry are copied out of the frame.
+6. Copy 4: the bind of SQLite copies into the database. This is the one
+   copy that stays.
+7. The library keeps entries after the step that received them: tasks_,
+   own_ and waiting_ in include/konsens/node.hpp hold requests and
+   results until their done records are appended or applied, which can
+   be many steps later.
+8. The frame length is a uint32 (program/frame.cpp:38), so a frame holds
+   at most 2^32 - 1 bytes.
+
+Questions that the form must answer:
+- A frame can span several buffers. A view of it is then a sequence of
+  spans, or the frame is copied once into one block. The CBOR decoder
+  of mbedded-cbor reads one contiguous span (not checked for a form that
+  reads a sequence of spans).
+- A buffer that a view holds cannot go back to the ring. The ring then
+  runs empty while entries wait in tasks_ and own_ (fact 7), and the
+  receive stalls (waiting_for_buffers, serve.cpp). The form needs a
+  bound on held buffers, or a copy of what the library keeps past the
+  step.
+- The public type entry holds std::vector. A view in entry changes the
+  API of the library and the lifetime of every entry that a caller
+  gives.
+- The send path is not part of this section.
+
+Known forms, not checked here: Seastar keeps a received buffer as a
+reference-counted temporary_buffer and shares views of it; DPDK chains
+mbufs for a packet that spans buffers; Linux io_uring has a zero-copy
+receive (zcrx) for a NIC with header split. A consensus search comes
+before the form, as the rules ask.
+
+Measure: callgrind of memcpy and of the allocator per write at 1 and 64
+in flight on 4314cd3, before any change, then each arm against it.
