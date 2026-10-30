@@ -1323,6 +1323,15 @@ write_the_done_results and check_the_done_record read the decoded
 result there. apply_the_done_records stays out of part B: it reads its
 own range in its own place.
 
+Wrong assumption (2026-10-30): part B was assumed to decode less. It
+decoded more. The step before decoded a result only where a run or a
+check needed it; part B decoded every record of each range read.
+Callgrind of the leader at 64 in flight: 1,090,524 calls into operator
+new against 919,977 for part A
+(bench/results/2026-10-30-193000Z-konsensd-callgrind-part-b.txt). Part
+B is reverted. A form that decodes on first use and keeps the result
+for the step is open.
+
 Part C, an arm only (owner, 2026-10-30 18:51, card "Erst messen"). The
 done records that this node appended or received stay in memory from
 the append until they are applied, and the step reads them there and
