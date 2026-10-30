@@ -531,3 +531,10 @@ both from memory. The argument of arm F needs neither. It rests on two
 facts of this code: the reply comes from a decided record, and a crash
 retires the identity (finding 2.6). Remove the quotes, or read the
 sources and give the sections.
+
+## Arm S (section 15), round 1
+
+Verdict: approve with changes. Ten findings; the changes R1 to R10 in
+section 15 of the plan answer them. Findings 1 to 3 (a stale synced
+length after append_on_prefix, a decide of one index only, the scope of
+item 5) changed the form before the build.

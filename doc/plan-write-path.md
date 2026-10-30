@@ -368,3 +368,36 @@ own accept before `Sync`. BFS with small bounds.
 
 As section 2, arm S against D1, with an A/A pair. Cells 1 and 64 in
 flight.
+
+### Changes after review (arm S, round 1)
+
+R1. Durable prefix. The node keeps `synced_len`: the length of the log
+    prefix that is durable. `append_on_prefix` and a change of the
+    accepted round lower it to the first changed index (0 for a change of
+    the round). A sync report for n raises it to the log length recorded
+    with step n, never above a lowering of a later step. Item 8 uses
+    `synced_len`. Test: a new leader adopts a suffix that overwrites
+    synced entries; its sync is delayed; it does not decide.
+R2. On a sync report the leader decides the highest chosen index: the
+    majority-th largest value of the accepted indexes.
+R3. Item 5 becomes: each Sequence Paxos message gets the highest sync
+    number assigned so far. Ballot Leader Election messages and the
+    read replies of `serve_reads` are not held.
+R4. The received and message batches are freed at the commit; only the
+    outgoing Sequence Paxos messages and the replies are held.
+R5. With the option on, every commit sets the flag that `stop()` uses to
+    sync the last commit. konsensd drops a sync completion after
+    `stop()`.
+R6. A failed sync report puts the storage in a failure state. Every
+    later `begin()` throws, as after a write that did not finish.
+    konsensd ends and answers the waiting calls.
+R7. Test with a small checkpoint threshold, so that checkpoints and WAL
+    resets run while a sync is out.
+R8. The storage opens the -wal file after the open sync, with O_CLOEXEC,
+    checks st_dev and st_ino against the path, and closes it only after
+    both connections are closed.
+R9. Safety: under form B a single crash retires the node. The sync per
+    step protects against a crash of a majority at the same time, and it
+    keeps the log that a retired node gives to a build.
+R10. `the_log_is_synced(n)` opens a step and returns a transaction, as
+    `tick()` does. A call between the two commit phases is a wrong use.
