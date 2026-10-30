@@ -789,3 +789,110 @@ P7. Correct the facts of section 19. With S2, a continued step runs
 
 P8. The name `read_meta_between_steps` no longer says what happens.
     Proposal: `meta_between_steps`. The owner decides the name.
+
+## Review of arms U and M (section 20)
+
+## Verdict: CHANGES
+
+The form is sound. The plan leaves out the bookkeeping that multishot changes, and the Unix form conflicts with its own test.
+
+## Answers
+
+### 1. A completion after a close, and c.pending
+
+- An id is never reused. `added_connection` takes `l.next_id++` (serve.cpp:183) in a 56-bit space (serve.cpp:47-48).
+- A completion for an id that is gone is dropped (serve.cpp:676-679).
+- The connection stays until `c.pending == 0` (serve.cpp:225-227). A late completion therefore finds its connection, but only while pending is right.
+- Today every completion decrements pending (serve.cpp:681). With multishot, one SQE gives many CQEs. That code would reach zero after the first CQE, erase the connection while the recv is still armed, and drop the rest at serve.cpp:677. With provided buffers, each dropped CQE also loses a buffer for good.
+- The plan does not say how pending counts a multishot. See M1.
+- The end of a multishot after a close: `begin_the_close` calls `shutdown(SHUT_RDWR)` (serve.cpp:223). The recv then ends with res 0 and no F_MORE. Queued bytes can still arrive first, with F_MORE. The slipstream engine has the same behaviour (deps/slipstreamIO/src/engine_posix.c:280-305). For the kernel I did not check this in this session. See M12.
+
+### 2. A bound on provided buffers
+
+- Memory per connection does not change. `http_in` closes above `most_client_bytes` (serve.cpp:591-593). A frame above `max_frame_bytes` closes the connection (serve.cpp:541-545, frame.cpp:48).
+- Within one turn, one connection can take every buffer of its ring. The kernel fills buffers as long as bytes and buffers exist.
+- Every buffer of a CQE in `l.ready` goes back while that CQE is handled. So at the end of the loop over `l.ready` (serve.cpp:834-836), every buffer of the turn is back.
+- A recv on another connection that finds no buffer ends with -ENOBUFS and no F_MORE (engine_posix.c:283-288; the comment there names it the kernel's contract). That connection then waits for a re-arm.
+- Today `handle_a_receive` closes on every `res <= 0` (serve.cpp:582). Without a change, ENOBUFS closes a healthy connection. See M4.
+- With one ring for all connections, a client that sends large bodies can take the buffers that the peers need for their messages. The peer messages carry the heartbeats of leader election. See M5.
+- The CQ holds 2 x `ring_entries` = 512 entries (serve.cpp:43, 808). More buffers than free CQ entries can overflow the CQ. From memory, the kernel then ends the multishot without F_MORE. I did not check this in the kernel source in this session. See M5.
+
+### 3. The provided buffer ring on the slipstream engine
+
+- The engine serves `IORING_REGISTER_PBUF_RING` with flags 0 and a caller ring (deps/slipstreamIO/src/slipstream_engine.c:623-645). `io_uring_setup_buf_ring` with flags 0 uses that form (liburing 2.13).
+- The engine serves multishot recv with buffer select (engine_posix.c:274-306) and multishot accept (engine_posix.c:250-271).
+- test/parity.c:575-606 and :969-971 compare both with the kernel on an AF_UNIX socketpair.
+- So the source says it works. No konsensd run on the engine shows it yet. M refuses to start on the engine only if the one-file test of M12 shows a difference.
+- The bench containers now allow io_uring through a seccomp profile (state file mbedded-konsens.md:196). The bench therefore measures the kernel. A run under the default seccomp profile of podman gives the engine.
+
+### 4. The Unix socket form
+
+- `split_host_and_port("unix:/p")` gives host "unix" and port "/p", and the port fails (address.cpp:57-74). So no address that works today changes meaning, except `unix:<digits>`. With the prefix, `unix:7151` names a socket file "7151". The prefix check must come before the split.
+- `sockaddr_un` (110 bytes) fits in `sockaddr_storage` (address.hpp:20-23). The length is `offsetof(sockaddr_un, sun_path) + path size + 1`, as unix(7) gives it.
+- The bound of a path: `sun_path` holds 108 bytes. A path of 107 bytes and its NUL fit. "Longer than sun_path" is off by one. The bound is 107 bytes.
+- An abstract name: no. An abstract socket has no file permissions, and any process in the network namespace connects. A NUL anywhere in the path is malformed. TOML lets a string hold `\u0000`, so the check is needed.
+- A stale socket file: the plan says the bind fails. three_nodes.sh restarts nodes after a clean stop (three_nodes.sh:135-136, 185-190, 195-196) and after SIGKILL (three_nodes.sh:202-207). Under the plan, every restart on `unix:` fails to bind. The unix run of three_nodes cannot pass. See M9.
+- TCP_NODELAY: `start_a_connect` sets it on every socket (serve.cpp:520). On AF_UNIX it fails with EOPNOTSUPP, and the result is ignored. The plan sets it on TCP only. That is right.
+- SO_REUSEADDR: `listener_on` sets it on every socket (serve.cpp:716). On AF_UNIX it has no effect. Set it on TCP only too, so that no call claims an effect that does not happen.
+- Permissions: bind creates the file with mode 0777 & ~umask. A connect needs write permission on the file (unix(7)). The plan says nothing on this. See M8.
+
+### 5. The tests
+
+- No test_address file exists. The tests of `split_host_and_port` and `resolve` are in program/test/test_frame.cpp:74-85.
+- ptest.sh is outside the tree (bench-logs/ptest.sh:4). The tree runs three_nodes through CMakeLists.txt:179. three_nodes.sh writes TCP addresses only (three_nodes.sh:21-25) and dials TCP (three_nodes.sh:14, 58).
+- The address set in the plan has three members. The finite set has more: IPv4 literal, host name, [v6], `unix:` path, and the malformed `unix:` forms. See M11.
+- The flag combinations are not covered. The plan has no function that takes (res, flags), so no test can reach each combination without a kernel. See M2.
+- `listener_on` on a Unix path has its own finite set of states of the path. See M11.
+
+### 6. Other points and a simpler form
+
+- The bench keeps its connections open (driver/main.go:62, IdleConnTimeout one hour). A run does about 64 accepts. The bench cannot measure multishot accept. It stays in M, since the owner asked for it, but the result says that it is not measured.
+- M changes the TCP path too. The plan measures M on Unix sockets only. If M enters the tree, TCP users get it unmeasured. See M13.
+- The buffer memory must stay alive until the ring is gone. See M6.
+- Multishot recv needs buffer select. So no simpler form of M without a buffer ring exists.
+- An accept that fails at once, for example on EMFILE, re-arms at once (serve.cpp:673). That loops today too. M keeps it. It is not new and not part of this review.
+- The plan ends with no list of its data. See M14.
+
+## Requested changes
+
+M1. Pending with multishot. An armed multishot recv adds one to `c.pending`. Only a CQE without IORING_CQE_F_MORE subtracts one. The plan states this in the M bullet.
+
+M2. A pure function decides. One function takes `res` and `flags` of a receive CQE and returns a value of an enum. The members are: bytes and still armed (res > 0, F_BUFFER, F_MORE); bytes and ended (res > 0, F_BUFFER, no F_MORE); end of stream (res 0, no F_MORE); no buffer (-ENOBUFS, no F_MORE); an error (other res < 0, no F_MORE). A CQE with res > 0 and no F_BUFFER, or with F_MORE and res <= 0, is a fault of ours and throws std::logic_error. The function reads F_BUFFER and F_MORE only, so IORING_CQE_F_SOCK_NONEMPTY changes nothing. A second function does the same for an accept CQE: a new descriptor and still armed; a new descriptor and ended; an error and ended. `handle_a_receive` and the accept branch (serve.cpp:667-675) act on the result. A test checks every member, and one case sets F_SOCK_NONEMPTY.
+
+M3. One place returns a buffer. Every CQE with F_BUFFER gives its buffer back to the ring after the bytes are copied. This holds on every path: a closing connection (serve.cpp:582), an outgoing peer (serve.cpp:582), and an id that is gone (serve.cpp:677). The return is one function, called from `handle_a_completion` once for each CQE. The plan names `io_uring_buf_ring_add` and `io_uring_buf_ring_advance` for it.
+
+M4. ENOBUFS is not a close. A connection with ENOBUFS goes into a list. That list is re-armed after the loop over `l.ready` (serve.cpp:834-836). At that point every buffer of the turn is back. The words "after the buffers are back" change to this form.
+
+M5. Two buffer rings and a static bound. One ring serves the peer connections. One ring serves the client connections. A client then cannot take the buffers of the peers. The count of the two rings together is not greater than the CQ entries, 2 x `ring_entries`. A `static_assert` checks it. The plan names the provisional count and size of each ring and the total memory. The measurement then decides the values.
+
+M6. The lifetime of the buffer memory. `io_uring_free_buf_ring` runs before `io_uring_queue_exit` (serve.cpp:855). The memory of the buffers is freed after `io_uring_queue_exit`. The kernel or the engine can write into it until then. A failure of `io_uring_setup_buf_ring` at start ends `serve` with `exit_failed` and a message, as `io_uring_queue_init` does (serve.cpp:808-811).
+
+M7. A receive CQE with -EINVAL in M is a fault of ours. It is not a client error. The process ends with a message that names the operation. A kernel without multishot recv then fails at once and does not close each connection in a loop.
+
+M8. The Unix form, in full:
+- `resolve` checks the prefix `unix:` before `split_host_and_port`.
+- The path has 1 to 107 bytes. The bound is one named constant, `sizeof(sockaddr_un::sun_path) - 1`.
+- A NUL anywhere in the path is malformed. No abstract name exists.
+- The length is `offsetof(sockaddr_un, sun_path) + size + 1`.
+- A relative path is allowed. It is relative to the working directory, as bind resolves it.
+- TCP_NODELAY (serve.cpp:520) and SO_REUSEADDR (serve.cpp:716) are set on AF_INET and AF_INET6 only.
+- The socket file takes 0777 & ~umask. konsensd does no chmod. The plan states this.
+
+M9. The stale socket file. This is an error path, so the owner decides. Proposal: at start, if the path is a socket (lstat, S_ISSOCK) and a connect to it gives ECONNREFUSED, konsensd removes it and binds. A socket that accepts, or a file that is not a socket, makes the start fail, as now. A clean stop removes the file. Sources, from memory and not checked in this session: gRPC and systemd remove the path before bind; Go removes it at the close of its listener; Redis removes it before bind. Without a change of this kind, the unix run of three_nodes.sh fails at lines 136, 189, 196 and 207.
+
+M10. The test names in the plan are the real ones. The `resolve` tests are in program/test/test_frame.cpp. ptest.sh is a bench script outside the tree. In the tree, three_nodes.sh takes a third argument for the address form. CMakeLists.txt:179 gets a second entry, `three_nodes_unix`. The unix run uses `curl --unix-socket` and `http://localhost` as the URL. Both runs together stay within five minutes. The plan names that time after it is measured.
+
+M11. Every member of each finite set has a test:
+- `resolve`: an IPv4 literal; a host name; [v6]; `unix:` with an absolute path; `unix:` with a relative path; `unix:7151` as a path; `unix:` with an empty path (malformed); a path of 107 bytes (accepted); a path of 108 bytes (malformed); a path with a leading NUL (malformed); a path with a NUL inside (malformed).
+- `listener_on` on a Unix path: no file; a stale socket; a socket that accepts; a regular file; a directory that does not exist.
+- The two functions of M2: every member, as M2 lists.
+
+M12. One file first. Before the branch, one small file outside the tree shows, on the kernel and on the engine (podman with its default seccomp profile):
+- `shutdown(SHUT_RDWR)` ends a multishot recv with res 0 and no F_MORE, on AF_UNIX and on TCP, also with queued bytes.
+- An empty ring ends a multishot recv with -ENOBUFS and no F_MORE, and the buffer count stays right.
+- Multishot accept works on an AF_UNIX listener.
+M refuses to start on the engine only if this file shows a difference.
+
+M13. The bench table. Arms R1, U and M, each on TCP and on Unix sockets. R1 on Unix sockets is a cell that says "does not parse". The driver dials through `http.Transport.DialContext` with `net.Dialer.DialContext(ctx, "unix", path)`. The URL host is a fixed name. cluster.sh prints the target as `unix:<path>`. The socket path under arms.sh:10 (`/z/b/arms/<arm>-c64/...`) stays under 107 bytes; the plan says so. The result says that multishot accept is not measured.
+
+M14. The plan ends with a list of its data on the disk, as the rules ask. Each item is marked: in the state file, needed by open work, or made again by a build command.

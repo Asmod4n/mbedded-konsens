@@ -645,3 +645,25 @@ Steps:
 Open for the owner before step 2: the tag numbers (the provisional block
 of 2026-10-20 in the IANA first-come range), and whether a clang build
 of the library without a wire is acceptable.
+
+### Changes after review (arms U and M, round 1)
+
+The review is in doc/review-plan-write-path.md ("Review of arms U and
+M"). M1 to M8 and M10 to M14 are taken as the review writes them.
+
+M9, the stale socket file: nginx and Redis remove the path before the
+bind, systemd removes it for its socket units, and Go removes it when
+its listener closes. konsensd takes the safer form of the review: at
+start, a path that is a socket and refuses a connect (ECONNREFUSED) is
+removed before the bind; a socket that accepts, or a file that is not a
+socket, makes the start fail; a clean stop removes the file.
+
+The data of this plan on the disk (M14), as of this section:
+- bench-logs/bin/konsensd_g16* and the build directories under
+  bench-logs/kbuild/: made again by build-konsensd.sh; deleted after
+  the arms are decided.
+- /mnt/zrun/b/* (run directories, callgrind files, strace files):
+  needed by no open work after their result file is committed.
+- $S/wt-d (diagnostic worktree), $S/hyp-sync, $S/diag-*.patch: needed
+  by no open work.
+- The seccomp profile: recorded in the state file (section 2).
