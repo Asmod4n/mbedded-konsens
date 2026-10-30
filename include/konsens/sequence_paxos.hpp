@@ -922,19 +922,19 @@ public:
     std::pair<role, phase> get_state() const { return state_; }
     std::expected<ballot, std::error_code> get_promise() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.promise; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.promise; });
     }
     std::expected<ballot, std::error_code> get_accepted_round() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.accepted_round; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.accepted_round; });
     }
     std::expected<std::uint64_t, std::error_code> get_decided_idx() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.decided_idx; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.decided_idx; });
     }
     std::expected<std::uint64_t, std::error_code> get_accepted_idx() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.log_len; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.log_len; });
     }
     std::expected<std::uint32_t, std::error_code> get_prefix_chain_crc(const std::uint64_t length) const
     {
@@ -1206,6 +1206,17 @@ private:
     }
 
     std::expected<meta_record, std::error_code> read_meta() const { return txn_->get_meta(); }
+
+    std::expected<high_water_mark, std::error_code> values_between_steps() const
+    {
+        if (txn_) {
+            return txn_->get_meta().transform(mark_of);
+        }
+        if (!error_ && !write_unfinished_) {
+            return mark_;
+        }
+        return read_meta_between_steps().transform(mark_of);
+    }
 
     result begin_step()
     {

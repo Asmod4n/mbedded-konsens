@@ -668,9 +668,11 @@ TEST_CASE("a promise lost while the node runs is found at the next step")
 
 // Plan 2.3 item 7: the node keeps the highest values that it committed. A
 // disk that gives back an older meta record, with a valid CRC, gives a
-// value below that mark. A getter between two steps runs the same check
-// (plan 2.1 item 3), so no value of the old record leaves the node.
-TEST_CASE("a value below the mark stops the vote, and a getter between two steps runs the step check")
+// value below that mark. A getter between two steps returns the values of
+// the mark (plan-write-path.md 19, arm P), so it gives the committed
+// promise and no value of the old record. The next step runs the check,
+// finds the older record and stops the vote.
+TEST_CASE("a value below the mark stops the vote at the next step, and a getter between two steps returns the mark")
 {
     const auto directory = sqlite_storage::new_directory();
     auto sp = make(1, sqlite_storage::open_in(directory));
@@ -684,9 +686,10 @@ TEST_CASE("a value below the mark stops the vote, and a getter between two steps
     REQUIRE(sp.get_promise() == ballot_of(2, 2));
     sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
     const auto inconsistent = make_error_code(konsens::paxos_errc::inconsistent_storage);
+    CHECK(sp.get_promise() == ballot_of(2, 2));
+    CHECK(sp.handle({3, 1, konsens::prepare{ballot_of(3, 3), 0, ballot{}, 0}}) == std::unexpected(inconsistent));
     CHECK(sp.get_promise() == std::unexpected(inconsistent));
     CHECK(sp.get_decided_idx() == std::unexpected(inconsistent));
-    CHECK(sp.handle({3, 1, konsens::prepare{ballot_of(3, 3), 0, ballot{}, 0}}) == std::unexpected(inconsistent));
     CHECK(!sp.votes());
     CHECK(committed_messages_of(sp).empty());
 }

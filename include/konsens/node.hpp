@@ -1977,7 +1977,7 @@ private:
             return;
         }
         const auto t = read_or_throw(seq_paxos_.internal_storage_.begin_read_only());
-        const auto applied_idx = read_or_throw(t.get_meta()).applied_idx;
+        const auto applied_idx = read_or_throw(seq_paxos_.read_checked_meta(t)).applied_idx;
         const read_view view{t};
         std::erase_if(reads_, [this, applied_idx, &view](const auto& r) {
             if (!r.second.read_index || *r.second.read_index > applied_idx) {
