@@ -1,0 +1,20 @@
+What was measured
+- Raw SQLite 3.53.4 (libsqlite3-0 3.53.4-2), WAL, one process, 64 B values. Each write: one log row, plus one data upsert; each commit: one meta upsert.
+- Arms, each its own binary of one source outside the tree (split.cpp sha256 4d6d54800ffb3572), g++ 16.2.0 -O2:
+  split_1: one file, synchronous=FULL, one transaction (as konsensd today). split_1aa: the same binary copied (A/A).
+  split_2: log+meta file FULL, data file NORMAL, one thread, log commit then data commit.
+  split_3: as split_2, the data commit in a second thread in parallel.
+  split_4: log file FULL, meta file FULL, data file NORMAL, three threads in parallel.
+- Bed: one btrfs file system (compress=zstd:1, loop image), podman --cpus=3, user 1001, not pinned, kernel 6.18.44-fc-v185, Intel Xeon (Firecracker VM).
+- 5 rounds, arms alternate in each round. Batch 1: 1500 writes; batch 64: 64000 writes. Medians, min, max in writes/s.
+
+batch=1 split_1 median=1230 min=1163 max=1292 all=[1230, 1292, 1170, 1280, 1163]
+batch=1 split_1aa median=1262 min=1083 max=1302 all=[1083, 1284, 1160, 1302, 1262]
+batch=1 split_2 median=1192 min=1119 max=1308 all=[1192, 1308, 1119, 1280, 1147]
+batch=1 split_3 median=1074 min=1003 max=1258 all=[1003, 1253, 1074, 1258, 1053]
+batch=1 split_4 median=1143 min=1136 max=1170 all=[1155, 1170, 1143, 1141, 1136]
+batch=64 split_1 median=70164 min=64007 max=77027 all=[64007, 77027, 70164, 76921, 64960]
+batch=64 split_1aa median=72640 min=63285 max=76305 all=[73494, 72640, 76305, 63285, 66316]
+batch=64 split_2 median=68067 min=65093 max=76028 all=[76028, 65093, 71386, 68067, 67686]
+batch=64 split_3 median=66645 min=64669 max=72721 all=[72721, 66645, 65525, 67443, 64669]
+batch=64 split_4 median=62257 min=50338 max=68692 all=[68692, 59160, 65077, 50338, 62257]
