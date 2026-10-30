@@ -1,0 +1,30 @@
+What was measured
+- The bound of arm D: what a write costs when the base of Execute-Verify is not written at all.
+- konsensd_nobase: commit dd179cb plus a diagnostic patch outside the tree (d5f438027cd9df00). The patch makes write_the_done_results and the loop over own results in begin_the_base write nothing. The patch is not safe: a request whose result depends on the earlier writes of the window gets a wrong result. sha256 696809771e131baf.
+- konsensd_g16F2: commit dd179cb (sha256 486d1b0efe993860).
+- Same bed, scripts and settings as 2026-10-30-073500Z-konsensd-arm-f2.txt; arms.sh 7d685173ed1f99df, cluster.sh d9bad1b2fb550242. g++ 16.2.0 Release.
+
+round=1 arm=konsensd_g16F2 conc=1 median_writes_per_s=427 min=421 max=446 median_latency_us=2221 user_us_per_write=688 sys_us_per_write=933
+round=1 arm=konsensd_nobase conc=1 median_writes_per_s=377 min=372 max=377 median_latency_us=2414 user_us_per_write=655 sys_us_per_write=1011
+round=1 arm=konsensd_g16F2 conc=64 median_writes_per_s=3915 min=2749 max=4917 median_latency_us=14883 user_us_per_write=220 sys_us_per_write=86
+round=1 arm=konsensd_nobase conc=64 median_writes_per_s=220 min=141 max=769 median_latency_us=292563 user_us_per_write=3558 sys_us_per_write=1043
+round=1 raw_sqlite batch=1 median_writes_per_s=1302
+round=1 raw_sqlite batch=64 median_writes_per_s=83033
+round=2 arm=konsensd_g16F2 conc=1 median_writes_per_s=421 min=407 max=438 median_latency_us=2232 user_us_per_write=688 sys_us_per_write=966
+round=2 arm=konsensd_nobase conc=1 median_writes_per_s=364 min=363 max=372 median_latency_us=2458 user_us_per_write=766 sys_us_per_write=988
+round=2 arm=konsensd_g16F2 conc=64 median_writes_per_s=3821 min=2565 max=4914 median_latency_us=16175 user_us_per_write=238 sys_us_per_write=94
+round=2 arm=konsensd_nobase conc=64 median_writes_per_s=4385 min=2917 max=5013 median_latency_us=14081 user_us_per_write=186 sys_us_per_write=74
+round=2 raw_sqlite batch=1 median_writes_per_s=1259
+round=2 raw_sqlite batch=64 median_writes_per_s=57193
+round=3 arm=konsensd_g16F2 conc=1 median_writes_per_s=401 min=381 max=431 median_latency_us=2278 user_us_per_write=622 sys_us_per_write=1088
+round=3 arm=konsensd_nobase conc=1 median_writes_per_s=411 min=402 max=437 median_latency_us=2251 user_us_per_write=777 sys_us_per_write=1000
+round=3 arm=konsensd_g16F2 conc=64 median_writes_per_s=4013 min=2658 max=4817 median_latency_us=14757 user_us_per_write=224 sys_us_per_write=86
+round=3 arm=konsensd_nobase conc=64 median_writes_per_s=504 min=207 max=750 median_latency_us=68069 user_us_per_write=2119 sys_us_per_write=808
+round=3 raw_sqlite batch=1 median_writes_per_s=988
+round=3 raw_sqlite batch=64 median_writes_per_s=62433
+
+Reading
+- 1 in flight: F2 401 to 427, without the base 364 to 411 writes/s. No difference above the A/A floor.
+- 64 in flight: in rounds 1 and 3 the run without the base fell to 220 and 504 writes/s, with a median latency of 69 to 293 ms and 2 to 3.5 ms of user CPU per write. The patch was not examined for the cause.
+- 64 in flight, round 2: without the base 4 385 against 3 821 writes/s (+15 %), CPU per write 260 against 332 us. This is one sample of a run that is not stable.
+- The CPU that the base costs at 64 in flight is of the order of 70 us per write in round 2. The goal needs at most 78 us per write in total, and F2 takes about 310 us. Arm D alone does not reach the goal.
