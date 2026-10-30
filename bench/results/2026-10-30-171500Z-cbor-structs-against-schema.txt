@@ -1,0 +1,33 @@
+What was measured
+- Encode and decode of a struct shaped like konsens::accept_decide (a ballot, three numbers, a list of entries shaped like konsens::entry with 64 bytes of payload and 30 bytes of result, a CRC), with 1 and with 16 entries. cbor::structs against cbor::schema of deps/mbedded-cbor 55418aa. One file outside the tree (c.cpp 5d7dae0442096239); each arm its own binary, g++ 16 (image localhost/cxx-matrix-sqlite) -std=c++26 -freflection -O2 -DNDEBUG; each arm copied once for A/A. podman --cpus=1, user 1001, not pinned. 15 samples of 20 000 operations; nanoseconds per operation, median, min and max of the samples. decode is the full decode into a cbor::ref (checked form).
+
+round=1 arm=structs entries=1 encode_ns median=91 min=89 max=95 decode_ns median=284 min=278 max=302 sink=2
+round=1 arm=structs_aa entries=1 encode_ns median=91 min=90 max=94 decode_ns median=283 min=278 max=296 sink=2
+round=1 arm=schema entries=1 encode_ns median=26 min=26 max=28 decode_ns median=100 min=99 max=106 sink=0
+round=1 arm=schema_aa entries=1 encode_ns median=26 min=26 max=28 decode_ns median=101 min=98 max=104 sink=0
+round=1 arm=structs entries=16 encode_ns median=1000 min=990 max=1010 decode_ns median=2857 min=2835 max=2963 sink=6
+round=1 arm=structs_aa entries=16 encode_ns median=1008 min=994 max=1415 decode_ns median=2878 min=2853 max=3011 sink=6
+round=1 arm=schema entries=16 encode_ns median=204 min=199 max=216 decode_ns median=989 min=966 max=1007 sink=0
+round=1 arm=schema_aa entries=16 encode_ns median=196 min=188 max=355 decode_ns median=953 min=948 max=1153 sink=0
+round=2 arm=structs entries=1 encode_ns median=92 min=89 max=97 decode_ns median=283 min=277 max=291 sink=2
+round=2 arm=structs_aa entries=1 encode_ns median=91 min=90 max=97 decode_ns median=283 min=279 max=312 sink=2
+round=2 arm=schema entries=1 encode_ns median=26 min=26 max=28 decode_ns median=100 min=97 max=104 sink=0
+round=2 arm=schema_aa entries=1 encode_ns median=26 min=26 max=27 decode_ns median=99 min=97 max=101 sink=0
+round=2 arm=structs entries=16 encode_ns median=1006 min=996 max=1021 decode_ns median=2885 min=2866 max=2912 sink=6
+round=2 arm=structs_aa entries=16 encode_ns median=1005 min=989 max=1257 decode_ns median=2849 min=2812 max=3134 sink=6
+round=2 arm=schema entries=16 encode_ns median=194 min=191 max=203 decode_ns median=964 min=955 max=975 sink=0
+round=2 arm=schema_aa entries=16 encode_ns median=196 min=190 max=289 decode_ns median=961 min=939 max=1083 sink=0
+round=3 arm=structs entries=1 encode_ns median=91 min=89 max=97 decode_ns median=284 min=277 max=384 sink=2
+round=3 arm=structs_aa entries=1 encode_ns median=91 min=90 max=121 decode_ns median=282 min=279 max=313 sink=2
+round=3 arm=schema entries=1 encode_ns median=27 min=27 max=31 decode_ns median=101 min=99 max=109 sink=0
+round=3 arm=schema_aa entries=1 encode_ns median=26 min=26 max=27 decode_ns median=99 min=96 max=103 sink=0
+round=3 arm=structs entries=16 encode_ns median=1011 min=997 max=1033 decode_ns median=2884 min=2874 max=3396 sink=6
+round=3 arm=structs_aa entries=16 encode_ns median=1003 min=994 max=1090 decode_ns median=2923 min=2890 max=3096 sink=6
+round=3 arm=schema entries=16 encode_ns median=194 min=192 max=200 decode_ns median=960 min=941 max=993 sink=0
+round=3 arm=schema_aa entries=16 encode_ns median=193 min=191 max=196 decode_ns median=948 min=941 max=954 sink=0
+
+Result
+- A/A: at most 4 % apart (decode, 16 entries: 989 against 953).
+- 1 entry: encode 91 ns (structs) against 26 ns (schema); decode 283 ns against 100 ns.
+- 16 entries: encode about 1 005 ns against 195 ns; decode about 2 880 ns against 960 ns.
+- schema encodes 3.5 to 5 times as fast and decodes about 3 times as fast for this shape.
