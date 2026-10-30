@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "slipstream_signal.h"
+#include "slipstream_syscall.h"
 
 #include "address.hpp"
 #include "frame.hpp"
@@ -53,6 +54,7 @@ enum class op : std::uint8_t {
     receive,
     send,
     signal,
+    sync,
 };
 
 enum class link : std::uint8_t {
@@ -630,10 +632,28 @@ void arm_the_sends(loop& l)
     }
 }
 
+void submit_the_sync(loop& l)
+{
+    const auto r = l.node.take_the_sync_request();
+    if (!r) {
+        return;
+    }
+    io_uring_sqe* s = sqe_of(l);
+    io_uring_prep_fsync(s, r->file_descriptor, IORING_FSYNC_DATASYNC);
+    io_uring_sqe_set_data64(s, user_data_of(op::sync, r->sync_number));
+}
+
 void handle_a_completion(loop& l, const io_uring_cqe& cqe)
 {
     const auto o = static_cast<op>(cqe.user_data >> op_shift);
     const std::uint64_t id = cqe.user_data & id_mask;
+    if (o == op::sync) {
+        if (cqe.res < 0) [[unlikely]] {
+            l.node.throw_after_a_failed_sync(id, std::error_code{-cqe.res, std::system_category()});
+        }
+        keep_the_step(l, l.node.the_log_is_synced(id), "the_log_is_synced");
+        return;
+    }
     if (o == op::signal) {
         int signum = 0;
         while (slipstream_signal_read(l.signal_fd, &signum) == 1) {
@@ -758,6 +778,10 @@ int serve(const config& c, const start_options options)
         std::println(std::cerr, "konsensd: no descriptor for the signals");
         return exit_failed;
     }
+    if (c.sync_by_the_caller && slipstream_syscall_uses_engine() != 0) [[unlikely]] {
+        std::println(std::cerr, "konsensd: sync_by_the_caller needs io_uring of the kernel, and this process has none");
+        return exit_failed;
+    }
     auto n = started_node(c, options);
     if (!n) [[unlikely]] {
         std::println(std::cerr, "konsensd: {}", n.error());
@@ -824,6 +848,7 @@ int serve(const config& c, const start_options options)
             }
         }
         commit_the_step(l);
+        submit_the_sync(l);
         arm_the_sends(l);
     }
     const int status = stopped(l);

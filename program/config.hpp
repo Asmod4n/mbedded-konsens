@@ -41,6 +41,7 @@ struct config {
     std::uint64_t max_store_bytes;
     std::vector<konsens::node_id> build_from;
     std::vector<peer> peers;
+    bool sync_by_the_caller;
 
     friend bool operator==(const config&, const config&) = default;
 };

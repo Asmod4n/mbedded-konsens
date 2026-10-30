@@ -28,6 +28,7 @@ max_frame_bytes = 4096
 max_body_bytes = 512
 max_store_bytes = 8192
 build_from = [5, 6]
+sync_by_the_caller = true
 
 [[peers]]
 pid = 2
@@ -102,6 +103,8 @@ TEST_CASE("each field of a whole config is read")
     CHECK(n.resend_message_tick_timeout == 2);
     CHECK(n.build_from == std::vector<konsens::node_id>{5, 6});
     CHECK(n.first_start);
+    CHECK(c->sync_by_the_caller);
+    CHECK(n.sync_by_the_caller);
 }
 
 // The optional fields have defaults, so a short config from a person
@@ -118,6 +121,7 @@ TEST_CASE("the optional fields take their defaults")
     CHECK(c->max_body_bytes == konsensd::default_max_body_bytes);
     CHECK(c->max_store_bytes == konsensd::default_max_store_bytes);
     CHECK(c->build_from.empty());
+    CHECK(!c->sync_by_the_caller);
     CHECK(!konsensd::node_config_of(*c, false).first_start);
 }
 
@@ -166,6 +170,8 @@ TEST_CASE("a wrong type names its line")
     CHECK(error_of(replaced(smallest, "client_address = \"[::]:7152\"", "client_address = \"[::]:7152\"\nbuild_from = [\"a\"]")) ==
           config_errc::wrong_type);
     CHECK(error_of(replaced(smallest, "client_address = \"[::]:7152\"", "client_address = \"[::]:7152\"\nbuild_from = 3")) ==
+          config_errc::wrong_type);
+    CHECK(error_of(replaced(smallest, "client_address = \"[::]:7152\"", "client_address = \"[::]:7152\"\nsync_by_the_caller = 1")) ==
           config_errc::wrong_type);
     CHECK(error_of("peers = 3\n" + replaced(smallest, "[[peers]]\npid = 2\naddress = \"192.0.2.2:7151\"", "")) ==
           config_errc::wrong_type);
