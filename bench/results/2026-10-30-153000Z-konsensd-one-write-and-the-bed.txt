@@ -1,0 +1,84 @@
+konsensd: the path of one write at 1 in flight, and raw SQLite alone against three at once on the same bed
+
+What was measured
+- Part 1: konsensd writes of 64 B through PUT /kv at 1 in flight, three nodes, Unix sockets, sync_by_the_caller = true, 300 writes after 300 writes of warm-up.
+- Build: commit e17f3e3 (the konsensd code of 1011ddc) plus a diagnostic patch outside the tree (sha256 a4321f642a57c46d). It prints one line with the wall time in us for each client request, each step, each sent message with its kind, each reply, and each submit and completion of an fdatasync.
+- The three nodes run on one machine, so their wall clocks are one clock.
+- Part 2: raw SQLite (bench/raw_sqlite, WAL, synchronous=FULL, 1 write of 64 B per commit). In each of 4 rounds: one process alone on the file system of node 1, then three processes at the same time, one on the file system of each node.
+- g++ 16.2.0 Release, podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, three btrfs loop images compress=zstd:1 on one host disk, libsqlite3 3.53.4.
+
+Result, part 1 (medians of the last 300 writes)
+- Client request to reply on the leader: 2060 us. The driver measured 430 writes/s.
+- fdatasync from submit to completion: node 1 1664 us, node 2 1616 us, node 3 (leader) 1666 us. Each node makes about one fdatasync per write.
+- The rest of the path is about 250 us before the syncs start: the leader sends work (kind 16), the followers answer (kind 13), the leader sends AcceptDecide (kind 4). After the first sync of a follower the Accepted (kind 5) reaches the leader, and the leader sends Decide (kind 6) and the reply in 50 us.
+- Thus about 80 % of the time of one write at 1 in flight is the fdatasync.
+
+Result, part 2 (writes/s)
+round=1 alone 1118 three_at_once 730 694 695
+round=2 alone 1196 three_at_once 727 730 734
+round=3 alone 1280 three_at_once 723 724 722
+round=4 alone 1085 three_at_once 719 722 716
+- Median alone: 1157 writes/s (864 us per commit). Median of the three at once: 722.5 writes/s (1384 us per commit).
+- Three syncs at the same time on the one host disk make each commit about 1.6 times as long.
+- konsensd syncs on all three nodes at the same time for each write. On this bed the reference "raw SQLite alone" thus holds a cost that a cluster with a disk for each node does not have.
+
+Example of one write (us from the client request, leader n3)
+     0 n3 client_request
+     3 n2 step_end us=84
+     4 n3 step_start in= handled_us=0
+    36 n3 commit_two_us=0
+    39 n3 out kind=16 to=1
+    41 n3 out kind=16 to=2
+    42 n3 step_end us=38
+    65 n1 step_start in=16, handled_us=0
+    72 n2 step_start in=16, handled_us=1
+    96 n1 commit_two_us=1
+   100 n1 out kind=13 to=3
+   102 n1 step_end us=37
+   103 n2 commit_two_us=1
+   106 n2 out kind=13 to=3
+   109 n2 step_end us=37
+   126 n3 step_start in=13,13, handled_us=1
+   187 n3 out kind=4 to=1
+   192 n3 out kind=4 to=2
+   214 n3 commit_two_us=14
+   217 n1 step_start in=4, handled_us=17
+   225 n2 step_start in=4, handled_us=18
+   230 n3 step_end us=104
+   232 n3 sync_submit 461
+   245 n1 commit_two_us=12
+   253 n2 commit_two_us=12
+   259 n1 step_end us=42
+   260 n1 sync_submit 461
+   267 n2 step_end us=42
+   268 n2 sync_submit 459
+  1803 n3 sync_done 461
+  1833 n3 step_start in= handled_us=1
+  1847 n3 commit_two_us=1
+  1849 n3 step_end us=16
+  1852 n2 sync_done 459
+  1873 n2 step_start in= handled_us=0
+  1918 n2 out kind=5 to=3
+  1920 n2 out kind=5 to=3
+  1938 n2 commit_two_us=2
+  1942 n2 step_end us=69
+  1956 n3 step_start in=5,5, handled_us=12
+  1959 n1 sync_done 461
+  1971 n1 step_start in= handled_us=0
+  2001 n1 out kind=5 to=3
+  2003 n1 out kind=5 to=3
+  2003 n3 out kind=6 to=1
+  2006 n3 out kind=6 to=2
+  2007 n3 reply_before_sync
+  2018 n1 commit_two_us=1
+  2022 n1 step_end us=51
+  2045 n1 step_start in=6, handled_us=13
+  2048 n3 commit_two_us=37
+  2088 n3 step_end us=132
+  2092 n3 step_start in=5,5, handled_us=5
+  2098 n1 commit_two_us=35
+  2103 n3 commit_two_us=0
+  2104 n3 step_end us=12
+  2136 n1 step_end us=90
+  2154 n2 step_start in=6, handled_us=13
+  2198 n2 commit_two_us=34
