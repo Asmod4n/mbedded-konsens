@@ -1,0 +1,29 @@
+konsensd: arm X (begin_the_base replays nothing) against 1011ddc, stopped after two rounds
+
+What was measured
+- The aim: an upper bound of the cost of the replay in begin_the_base, at 1 and at 64 writes in flight.
+- konsensd writes of 64 B through PUT /kv, three nodes, Unix sockets, sync_by_the_caller = true.
+- Arms, each its own binary, g++ 16.2.0 Release: konsensd_g16HS2u (1011ddc), konsensd_g16XS2u (1011ddc with begin_the_base returning an empty nested transaction), konsensd_g16HS2uc (the H binary copied, A/A).
+- podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, btrfs loop images compress=zstd:1, libsqlite3 3.53.4.
+- Binaries: konsensd_g16HS2u e4a23155a4362697; konsensd_g16XS2u d1eb8a76bb0cad68. Script outside the tree: arms.sh 0aad1710ea6c3d47.
+
+Result
+- Arm X gives no number. No write of arm X got an answer, at 1 and at 64 in flight.
+- Node 1 of arm X logged: "a majority refused a done record of this leader: A chosen result fails its CRC on this node, or a value that the node wrote reads back different".
+- The cause: run_the_tasks and run_again execute a request on the base. Without the replay, the base lacks the done results above applied_idx. A key_value result depends on the earlier writes of the same key, so the followers compute other bytes and refuse.
+- Removing the replay thus changes the results. It is not a valid arm, and the replay has no upper bound from this form.
+- The run was stopped after round 2. The rows of H and its copy below are not enough for a comparison.
+
+Rows
+round=1 arm=konsensd_g16HS2u size=64 conc=1 median_writes_per_s=217 min=183 max=358 median_latency_us=2633 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16XS2u size=64 conc=1 median_writes_per_s=319 min=286 max=352 median_latency_us=2760 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16HS2uc size=64 conc=1 median_writes_per_s=420 min=378 max=445 median_latency_us=2152 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16HS2u size=64 conc=64 median_writes_per_s=6130 min=4674 max=6270 median_latency_us=9935 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16XS2u size=64 conc=64  user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16HS2uc size=64 conc=64 median_writes_per_s=6786 min=5164 max=7487 median_latency_us=9105 user_us_per_write=0 sys_us_per_write=0
+round=1 raw_sqlite batch=1 median_writes_per_s=1120
+round=1 raw_sqlite batch=64 median_writes_per_s=61833
+round=2 arm=konsensd_g16HS2u size=64 conc=1 median_writes_per_s=449 min=440 max=451 median_latency_us=2052 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16XS2u size=64 conc=1  user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16HS2uc size=64 conc=1 median_writes_per_s=437 min=418 max=449 median_latency_us=2155 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16HS2u size=64 conc=64 median_writes_per_s=6575 min=6492 max=7491 median_latency_us=9321 user_us_per_write=0 sys_us_per_write=0
