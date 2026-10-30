@@ -62,21 +62,21 @@ Which place makes the most rows is not measured. The plan measures it
 first: bench/sqlcount.cpp counts executions beside rows, and the run
 of 203500Z is made again on the base.
 
-## 3. Part B: the state of an entry (waits for the owner card)
+## 3. Part B: the state of an entry (owner 2026-10-30 20:52)
 
 `set_entry_states` (persistent_storage.cpp:762-795) reads each decided
 entry and writes it again with the state `committed`. The meta record
 holds decided_idx in the same commit. Raft (commitIndex), TigerBeetle
 (commit_max) and FoundationDB (knownCommittedVersion) keep one index
-and write no entry again. With the card "Nur Index": the record loses
+and write no entry again. The owner decided: the record loses
 the state byte and its CRC; the start check (sequence_paxos.hpp:
 1175-1190) loses its two entry-state checks; format_version becomes 6.
 
-## 4. Part C: the read back of written values (waits for the owner card)
+## 4. Part C: the read back of written values (owner 2026-10-30 20:52)
 
 `written_values_read_back` (node.hpp:1545-1558) reads each written key
 in the same write transaction. That read comes from the page cache of
-SQLite. With the card "Nur Debug-Build" it runs only without NDEBUG.
+SQLite. The owner decided that it runs only without NDEBUG.
 
 ## 5. Measurement
 
