@@ -29,3 +29,21 @@ allocator ~19 %, memcpy 3.05 %.
 Inclusive, node 3, conc 64: handle_a_receive 8.96 % (with take_the_frames_of
 4.94 % and konsens::decode 4.42 %); read_entries 14.17 %; decode_result
 8.59 %; append_entries 12.75 %; execute_verify 30.77 %.
+
+Correction (same run, read again): in dump 2 node 2 is the leader.
+Node 2 has no handle_acceptdecide and propose_before_the_step takes
+50.20 %. Nodes 1 and 3 have handle_acceptdecide (15.23 %, 13.99 %).
+The driver sent to node 3, which forwards a write to the leader. The
+figures for node 3 above are a follower's.
+Node 2, conc 64 (dump 2): total 1,271,057,857 Ir = 310.3 kIr per write.
+  memcpy       38,820,304 Ir  3.05 %   9.5 kIr per write
+  allocator   ~258.8 M Ir    ~20.4 %  63 kIr per write
+    (_int_malloc 62.7 M, _int_free_merge_chunk 52.0 M, free 40.3 M,
+    malloc 34.5 M, operator new 19.5 M, _int_free_maybe_trim 16.5 M,
+    unlink_chunk 9.2 M, __libc_malloc2 8.4 M, _int_free_chunk 6.8 M,
+    delete 4.9 M, sqlite3_free 2.1 M, arena free 2.0 M)
+Inclusive, node 2: append_the_done_records 39.10 %, execute_verify
+24.15 %, check_the_done_records 15.82 %, read_entries 11.29 %,
+accept_entries_leader 10.82 %, select_results 10.23 %, append_entries
+9.59 %, crc32c::Extend 6.51 %, decode_result 5.87 %,
+handle_a_receive 5.81 %.

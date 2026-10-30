@@ -1199,10 +1199,10 @@ write into the file.
 
 Measured (bench/results/2026-10-30-184500Z-konsensd-callgrind-copies-
 and-allocator.txt, instruction counts, not time): at 64 in flight the
-allocator takes about 17 % of the instructions of the leader and memcpy
-3 %. The receive path, decode included, takes 9 %. Most allocations
-come from read_entries and decode_result, which build std::vector
-members.
+allocator takes about 20 % of the instructions of the leader (node 2)
+and memcpy 3 %. The receive path, decode included, takes 6 %. Most
+allocations come from read_entries and decode_result, which build
+std::vector members.
 
 Owner (2026-10-30 18:42): the receive into the temporary file is the
 reverse of the send of mruby-webmachine from its mapping
