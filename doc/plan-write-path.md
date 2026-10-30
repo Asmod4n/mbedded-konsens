@@ -744,8 +744,12 @@ Steps:
    flight. 6 rounds instead of 3, because the run of section 20 showed a
    spread across rounds larger than the difference of the arms.
 
-Provisional, for the owner: the tag numbers 34816 to 34843 (one for each
-described struct), and the description inside. The form apart saves 179 bytes of each message at the same time,
+Decided by the owner (2026-10-30): the tags start at a random number
+in a free gap of the first-come range below 65536, so that each tag head
+stays 3 bytes. The draw in 33001 to 39999 gave 35672. The 28 structs
+take 35672 to 35699; 35700 to 36695 stay free for later structs.
+mbedded-cbor fc46856 has one class, cbor::schema, for every compiler;
+the wire uses it. Provisional, for the owner: the description inside. The form apart saves 179 bytes of each message at the same time,
 but its reader does not receive the description of the writer
 (test/doc_reference_schema.cpp of mbedded-cbor, "description"), and
 so cannot compare it with its own; that waits on the open question of

@@ -172,9 +172,9 @@ struct wide_header {
     konsens::node_id to;
 };
 
-CBOR_DEFINE_TYPE(test_header, cbor::tag{34843}, CBOR_MEMBER(test_header, method), CBOR_MEMBER(test_header, kind),
+CBOR_DEFINE_TYPE(test_header, cbor::tag{35699}, CBOR_MEMBER(test_header, method), CBOR_MEMBER(test_header, kind),
                  CBOR_MEMBER(test_header, from), CBOR_MEMBER(test_header, to));
-CBOR_DEFINE_TYPE(wide_header, cbor::tag{34843}, CBOR_MEMBER(wide_header, method), CBOR_MEMBER(wide_header, kind),
+CBOR_DEFINE_TYPE(wide_header, cbor::tag{35699}, CBOR_MEMBER(wide_header, method), CBOR_MEMBER(wide_header, kind),
                  CBOR_MEMBER(wide_header, from), CBOR_MEMBER(wide_header, to));
 
 namespace {
@@ -182,7 +182,7 @@ namespace {
 template <typename T>
 std::string packed(const T& value)
 {
-    auto out = cbor::packed<T>::encode(value);
+    auto out = cbor::schema<T>::encode(value);
     REQUIRE(out.has_value());
     return std::move(*out);
 }

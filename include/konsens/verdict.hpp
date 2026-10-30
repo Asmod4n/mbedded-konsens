@@ -63,5 +63,5 @@ struct float_rule {
 
 }
 
-CBOR_DEFINE_TYPE(konsens::indexed_result, cbor::tag{34818}, CBOR_MEMBER(konsens::indexed_result, index),
+CBOR_DEFINE_TYPE(konsens::indexed_result, cbor::tag{35674}, CBOR_MEMBER(konsens::indexed_result, index),
                  CBOR_MEMBER(konsens::indexed_result, result), CBOR_MEMBER(konsens::indexed_result, crc));
