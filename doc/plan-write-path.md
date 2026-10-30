@@ -1303,8 +1303,9 @@ applied, and check_the_done_records reads them there and not from
 SQLite. SQLite is read at the start of the node and after a recovery.
 A lost write is then not seen in a release build until the next start;
 the lost-write check of the debug build (decision 2026-10-17) reads the
-record back. Proposal: build part C, with the read-back in the debug
-build. Part C waits for the answer of the owner.
+record back. Owner (2026-10-30 18:51, card "Erst messen"): part C is built as an
+arm and measured before the owner decides. It does not enter the tree
+before that decision.
 
 Not in this section: the receive path (section 25), the copy of a done
 record in find_the_done_records (`auto e = task`, src/selection.cpp,
