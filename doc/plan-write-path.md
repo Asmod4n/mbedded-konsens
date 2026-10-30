@@ -821,3 +821,72 @@ Checks:
 
 Provisional names: the write set (source: Hyperledger Fabric "write
 set"), write_set_.
+
+### The simple form, as measured (arm W, 2026-10-30)
+
+The owner chose to measure before a decision on the form above. The
+first review of that form did not approve it (doc/review-plan-write-path.md,
+section 23). The arm that was measured is a simpler form, and the
+owner took it on 2026-10-30.
+
+Form:
+1. node has a class write_set. It holds a pointer to the open
+   transaction, a std::map of key to an optional value (empty for an
+   erase), and a std::map of session to an optional session_record
+   (empty for an erase).
+2. write_set has the member functions of a nested transaction that the
+   base uses: find, find_session, insert_or_assign, erase,
+   insert_or_assign_session, erase_session. A read looks in the maps
+   first, then in the open transaction. A write goes into the maps
+   only.
+3. begin_the_nested_transaction returns an empty write_set over the
+   open transaction instead of a SAVEPOINT. The callers do not change:
+   begin_the_base, check_the_done_records, run_the_tasks, run_again and
+   apply_the_done_records build the base again at each step, as before.
+4. run_request gives the machine a transaction_view of the write_set.
+   Every machine takes `const state_view auto&`, so no machine changes.
+   The alias write_view and the concept state_machine do not change.
+
+Why the result of each request stays the same: the write set gives the
+same reads as the SAVEPOINT over the same open transaction. A read of
+a key gives the last write to that key in this base, an erase gives no
+value, and a key with no write gives the value of the open transaction.
+A SAVEPOINT gives the same, and its writes are rolled back at the end;
+the writes of a write set end with the object. The open transaction
+gets no write from the base in both forms.
+
+What the form does not do: it keeps no base from one step to the next,
+so the replay of section 23 stays. Findings 1 to 9 of the first review
+apply to a write set that lives across steps, and do not apply here.
+
+The model: the TLA+ model holds the base per index
+(model/tla/SequencePaxos.tla, BaseWith and NodeBase) as a value. The
+form changes where the writes of the base are held, not which base a
+request sees. The model needs no change.
+
+Tests:
+- test_persistent_storage keeps its tests of the nested transaction;
+  the storage does not change.
+- A new test in test_execute_verify runs requests of each kind
+  (register_client, client_request with a put, with an erase and with
+  an error, expire_session, normal, stop_sign) on a write set and on a
+  SAVEPOINT over the same state, and compares each result byte for
+  byte, and each read after each write.
+- The tests of the changed paths: test_execute_verify, test_node,
+  test_sync_by_the_caller, test_simulation, test_group_commit,
+  test_simulation_clients. The CI runs every build.
+
+Measured (bench/results/2026-10-30-170000Z-konsensd-arm-w-write-set.txt,
+8d0d033), 64 B, writes/s, medians of 6 rounds: 1 in flight 456.5
+(1011ddc), 458 (its copy), 490.5 (W); 64 in flight 6 719.5, 7 140,
+7 246. The A/A floor is 0.3 % at 1 in flight and 6.3 % at 64. W gains
+7.1 % to 7.4 % at 1 in flight; at 64 in flight the difference is under
+the floor.
+
+Wrong assumption: section 23 assumed that the replay of the base limits
+the rate at 64 in flight, because callgrind gave write_the_result 4.6
+times per write. True: the base in memory changed the rate at 64 in
+flight by less than the floor. An instruction count does not say what
+its removal saves.
+
+Name: write_set (Hyperledger Fabric, "write set").
