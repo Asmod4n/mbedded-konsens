@@ -95,6 +95,36 @@ std::vector<konsens::chosen_result> list_of(const entry& e)
 
 }
 
+// The check for refused done records runs in each step of the leader. It
+// reads the refusals, not each appended done record, so its cost does not
+// grow with the length of the log. Its result stays the same: each appended
+// index that a majority of the configuration refused, in ascending order.
+TEST_CASE("the leader finds each appended done record that a majority refused")
+{
+    auto s = new_selection();
+    for (std::uint64_t index = 1; index <= 6; ++index) {
+        if (index != 4) {
+            s.count_an_appended_done_record(index);
+        }
+    }
+    CHECK(s.find_the_entries_that_a_majority_refused().empty());
+    s.count_a_refusal(1, 2);
+    CHECK(s.find_the_entries_that_a_majority_refused().empty());
+    s.count_a_refusal(9, 2);
+    CHECK(s.find_the_entries_that_a_majority_refused().empty());
+    s.count_a_refusal(1, 4);
+    s.count_a_refusal(2, 4);
+    CHECK(s.find_the_entries_that_a_majority_refused().empty());
+    s.count_a_refusal(3, 5);
+    s.count_a_refusal(2, 5);
+    s.count_a_refusal(3, 2);
+    CHECK(s.find_the_entries_that_a_majority_refused() == std::vector<std::uint64_t>{2, 5});
+    s.count_a_refusal(1, 1);
+    s.count_a_refusal(2, 1);
+    s.count_a_refusal(3, 1);
+    CHECK(s.find_the_entries_that_a_majority_refused() == std::vector<std::uint64_t>{1, 2, 5});
+}
+
 // Plan 2.6.3 and 2.6.4: the leader selects the result that a majority of
 // the configuration agrees on, the agreeing node with the lowest id gives
 // the bytes, and each counted node that does not agree is asked once to

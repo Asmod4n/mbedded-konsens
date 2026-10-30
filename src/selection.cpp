@@ -306,12 +306,13 @@ void selection::count_an_appended_done_record(const std::uint64_t index)
 std::vector<std::uint64_t> selection::find_the_entries_that_a_majority_refused() const
 {
     std::vector<std::uint64_t> refused;
-    for (const auto index : appended_) {
-        const auto first = refusals_.lower_bound({index, 0});
+    for (auto first = refusals_.begin(); first != refusals_.end();) {
+        const auto index = first->first;
         const auto end = refusals_.lower_bound({index + 1, 0});
-        if (static_cast<std::size_t>(std::distance(first, end)) >= majority()) {
+        if (appended_.contains(index) && static_cast<std::size_t>(std::distance(first, end)) >= majority()) {
             refused.push_back(index);
         }
+        first = end;
     }
     return refused;
 }
