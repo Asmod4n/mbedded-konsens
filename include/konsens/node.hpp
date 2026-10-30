@@ -1559,8 +1559,7 @@ private:
 
     static std::error_code error_of(const std::uint64_t error)
     {
-        for (const auto known : {client_errc::session_expired, client_errc::stale_request, client_errc::key_too_large,
-                                 client_errc::value_too_large, client_errc::result_too_large}) {
+        for (const auto known : {client_errc::session_expired, client_errc::stale_request}) {
             if (error == static_cast<std::uint64_t>(std::to_underlying(known))) {
                 return make_error_code(known);
             }
@@ -1655,33 +1654,12 @@ private:
                     }
                 }
             }
-            if (const auto past = find_a_size_past_its_bound(a); past) [[unlikely]] {
-                return {static_cast<std::uint64_t>(std::to_underlying(*past)), {}, {}};
-            }
             return {0, std::move(a.reply), std::move(a.mutations)};
         }
         if (e.request_number == s->request_number && s->request_number != 0) {
             return {0, s->reply, {}};
         }
         return {static_cast<std::uint64_t>(std::to_underlying(client_errc::stale_request)), {}, {}};
-    }
-
-    static std::optional<client_errc> find_a_size_past_its_bound(const applied& a)
-    {
-        std::size_t total = a.reply.size();
-        for (const auto& m : a.mutations) {
-            if (m.key.size() > max_key_size) [[unlikely]] {
-                return client_errc::key_too_large;
-            }
-            if (m.value && m.value->size() > max_value_size) [[unlikely]] {
-                return client_errc::value_too_large;
-            }
-            total += m.key.size() + (m.value ? m.value->size() : 0);
-        }
-        if (total > max_result_size) [[unlikely]] {
-            return client_errc::result_too_large;
-        }
-        return std::nullopt;
     }
 
     template <typename T>

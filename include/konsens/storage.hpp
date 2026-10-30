@@ -138,10 +138,6 @@ struct meta_record {
     friend bool operator==(const meta_record&, const meta_record&) = default;
 };
 
-inline constexpr std::size_t max_key_size = 10'000;
-inline constexpr std::size_t max_value_size = 100'000;
-inline constexpr std::size_t max_result_size = 10'000'000;
-
 struct session_record {
     std::uint64_t request_number;
     std::vector<std::byte> reply;

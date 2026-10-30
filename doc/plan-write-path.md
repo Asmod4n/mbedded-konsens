@@ -1036,3 +1036,20 @@ changes:
   as value_too_large and changes nothing"), test_rest (the three
   codes), and the runs of test_execute_verify and
   test_persistent_storage.
+
+### Owner decision (section 24, 2026-10-30)
+
+The owner: no fixed bound. A value is unbounded; only the system is the
+limit, and the system says when. The three constants, the three errors,
+the check in run_request, the check at open and the 413 of konsensd are
+removed again (this commit reverts c99ff0a in code).
+
+What follows from it:
+- A value past the length limit of SQLite makes the done record that
+  holds it too long for the log. The leader writes that record in
+  accept_entries_leader before it sends the AcceptDecide, so SQLite
+  refuses it there, before the result is chosen. Not checked by a test.
+- What the client gets in that case is not checked.
+- A full store is reported when a write reaches it. A value that fits
+  the length limit of SQLite and fills the store at the apply fails on
+  each node that applies it.

@@ -10,19 +10,7 @@
 
 namespace konsens {
 
-enum class client_errc {
-    building = 1,
-    session_expired,
-    stale_request,
-    retry,
-    rejected,
-    reconfiguring,
-    retired,
-    stopped,
-    key_too_large,
-    value_too_large,
-    result_too_large
-};
+enum class client_errc { building = 1, session_expired, stale_request, retry, rejected, reconfiguring, retired, stopped };
 
 class client_error_category final : public std::error_category {
 public:
@@ -47,12 +35,6 @@ public:
             return "The node started without a clean stop and votes never again; send the call to another node";
         case client_errc::stopped:
             return "The node stopped before the call was decided; the call may still be decided";
-        case client_errc::key_too_large:
-            return "A key of the request is longer than max_key_size";
-        case client_errc::value_too_large:
-            return "A value of the request is longer than max_value_size";
-        case client_errc::result_too_large:
-            return "The keys, values and reply of the request are longer than max_result_size";
         }
         return "Unknown client error";
     }
