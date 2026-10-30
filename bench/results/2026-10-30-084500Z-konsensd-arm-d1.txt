@@ -1,0 +1,38 @@
+What was measured
+- konsensd writes of 64 B through PUT /kv, three nodes, one btrfs file system per node (loop images, compress=zstd:1), 1 and 64 in flight.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh):
+  konsensd_g16F2: commit dd179cb (sha256 486d1b0efe993860); konsensd_g16F2cp: the same binary copied (A/A).
+  konsensd_g16D1: commit 6207a7d, F2 plus the meta record kept in memory per write transaction (sha256 51f8368f11e53270).
+- 3 rounds; in each round the arms alternate; each cell is the median of 3 samples (300 writes at 1 in flight, 8192 at 64). Raw SQLite on the file system of node 1 in each round.
+- podman --cpus=3, user 1001, not pinned, kernel 6.18.44-fc-v185, Intel Xeon (Firecracker VM), libsqlite3-0 3.53.4-2. Scripts arms.sh and cluster.sh outside the tree: 7d685173ed1f99df d9bad1b2fb550242.
+- CPU per write: user and system time of the three nodes. The name konsensd_g16F2cp is longer than the 15 bytes of a process name, so pgrep found no process and its CPU columns read 0. Its rates are valid.
+
+round=1 arm=konsensd_g16F2 conc=1 median_writes_per_s=372 min=366 max=388 median_latency_us=2601 user_us_per_write=688 sys_us_per_write=1088
+round=1 arm=konsensd_g16F2cp conc=1 median_writes_per_s=375 min=375 max=378 median_latency_us=2510 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16D1 conc=1 median_writes_per_s=468 min=397 max=469 median_latency_us=2007 user_us_per_write=588 sys_us_per_write=944
+round=1 arm=konsensd_g16F2 conc=64 median_writes_per_s=4080 min=2841 max=4688 median_latency_us=14929 user_us_per_write=217 sys_us_per_write=76
+round=1 arm=konsensd_g16F2cp conc=64 median_writes_per_s=3984 min=2380 max=4654 median_latency_us=14488 user_us_per_write=0 sys_us_per_write=0
+round=1 arm=konsensd_g16D1 conc=64 median_writes_per_s=4335 min=2357 max=5400 median_latency_us=14064 user_us_per_write=241 sys_us_per_write=89
+round=1 raw_sqlite batch=1 median_writes_per_s=1233
+round=1 raw_sqlite batch=64 median_writes_per_s=73544
+round=2 arm=konsensd_g16F2 conc=1 median_writes_per_s=404 min=384 max=411 median_latency_us=2338 user_us_per_write=755 sys_us_per_write=966
+round=2 arm=konsensd_g16F2cp conc=1 median_writes_per_s=403 min=388 max=405 median_latency_us=2297 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16D1 conc=1 median_writes_per_s=488 min=457 max=489 median_latency_us=1959 user_us_per_write=688 sys_us_per_write=888
+round=2 arm=konsensd_g16F2 conc=64 median_writes_per_s=3909 min=2577 max=5031 median_latency_us=15509 user_us_per_write=235 sys_us_per_write=87
+round=2 arm=konsensd_g16F2cp conc=64 median_writes_per_s=3607 min=2587 max=5096 median_latency_us=16128 user_us_per_write=0 sys_us_per_write=0
+round=2 arm=konsensd_g16D1 conc=64 median_writes_per_s=4580 min=3449 max=5156 median_latency_us=14383 user_us_per_write=176 sys_us_per_write=72
+round=2 raw_sqlite batch=1 median_writes_per_s=1230
+round=2 raw_sqlite batch=64 median_writes_per_s=60080
+round=3 arm=konsensd_g16F2 conc=1 median_writes_per_s=381 min=362 max=406 median_latency_us=2481 user_us_per_write=733 sys_us_per_write=1011
+round=3 arm=konsensd_g16F2cp conc=1 median_writes_per_s=400 min=359 max=436 median_latency_us=2356 user_us_per_write=0 sys_us_per_write=0
+round=3 arm=konsensd_g16D1 conc=1 median_writes_per_s=416 min=404 max=426 median_latency_us=2273 user_us_per_write=577 sys_us_per_write=1066
+round=3 arm=konsensd_g16F2 conc=64 median_writes_per_s=3923 min=2266 max=5214 median_latency_us=15111 user_us_per_write=260 sys_us_per_write=94
+round=3 arm=konsensd_g16F2cp conc=64 median_writes_per_s=4069 min=3047 max=5138 median_latency_us=14714 user_us_per_write=0 sys_us_per_write=0
+round=3 arm=konsensd_g16D1 conc=64 median_writes_per_s=4062 min=2679 max=5277 median_latency_us=14356 user_us_per_write=225 sys_us_per_write=86
+round=3 raw_sqlite batch=1 median_writes_per_s=1136
+round=3 raw_sqlite batch=64 median_writes_per_s=74429
+
+Medians of the three rounds (writes/s)
+- 1 in flight: F2 381, F2 copy 400, D1 468. A/A: 372 to 404 against 375 to 403. D1 against F2: +23 %, above the A/A floor.
+- 64 in flight: F2 3 923, F2 copy 3 984, D1 4 335. A/A: 3 909 to 4 080 against 3 607 to 4 069. D1 against F2: +10 %; the range of D1 (4 062 to 4 580) overlaps the A/A range, so the difference is not shown.
+- D1 against raw SQLite: 41 % at 1 in flight (1 230), 5.8 % at 64 in flight (73 544).
