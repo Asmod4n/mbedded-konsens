@@ -1,0 +1,43 @@
+What was measured
+- Arm P3 (plan section 19, changes after review): between two steps the getters return the high water mark; inside a write transaction they return its meta record; a client read checks the meta record of its read transaction.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh), option sync_by_the_caller on in all three: konsensd_g16P4S2 (b6b62a6), konsensd_g16P4S2c (the same binary copied, A/A), konsensd_g16P3S2 (1e7ea2b, c2c3be1a9c94f329).
+- Same bed, settings, samples, container and seccomp profile as 2026-10-30-150000Z-konsensd-arm-p4.txt. arms.sh 4dc1641035e931fa. The CPU columns are left out; they read 0 for names longer than 15 bytes.
+- callgrind on all three nodes, 1 in flight, 1024 writes after 1024 writes of warm-up, election_ticks = 100, tmpfs (vg6.sh f3dd573cc1ebe6fe); the same run of R1 with S2 is vg5.sh.
+
+round=1 arm=konsensd_g16P4S2 conc=1 median_writes_per_s=367 min=366 max=378 median_latency_us=2500
+round=1 arm=konsensd_g16P4S2c conc=1 median_writes_per_s=389 min=357 max=391 median_latency_us=2454
+round=1 arm=konsensd_g16P3S2 conc=1 median_writes_per_s=380 min=368 max=403 median_latency_us=2447
+round=1 arm=konsensd_g16P4S2 conc=64 median_writes_per_s=7092 min=6647 max=7492 median_latency_us=8347
+round=1 arm=konsensd_g16P4S2c conc=64 median_writes_per_s=6398 min=5488 max=6600 median_latency_us=9245
+round=1 arm=konsensd_g16P3S2 conc=64 median_writes_per_s=6587 min=6474 max=7491 median_latency_us=9205
+round=1 raw_sqlite batch=1 median_writes_per_s=1077
+round=1 raw_sqlite batch=64 median_writes_per_s=70838
+round=2 arm=konsensd_g16P4S2 conc=1 median_writes_per_s=409 min=365 max=419 median_latency_us=2330
+round=2 arm=konsensd_g16P4S2c conc=1 median_writes_per_s=390 min=355 max=391 median_latency_us=2410
+round=2 arm=konsensd_g16P3S2 conc=1 median_writes_per_s=402 min=389 max=403 median_latency_us=2328
+round=2 arm=konsensd_g16P4S2 conc=64 median_writes_per_s=6244 min=5762 max=6307 median_latency_us=9577
+round=2 arm=konsensd_g16P4S2c conc=64 median_writes_per_s=5850 min=5302 max=6066 median_latency_us=9563
+round=2 arm=konsensd_g16P3S2 conc=64 median_writes_per_s=6408 min=6307 max=7619 median_latency_us=9342
+round=2 raw_sqlite batch=1 median_writes_per_s=1094
+round=2 raw_sqlite batch=64 median_writes_per_s=65396
+round=3 arm=konsensd_g16P4S2 conc=1 median_writes_per_s=369 min=364 max=396 median_latency_us=2394
+round=3 arm=konsensd_g16P4S2c conc=1 median_writes_per_s=399 min=390 max=413 median_latency_us=2286
+round=3 arm=konsensd_g16P3S2 conc=1 median_writes_per_s=418 min=414 max=437 median_latency_us=2260
+round=3 arm=konsensd_g16P4S2 conc=64 median_writes_per_s=6351 min=6049 max=6438 median_latency_us=9436
+round=3 arm=konsensd_g16P4S2c conc=64 median_writes_per_s=7427 min=7407 max=7435 median_latency_us=8060
+round=3 arm=konsensd_g16P3S2 conc=64 median_writes_per_s=6437 min=5120 max=6700 median_latency_us=9470
+round=3 raw_sqlite batch=1 median_writes_per_s=1133
+round=3 raw_sqlite batch=64 median_writes_per_s=49086
+
+Medians of the three rounds (writes/s)
+- 1 in flight: P4 369, its copy 390, P3 402.
+- 64 in flight: P4 6 351, its copy 6 398, P3 6 437.
+- The A/A pair differs by 6 % at 1 in flight and by 1 % at 64 in flight. P3 differs from P4 by 9 % and by 1 %. The 9 % lies above the A/A floor of this run only by 3 points; it is not taken as a gain until it repeats.
+
+Instructions per write (callgrind, 1 in flight)
+- R1 with S2: 482 929, 696 972, 560 470 on the three nodes.
+- P3 with S2: 364 184, 363 953, 498 454.
+- Under callgrind the rate was 93 writes/s for R1 and 130 for P3.
+
+Reading
+- P3 removes 18 % to 29 % of the instructions per write. Without callgrind the rate at 1 in flight does not show the same gain. The path of one write at 1 in flight waits for more than the CPU of the nodes. Where it waits is not measured yet.
