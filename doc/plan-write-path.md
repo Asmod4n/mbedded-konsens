@@ -1106,3 +1106,17 @@ before the form, as the rules ask.
 
 Measure: callgrind of memcpy and of the allocator per write at 1 and 64
 in flight on 4314cd3, before any change, then each arm against it.
+
+Owner (2026-10-30 18:31): a client that sends more data than the pool
+holds gets its bytes written to a temporary file. slipstreamIO has this
+for each platform: slipstream_tmpfile (deps/slipstreamIO/src/
+slipstream_tmpfile.h; O_TMPFILE on Linux, mkstemp and unlink on other
+POSIX systems, FILE_FLAG_DELETE_ON_CLOSE on Windows) and
+slipstream_tmpfile_link.
+
+Open with it:
+- The write into SQLite from such a file. SQLite has incremental blob
+  I/O (sqlite3_blob_open, sqlite3_blob_write on a zeroblob), which
+  writes a value in parts; not checked against the schema of the store.
+- The value still goes to the followers in frames of at most 2^32 - 1
+  bytes; a value past one frame needs a form for parts on the wire.
