@@ -14,6 +14,14 @@ namespace konsens {
 
 namespace {
 
+#ifdef __cpp_impl_reflection
+template <typename T>
+using codec = cbor::schema<T>;
+#else
+template <typename T>
+using codec = cbor::packed<T>;
+#endif
+
 struct header {
     std::uint8_t method;
     std::uint8_t kind;
@@ -119,7 +127,7 @@ std::expected<received, std::error_code> decode_body(const std::shared_ptr<const
                                                      const std::string_view body, const header& h)
 {
     using body_type = body_of_kind<I>;
-    auto decoded = cbor::packed<body_type>::decode(owner, body);
+    auto decoded = codec<body_type>::decode(owner, body);
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error());
     }
@@ -142,11 +150,11 @@ std::expected<received, std::error_code> decode_body_of_kind(const std::shared_p
 template <typename Body>
 std::expected<std::string, std::error_code> encode_parts(const header& h, const Body& body)
 {
-    auto out = cbor::packed<header>::encode(h);
+    auto out = codec<header>::encode(h);
     if (!out) [[unlikely]] {
         return std::unexpected(out.error());
     }
-    if (const auto appended = cbor::packed<Body>::encode(body, *out); !appended) [[unlikely]] {
+    if (const auto appended = codec<Body>::encode(body, *out); !appended) [[unlikely]] {
         return std::unexpected(appended.error());
     }
     return std::move(*out);
@@ -210,7 +218,7 @@ std::expected<received, std::error_code> decode(std::string bytes)
     if (*body_size != body.size()) [[unlikely]] {
         return std::unexpected(wire_errc::extraneous_data);
     }
-    const auto decoded = cbor::packed<header>::decode(owner, all.substr(0, *header_size));
+    const auto decoded = codec<header>::decode(owner, all.substr(0, *header_size));
     if (!decoded) [[unlikely]] {
         return std::unexpected(decoded.error());
     }

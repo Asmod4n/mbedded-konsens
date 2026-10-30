@@ -881,7 +881,7 @@ TEST_CASE("each paxos error has its own message")
     }
     std::ranges::sort(messages);
     CHECK(std::ranges::adjacent_find(messages) == messages.end());
-    CHECK(std::ranges::find(messages, "Unknown paxos error") == messages.end());
+    CHECK(std::ranges::find(messages, std::string_view{"Unknown paxos error"}) == messages.end());
 }
 
 // Plan 2.5 item 4: the leader takes the decided index of a promise only

@@ -128,7 +128,7 @@ TEST_CASE("each client error has its own message")
     }
     std::ranges::sort(messages);
     CHECK(std::ranges::adjacent_find(messages) == messages.end());
-    CHECK(std::ranges::find(messages, "Unknown client error") == messages.end());
+    CHECK(std::ranges::find(messages, std::string_view{"Unknown client error"}) == messages.end());
 }
 
 // Plan clean-stop 2.4: a leader that starts after a crash retires. It
