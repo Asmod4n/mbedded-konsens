@@ -1,0 +1,37 @@
+What was measured
+- Arm U (plan section 20): konsensd on Unix sockets against TCP over loopback. One binary from 575ec08 (2d99e89f24c13d91), g++ 16.2.0 Release (build-konsensd.sh), copied three times so that each arm is its own file: konsensd_g16US2 on TCP, konsensd_g16US2u on Unix sockets, konsensd_g16US2uc on Unix sockets (A/A). Option sync_by_the_caller on in all three.
+- The driver and the nodes use the same address form in one cell: cluster.sh with UNIX=1 writes unix:<run directory>/p<i>.sock and c<i>.sock. driver rebuilt with a unix: dialer (main.go 196053b6f56a6ad6).
+- Same bed, settings, samples, container and seccomp profile as 2026-10-30-160000Z-konsensd-arm-p3.txt. arms.sh ecc38295cb6529ee (sets UNIX=1 for arm names that end in u or uc), cluster.sh 29a3cc623c3f1da9. The CPU columns are left out; they read 0 for names longer than 15 bytes.
+
+round=1 arm=konsensd_g16US2 conc=1 median_writes_per_s=374 min=338 max=388 median_latency_us=2514
+round=1 arm=konsensd_g16US2u conc=1 median_writes_per_s=420 min=369 max=428 median_latency_us=2269
+round=1 arm=konsensd_g16US2uc conc=1 median_writes_per_s=410 min=380 max=439 median_latency_us=2291
+round=1 arm=konsensd_g16US2 conc=64 median_writes_per_s=6166 min=5911 max=6542 median_latency_us=9784
+round=1 arm=konsensd_g16US2u conc=64 median_writes_per_s=7068 min=7026 max=7115 median_latency_us=8411
+round=1 arm=konsensd_g16US2uc conc=64 median_writes_per_s=7656 min=7399 max=8874 median_latency_us=7953
+round=1 raw_sqlite batch=1 median_writes_per_s=1084
+round=1 raw_sqlite batch=64 median_writes_per_s=65458
+round=2 arm=konsensd_g16US2 conc=1 median_writes_per_s=421 min=408 max=430 median_latency_us=2190
+round=2 arm=konsensd_g16US2u conc=1 median_writes_per_s=411 min=292 max=433 median_latency_us=2173
+round=2 arm=konsensd_g16US2uc conc=1 median_writes_per_s=451 min=435 max=466 median_latency_us=2065
+round=2 arm=konsensd_g16US2 conc=64 median_writes_per_s=6190 min=6173 max=7603 median_latency_us=9640
+round=2 arm=konsensd_g16US2u conc=64 median_writes_per_s=7284 min=6988 max=7439 median_latency_us=8326
+round=2 arm=konsensd_g16US2uc conc=64 median_writes_per_s=7316 min=6835 max=8130 median_latency_us=8296
+round=2 raw_sqlite batch=1 median_writes_per_s=1283
+round=2 raw_sqlite batch=64 median_writes_per_s=70917
+round=3 arm=konsensd_g16US2 conc=1 median_writes_per_s=448 min=423 max=463 median_latency_us=2141
+round=3 arm=konsensd_g16US2u conc=1 median_writes_per_s=434 min=420 max=444 median_latency_us=2167
+round=3 arm=konsensd_g16US2uc conc=1 median_writes_per_s=482 min=467 max=488 median_latency_us=1978
+round=3 arm=konsensd_g16US2 conc=64 median_writes_per_s=6638 min=6576 max=6928 median_latency_us=8955
+round=3 arm=konsensd_g16US2u conc=64 median_writes_per_s=7085 min=7042 max=8425 median_latency_us=8415
+round=3 arm=konsensd_g16US2uc conc=64 median_writes_per_s=8584 min=8226 max=8585 median_latency_us=7049
+round=3 raw_sqlite batch=1 median_writes_per_s=1182
+round=3 raw_sqlite batch=64 median_writes_per_s=67472
+
+Medians of the three rounds (writes/s)
+- 1 in flight: TCP 421, Unix 420, Unix copy 451.
+- 64 in flight: TCP 6 190, Unix 7 085, Unix copy 7 656.
+- The A/A pair on Unix sockets differs by 7 % at 1 in flight and by 8 % at 64 in flight.
+- At 1 in flight no difference between TCP and Unix sockets is shown.
+- At 64 in flight Unix sockets are 14 % (7 085) and 24 % (7 656) above TCP. In rounds 1 and 2 the lowest sample on Unix sockets lies above the median on TCP.
+- Multishot is not part of this arm. Accept runs about 64 times per cell, so this bench does not measure the accept path.
