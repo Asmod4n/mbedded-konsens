@@ -545,3 +545,247 @@ Verdict: approve with changes. Ten findings; Q1 to Q9 in section 17 of
 the plan answer them. Findings 1 to 4 (the sync number of held output,
 a partial rollback, the meaning of an open step, reads of committed
 state) changed the form before the build.
+
+## Review of arm P (section 19)
+
+## Verdict: CHANGES
+
+The idea is safe in my reading. A value in memory is the value that the
+node committed after a check. No vote happens without a check at the
+begin or at the end of a step. Eight changes are requested before the
+build (P1 to P8). The main ones: one divergence after a failed commit,
+one earlier decision that the arm reverses, one client read path that
+loses its check, tests that do not hold or do not build, and a simpler
+form.
+
+## Answers
+
+### 1. Can the value in memory differ from a checked read?
+
+Yes, in one path: a failed commit.
+
+- `commit_phase_two` (sequence_paxos.hpp:494-499) throws `write_error`
+  when the commit fails. `persistent_storage::transaction::commit`
+  (persistent_storage.cpp:1700-1707) runs `commit_without_a_sync` and
+  then `sync_the_wal`. When only the sync fails, the commit is visible
+  to the next reader. Item 1 sets the kept record "once
+  `commit_phase_two` committed it". So the kept record stays at the
+  old step, and a checked read gives the new step. "An error drops
+  it" does not name this place. The getters do not call
+  `throw_if_a_write_did_not_finish` (sequence_paxos.hpp:923-938), so a
+  caller still reaches them through `node::get_sequence_paxos()`
+  (node.hpp:629).
+
+No difference in the other paths:
+
+- Start: `with` (sequence_paxos.hpp:337) runs before any kept record.
+  It takes the checked read. node.hpp:174 also runs at the start.
+- Recovery (`start_kind::clean`) and build: every write goes through
+  `txn_` (for example sequence_paxos.hpp:1938-1955) and ends in
+  `commit_phase_one`, which checks (sequence_paxos.hpp:464).
+- Stop: `commit_the_open_transaction` checks (sequence_paxos.hpp:516)
+  and goes through `commit_phase_two`. `sync_the_last_commit`
+  (sequence_paxos.hpp:578-597) writes the decided index with the value
+  that it read, so the four values do not change.
+- Retire: `retired_` is set in memory only (node.hpp:1003-1012).
+- S2 with the transaction open over ended steps: `txn_` is set, so
+  item 2 takes the meta of the transaction. `commit_phase_one` checked
+  it at the end of the last step (sequence_paxos.hpp:464-475), and the
+  mark does not rise on that path.
+- The window between `commit_phase_one` and `commit_phase_two`: `txn_`
+  is empty and `pending_commit_` holds the step. The checked read
+  gives the last committed step. The kept record is the same step.
+- Rollback: a rollback leaves the last committed state, which equals
+  the kept record. The callers in sequence_paxos also set `error_` or
+  `write_unfinished_` (sequence_paxos.hpp:419-420, 456-457, 572-573,
+  1232-1235, 1240-1242). One caller does not:
+  `node::roll_back_the_step` (node.hpp:848-855) rolls back after a
+  failed `serve_clients_in_the_step` or a failed apply, with no error,
+  when no ended steps are held. The committed state does not change
+  there either.
+- sync_by_the_caller: `commit_without_a_sync` makes the commit visible
+  at once, so the kept record and the read agree.
+  `the_sync_failed` (sequence_paxos.hpp:568-574) rolls back, so item 1
+  drops the record there.
+- Read-only path: `read_decided_suffix`, `get_prefix_chain_crc` and
+  `check_applied_chain_crc` (sequence_paxos.hpp:909-972) keep their own
+  read-only transaction and their own check. Arm P does not touch them.
+
+### 2. Does a path write the storage outside a transaction of sequence_paxos?
+
+No path writes the four values outside `sequence_paxos`.
+
+- `own_storage_` is `node_storage`. It opens its own file
+  (`node_file_name` = "node.db", persistent_storage.cpp:32, 2002). It holds the
+  proof and the clean-stop mark only.
+- The node writes the store only through `seq_paxos_.txn_`
+  (node.hpp:961-966, 972-978, 984-990).
+- A nested transaction is a savepoint in `txn_`
+  (persistent_storage.cpp:1670-1683). Its methods do not write the
+  meta row (persistent_storage.cpp:1760-1818). `get_meta` throws while
+  a nested transaction is open (persistent_storage.cpp:1386), so the
+  D1 cache cannot hold a value of a rolled back savepoint.
+  `roll_back_the_nested` does not reset `writer_meta`
+  (persistent_storage.cpp:1239-1245). That is correct only while a
+  nested transaction does not write the meta.
+- `sync_the_last_commit` is a write transaction of `sequence_paxos`
+  that does not use `txn_` (sequence_paxos.hpp:578-597). It keeps the
+  values. Item 1 does not name it.
+- A second connection writes the store in the tests
+  (sqlite_damage.hpp:28-37). Not checked: whether a tool of the tree
+  writes the store while a node runs.
+
+### 3. Does the plan miss a damage that the checked reads find now?
+
+Three differences.
+
+a. The client read path loses its check. `finish_the_step` reads the
+   promise (node.hpp:429) and then calls `serve_reads`
+   (node.hpp:436). `answer_indexed_reads` (node.hpp, the function after
+   `serve_reads`) opens a read-only transaction and reads `applied_idx`
+   with `get_meta` only, with a CRC check and no step check. Today the
+   getter runs the step check through the reader connection just
+   before. With arm P, a reply to a client read can leave from a store
+   that the step check calls damaged. This holds above all for a step
+   with no write transaction: `commit_phase_one` then returns before
+   its check (sequence_paxos.hpp:461-463). The last check can then
+   lie many calls back.
+
+b. Arm P reverses an earlier decision. plan-lmdb-only-source.md:150-153
+   (2.1 item 3) says that a getter between two steps runs the step
+   check, "so no value leaves the node without the check". Review
+   finding 5 (review-plan-lmdb-only-source-1.md:17-21) asked for it.
+   The test at test_sequence_paxos.cpp:668-689 checks it: after a
+   damage, `get_promise` and `get_decided_idx` must return
+   `inconsistent_storage`. With arm P both return the committed value,
+   so this test fails. Section 19 names neither the decision nor the
+   test.
+
+c. The time of detection moves. Without S2, a damage between two steps
+   is found by the next `begin_step`. With S2 and an open transaction,
+   `begin_step` does no check (sequence_paxos.hpp:1213-1216). The
+   damage is found at the end of the next step
+   (sequence_paxos.hpp:464). The output of that step leaves only after
+   that check (node.hpp:398-405), so no vote leaves on the damage.
+
+I found no path where a vote or a Paxos message leaves without a check
+of its step. `tick` (node.hpp:232-236) passes the promise to
+`handle_leader`, which runs `begin_step` first
+(sequence_paxos.hpp:719).
+
+### 4. Are the tests enough, and do they build?
+
+- "A storage that counts its reads": no such helper exists.
+  sqlite_storage.hpp and sqlite_damage.hpp have none. Two wrappers
+  exist that the test can extend: `recording_storage`
+  (test_node.cpp:342-412, in an unnamed namespace) and `disk_storage`
+  (node_cluster.hpp:46-120). A simpler form needs no wrapper: after a
+  commit, put an older meta value with `change_with_sqlite`, as
+  test_sequence_paxos.cpp:668-689 does. `get_promise` then returns the
+  committed promise. That shows that it read nothing.
+- "After a rollback, the next get_promise makes the checked read": it
+  does not name which rollback. The one rollback with no error is
+  `node::roll_back_the_step` (node.hpp:848-855). The other rollbacks
+  come with `error_` or `write_unfinished_`. The test must name each
+  path: `roll_back_the_step`, a damage that stops the vote,
+  `the_sync_failed`, and a failed commit.
+- "A damage between two steps is found by the next begin_step": this
+  is wrong with S2 and an open transaction (answer 3c). Also,
+  `change_with_sqlite` runs `BEGIN IMMEDIATE` and requires
+  `SQLITE_OK` (sqlite_damage.hpp:32). It fails while S2 holds the
+  write transaction. So the test runs only with no open transaction.
+- Missing: a test of the failed commit (answer 1). `disk_storage` can
+  take a flag that makes `commit` run `commit_without_a_sync` and then
+  return an error.
+- Missing: a test of the client read path (answer 3a).
+- Missing: the S2 run of the new tests (section 17 Q7 runs R7 with S2;
+  arm P needs the same).
+
+### 5. Other faults and a simpler form
+
+- The simpler form: `mark_` (sequence_paxos.hpp:2102) already holds the
+  four values of the last committed step. It rises only at
+  sequence_paxos.hpp:349, 480 and 502, each time with a checked record.
+  A checked record is never below the mark (sequence_paxos.hpp:1172).
+  So `raise_mark` (sequence_paxos.hpp:309-314) gives exactly
+  `mark_of` of that record. A rollback, also the one of
+  `roll_back_the_step`, does not change the committed state and does
+  not change `mark_`. Outside `txn_`, with no `error_` and no
+  `write_unfinished_`, `mark_` equals the committed state. No new
+  member and no drop point is needed. The condition covers the failed
+  commit too, because `commit_phase_two` sets `write_unfinished_`
+  before the commit (sequence_paxos.hpp:495).
+- `execute_verify` reads the promise (node.hpp:1888) and then reads
+  `m = seq_paxos_.read_meta()` (node.hpp:1891) in the same
+  transaction. `m->promise` is the same value. This removes one of the
+  two calls per step, with no new state.
+- Item 1 keeps a whole `meta_record`. The getters give four values. A
+  kept `applied_idx` would be wrong after the next `set_applied`.
+- The name `read_meta_between_steps` claims a read. With arm P it
+  reads in the cold path only.
+- Section 19 says that the checks run four times per step. With S2,
+  a step that continues an open transaction runs three: `begin_step`
+  does not check (sequence_paxos.hpp:1213-1216).
+- Item 2 calls `txn_->get_meta()`. It is cheap only with the D1 cache
+  (persistent_storage.cpp:1203-1213). The plan does not say that the
+  base holds D1.
+
+## Requested changes
+
+P1. The failed commit. Use the form of P3. Or, if the kept record
+    stays: `commit_phase_two` drops the kept record before it calls
+    `commit`, and sets it after the commit succeeded. Test: a
+    `disk_storage` whose `commit` runs `commit_without_a_sync` and
+    returns an error. After the `write_error`, `get_promise` returns
+    the promise of the failed step or an error, never the promise of
+    the step before.
+
+P2. Name the reversed decision. Section 19 cites
+    plan-lmdb-only-source.md:150-153 and
+    review-plan-lmdb-only-source-1.md:17-21, and says why the new form
+    keeps their goal: the value in memory is the last checked value,
+    and every vote runs after a check of its step. The test at
+    test_sequence_paxos.cpp:668-689 changes: after the damage,
+    `get_promise` returns `ballot_of(2, 2)`, and the next `handle`
+    returns `inconsistent_storage` with `!votes()`. The owner decides
+    this before the build, because it is a question about safety.
+
+P3. Simpler form. The four getters return `mark_` when `!txn_ &&
+    !error_ && !write_unfinished_`. Inside `txn_` they return
+    `txn_->get_meta()`. Else they make the checked read as now. Item 1
+    is then not needed. If the owner prefers a separate member, it has
+    the type `high_water_mark` and not `meta_record`.
+
+P4. `execute_verify` takes the promise from `m->promise` of
+    `read_meta()` (node.hpp:1888-1893). Measure P4 alone as its own
+    arm, beside P3, against the same base. The plan then shows which
+    of the two calls carries the cost.
+
+P5. The client read path keeps a check. `answer_indexed_reads` runs
+    `seq_paxos_.read_checked_meta(t)` on its own read-only transaction
+    `t` (node is a friend, sequence_paxos.hpp:621-622). A damage there
+    stops the vote, and no reply leaves. This runs only when `reads_`
+    is not empty. Test: a client read with a read index, a damage of
+    the meta row through `change_with_sqlite`, then a step with no
+    write transaction. No reply leaves, and the node stops voting.
+
+P6. Fix the tests of section 19:
+    - Replace "a storage that counts its reads" with the damage form of
+      answer 4. It needs no new helper.
+    - Replace the rollback test with one test for each path: a failed
+      `serve_clients_in_the_step` that runs `roll_back_the_step`
+      (`get_promise` gives the last committed promise), a damage that
+      stops the vote, `the_sync_failed`, and the failed commit of
+      P1.
+    - The damage test states its form: without S2 the next
+      `begin_step` finds it. With S2 it runs only when no transaction
+      is open. Each damage test ends with `check_stops_voting`
+      (test_sequence_paxos.cpp:610-615), so it also shows that no
+      message leaves.
+    - Run every new test with S2 too.
+
+P7. Correct the facts of section 19. With S2, a continued step runs
+    three checks, not four. The base of the measurement holds D1.
+
+P8. The name `read_meta_between_steps` no longer says what happens.
+    Proposal: `meta_between_steps`. The owner decides the name.

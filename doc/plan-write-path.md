@@ -546,3 +546,27 @@ Measured as section 2 says, against R1 with S2 and against R1.
 Question for the review: whether a value in memory between two steps
 misses a damage that a checked read finds now, and whether any path
 writes the storage outside a transaction of `sequence_paxos`.
+
+### Changes after review (arm P, round 1)
+
+The review is in doc/review-plan-write-path.md ("Review of arm P").
+
+- P4 is built first as its own arm, P4: `execute_verify` takes the
+  promise from the meta record that it reads next (`read_meta()`), and
+  does not call `get_promise`. No check is removed: the step checked
+  the meta in `begin_step`.
+- P3 replaces items 1 and 2. Outside a write transaction, with no error
+  and no unfinished write, the getters return the values of `mark_`.
+  Inside a write transaction they return `txn_->get_meta()`. Else they
+  make the checked read. No new member. This fixes P1.
+- P2: P3 reverses item 3 of 2.1 of plan-lmdb-only-source.md (each
+  getter makes the checked read). The test at
+  test_sequence_paxos.cpp:668-689 changes as the review says. P3 is
+  built as an arm, marked provisional, and is kept only after the owner
+  decides.
+- P5: `answer_indexed_reads` makes the checked read on its read-only
+  transaction, so a client read keeps a check in every step.
+- P6: the tests follow the review.
+- P7: with S2, a step that continues an open transaction runs three
+  checks.
+- P8: the name `read_meta_between_steps` stays until the owner decides.
