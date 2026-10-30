@@ -1,0 +1,42 @@
+CBOR: cbor::packed with the description inside and apart, one message of the write path
+
+What was measured
+- Size, encode and decode of one accept_decide message with 1 and 16 entries, as in 2026-10-30-120000Z-cbor-packed-against-schema-and-structs.txt.
+- mbedded-cbor fe7eaf2. Test file outside the tree: c.cpp 9134f64c7e50074c.
+- Arms, each its own binary, -O2 -DNDEBUG: structs (g++ 16, -std=c++26 -freflection); packed and packed_aa (g++ 16, -std=c++23, description inside; packed_aa a copy, A/A); apart (g++ 16, -std=c++23, cbor::description_place::apart).
+- Each value is the median of 15 samples of 20000 iterations, ns per message. 3 rounds, arms alternate.
+- podman image localhost/cxx-matrix-sqlite, not pinned, kernel 6.18.44-fc-v185, Intel Xeon (Firecracker VM).
+
+Rows
+round=1 arm=structs bytes=308 entries=1 encode_ns median=97 min=95 max=101 decode_ns median=287 min=282 max=297 sink=2
+round=1 arm=packed bytes=502 entries=1 encode_ns median=30 min=29 max=32 decode_ns median=96 min=96 max=102 sink=0
+round=1 arm=packed_aa bytes=502 entries=1 encode_ns median=30 min=29 max=30 decode_ns median=96 min=94 max=100 sink=0
+round=1 arm=apart bytes=323 entries=1 encode_ns median=44 min=28 max=51 decode_ns median=114 min=96 max=123 sink=3
+round=1 arm=structs bytes=3293 entries=16 encode_ns median=997 min=979 max=1018 decode_ns median=2866 min=2843 max=3092 sink=6
+round=1 arm=packed bytes=3427 entries=16 encode_ns median=194 min=191 max=198 decode_ns median=932 min=924 max=951 sink=0
+round=1 arm=packed_aa bytes=3427 entries=16 encode_ns median=193 min=191 max=197 decode_ns median=930 min=913 max=943 sink=0
+round=1 arm=apart bytes=3248 entries=16 encode_ns median=199 min=195 max=213 decode_ns median=958 min=949 max=967 sink=3
+round=2 arm=structs bytes=308 entries=1 encode_ns median=97 min=96 max=102 decode_ns median=287 min=277 max=294 sink=2
+round=2 arm=packed bytes=502 entries=1 encode_ns median=29 min=29 max=32 decode_ns median=96 min=95 max=98 sink=0
+round=2 arm=packed_aa bytes=502 entries=1 encode_ns median=29 min=28 max=30 decode_ns median=96 min=94 max=100 sink=0
+round=2 arm=apart bytes=323 entries=1 encode_ns median=27 min=26 max=30 decode_ns median=94 min=92 max=101 sink=3
+round=2 arm=structs bytes=3293 entries=16 encode_ns median=1001 min=984 max=1037 decode_ns median=2869 min=2843 max=2898 sink=6
+round=2 arm=packed bytes=3427 entries=16 encode_ns median=202 min=198 max=214 decode_ns median=928 min=921 max=946 sink=0
+round=2 arm=packed_aa bytes=3427 entries=16 encode_ns median=193 min=191 max=200 decode_ns median=928 min=920 max=980 sink=0
+round=2 arm=apart bytes=3248 entries=16 encode_ns median=198 min=196 max=211 decode_ns median=954 min=945 max=968 sink=3
+round=3 arm=structs bytes=308 entries=1 encode_ns median=98 min=96 max=100 decode_ns median=284 min=282 max=296 sink=2
+round=3 arm=packed bytes=502 entries=1 encode_ns median=30 min=29 max=33 decode_ns median=97 min=95 max=102 sink=0
+round=3 arm=packed_aa bytes=502 entries=1 encode_ns median=29 min=28 max=30 decode_ns median=96 min=95 max=99 sink=0
+round=3 arm=apart bytes=323 entries=1 encode_ns median=28 min=28 max=29 decode_ns median=94 min=92 max=95 sink=3
+round=3 arm=structs bytes=3293 entries=16 encode_ns median=995 min=986 max=1011 decode_ns median=2852 min=2815 max=2889 sink=6
+round=3 arm=packed bytes=3427 entries=16 encode_ns median=196 min=189 max=205 decode_ns median=940 min=925 max=970 sink=0
+round=3 arm=packed_aa bytes=3427 entries=16 encode_ns median=196 min=191 max=204 decode_ns median=921 min=913 max=955 sink=0
+round=3 arm=apart bytes=3248 entries=16 encode_ns median=199 min=197 max=211 decode_ns median=955 min=946 max=1025 sink=3
+
+Medians of the three rounds (bytes; encode ns / decode ns)
+| Arm | 1 entry | 16 entries |
+| structs | 308 B; 97 / 285 | 3293 B; 997 / 2866 |
+| packed, inside | 502 B; 30 / 96 | 3427 B; 196 / 932 |
+| packed, inside, A/A | 502 B; 29 / 96 | 3427 B; 193 / 928 |
+| packed, apart | 323 B; 28 / 94 | 3248 B; 199 / 955 |
+- The form apart is 179 B smaller for each message. Its times are within 3 % of the form inside, which is the A/A floor, except one round at 1 entry (44 / 114).

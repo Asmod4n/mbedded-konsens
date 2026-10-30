@@ -667,3 +667,93 @@ The data of this plan on the disk (M14), as of this section:
 - $S/wt-d (diagnostic worktree), $S/hyp-sync, $S/diag-*.patch: needed
   by no open work.
 - The seccomp profile: recorded in the state file (section 2).
+
+## 22. Multishot as the default, and arm C as cbor::packed
+
+The owner chose multishot as the default (2026-10-30). The owner named
+`cbor::packed` for the wire (2026-10-30). Section 21 is replaced by this
+section.
+
+Wrong assumption: this plan first said that konsensd still had a
+single accept and a single recv beside multishot, and an option between
+them. In fact, 2600937 removed both: program/serve.cpp has only the
+multishot accept and recv, and no option chooses a path. The arm F was
+a binary of the commit before 2600937. The first plan had a step that
+removed code that no longer existed.
+
+Facts that bound the form, checked in this session:
+- mbedded-cbor fe7eaf2 (main, 63 commits after 55418aa) has
+  `cbor::packed<T>`. It reads `cbor::describe_members<T>` and builds in
+  C++23. Its decode gives the same `cbor::ref<T>` and `cbor::error` as
+  `cbor::structs`. A packed message is one CBOR item (tag 113 of
+  draft-ietf-cbor-packed-19, then an array of 2), so `cbor::item_size`
+  still splits the header from the body.
+- On fe7eaf2, `cbor::structs` also reads `cbor::describe_members<T>`
+  where it exists. A type that has a description in one translation unit
+  and none in another breaks the one definition rule.
+- A file outside the tree ($S/hyp-w/w.cpp) describes the structs of the
+  22 message bodies with `CBOR_DEFINE_TYPE`. Each body makes a round trip
+  of its value-initialized form through `cbor::packed` with g++ 16, g++
+  15 and clang 22 in C++23, with the warning flags of the tree.
+- One accept_decide message, g++ 16
+  (bench/results/2026-10-30-120000Z-cbor-packed-against-schema-and-structs.txt
+  and 2026-10-30-121500Z-cbor-packed-description-inside-and-apart.txt):
+
+| Form | bytes, 1 / 16 entries | encode ns | decode ns |
+| structs | 308 / 3293 | 97 / 997 | 285 / 2866 |
+| packed, description inside | 502 / 3427 | 30 / 196 | 96 / 932 |
+| packed, description apart | 323 / 3248 | 28 / 199 | 94 / 955 |
+
+- With g++ 15 and clang 22, packed encodes about 3 times slower than
+  with g++ 16.
+- The IANA registry of CBOR tags (last updated 2026-10-08) has
+  33001-39999 as unassigned, in the first-come range.
+
+Steps:
+1. Multishot is already the only receive path (2600937). The program
+   tests run once on the slipstream engine, with io_uring of the kernel
+   forbidden, to show that a provided buffer ring works there. If it
+   does not, konsensd refuses to start on the engine, in the same check
+   as sync_by_the_caller (program/serve.cpp:885).
+2. deps/mbedded-cbor moves to fe7eaf2. Every codec call still uses
+   `cbor::structs`. All tests run green on g++ 15, g++ 16, g16aa and
+   clang 22.
+3. Each struct of a message body gets one `CBOR_DEFINE_TYPE`, in the
+   header that defines the struct (storage.hpp, verdict.hpp,
+   message.hpp), so every translation unit that sees the struct sees its
+   description. cluster_config gets no description: it
+   travels only inside a log entry. The wire header is described in
+   src/wire.cpp, where it stands. src/wire.cpp encodes and decodes the
+   header and the body with `cbor::packed`, with the description inside,
+   and with the verified decode. The decode takes the owner and the view,
+   as now.
+   Consequence: indexed_result now has a description in verdict.hpp, so
+   `cbor::structs` in src/verdict.cpp writes it with its tag. The
+   list of chosen results that goes into the log changes its bytes. No
+   release exists, so no old log has to be read.
+4. In the same commit as step 3, test/test_wire.cpp gains: a round trip
+   of each message kind with values that are not zero (entries with
+   payload and result, log_sync present and absent); the first bytes of
+   a message against tag 113 of the specification; a header and a body
+   in one buffer that split at the item size of the header; a body of
+   another kind; a body cut short; a body whose description differs in
+   one member, which the decode refuses.
+5. konsensd is measured as section 2 says: arm C (step 3) against the
+   base (step 2), each its own binary, Unix sockets, sync_by_the_caller,
+   for each build of section 2, cells 64 B and 1 KiB at 1 and 64 in
+   flight. 6 rounds instead of 3, because the run of section 20 showed a
+   spread across rounds larger than the difference of the arms.
+
+Provisional, for the owner: the tag numbers 34816 to 34843 (one for each
+described struct), and the description inside. The form apart saves 179 bytes of each message at the same time,
+but its reader does not receive the description of the writer
+(test/doc_reference_schema.cpp of mbedded-cbor, "description"), and
+so cannot compare it with its own; that waits on the open question of
+mixed versions. The verified read of the form inside compares the
+description in the message with its own (schema.hpp:1775-1785, called
+at :1814 of fe7eaf2).
+
+The data of this section: $S/hyp-p and $S/hyp-w (test files and their
+binaries, deleted after this section is decided); $S/cbor-main (a
+worktree of mbedded-cbor main, removed after step 2); the bench binaries
+of step 5 (deleted after the arms are decided).

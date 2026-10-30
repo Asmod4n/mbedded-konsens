@@ -896,3 +896,19 @@ M refuses to start on the engine only if this file shows a difference.
 M13. The bench table. Arms R1, U and M, each on TCP and on Unix sockets. R1 on Unix sockets is a cell that says "does not parse". The driver dials through `http.Transport.DialContext` with `net.Dialer.DialContext(ctx, "unix", path)`. The URL host is a fixed name. cluster.sh prints the target as `unix:<path>`. The socket path under arms.sh:10 (`/z/b/arms/<arm>-c64/...`) stays under 107 bytes; the plan says so. The result says that multishot accept is not measured.
 
 M14. The plan ends with a list of its data on the disk, as the rules ask. Each item is marked: in the state file, needed by open work, or made again by a build command.
+
+## Review of section 22 (multishot as the default, arm C as cbor::packed)
+
+Round 1: not approved, 13 findings. The wrong assumption about the
+receive paths (finding 1), the engine (2), the one definition rule (3),
+the wire header in an unnamed namespace (4), the place of the
+description (5), the tests (6), the builds (8), the base (9), the order
+(10), the tag registry (11) and the verified decode (12) are taken into
+section 22.
+
+Round 2: not approved, 3 findings. A: the descriptions stand in the
+header that defines each struct, so the one definition rule holds for
+indexed_result. B: the result of the place of the description is a
+file under bench/results/. C: the verified read of the form inside
+compares the description; step 4 tests a description that differs.
+These are small corrections and are taken without a third round.
