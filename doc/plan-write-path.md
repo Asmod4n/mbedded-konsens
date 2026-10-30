@@ -616,3 +616,32 @@ a close of the connection; the bound of buffers per connection when a
 peer sends faster than the node reads; whether a provided buffer ring
 works on the slipstream engine (if not, M refuses to start there as S
 does).
+
+## 21. Arm C: messages between nodes as cbor::schema
+
+Source: the owner (2026-10-30): `cbor::schema` is much faster than
+`cbor::structs`. The decision of 2026-10-20 names packed CBOR through
+`cbor::schema` for the messages between nodes. The code uses
+`cbor::structs` (src/wire.cpp:109-236, src/verdict.cpp:30-43,
+program/frame.cpp:72-86, program/key_value.cpp:17-34). callgrind at 64
+in flight: `cbor::generic::generic_read` takes about 17k instructions
+per write on the leader, about 5 %.
+
+Facts that bound the form (deps/mbedded-cbor 55418aa, doc/schema.md):
+- `cbor::schema` needs C++26 reflection, g++ 16 with -freflection. A
+  clang build has no `cbor::schema`.
+- Every struct in a message carries `[[=cbor::tag(n)]]` with its own
+  number.
+
+Steps:
+1. A file outside the tree measures, for the messages that a write
+   sends (work, answer, accept_decide with entries, accepted, decide),
+   encode and decode with `structs` and with `schema`, each in its own
+   binary, g++ 16 Release. Medians, A/A first.
+2. If step 1 shows a gain above its floor, the wire of src/wire.cpp
+   uses `schema`. The log entries on disk follow in a later arm.
+3. konsensd is measured as section 2 says.
+
+Open for the owner before step 2: the tag numbers (the provisional block
+of 2026-10-20 in the IANA first-come range), and whether a clang build
+of the library without a wire is acceptable.
