@@ -1249,9 +1249,8 @@ Owner (2026-10-30 18:48): by default a user has 8 MiB of RLIMIT_MEMLOCK
 for the whole machine. Checked: `ulimit -l` gives 8192 (KiB) on this
 host and in the bench container as user 1001. A form that pins memory
 (registered buffers, one buffer ring per connection as in
-mruby-webmachine 74066bb) meets this limit. Not checked: whether the
-data of provided buffers counts against the limit, or only the ring of
-their descriptors.
+mruby-webmachine 74066bb) meets this limit. Owner (2026-10-30 18:50): the data of provided
+buffers counts against no limit; it is normal heap memory.
 Owner (2026-10-30 18:48): the rings themselves already need this limit.
 No form of this plan pins more memory.
 
