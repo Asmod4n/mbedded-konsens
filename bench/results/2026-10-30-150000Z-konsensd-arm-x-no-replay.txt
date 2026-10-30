@@ -8,7 +8,8 @@ What was measured
 - Binaries: konsensd_g16HS2u e4a23155a4362697; konsensd_g16XS2u d1eb8a76bb0cad68. Script outside the tree: arms.sh 0aad1710ea6c3d47.
 
 Result
-- Arm X gives no number. No write of arm X got an answer, at 1 and at 64 in flight.
+- Arm X gives no valid number. In round 1 at 1 in flight it answered (319 writes/s). At 64 in flight and in every later cell it got no answer.
+- At 1 in flight no own result waits above applied_idx, so the replay is empty there and arm X computes the same results.
 - Node 1 of arm X logged: "a majority refused a done record of this leader: A chosen result fails its CRC on this node, or a value that the node wrote reads back different".
 - The cause: run_the_tasks and run_again execute a request on the base. Without the replay, the base lacks the done results above applied_idx. A key_value result depends on the earlier writes of the same key, so the followers compute other bytes and refuse.
 - Removing the replay thus changes the results. It is not a valid arm, and the replay has no upper bound from this form.
