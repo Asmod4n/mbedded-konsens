@@ -1,0 +1,76 @@
+konsensd: sqlite3_step calls per SQL statement on each node, 4096 writes of 64 B at 64 in flight
+
+What was counted
+- konsensd_g16A26S2u (write-path 35a6b5d), three nodes, Unix sockets, sync_by_the_caller = true, podman --cpus=3, user 1001.
+- bench/sqlcount.cpp is preloaded into each node. It counts each call of sqlite3_step by the SQL text of its statement and writes the counts when the process ends. A SELECT counts one call per row and one at the end.
+- One run. The counts include the start, the probe writes and the clean stop. The rate of this run (3924 writes/s) is not a measurement, because the preload takes a lock in each call.
+- The leader was node 3. The file of the leader is the one with the most range reads (pid 41); the order of the pids to the nodes is not checked.
+- Binary 2a4fd395a8a556ad.
+
+Counts
+== pid 29
+121322	SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+13156	SELECT record FROM log WHERE idx = ?1
+4291	UPDATE log SET record = ?2 WHERE idx = ?1
+4291	INSERT INTO log (idx, record) SELECT ?1, ?2 WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)
+4226	INSERT INTO session (id, record) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET record = excluded.record
+4192	SELECT record FROM session WHERE id = ?1
+4097	SELECT value FROM data WHERE key = ?1
+4097	INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value
+3470	SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+1086	SELECT record FROM meta WHERE name = ?1
+1070	BEGIN IMMEDIATE
+952	INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
+783	ROLLBACK
+294	COMMIT
+65	DELETE FROM session WHERE id = ?1
+7	BEGIN
+3	PRAGMA synchronous
+3	PRAGMA journal_mode = WAL
+1	SELECT count(*) FROM sqlite_schema
+1	SELECT (SELECT count(*) FROM meta) + (SELECT count(*) FROM log) + (SELECT count(*) FROM session) + (SELECT count(*) FROM data)
+1	PRAGMA page_size
+== pid 35
+90655	SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+10785	SELECT record FROM log WHERE idx = ?1
+4349	SELECT record FROM session WHERE id = ?1
+4291	UPDATE log SET record = ?2 WHERE idx = ?1
+4291	INSERT INTO log (idx, record) SELECT ?1, ?2 WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)
+4226	INSERT INTO session (id, record) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET record = excluded.record
+4097	SELECT value FROM data WHERE key = ?1
+4097	INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value
+2909	SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+1000	SELECT record FROM meta WHERE name = ?1
+990	INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
+984	BEGIN IMMEDIATE
+660	ROLLBACK
+331	COMMIT
+65	DELETE FROM session WHERE id = ?1
+7	BEGIN
+3	PRAGMA synchronous
+3	PRAGMA journal_mode = WAL
+1	SELECT count(*) FROM sqlite_schema
+1	SELECT (SELECT count(*) FROM meta) + (SELECT count(*) FROM log) + (SELECT count(*) FROM session) + (SELECT count(*) FROM data)
+1	PRAGMA page_size
+== pid 41
+128659	SELECT idx, record FROM log WHERE idx >= ?1 ORDER BY idx
+13983	SELECT record FROM log WHERE idx = ?1
+4622	SELECT record FROM session WHERE id = ?1
+4573	SELECT idx, record FROM log ORDER BY idx DESC LIMIT 1
+4291	UPDATE log SET record = ?2 WHERE idx = ?1
+4291	INSERT INTO log (idx, record) SELECT ?1, ?2 WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)
+4226	INSERT INTO session (id, record) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET record = excluded.record
+4097	SELECT value FROM data WHERE key = ?1
+4097	INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value
+1535	SELECT record FROM meta WHERE name = ?1
+1519	BEGIN IMMEDIATE
+1195	ROLLBACK
+989	INSERT INTO meta (name, record) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET record = excluded.record
+331	COMMIT
+65	DELETE FROM session WHERE id = ?1
+7	BEGIN
+3	PRAGMA synchronous
+3	PRAGMA journal_mode = WAL
+1	SELECT count(*) FROM sqlite_schema
+1	SELECT (SELECT count(*) FROM meta) + (SELECT count(*) FROM log) + (SELECT count(*) FROM session) + (SELECT count(*) FROM data)
+1	PRAGMA page_size
