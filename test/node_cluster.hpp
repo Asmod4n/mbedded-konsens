@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <system_error>
@@ -45,11 +46,14 @@ constexpr std::uint32_t config_id = 1;
 // The disk of a node outlives the node, so a test can end a node between a
 // call and its commit, as a crash does, and start it again on the same
 // disk. The disk counts the commits of write transactions and the entries
-// of each append_entries. Its store is SQLite.
+// of each append_entries. Its store is SQLite. A test that sets
+// meta_read_error makes every read of the meta in a write transaction fail
+// with it, as a disk that fails under a step.
 struct disk {
     konsens::persistent_storage store;
     std::uint64_t commits;
     std::vector<std::size_t> appended;
+    std::optional<std::error_code> meta_read_error{};
 };
 
 struct disk_storage {
@@ -59,7 +63,13 @@ struct disk_storage {
     public:
         transaction(konsens::persistent_storage::transaction t, disk* d) : t_{std::move(t)}, d_{d} {}
 
-        auto get_meta() const { return t_.get_meta(); }
+        std::expected<konsens::meta_record, std::error_code> get_meta() const
+        {
+            if (d_->meta_read_error) {
+                return std::unexpected(*d_->meta_read_error);
+            }
+            return t_.get_meta();
+        }
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }

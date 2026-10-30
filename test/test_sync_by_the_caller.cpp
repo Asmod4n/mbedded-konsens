@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <sys/stat.h>
@@ -107,6 +108,54 @@ template <typename T>
 std::size_t first_index_of(const std::vector<message>& out)
 {
     return static_cast<std::size_t>(std::ranges::distance(out.begin(), std::ranges::find_if(out, holds<T>)));
+}
+
+std::vector<std::uint64_t> accepted_indexes_in(const std::vector<message>& out)
+{
+    std::vector<std::uint64_t> indexes;
+    for (const auto& m : out) {
+        if (const auto* p = std::get_if<paxos_message>(&m)) {
+            if (const auto* a = std::get_if<konsens::accepted>(&p->msg)) {
+                indexes.push_back(a->accepted_idx);
+            }
+        }
+    }
+    return indexes;
+}
+
+// The follower accepts entry 1 in a commit of its own and keeps the sync of
+// that commit out. It then accepts entry 2 in a step that ends while the
+// sync is out, so entry 2 stays in the open transaction.
+struct open_transaction {
+    cluster c;
+    std::size_t f;
+    std::uint64_t committed_len;
+    konsens::sync_request out;
+};
+
+open_transaction follower_with_an_open_transaction()
+{
+    auto c = elected_with_syncs();
+    const auto l = c.leader();
+    const auto f = first_follower(l);
+    auto& leader = c.nodes.at(l);
+    auto& follower = c.nodes.at(f);
+    batches::commit(leader, leader.append(make_entry(1)));
+    auto out = leader.take_outgoing_messages();
+    batches::commit(follower, follower.handle_incoming(messages_to(out, pid_of(f))));
+    const auto committed_len = value_of(follower.get_sequence_paxos().get_accepted_idx());
+    const auto request = follower.take_the_sync_request();
+    REQUIRE(request);
+    batches::commit(leader, leader.append(make_entry(2)));
+    out = leader.take_outgoing_messages();
+    auto to_f = messages_to(out, pid_of(f));
+    REQUIRE(std::ranges::any_of(to_f, holds<konsens::accept_decide>));
+    const auto commits = c.disks.at(f)->commits;
+    batches::commit(follower, follower.handle_incoming(std::move(to_f)));
+    REQUIRE(c.disks.at(f)->commits == commits);
+    REQUIRE(follower.get_sequence_paxos().the_transaction_holds_ended_steps());
+    REQUIRE(value_of(follower.get_sequence_paxos().get_accepted_idx()) == committed_len + 1);
+    return {std::move(c), f, committed_len, *request};
 }
 
 }
@@ -226,6 +275,9 @@ TEST_CASE("a held AcceptSync and a later AcceptDecide to one peer leave in step 
     CHECK_FALSE(std::ranges::any_of(leader.take_outgoing_messages(), holds<konsens::accept_decide>));
     REQUIRE(sync_and_report(leader));
     auto out = leader.take_outgoing_messages();
+    while (sync_and_report(leader)) {
+        std::ranges::move(leader.take_outgoing_messages(), std::back_inserter(out));
+    }
     bool checked = false;
     for (std::size_t i = 0; i < node_count; ++i) {
         if (i == *l) {
@@ -298,15 +350,18 @@ TEST_CASE("a sync report between commit_phase_one and commit_phase_two is a wron
     batches::commit(n, n.the_log_is_synced(request->sync_number));
 }
 
-// R7: a checkpoint of SQLite runs while a sync of the caller is out, and
-// the WAL starts again at its head. The descriptor of the request must
-// still name the WAL file, and the sync must still cover the log. The
-// storage checkpoints after checkpoint_frames frames of the WAL
-// (src/persistent_storage.cpp); each commit writes at least one frame, so
-// more commits than that on the follower run at least one checkpoint. The
-// leader and the other follower form a majority, so the cluster decides
-// while the sync of the follower is out.
-TEST_CASE("checkpoints that run while a sync is out keep the descriptor on the WAL")
+// R7 and Q7: under arm S2 a step that ends while a sync is out commits
+// nothing, so the follower commits once for each sync. The commit after a
+// report checkpoints the WAL, and the first write of the next open
+// transaction starts the WAL again at its head while the sync of that
+// commit is out. The descriptor of each request must still name the WAL
+// file, and each sync must still cover the log. The storage checkpoints
+// after checkpoint_frames frames of the WAL (src/persistent_storage.cpp);
+// each commit writes at least one frame, so more commits than that on the
+// follower run at least one checkpoint. The leader and the other follower
+// form a majority, so the cluster decides while the sync of the follower is
+// out.
+TEST_CASE("checkpoints between the syncs keep the descriptor on the WAL")
 {
     constexpr std::uint64_t checkpoint_frames = 1000;
     auto c = elected_with_syncs();
@@ -315,18 +370,29 @@ TEST_CASE("checkpoints that run while a sync is out keep the descriptor on the W
     auto& leader = c.nodes.at(l);
     auto& slow = c.nodes.at(f);
     const auto decided = decided_of(leader);
-    batches::commit(leader, leader.append(make_entry(1)));
     delays delayed{};
     delayed.at(f) = true;
-    settle(c, delayed);
-    const auto request = slow.take_the_sync_request();
-    REQUIRE(request);
     const auto commits = c.disks.at(f)->commits;
-    std::uint64_t appended = 1;
+    std::optional<konsens::sync_request> request;
+    std::optional<int> descriptor;
+    std::uint64_t appended = 0;
     while (c.disks.at(f)->commits <= commits + checkpoint_frames) {
-        batches::commit(leader, leader.append(make_entry(static_cast<std::uint8_t>(appended))));
         appended += 1;
+        batches::commit(leader, leader.append(make_entry(static_cast<std::uint8_t>(appended))));
+        const auto before = c.disks.at(f)->commits;
         settle(c, delayed);
+        if (request) {
+            REQUIRE(c.disks.at(f)->commits == before);
+            REQUIRE(::fdatasync(request->file_descriptor) == 0);
+            batches::commit(slow, slow.the_log_is_synced(request->sync_number));
+            REQUIRE(c.disks.at(f)->commits == before + 1);
+        }
+        request = slow.take_the_sync_request();
+        REQUIRE(request);
+        if (!descriptor) {
+            descriptor = request->file_descriptor;
+        }
+        REQUIRE(request->file_descriptor == *descriptor);
     }
     CHECK(decided_of(leader) == decided + appended);
     struct stat by_descriptor {};
@@ -334,11 +400,6 @@ TEST_CASE("checkpoints that run while a sync is out keep the descriptor on the W
     CHECK(by_descriptor.st_nlink > 0);
     REQUIRE(::fdatasync(request->file_descriptor) == 0);
     batches::commit(slow, slow.the_log_is_synced(request->sync_number));
-    const auto next = slow.take_the_sync_request();
-    REQUIRE(next);
-    CHECK(next->file_descriptor == request->file_descriptor);
-    REQUIRE(::fdatasync(next->file_descriptor) == 0);
-    batches::commit(slow, slow.the_log_is_synced(next->sync_number));
     settle(c);
     for (std::size_t i = 0; i < node_count; ++i) {
         CHECK(decided_of(c.nodes.at(i)) == decided_of(leader));
@@ -357,4 +418,95 @@ TEST_CASE("a clean stop with a sync out syncs the last commit and starts clean")
     REQUIRE(n.take_the_sync_request());
     c.stop_and_start(l);
     CHECK_FALSE(c.nodes.at(l).retired());
+}
+
+// Q1 of section 17: the output of a step in the open transaction gets the
+// sync number of the commit of that transaction, which is above the sync
+// that is out. If it took the number of the sync that is out, the report of
+// that sync would release an Accepted of entry 2, which only the cache of
+// the follower holds, and the leader would count it as a durable vote.
+TEST_CASE("an Accepted of a step in the open transaction does not leave on the report of the sync that was out")
+{
+    auto o = follower_with_an_open_transaction();
+    auto& follower = o.c.nodes.at(o.f);
+    const auto commits = o.c.disks.at(o.f)->commits;
+    REQUIRE(::fdatasync(o.out.file_descriptor) == 0);
+    batches::commit(follower, follower.the_log_is_synced(o.out.sync_number));
+    const auto released = accepted_indexes_in(follower.take_outgoing_messages());
+    CHECK_FALSE(released.empty());
+    CHECK(std::ranges::all_of(released, [&o](const std::uint64_t i) { return i <= o.committed_len; }));
+    CHECK(o.c.disks.at(o.f)->commits == commits + 1);
+    REQUIRE(sync_and_report(follower));
+    CHECK(std::ranges::contains(accepted_indexes_in(follower.take_outgoing_messages()), o.committed_len + 1));
+}
+
+// Q2 of section 17: a failure inside a step rolls back the open
+// transaction, and with it every step since the last commit. Their state in
+// memory, such as the accepted indexes, no longer matches the store, so the
+// node stops voting. Their held output must not leave, also not on the
+// report of the sync that was out, because the entry it states is gone.
+TEST_CASE("a rollback of the open transaction stops voting and drops its held output")
+{
+    auto o = follower_with_an_open_transaction();
+    auto& follower = o.c.nodes.at(o.f);
+    o.c.disks.at(o.f)->meta_read_error = std::make_error_code(std::errc::io_error);
+    const auto t = follower.handle_incoming(std::vector<message>{});
+    REQUIRE(t);
+    CHECK_FALSE(follower.commit(*t));
+    o.c.disks.at(o.f)->meta_read_error.reset();
+    CHECK_FALSE(follower.get_sequence_paxos().votes());
+    CHECK_FALSE(follower.get_sequence_paxos().the_transaction_holds_ended_steps());
+    CHECK(sqlite_storage::meta_of(o.c.disks.at(o.f)->store).log_len == o.committed_len);
+    REQUIRE(::fdatasync(o.out.file_descriptor) == 0);
+    REQUIRE(follower.the_log_is_synced(o.out.sync_number));
+    const auto released = accepted_indexes_in(follower.take_outgoing_messages());
+    CHECK(std::ranges::all_of(released, [&o](const std::uint64_t i) { return i <= o.committed_len; }));
+}
+
+// Q4 of section 17: the leader applies a registration while its sync is
+// out, so the session stands only in the open transaction. A check of the
+// session that read only the committed state would find no session and
+// answer session_expired to a client whose registration was decided.
+TEST_CASE("a session registered in the open transaction does not expire as unknown")
+{
+    auto c = elected_with_syncs();
+    const auto l = c.leader();
+    auto& leader = c.nodes.at(l);
+    batches::commit(leader, leader.append(make_entry(1)));
+    const auto request = leader.take_the_sync_request();
+    REQUIRE(request);
+    batches::commit(leader, leader.register_client(client_a));
+    delays delayed{};
+    delayed.at(l) = true;
+    settle(c, delayed);
+    REQUIRE(leader.get_sequence_paxos().the_transaction_holds_ended_steps());
+    const auto session = value_of(leader.get_sequence_paxos().get_accepted_idx());
+    REQUIRE(leader.get_applied_idx() >= session);
+    REQUIRE(leader.find_client_session(session));
+    {
+        const auto committed = leader.get_sequence_paxos().get_internal_storage().begin_read_only();
+        REQUIRE(committed);
+        CHECK_FALSE(value_of(committed->find_session(session)));
+    }
+    batches::commit(leader, leader.expire_session(client_a, session));
+    REQUIRE(::fdatasync(request->file_descriptor) == 0);
+    batches::commit(leader, leader.the_log_is_synced(request->sync_number));
+    settle(c);
+    const auto replies = c.replies_of_all();
+    CHECK(std::ranges::any_of(replies, [session](const konsens::client_reply& r) {
+        return r.session == session && r.response;
+    }));
+    CHECK_FALSE(leader.find_client_session(session));
+}
+
+// Q3 of section 17: a clean stop while steps wait in the open transaction
+// commits that transaction and syncs it before it writes the mark. A mark
+// over a log that lost entry 2 would let the next start serve a state that
+// the store no longer holds.
+TEST_CASE("a clean stop commits and syncs the open transaction before the mark")
+{
+    auto o = follower_with_an_open_transaction();
+    o.c.stop_and_start(o.f);
+    CHECK_FALSE(o.c.nodes.at(o.f).retired());
+    CHECK(sqlite_storage::meta_of(o.c.disks.at(o.f)->store).log_len == o.committed_len + 1);
 }

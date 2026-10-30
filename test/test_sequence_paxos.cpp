@@ -1036,9 +1036,12 @@ sp_t make_synced_by_the_caller(const node_id pid)
                        first_nonce);
 }
 
+// Under arm S2 the steps that end while a sync is out stay in one open
+// transaction. The commit after the report commits that transaction and
+// takes the next sync number, so the caller reports until no sync is out.
 void report_the_sync(sp_t& sp)
 {
-    if (sp.get_last_sync_number() > sp.get_synced_sync_number()) {
+    while (sp.get_last_sync_number() > sp.get_synced_sync_number()) {
         REQUIRE(sp.the_log_is_synced(sp.get_last_sync_number()));
         static_cast<void>(sp.commit());
     }

@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -209,6 +210,7 @@ public:
         }
         drop_held_messages_and_replies();
         reply_stopped_to_the_waiting_calls();
+        seq_paxos_.commit_the_open_transaction();
         seq_paxos_.sync_the_last_commit();
         release_the_held_replies_after_the_last_sync();
         const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta(),
@@ -284,6 +286,7 @@ public:
         phase_two_open_ = false;
         return throw_on_a_damage([&]() -> result {
             seq_paxos_.commit_phase_two();
+            tag_or_drop_the_pending_steps();
             return finish_the_step();
         });
     }
@@ -348,7 +351,7 @@ private:
     void release_the_synced_output(const std::uint64_t sync_number)
     {
         const auto synced = std::ranges::find_if(
-            held_steps_, [sync_number](const held_step& h) { return h.sync_number > sync_number; });
+            held_steps_, [sync_number](const held_step& h) { return !h.sync_number || *h.sync_number > sync_number; });
         for (auto& h : std::ranges::subrange(held_steps_.begin(), synced)) {
             std::ranges::move(h.messages, std::back_inserter(released_messages_));
             std::ranges::move(h.replies, std::back_inserter(released_replies_));
@@ -386,7 +389,7 @@ private:
             }
             if (seq_paxos_.txn_ && seq_paxos_.votes()) {
                 if (auto r = serve_clients_in_the_step(); !r) [[unlikely]] {
-                    seq_paxos_.txn_.reset();
+                    roll_back_the_step(r.error());
                     static_cast<void>(seq_paxos_.commit());
                     drop_held_messages_and_replies();
                     return r;
@@ -589,11 +592,10 @@ public:
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            const auto t = read_or_throw(seq_paxos_.internal_storage_.begin_read_only());
-            if (!read_or_throw(t.find_session(session))) [[unlikely]] {
+            if (!read_the_newest_state([session](const auto& t) { return t.find_session(session); })) [[unlikely]] {
                 return std::unexpected(make_error_code(client_errc::session_expired));
             }
-            const auto applied_idx = read_or_throw(t.get_meta()).applied_idx;
+            const auto applied_idx = read_the_newest_state([](const auto& t) { return t.get_meta(); }).applied_idx;
             const entry expiry{entry_kind::expire_session, {}, session};
             const auto undecided = holds_the_request(applied_idx, expiry);
             if (!undecided) [[unlikely]] {
@@ -642,10 +644,13 @@ public:
         }
         return indexes;
     }
-    std::uint64_t get_applied_idx() const { return read_the_committed_meta().applied_idx; }
+    std::uint64_t get_applied_idx() const
+    {
+        return read_the_newest_state([](const auto& t) { return t.get_meta(); }).applied_idx;
+    }
     std::optional<session_record> find_client_session(const std::uint64_t session) const
     {
-        return read_or_throw(read_or_throw(seq_paxos_.internal_storage_.begin_read_only()).find_session(session));
+        return read_the_newest_state([session](const auto& t) { return t.find_session(session); });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
@@ -819,13 +824,39 @@ private:
     }
 
     struct held_step {
-        std::uint64_t sync_number;
+        std::optional<std::uint64_t> sync_number;
         std::vector<message> messages;
         std::vector<client_reply> replies;
     };
 
+    void tag_or_drop_the_pending_steps()
+    {
+        if (seq_paxos_.the_transaction_holds_ended_steps()) {
+            return;
+        }
+        const auto pending = [](const held_step& h) { return !h.sync_number; };
+        if (seq_paxos_.get_error()) [[unlikely]] {
+            std::erase_if(held_steps_, pending);
+            return;
+        }
+        for (auto& h : held_steps_ | std::views::filter(pending)) {
+            h.sync_number = seq_paxos_.get_last_sync_number();
+        }
+        release_the_synced_output(seq_paxos_.get_synced_sync_number());
+    }
+
+    void roll_back_the_step(const std::error_code cause)
+    {
+        if (seq_paxos_.the_transaction_holds_ended_steps()) [[unlikely]] {
+            static_cast<void>(seq_paxos_.stop_voting(cause));
+            return;
+        }
+        seq_paxos_.roll_back_the_transaction();
+    }
+
     void hold_the_output_until_its_sync()
     {
+        tag_or_drop_the_pending_steps();
         for (auto& m : ble_.take_outgoing_messages()) {
             released_messages_.emplace_back(std::move(m));
         }
@@ -835,13 +866,17 @@ private:
         log_records_.clear();
         received_batch_.clear();
         message_batch_.clear();
-        held_step step{seq_paxos_.get_last_sync_number(), {}, std::exchange(client_replies_, {})};
+        held_step step{seq_paxos_.the_transaction_holds_ended_steps()
+                           ? std::nullopt
+                           : std::optional{seq_paxos_.get_last_sync_number()},
+                       {},
+                       std::exchange(client_replies_, {})};
         for (auto& m : seq_paxos_.take_outgoing_messages()) {
             step.messages.emplace_back(std::move(m));
         }
         std::ranges::move(execute_verify_outgoing_, std::back_inserter(released_messages_));
         execute_verify_outgoing_.clear();
-        if (held_steps_.empty() && step.sync_number <= seq_paxos_.get_synced_sync_number()) {
+        if (held_steps_.empty() && step.sync_number && *step.sync_number <= seq_paxos_.get_synced_sync_number()) {
             std::ranges::move(step.messages, std::back_inserter(released_messages_));
             std::ranges::move(step.replies, std::back_inserter(released_replies_));
             return;
@@ -860,6 +895,7 @@ private:
 
     void drop_held_messages_and_replies()
     {
+        tag_or_drop_the_pending_steps();
         static_cast<void>(seq_paxos_.take_outgoing_messages());
         static_cast<void>(ble_.take_outgoing_messages());
         execute_verify_outgoing_.clear();
@@ -928,6 +964,15 @@ private:
         if (!written) [[unlikely]] {
             throw write_error(written.error(), "konsens: the storage failed to write the state");
         }
+    }
+
+    template <typename Read>
+    auto read_the_newest_state(const Read read) const
+    {
+        if (seq_paxos_.txn_) {
+            return read_or_throw(read(*seq_paxos_.txn_));
+        }
+        return read_or_throw(read(read_or_throw(seq_paxos_.internal_storage_.begin_read_only())));
     }
 
     meta_record read_the_committed_meta() const
@@ -1028,11 +1073,11 @@ private:
             return r;
         }
         if (auto r = read_the_applied_stop_sign(); !r) [[unlikely]] {
-            seq_paxos_.txn_.reset();
+            roll_back_the_step(r.error());
             return r;
         }
         if (auto r = apply_the_done_records(); !r) [[unlikely]] {
-            seq_paxos_.txn_.reset();
+            roll_back_the_step(r.error());
             return std::unexpected(r.error());
         }
         if (auto r = seq_paxos_.commit(); !r) [[unlikely]] {

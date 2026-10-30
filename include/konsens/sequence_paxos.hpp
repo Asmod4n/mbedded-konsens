@@ -417,7 +417,7 @@ public:
             return {};
         }
         if (error_) [[unlikely]] {
-            txn_.reset();
+            roll_back_the_transaction();
             drop_incoming_and_outgoing();
             return error_unless_retired();
         }
@@ -454,7 +454,7 @@ public:
             return ended;
         }
         if (error_) [[unlikely]] {
-            txn_.reset();
+            roll_back_the_transaction();
             drop_incoming_and_outgoing();
             return error_unless_retired();
         }
@@ -467,9 +467,15 @@ public:
             drop_incoming_and_outgoing();
             return stopped;
         }
+        incoming_.clear();
+        step_open_ = false;
+        if (txn_->has_writes() && a_sync_is_out()) {
+            the_transaction_holds_ended_steps_ = true;
+            return {};
+        }
         auto txn = std::move(*txn_);
         txn_.reset();
-        incoming_.clear();
+        the_transaction_holds_ended_steps_ = false;
         if (!txn.has_writes()) {
             mark_ = raise_mark(mark_, mark_of(*m));
             return {};
@@ -500,6 +506,25 @@ public:
         }
     }
 
+    void commit_the_open_transaction()
+    {
+        throw_if_a_write_did_not_finish();
+        throw_if_a_step_is_open();
+        if (!txn_) {
+            return;
+        }
+        const auto m = read_checked_meta(*txn_);
+        if (!m) [[unlikely]] {
+            throw write_error(m.error(), "konsens: the storage failed to read the meta for the commit of the open transaction");
+        }
+        pending_commit_.emplace(std::move(*txn_), *m);
+        txn_.reset();
+        the_transaction_holds_ended_steps_ = false;
+        commit_phase_two();
+    }
+
+    bool a_sync_is_out() const { return last_sync_number_ > synced_sync_number_; }
+    bool the_transaction_holds_ended_steps() const { return the_transaction_holds_ended_steps_; }
     std::uint64_t get_last_sync_number() const { return last_sync_number_; }
     std::uint64_t get_synced_sync_number() const { return synced_sync_number_; }
     std::uint64_t get_synced_len() const { return synced_len_; }
@@ -545,7 +570,7 @@ public:
     {
         internal_storage_.the_sync_failed();
         write_unfinished_ = true;
-        txn_.reset();
+        roll_back_the_transaction();
         drop_incoming_and_outgoing();
     }
 
@@ -1186,6 +1211,7 @@ private:
     {
         throw_if_a_write_did_not_finish();
         if (txn_) {
+            step_open_ = true;
             return {};
         }
         auto t = internal_storage_.begin();
@@ -1193,6 +1219,7 @@ private:
             return stop_voting(t.error());
         }
         txn_.emplace(std::move(*t));
+        step_open_ = true;
         const auto m = read_checked_meta(*txn_);
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
@@ -1203,7 +1230,7 @@ private:
     void write_or_throw(const std::expected<void, std::error_code>& written)
     {
         if (!written) [[unlikely]] {
-            txn_.reset();
+            roll_back_the_transaction();
             write_unfinished_ = true;
             throw write_error(written.error(), "konsens: the storage failed to write in the step");
         }
@@ -1212,13 +1239,20 @@ private:
     std::unexpected<std::error_code> stop_voting(std::error_code e)
     {
         error_ = e;
-        txn_.reset();
+        roll_back_the_transaction();
         return std::unexpected(e);
+    }
+
+    void roll_back_the_transaction()
+    {
+        txn_.reset();
+        step_open_ = false;
+        the_transaction_holds_ended_steps_ = false;
     }
 
     void throw_if_a_step_is_open() const
     {
-        if (txn_) [[unlikely]] {
+        if (step_open_) [[unlikely]] {
             throw std::logic_error("konsens: a read of the storage or a take of messages while a step is open");
         }
     }
@@ -2048,6 +2082,8 @@ private:
     std::vector<node_id> nodes_;
     S internal_storage_;
     std::optional<typename S::transaction> txn_;
+    bool step_open_{};
+    bool the_transaction_holds_ended_steps_{};
     struct pending_commit {
         typename S::transaction txn;
         meta_record meta;
