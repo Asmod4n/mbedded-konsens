@@ -3,7 +3,7 @@
 Reviewer: a second agent, 2026-10-25, on branch lmdb-only-source at
 86fb1df. The text below is the report of the reviewer, unchanged.
 
-Task: I review the plan doc/plan-lmdb-only-source.md and the TLA+ changes since 2f27efa on branch lmdb-only-source (/home/claude/mk-lmdb-source), against RULES.md, the results of rounds 9-12, two bench files and mdb.c 1.0.2. I changed, committed and pushed nothing. I did not question the owner decisions or report the known wrong assumptions again. My one TLC run: S5 plus EntryRunsOnOnePrefix on MC_pipe_net, MC_pipe_crash and MC_pipe_fault, 300 s each, seed 7, `-deadlock`, about 1.7M states each, no violation.
+Task: I review the plan doc/plan-storage-only-source.md and the TLA+ changes since 2f27efa on branch lmdb-only-source (/home/claude/mk-lmdb-source), against RULES.md, the results of rounds 9-12, two bench files and mdb.c 1.0.2. I changed, committed and pushed nothing. I did not question the owner decisions or report the known wrong assumptions again. My one TLC run: S5 plus EntryRunsOnOnePrefix on MC_pipe_net, MC_pipe_crash and MC_pipe_fault, 300 s each, seed 7, `-deadlock`, about 1.7M states each, no violation.
 
 **Verdict: approve after the listed fixes.** Findings 1, 2, 7, 8 and 15 must be fixed first.
 

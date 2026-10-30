@@ -1,7 +1,7 @@
-# Plan: the state machine in LMDB (stage D of plan-lmdb-only-source.md)
+# Plan: the state machine in LMDB (stage D of plan-storage-only-source.md)
 
 This plan gives the code form of section 2.6 of
-doc/plan-lmdb-only-source.md. The model is `StateInLmdb`, `StateRun`,
+doc/plan-storage-only-source.md. The model is `StateInLmdb`, `StateRun`,
 `StateApply`, `StateAbort`, `StateCurrent` and `StateFollows`
 (model/tla/SequencePaxos.tla, rounds 12 to 14). The owner chose, on
 2026-10-25 07:22 and 07:23: the state machine reads through a view

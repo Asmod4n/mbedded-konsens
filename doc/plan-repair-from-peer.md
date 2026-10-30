@@ -1,7 +1,7 @@
-# Plan: the repair from a peer (stage E of plan-lmdb-only-source.md)
+# Plan: the repair from a peer (stage E of plan-storage-only-source.md)
 
 This plan gives the code form of section 2.4 items 1 to 8 of
-doc/plan-lmdb-only-source.md. The model of that section is
+doc/plan-storage-only-source.md. The model of that section is
 `RepairFromPeer`, `DamageFound`, `OperatorAllowsRepair` and
 `StartDamageCounts` in model/tla/SequencePaxos.tla:1678-1760. In the
 model, a repair gives the node the durable tuple of a source that votes

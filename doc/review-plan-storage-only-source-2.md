@@ -3,7 +3,7 @@
 Reviewer: a second agent, 2026-10-24, on branch lmdb-only-source at
 6232083. The text below is the report of the reviewer, unchanged.
 
-My task: I reviewed doc/plan-lmdb-only-source.md and model/tla/SequencePaxos.tla in /home/claude/mk-lmdb-source (6232083) before any code exists. I checked them against review 1, the code at the base, LMDB_1.0.2 mdb.c and lmdb.h, the eight run files of the model, the cited bench files and both rule files. I edited, committed, built and ran nothing except this file. I did not question the owner's decisions. Where I looked: `git diff 06a52bf HEAD -- include src` is empty, so the code line numbers of section 1 apply to HEAD.
+My task: I reviewed doc/plan-storage-only-source.md and model/tla/SequencePaxos.tla in /home/claude/mk-lmdb-source (6232083) before any code exists. I checked them against review 1, the code at the base, LMDB_1.0.2 mdb.c and lmdb.h, the eight run files of the model, the cited bench files and both rule files. I edited, committed, built and ran nothing except this file. I did not question the owner's decisions. Where I looked: `git diff 06a52bf HEAD -- include src` is empty, so the code line numbers of section 1 apply to HEAD.
 
 Section 1 facts. I checked all of them except the ones listed as not checked:
 - The cited lines in sequence_paxos.hpp, node.hpp:70/127/221/374/466, persistent_storage.cpp:31-33/403, storage.hpp:121-129, mdb.c:2337/3497-3506/4296/4606-4616/5646/12147, lmdb.h:1108/1118 and mdb_page_get. They hold.

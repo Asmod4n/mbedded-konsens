@@ -148,9 +148,9 @@ and `map_size` (section 6.6).
 
 ## 3. Older plans that this plan replaces
 
-plan-hide-lmdb.md, plan-lmdb-converter.md, plan-lmdb-only-source.md,
+plan-hide-lmdb.md, plan-lmdb-converter.md, plan-storage-only-source.md,
 plan-lmdb-submodule.md, plan-simulation-on-lmdb.md and
-plan-state-in-lmdb.md describe the LMDB form. Their rules that do not
+plan-state-in-storage.md describe the LMDB form. Their rules that do not
 name LMDB stay: the CRCs, the start checks, the repair by entries, the
 proof of a fault and the root check.
 

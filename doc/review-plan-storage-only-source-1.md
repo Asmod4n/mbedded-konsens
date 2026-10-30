@@ -3,7 +3,7 @@
 Reviewer: a second agent, 2026-10-24, on branch lmdb-only-source at
 fe79246. The text below is the report of the reviewer, unchanged.
 
-My task: I reviewed doc/plan-lmdb-only-source.md and model/tla/SequencePaxos.tla in /home/claude/mk-lmdb-source (fe79246) before any code exists. I checked them against the code at the base, LMDB_1.0.2 mdb.c, the four run files, the three bench files and RULES.md. I edited, committed, built and ran nothing, and I did not question the owner's decisions. Where I looked: `git diff 06a52bf HEAD -- include src` is empty, so the line numbers in section 1 apply to HEAD.
+My task: I reviewed doc/plan-storage-only-source.md and model/tla/SequencePaxos.tla in /home/claude/mk-lmdb-source (fe79246) before any code exists. I checked them against the code at the base, LMDB_1.0.2 mdb.c, the four run files, the three bench files and RULES.md. I edited, committed, built and ran nothing, and I did not question the owner's decisions. Where I looked: `git diff 06a52bf HEAD -- include src` is empty, so the line numbers in section 1 apply to HEAD.
 
 Section 1 facts. I checked all of them except the ones listed as not checked:
 - About 75 cited lines in sequence_paxos.hpp, node.hpp:127/221/374/466, persistent_storage.cpp:31-33/192-200/403/454/499/515/538, storage.hpp:121-129, mdb.c:3497-3506 and mdb_page_get. All hold. Small points: `:953` is `if (source == pid_)`, and its use of the fields is at `:954`. In plan line 63, `:276-301` stands under a node.hpp bullet but means sequence_paxos.hpp.

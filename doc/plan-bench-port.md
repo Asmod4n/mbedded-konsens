@@ -4,7 +4,7 @@ The bench `bench/konsens_bench.cpp` does not compile at 4e11084 with
 `-DKONSENS_BENCH=ON`. It uses the storage API of 06a52bf
 (`write_atomically`, `storage_op`, `append_entries`, `set_promise`) and
 `node::with(config, storage, machine, nonce)`. The checks of section 5 of
-plan-lmdb-only-source.md and section 6 of plan-execute-verify.md need it.
+plan-storage-only-source.md and section 6 of plan-execute-verify.md need it.
 
 ## 1. The port
 
@@ -24,7 +24,7 @@ plan-lmdb-only-source.md and section 6 of plan-execute-verify.md need it.
 ## 2. New cases
 
 1. `write_batch_size_lmdb` for batch sizes 1, 16 and 256
-   (plan-lmdb-only-source 5). The name `write_batch_lmdb` stays with its
+   (plan-storage-only-source 5). The name `write_batch_lmdb` stays with its
    meaning of 06a52bf (value sizes 64, 1024, 65536 at batch size 64).
 2. `pipeline`: one leader and two followers in one process, threads as
    the tests use them, `max_in_flight` 1, 4, 16 and 64. Two works: one
@@ -48,7 +48,7 @@ plan-lmdb-only-source.md and section 6 of plan-execute-verify.md need it.
 
 ## 3. The arms
 
-1. Cost of the branch (plan-lmdb-only-source 5): the cases of 1.3 and
+1. Cost of the branch (plan-storage-only-source 5): the cases of 1.3 and
    2.1. Before: 06a52bf with its own bench. After: the ported bench at
    the branch. For `write_batch_size_lmdb` the before arm is 06a52bf with
    the same case added against the old storage API; that patch is

@@ -1,7 +1,7 @@
-# Plan: Execute-Verify with the majority (stages D2 and D3 of plan-state-in-lmdb.md)
+# Plan: Execute-Verify with the majority (stages D2 and D3 of plan-state-in-storage.md)
 
 This plan gives the protocol and the model of sections 4 and 5 of
-doc/plan-state-in-lmdb.md, in the form that the owner gave:
+doc/plan-state-in-storage.md, in the form that the owner gave:
 
 - A node that finds a fault in itself throws (2026-10-25 09:26).
 - A peer that delivers a wrong value is asked to try again. When the
@@ -18,7 +18,7 @@ doc/plan-state-in-lmdb.md, in the form that the owner gave:
 
 ## 0. What this plan replaces
 
-- In plan-state-in-lmdb.md: items 4.1 to 4.9, the compare in item 5.2,
+- In plan-state-in-storage.md: items 4.1 to 4.9, the compare in item 5.2,
   item 7.2, and the tests "a result after the decide that differs from
   the entry stops the vote", "a follower whose result differs does not
   accept and reports" and "a follower writes the write list of the
@@ -28,7 +28,7 @@ doc/plan-state-in-lmdb.md, in the form that the owner gave:
   restart), and the close of the open mark at each start that votes
   (node.hpp, `with`).
 - The format version of the file and of the wire goes up for the two
-  new kinds of entry (plan-lmdb-only-source.md 2.9).
+  new kinds of entry (plan-storage-only-source.md 2.9).
 - The session record of a request is derived from the chosen reply.
 
 ## 1. History of this plan
@@ -70,7 +70,7 @@ violation and a review approves the parts that changed from form 5.
 
 1. A run of a request entry gives a result: the reply and the mutations,
    in deterministic CBOR (RFC 8949 4.2). The run reads the state through
-   the view and writes nothing (plan-state-in-lmdb.md 2.1), so it needs no
+   the view and writes nothing (plan-state-in-storage.md 2.1), so it needs no
    nested transaction.
 2. Two results agree when the compare walks the CBOR items and each pair
    agrees. A float of any width is decoded to `double`; two floats agree
@@ -147,7 +147,7 @@ violation and a review approves the parts that changed from form 5.
    byte for byte the own result, or an entry is void, the node aborts
    the open transaction, writes the chosen results from the applied index
    again, and runs the entries above `p` again. A cut of the log, a
-   crash, a recovery and a repair abort it as well (plan-state-in-lmdb.md
+   crash, a recovery and a repair abort it as well (plan-state-in-storage.md
    5.3, 5.4).
 4. Every node runs every decided request entry. The leader proposes no
    more request entries while its open transaction holds
@@ -223,7 +223,7 @@ violation and a review approves the parts that changed from form 5.
    counted answers and its own make a majority).
 4. In `sequence_paxos`, a node sends `accepted` only up to its
    `verified_idx` (provisional), which the node raises after the check
-   (plan-state-in-lmdb.md 4.5, kept for this use). A request entry needs
+   (plan-state-in-storage.md 4.5, kept for this use). A request entry needs
    no check, so `verified_idx` passes it at once. After a restart,
    `verified_idx` is the decided index; it is not durable. The leader counts its
    own accept also only up to its own `verified_idx`: it checks its own

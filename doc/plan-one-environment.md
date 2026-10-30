@@ -185,12 +185,12 @@ The owner named two: metadata and data (07:16). So there are two:
 The node storage stays an environment of its own: the repair count, the
 open mark, the proof, the hidden identity and the name of the directory
 of the store. No copy from a peer may bring them
-(plan-lmdb-only-source.md 2.4 item 8). The owner keeps it a second
+(plan-storage-only-source.md 2.4 item 8). The owner keeps it a second
 environment (card 2026-10-26 10:51).
 
 ### 3.2 The meta record
 
-One record with one CRC, as plan-lmdb-only-source.md 2.3 item 2: the
+One record with one CRC, as plan-storage-only-source.md 2.3 item 2: the
 promise, the accepted round, the decided index, the log length, the
 chain CRC of the last entry, and now also the applied index and the
 chain CRC at the applied index. The applied record of the state
@@ -224,7 +224,7 @@ the whole record.
 4. The runs of the work happen in a child transaction of the step
    (section 5.2). The child ends before the parent commits
    (`lmdb.h:1132-1137`).
-5. The two write transactions in one thread of plan-lmdb-only-source.md
+5. The two write transactions in one thread of plan-storage-only-source.md
    2.1 item 3 (owner 2026-10-25 03:53) and their test go. The kept read
    transaction and `MDB_NOTLS` stay.
 
@@ -310,14 +310,14 @@ with 1024 puts 611 us, 1.7 M puts/s
 
 ### 4.1 What the old order was for
 
-- plan-lmdb-only-source.md 2.6 item 3: the state commits after the
+- plan-storage-only-source.md 2.6 item 3: the state commits after the
   commit of the step that raised the decided index. So the state never
   holds an entry that is not decided, also after a crash between the two
   commits.
 - 2.4 item 9: a copy from a peer sends the state environment first and
   the log after it, so that the applied index of the copy is not above
   its decided index.
-- plan-state-in-lmdb.md 1.4: a start compares the applied chain CRC of
+- plan-state-in-storage.md 1.4: a start compares the applied chain CRC of
   the state environment with the log, because two commits can leave
   them apart.
 
@@ -403,7 +403,7 @@ Owner 2026-10-26 10:53 and card 10:59 ("Je nach FS"):
    writes the base into it, runs the new tasks in log order, and aborts
    the child. The tombstone of each new task goes into the step
    (section 5.1).
-3. The open state transaction over many steps (plan-state-in-lmdb.md 5,
+3. The open state transaction over many steps (plan-state-in-storage.md 5,
    `open_`) goes: one environment allows one writer, and a child cannot
    outlive the commit of its parent. Its cost moves to the writes of the
    base in each step; section 15 measures it.
@@ -440,7 +440,7 @@ own.
 ## 6. Group commit
 
 1. A step takes every message and request that waits when it begins
-   (plan-lmdb-only-source.md 2.7).
+   (plan-storage-only-source.md 2.7).
 2. One sync covers every done record that waits: the leader writes the
    done records of all tasks whose selection is ready, in log order, in
    one transaction. A follower writes every "done" of the batch in one
@@ -490,7 +490,7 @@ own.
 
 ### 8.2 Repair and copy
 
-1. The repair by entries (plan-lmdb-only-source.md 2.4 items 1 to 7)
+1. The repair by entries (plan-storage-only-source.md 2.4 items 1 to 7)
    stays. It writes the received done records and the meta record in one
    transaction.
 2. 2.4 item 10: when the chain CRC at the applied index differs from the
@@ -514,7 +514,7 @@ In one read transaction:
 2. `applied <= decided <= log length`. A violation is a damage.
 3. The chain CRC at the applied index equals the one in the meta record.
    A difference is a damage. `paxos_errc::state_differs_from_log` (not a
-   damage, plan-state-in-lmdb.md 1.4) goes, because one commit cannot
+   damage, plan-state-in-storage.md 1.4) goes, because one commit cannot
    leave log and state apart.
 4. The step check, the continuity and the scan of the whole log as now.
 5. The first write transaction deletes the tombstones (5.1 item 6).
@@ -547,7 +547,7 @@ In one read transaction:
 
 No release exists, and no store of an older format exists outside the
 tests. The format version goes up, and the library refuses an older
-format, as plan-lmdb-only-source.md 2.9 says. No converter is needed.
+format, as plan-storage-only-source.md 2.9 says. No converter is needed.
 
 ## 13. The model
 
@@ -638,7 +638,7 @@ worker each. The results are in
   to 3 cover them.
 - Group commit: the model writes one done record in each commit.
   Several commits between two syncs give the same durable states.
-- A lying disk (stale meta, rollback): plan-lmdb-only-source.md rounds 5
+- A lying disk (stale meta, rollback): plan-storage-only-source.md rounds 5
   to 15 cover them in `SequencePaxos.tla`.
 
 ## 14. Tests
@@ -701,7 +701,7 @@ first. The arm before is fa14f44. No number is written before the run.
 
 ## 16. Rules of older plans that change
 
-- plan-lmdb-only-source.md: 2.1 item 3 (two write transactions in one
+- plan-storage-only-source.md: 2.1 item 3 (two write transactions in one
   thread); 2.2 (the entry states `in_work` and `committed`: the log
   holds done records, and the decided index gives the decide); 2.3 item
   2 (the meta record gets the applied index); 2.4 item 9 (the order of
@@ -710,7 +710,7 @@ first. The arm before is fa14f44. No number is written before the run.
   the decide in an open transaction, the pipeline with `max_in_flight`,
   the abort on a cut, two environments without `MDB_WRITEMAP`: now one);
   questions 11 and 12 of that plan.
-- plan-lmdb-only-source.md 2.1 item 2 (the messages of a step leave
+- plan-storage-only-source.md 2.1 item 2 (the messages of a step leave
   only after its commit): "work", "ran", "decide" and the heartbeats
   leave at once (3.5 item 2); the rest waits on the sync, not on the
   commit. 2.6 item 2 (a read in a read transaction of the state
@@ -718,7 +718,7 @@ first. The arm before is fa14f44. No number is written before the run.
   compared at the commit of the state): the apply writes the stored
   mutations of the done record (4.2 item 2), and the check of the
   result happens before the done (7.4).
-- plan-state-in-lmdb.md: 1.1 (`state_storage`, own environment), 1.3,
+- plan-state-in-storage.md: 1.1 (`state_storage`, own environment), 1.3,
   1.4 (`state_differs_from_log`), 1.5, 3.2 and 3.3 (the state commit),
   5.1 to 5.5 (the open transaction, the bound, two write transactions).
 - plan-execute-verify.md: 2.1.2 and 2.1.3 (verdict entries), 2.3 (V and
