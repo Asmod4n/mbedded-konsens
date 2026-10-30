@@ -1,0 +1,122 @@
+diff --git a/program/serve.cpp b/program/serve.cpp
+index 54c9a3b..3305623 100644
+--- a/program/serve.cpp
++++ b/program/serve.cpp
+@@ -37,6 +37,22 @@
+ #include "konsens/persistent_storage.hpp"
+ #include "konsens/wire.hpp"
+ #include "serve.hpp"
++#include <time.h>
++#include <cstdio>
++namespace trace_arm {
++struct ev { std::uint64_t t; char k; std::uint64_t a; std::uint64_t b; };
++inline std::vector<ev>& evs() { static std::vector<ev> v = [] { std::vector<ev> x; x.reserve(1u << 22); return x; }(); return v; }
++inline void mark(char k, std::uint64_t a = 0, std::uint64_t b = 0) {
++    timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++    if (evs().size() < (1u << 22)) evs().push_back({std::uint64_t(ts.tv_sec) * 1000000000u + std::uint64_t(ts.tv_nsec), k, a, b});
++}
++inline void dump(std::uint64_t pid, const std::filesystem::path& dir) {
++    FILE* f = std::fopen((dir / "trace.txt").c_str(), "w");
++    if (!f) return;
++    for (const auto& e : evs()) std::fprintf(f, "%llu %llu %c %llu %llu\n", (unsigned long long)e.t, (unsigned long long)pid, e.k, (unsigned long long)e.a, (unsigned long long)e.b);
++    std::fclose(f);
++}
++}
+ 
+ namespace konsensd {
+ 
+@@ -355,6 +371,7 @@ void take_the_requests_of(loop& l, std::uint64_t id, connection& c);
+ 
+ void answer(loop& l, const std::uint64_t id, connection& c, std::string response, const bool closes)
+ {
++    trace_arm::mark('A', id, c.request_number);
+     queue_on(c, std::move(response));
+     c.call.reset();
+     c.waits_for = awaited::nothing;
+@@ -374,6 +391,7 @@ void answer_with(loop& l, const std::uint64_t id, connection& c, const problem&
+ void send_the_write(loop& l, const std::uint64_t id, connection& c, const std::uint64_t number)
+ {
+     const auto op = c.call->method == rest_method::put ? key_value_op::put : key_value_op::erase;
++    trace_arm::mark('Q', id, number);
+     auto t = l.node.client_request(id, *c.session, number, encode_write({op, c.call->key, c.call->body}));
+     if (!t) [[unlikely]] {
+         answer_with(l, id, c, problem_of(t.error()));
+@@ -520,6 +538,13 @@ void queue_the_messages(loop& l)
+ {
+     for (const auto& m : l.node.take_outgoing_messages()) {
+         const auto to = std::visit([](const auto& x) { return x.to; }, m);
++        if (const auto* pm = std::get_if<konsens::paxos_message>(&m)) {
++            std::uint64_t ix = 0;
++            if (const auto* x = std::get_if<konsens::accept_decide>(&pm->msg)) ix = x->entries.size() * 1000000000000ull + x->decided_idx;
++            if (const auto* x = std::get_if<konsens::accepted>(&pm->msg)) ix = x->accepted_idx;
++            if (const auto* x = std::get_if<konsens::decide>(&pm->msg)) ix = x->decided_idx;
++            trace_arm::mark('M', to * 100 + pm->msg.index(), ix);
++        }
+         const auto o = l.outgoing.find(to);
+         if (o == l.outgoing.end()) {
+             continue;
+@@ -595,13 +620,16 @@ void commit_the_step(loop& l)
+         const auto t = *std::exchange(l.step, std::nullopt);
+         std::vector<konsens::client_reply> later;
+         std::vector<std::uint64_t> answered;
++        trace_arm::mark('c');
+         auto r = l.node.commit_phase_one(t);
++        trace_arm::mark('d');
+         if (r) [[likely]] {
+             release_the_output_before_the_sync(l, later, answered);
+             arm_the_sends(l);
+             io_uring_submit(&l.ring);
+             r = l.node.commit_phase_two();
+         }
++        trace_arm::mark('e');
+         if (!r) [[unlikely]] {
+             std::println(std::cerr, "konsensd: the commit gave the error {}", r.error().message());
+             answer_the_calls_after_a_failed_commit(l, r.error());
+@@ -676,6 +704,7 @@ void take_the_frames_of(loop& l, const std::uint64_t id, connection& c)
+             begin_the_close(l, id, c);
+             return;
+         }
++        trace_arm::mark('R', r->from, konsens::kind_of(*r));
+         l.batch.push_back(std::move(*r));
+         if (l.batch.size() == konsens::max_batch_size) {
+             commit_the_step(l);
+@@ -743,6 +772,7 @@ void arm_the_sends(loop& l)
+         }
+         const std::string& front = c->out.front();
+         io_uring_sqe* s = sqe_of(l);
++        trace_arm::mark('X', c->pid, c->pid == 0 ? id : front.size() - c->out_offset);
+         io_uring_prep_send(s, c->fd, front.data() + c->out_offset, front.size() - c->out_offset, MSG_NOSIGNAL);
+         io_uring_sqe_set_data64(s, user_data_of(op::send, id));
+         c->pending += 1;
+@@ -757,6 +787,7 @@ void submit_the_sync(loop& l)
+         return;
+     }
+     io_uring_sqe* s = sqe_of(l);
++    trace_arm::mark('S', r->sync_number);
+     io_uring_prep_fsync(s, r->file_descriptor, IORING_FSYNC_DATASYNC);
+     io_uring_sqe_set_data64(s, user_data_of(op::sync, r->sync_number));
+ }
+@@ -769,6 +800,7 @@ void handle_a_completion(loop& l, const io_uring_cqe& cqe)
+         if (cqe.res < 0) [[unlikely]] {
+             l.node.throw_after_a_failed_sync(id, std::error_code{-cqe.res, std::system_category()});
+         }
++        trace_arm::mark('Y', id);
+         keep_the_step(l, l.node.the_log_is_synced(id), "the_log_is_synced");
+         return;
+     }
+@@ -950,6 +982,7 @@ int serve(const config& c, const start_options options)
+             seen += 1;
+         }
+         io_uring_cq_advance(&l.ring, seen);
++        trace_arm::mark('W', seen);
+         for (const auto& e : l.ready) {
+             handle_a_completion(l, e);
+             return_the_buffer_of(l, e);
+@@ -973,6 +1006,7 @@ int serve(const config& c, const start_options options)
+         submit_the_sync(l);
+         arm_the_sends(l);
+     }
++    trace_arm::dump(c.pid, c.data_directory);
+     const int status = stopped(l);
+     io_uring_free_buf_ring(&l.ring, l.peer_buffers.ring, l.peer_buffers.shape.count, l.peer_buffers.shape.group);
+     io_uring_free_buf_ring(&l.ring, l.client_buffers.ring, l.client_buffers.shape.count, l.client_buffers.shape.group);
