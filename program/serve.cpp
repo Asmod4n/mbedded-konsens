@@ -437,6 +437,8 @@ void log_a_change_of_state(loop& l)
     }
 }
 
+void arm_the_sends(loop& l);
+
 void commit_the_step(loop& l)
 {
     if (!l.batch.empty()) {
@@ -444,7 +446,14 @@ void commit_the_step(loop& l)
     }
     if (l.step) {
         const auto t = *std::exchange(l.step, std::nullopt);
-        if (auto r = l.node.commit(t); !r) [[unlikely]] {
+        auto r = l.node.commit_phase_one(t);
+        if (r) [[likely]] {
+            release_the_output(l);
+            arm_the_sends(l);
+            io_uring_submit(&l.ring);
+            r = l.node.commit_phase_two();
+        }
+        if (!r) [[unlikely]] {
             std::println(std::cerr, "konsensd: the commit gave the error {}", r.error().message());
             answer_the_calls_after_a_failed_commit(l, r.error());
         }

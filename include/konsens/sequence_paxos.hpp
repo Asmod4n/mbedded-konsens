@@ -428,6 +428,15 @@ public:
 
     [[nodiscard]] result commit()
     {
+        if (auto r = commit_phase_one(); !r) [[unlikely]] {
+            return r;
+        }
+        commit_phase_two();
+        return {};
+    }
+
+    [[nodiscard]] result commit_phase_one()
+    {
         const auto ended = end_step();
         step_ended_ = false;
         if (!ended) [[unlikely]] {
@@ -454,13 +463,41 @@ public:
             mark_ = raise_mark(mark_, mark_of(*m));
             return {};
         }
+        pending_commit_.emplace(std::move(txn), *m);
+        return {};
+    }
+
+    void commit_phase_two()
+    {
+        if (!pending_commit_) {
+            return;
+        }
+        auto u = std::move(*pending_commit_);
+        pending_commit_.reset();
         write_unfinished_ = true;
-        if (auto c = std::move(txn).commit(); !c) [[unlikely]] {
+        if (auto c = std::move(u.txn).commit(); !c) [[unlikely]] {
             throw write_error(c.error(), "konsens: the storage failed to commit the step");
         }
         write_unfinished_ = false;
-        mark_ = raise_mark(mark_, mark_of(*m));
-        return {};
+        mark_ = raise_mark(mark_, mark_of(u.meta));
+    }
+
+    std::vector<paxos_message> take_the_messages_before_the_sync()
+    {
+        std::vector<paxos_message> early;
+        std::vector<paxos_message> held;
+        std::vector<node_id> held_peers;
+        for (auto& m : outgoing_) {
+            const bool may_leave = std::holds_alternative<accept_decide>(m.msg) || std::holds_alternative<decide>(m.msg);
+            if (may_leave && !std::ranges::contains(held_peers, m.to)) {
+                early.push_back(std::move(m));
+            } else {
+                held_peers.push_back(m.to);
+                held.push_back(std::move(m));
+            }
+        }
+        outgoing_ = std::move(held);
+        return early;
     }
 
 private:
@@ -1893,6 +1930,11 @@ private:
     std::vector<node_id> nodes_;
     S internal_storage_;
     std::optional<typename S::transaction> txn_;
+    struct pending_commit {
+        typename S::transaction txn;
+        meta_record meta;
+    };
+    std::optional<pending_commit> pending_commit_;
     high_water_mark mark_{};
     std::pair<role, phase> state_{role::follower, phase::none};
     leader_state leader_state_{};

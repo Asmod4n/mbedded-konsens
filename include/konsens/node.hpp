@@ -195,6 +195,7 @@ public:
     void stop()
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         seq_paxos_.throw_if_a_write_did_not_finish();
         seq_paxos_.throw_if_a_step_is_open();
         if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired()) [[unlikely]] {
@@ -215,6 +216,7 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> tick()
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (election_clock_.tick_and_check_timeout() && seq_paxos_.votes()) {
                 const auto promise = seq_paxos_.get_promise();
@@ -252,8 +254,30 @@ public:
 
     [[nodiscard]] result commit(const transaction t)
     {
+        if (auto r = commit_phase_one(t); !r) [[unlikely]] {
+            return r;
+        }
+        return commit_phase_two();
+    }
+
+    [[nodiscard]] result commit_phase_one(const transaction t)
+    {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return end_the_step(t);
+    }
+
+    [[nodiscard]] result commit_phase_two()
+    {
+        throw_if_stopped();
+        if (!phase_two_open_) [[unlikely]] {
+            throw std::logic_error("konsens: commit_phase_two without commit_phase_one");
+        }
+        phase_two_open_ = false;
+        return throw_on_a_damage([&]() -> result {
+            seq_paxos_.commit_phase_two();
+            return finish_the_step();
+        });
     }
 
 private:
@@ -279,13 +303,24 @@ private:
                     return r;
                 }
             }
-            const auto w = seq_paxos_.commit();
+            const auto w = seq_paxos_.commit_phase_one();
             if (!w) [[unlikely]] {
                 drop_held_messages_and_replies();
                 return w;
             }
-            return finish_the_step();
+            release_the_output_before_phase_two();
+            phase_two_open_ = true;
+            return {};
         });
+    }
+
+    void release_the_output_before_phase_two()
+    {
+        for (auto& m : seq_paxos_.take_the_messages_before_the_sync()) {
+            released_messages_.emplace_back(std::move(m));
+        }
+        std::ranges::move(replies_before_the_sync_, std::back_inserter(released_replies_));
+        replies_before_the_sync_.clear();
     }
 
     result finish_the_step()
@@ -315,6 +350,7 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> reconfigure(const cluster_config& next)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         validate_next_cluster(ble_config_.configuration_id, ble_config_.pid, ble_config_.peers, next);
         auto payload = encode(next);
         if (!payload) [[unlikely]] {
@@ -337,6 +373,7 @@ private:
     std::expected<transaction, std::error_code> append_an_entry(entry e)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -362,6 +399,7 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> register_client(const std::uint64_t client_id)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -387,6 +425,7 @@ public:
                                                                              std::vector<std::byte> payload)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -417,6 +456,7 @@ public:
                                                                            std::vector<std::byte> payload)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -445,6 +485,7 @@ public:
                                                                              const std::uint64_t session)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -517,6 +558,7 @@ public:
     [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             if (auto r = seq_paxos_.reconnected(pid); !r) [[unlikely]] {
                 return std::unexpected(r.error());
@@ -553,6 +595,7 @@ private:
     std::expected<transaction, std::error_code> keep_and_handle(std::vector<T> batch)
     {
         throw_if_stopped();
+        throw_if_phase_two_is_open();
         return throw_on_a_damage([&]() -> std::expected<transaction, std::error_code> {
             throw_if_batch_exceeds_max_batch_size(batch.size());
             auto& held = batch_of<T>();
@@ -579,6 +622,13 @@ private:
     {
         if (stopped_) [[unlikely]] {
             throw std::logic_error("konsens: a call of a node after its stop");
+        }
+    }
+
+    void throw_if_phase_two_is_open() const
+    {
+        if (phase_two_open_) [[unlikely]] {
+            throw std::logic_error("konsens: a call of a node between commit_phase_one and commit_phase_two");
         }
     }
 
@@ -657,7 +707,9 @@ private:
         }
         std::ranges::move(execute_verify_outgoing_, std::back_inserter(out.messages));
         execute_verify_outgoing_.clear();
-        out.replies = std::exchange(client_replies_, {});
+        out.replies = std::exchange(replies_before_the_sync_, {});
+        std::ranges::move(client_replies_, std::back_inserter(out.replies));
+        client_replies_.clear();
         out.log_records = std::exchange(log_records_, {});
         out.received_batch = std::exchange(received_batch_, {});
         out.message_batch = std::exchange(message_batch_, {});
@@ -679,6 +731,7 @@ private:
         static_cast<void>(ble_.take_outgoing_messages());
         execute_verify_outgoing_.clear();
         client_replies_.clear();
+        replies_before_the_sync_.clear();
         log_records_.clear();
         received_batch_.clear();
         message_batch_.clear();
@@ -1349,21 +1402,22 @@ private:
             }
             return r->reply;
         };
+        auto& replies = index <= seq_paxos_.mark_.log_len ? replies_before_the_sync_ : client_replies_;
         switch (e.kind) {
         case entry_kind::register_client:
             if (e.pid == seq_paxos_.get_pid() && registrations_.erase(e.client_id) > 0) {
-                client_replies_.push_back({e.client_id, index, response()});
+                replies.push_back({e.client_id, index, response()});
             }
             break;
         case entry_kind::client_request:
             if (const auto it = requests_.find({e.session, e.request_number}); it != requests_.end()) {
-                client_replies_.push_back({it->second.client_id, e.session, response()});
+                replies.push_back({it->second.client_id, e.session, response()});
                 requests_.erase(it);
             }
             break;
         case entry_kind::expire_session:
             if (const auto it = expirations_.find(e.session); it != expirations_.end()) {
-                client_replies_.push_back({it->second, e.session, response()});
+                replies.push_back({it->second, e.session, response()});
                 expirations_.erase(it);
             }
             break;
@@ -1783,6 +1837,7 @@ private:
     logical_clock resend_message_clock_;
     M machine_;
     std::vector<client_reply> client_replies_;
+    std::vector<client_reply> replies_before_the_sync_;
     std::vector<client_reply> released_replies_;
     std::vector<fault_proof> log_records_;
     std::vector<fault_proof> released_log_records_;
@@ -1800,6 +1855,7 @@ private:
     bool waits_for_the_operator_{};
     bool faulted_{};
     bool stopped_{};
+    bool phase_two_open_{};
     std::vector<node_id> nodes_;
     std::map<std::uint64_t, own_result> own_;
     std::optional<std::pair<ballot, std::uint64_t>> answered_;
