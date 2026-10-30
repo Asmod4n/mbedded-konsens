@@ -95,7 +95,7 @@ CONSTANTS
   \* @type: Str;
   MismatchAction,
   \* @type: Bool;
-  StateInLmdb,
+  StateInStorage,
   \* @type: Int;
   MaxInFlight,
   \* @type: Str;
@@ -390,7 +390,7 @@ EmptyMessage ==
 
 \* The log up to position k. It stands for the digest of the state up to k,
 \* as each node reads it back after the commit (owner, 2026-10-24 15:30 to
-\* 15:35, doc/plan-lmdb-only-source.md). A log shorter than k gives itself,
+\* 15:35, doc/plan-storage-only-source.md). A log shorter than k gives itself,
 \* which equals no prefix of length k.
 \* @type: (Seq($entry), Int) => Seq($entry);
 PrefixAt(l, k) == IF k <= Len(l) THEN SubSeq(l, 1, k) ELSE l
@@ -477,7 +477,7 @@ MaxDecided(ls) ==
   LET ds == {ls.promises_meta[k].decided_idx : k \in Promised(ls)}
   IN IF ds = {} THEN 0 ELSE CHOOSE d \in ds : \A e \in ds : d >= e
 
-\* VerifyPromise (doc/plan-lmdb-only-source.md 2.5 item 4). The leader takes
+\* VerifyPromise (doc/plan-storage-only-source.md 2.5 item 4). The leader takes
 \* the decided index of a promise only when the promise carries the same
 \* prefix up to that index as the synced log of the leader. With no such
 \* promise, it keeps its own decided index.
@@ -693,8 +693,9 @@ NothingSeen == [n |-> DefaultBallot, idx |-> 0]
 (* that it saw). The state machine of a node keeps, in memory, the highest *)
 (* promise, the highest pair of accepted round and log length, and the     *)
 (* highest decided index that its own transactions read or wrote. It is a  *)
-(* check, not a source: a step reads LMDB, and a value below the mark is a  *)
-(* damage. A restart forgets the mark. Provisional names: HighWater, mark.  *)
+(* check, not a source: a step reads the storage, and a value below the    *)
+(* mark is a damage. A restart forgets the mark. Provisional names:        *)
+(* HighWater, mark.                                                        *)
 \* @type: $mark;
 NoMark == [promise |-> DefaultBallot, n_accepted |-> DefaultBallot, acc |-> 0, decided |-> 0]
 \* @type: $durable => $mark;
@@ -1501,7 +1502,7 @@ LeaseGhostUpdate ==
                THEN decided_idx'[CHOOSE s \in NextConfigNodes : s \in running']
                ELSE forced_decided_at_force
 
-(* PeerCheck (owner, 2026-10-24 19:19; doc/plan-lmdb-only-source.md 2.3   *)
+(* PeerCheck (owner, 2026-10-24 19:19; doc/plan-storage-only-source.md 2.3   *)
 (* item 6). Each node keeps, in memory, the highest ballot that a peer      *)
 (* sent it, and the highest accepted index of an Accepted of that ballot.  *)
 (* A received message is the head of a channel that shrinks by one; with   *)
@@ -1580,7 +1581,7 @@ Dispatch(i, j, m, c) ==
             [] m.type = "AcceptStopSign"  -> HandleAcceptStopSign(i, j, m, c)
        /\ UNCHANGED recovery
 
-\* MismatchAction (doc/plan-lmdb-only-source.md 2.5 item 3). The head of
+\* MismatchAction (doc/plan-storage-only-source.md 2.5 item 3). The head of
 \* the channel from j to i would raise the decided index of i to d, and the
 \* prefix of i up to d differs from the one in the message. "keep": the
 \* handler keeps the old decided index (CheckedDecided). "damage": the node
@@ -1810,7 +1811,7 @@ Wipe(i) ==
 \* doc/plan-start-checks.md section 3. A node restarts after a crash and
 \* reads a damaged durable state of one kind. Provisional names:
 \* StorageFault, StartChecks, the kinds.
-\* missing_entry: LMDB lost the key k. LogWithout is an approximation of
+\* missing_entry: the storage lost the key k. LogWithout is an approximation of
 \* what the node reads without the checks: read_entries works by key, so a
 \* range read up to the count returns the keys below the count, and the
 \* last key is not read. Only the mutation StartCheckMissing uses it; with
@@ -1820,7 +1821,7 @@ LogWithout(l, k) == SubSeq(l, 1, k - 1) \o SubSeq(l, k + 1, Len(l))
 
 \* @type: (Int, Str) => Set($durable);
 \* stale_meta: the disk gives back an earlier meta record with a valid CRC,
-\* and the log stays as it is (review 1 of doc/plan-lmdb-only-source.md,
+\* and the log stays as it is (review 1 of doc/plan-storage-only-source.md,
 \* finding 4). rollback: the disk gives back an earlier version of the log
 \* and of the meta record together, while the node runs.
 \* @type: (Int, Str, $durable) => $durable;
@@ -2003,11 +2004,11 @@ MismatchFound(i) ==
   /\ UNCHANGED storage_faults
   /\ IF MismatchAction = "damage" THEN DamageFound(i) ELSE LeaveRunning(i)
 
-\* RunningStorageFault, RunningFaults, StepChecks (doc/plan-lmdb-only-source.md).
+\* RunningStorageFault, RunningFaults, StepChecks (doc/plan-storage-only-source.md).
 \* The durable state of a running node changes. The node holds no copy of
 \* it, so its next step reads the damaged state (owner, 2026-10-24 14:44:
-\* LMDB is the only source). A missing key at the last position is a lost
-\* last entry: LMDB drops the key and the count, so the stored log stays
+\* the storage is the only source). A missing key at the last position is a lost
+\* last entry: the storage drops the key and the count, so the stored log stays
 \* consistent and one entry shorter. With StepChecks, the read of the next
 \* step finds what the checks find, and the node leaves running, as
 \* stop_voting does. With ChainCheck, each entry carries the CRC over the
@@ -2713,8 +2714,8 @@ ProtocolNext ==
   \/ \E i \in Nodes : LeaseGrant(i)
   \/ WitnessRestart
 
-\* StateInLmdb (doc/plan-lmdb-only-source.md 2.6). `applied[i]` is the
-\* committed state of node i in its own LMDB environment, as the entries
+\* StateInStorage (doc/plan-storage-only-source.md 2.6). `applied[i]` is the
+\* committed state of node i in the storage, as the entries
 \* that it applied. `in_txn[i]` is the open write transaction of the
 \* state: the entries that ran on top of `applied[i]` before their decide. A
 \* step of the protocol leaves both, except: a node that stops running or
@@ -2726,7 +2727,7 @@ ProtocolNext ==
 \* state environment as it is.
 \* @type: Bool;
 StateFollows ==
-  IF ~StateInLmdb THEN UNCHANGED statevars
+  IF ~StateInStorage THEN UNCHANGED statevars
   ELSE
   /\ applied' = [i \in Servers |->
         LET dp == SubSeq(log'[i], 1, Min(decided_idx'[i], Len(log'[i])))
@@ -2751,7 +2752,7 @@ StateCurrent(i) ==
 
 \* @type: Int => Bool;
 StateAbort(i) ==
-  /\ StateInLmdb
+  /\ StateInStorage
   /\ i \in running
   /\ in_txn[i] # <<>>
   /\ ~StateCurrent(i)
@@ -2762,7 +2763,7 @@ StateAbort(i) ==
 \* transaction, before the decide, up to MaxInFlight entries.
 \* @type: Int => Bool;
 StateRun(i) ==
-  /\ StateInLmdb /\ ~ExecuteVerify
+  /\ StateInStorage /\ ~ExecuteVerify
   /\ i \in running /\ ~recovering[i]
   /\ StateCurrent(i)
   /\ Len(in_txn[i]) < MaxInFlight
@@ -2775,7 +2776,7 @@ StateRun(i) ==
 \* the committed state, which gives the same entries in in_txn.
 \* @type: Int => Bool;
 StateApply(i) ==
-  /\ StateInLmdb /\ ~ExecuteVerify
+  /\ StateInStorage /\ ~ExecuteVerify
   /\ i \in running /\ ~recovering[i]
   /\ StateCurrent(i)
   /\ Len(applied[i]) < decided_idx[i]
@@ -3536,7 +3537,7 @@ ASSUME PeerCheck => MaxLoss = 0 /\ MaxDuplicate = 0
 ASSUME HighWater \in BOOLEAN
 ASSUME VerifyPromise \in BOOLEAN
 ASSUME MismatchAction \in {"keep", "damage", "stop"}
-ASSUME StateInLmdb \in BOOLEAN
+ASSUME StateInStorage \in BOOLEAN
 ASSUME MaxInFlight \in Nat
 ASSUME StateRepair \in {"keep", "copy"}
 ASSUME StartDamageCounts \in BOOLEAN
@@ -3581,7 +3582,7 @@ HighWaterHolds ==
 
 \* The 19:38 rule of the owner: outside a transaction a node knows only
 \* its state machine. The copy accepted_idx of the code at 4c57d44 is the
-\* log length that LMDB holds. Where this holds, the model can read the
+\* log length that the storage holds. Where this holds, the model can read the
 \* log length in place of the copy.
 AcceptedIdxIsLogLen == \A i \in running : accepted_idx[i] = Len(log[i])
 
@@ -3606,7 +3607,7 @@ S1 == \A i, j \in Servers : Votes(i) /\ Votes(j) => Compatible(DecidedPrefix(i),
 
 S2 == \A i \in Servers : Votes(i) => IsPrefix(DecidedPrefix(i), decided_history)
 
-\* doc/plan-lmdb-only-source.md 2.6 item 5: an entry runs on the state of
+\* doc/plan-storage-only-source.md 2.6 item 5: an entry runs on the state of
 \* the entries before it in the log. Each node that holds a decided entry
 \* at its index holds it after the same entries, so its run gives the
 \* result that the decided entry carries. A duplicated forward can put the
@@ -3621,7 +3622,7 @@ EntryRunsOnOnePrefix ==
       \A k \in 1..Min(decided_idx[i], Len(log[j])) :
         log[j][k] = log[i][k] => SubSeq(log[j], 1, k - 1) = SubSeq(log[i], 1, k - 1)
 
-\* StateInLmdb: the committed state of each node holds only decided
+\* StateInStorage: the committed state of each node holds only decided
 \* entries, in the decided order. A read from the state then gives a
 \* decided result.
 StateIsDecided ==
@@ -3634,7 +3635,7 @@ StateIsDecided ==
 \* entries of its log in order (2.6 item 5).
 OpenRunsOnLog == \A i \in running : StateCurrent(i) => IsPrefix(applied[i] \o in_txn[i], log[i])
 
-\* Covers of StateInLmdb: two entries run before their decide; a decide
+\* Covers of StateInStorage: two entries run before their decide; a decide
 \* covers only part of the entries that ran; a write cut the log below the
 \* end of an open transaction.
 NoTwoInFlight == \A i \in Servers : Len(in_txn[i]) < 2

@@ -34,7 +34,7 @@ OVERRIDE_PeerCheck == FALSE
 OVERRIDE_HighWater == FALSE
 OVERRIDE_VerifyPromise == FALSE
 OVERRIDE_MismatchAction == "keep"
-OVERRIDE_StateInLmdb == FALSE
+OVERRIDE_StateInStorage == FALSE
 OVERRIDE_MaxInFlight == 0
 OVERRIDE_StateRepair == "copy"
 OVERRIDE_StartDamageCounts == FALSE
