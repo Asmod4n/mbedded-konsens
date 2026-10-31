@@ -1582,7 +1582,7 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        if (!(m->promise < prep.n || (m->promise == prep.n && state_.second == phase::recover))) {
+        if (!(m->promise < prep.n || (m->promise == prep.n && state_.first == role::follower))) {
             return {};
         }
         write_or_throw(txn_->set_promise(prep.n));
@@ -1767,6 +1767,24 @@ private:
         return {};
     }
 
+    std::expected<bool, std::error_code> holds_the_sync_already(const meta_record& m, const accept_sync& accsync) const
+    {
+        const auto from = accsync.log_sync.sync_idx;
+        const auto end = from + accsync.log_sync.suffix.size();
+        if (m.accepted_round != accsync.n || end > m.log_len) {
+            return false;
+        }
+        const auto before = read_prefix_chain_crc(from);
+        if (!before) [[unlikely]] {
+            return std::unexpected(before.error());
+        }
+        const auto own = read_prefix_chain_crc(end);
+        if (!own) [[unlikely]] {
+            return std::unexpected(own.error());
+        }
+        return compute_chain_crc(*before, from, accsync.log_sync.suffix) == *own;
+    }
+
     result handle_acceptsync(const accept_sync& accsync, const node_id from)
     {
         const auto m = read_meta();
@@ -1781,10 +1799,16 @@ private:
             [[unlikely]] {
             return {};
         }
-        write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
-        lower_the_synced_len(sync_idx);
-        if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
-            return r;
+        const auto held = holds_the_sync_already(*m, accsync);
+        if (!held) [[unlikely]] {
+            return stop_voting(held.error());
+        }
+        if (!*held) {
+            write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
+            lower_the_synced_len(sync_idx);
+            if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
+                return r;
+            }
         }
         if (accsync.decided_idx > m->decided_idx) {
             if (auto r = check_decided_chain_crc(accsync.decided_idx, accsync.decided_chain_crc, from); !r)

@@ -348,6 +348,69 @@ TEST_CASE("handle_prepare promises only a higher ballot")
     CHECK(committed_messages_of(sp).empty());
 }
 
+// Simulation seed 410: a duplicated prepare_req makes the leader forget the
+// promise of a follower in phase accept and send prepare of the same
+// ballot. A follower that ignores it leaves the link dead.
+TEST_CASE("a follower in phase accept promises its ballot again")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, 0}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::accept});
+    committed_messages_of(sp);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::prepare});
+    const auto out = committed_messages_of(sp);
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].to == 3);
+    CHECK(std::get<konsens::promise>(out[0].msg).n == ballot_of(1, 3));
+}
+
+// After the second promise the node waits for the next accept sync. An
+// accept of the old session must not reach the log in phase prepare.
+TEST_CASE("after a promise of the same ballot an accept of the old session is dropped")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, 0}}));
+    CHECK(sp.get_accepted_idx() == 0);
+}
+
+// Model run promise_again_recovery_l1 (2026-10-31): an older accept sync of
+// the accepted ballot shortened the log and lost a voted entry. The log of
+// one leader only grows, so a sync of the accepted ballot that is not
+// longer than the log changes no entry.
+TEST_CASE("an accept sync of the accepted ballot does not shorten the log")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {2, 1}, 0, {{}, 0}, 0}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::accept});
+    CHECK(sp.get_accepted_idx() == 1);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).log_len == 1);
+}
+
+// Raft, Figure 2, AppendEntries step 3: a follower keeps the entries that it
+// holds and replaces them only at a conflict. An entry that the disk of the
+// follower changed is such a conflict, so a sync of the accepted ballot with
+// another entry at that index replaces it.
+TEST_CASE("an accept sync of the accepted ballot replaces an entry that differs")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{make_entry(9)}, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {2, 1}, 0, {{make_entry(1)}, 0}, 0}}));
+    CHECK(sp.get_accepted_idx() == 1);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).last_chain_crc == chain_of({make_entry(1)}, 1));
+}
+
 // follower.rs:196-227 check_valid_ballot: a message of a lower ballot gets
 // NotAccepted with the promise, so that the old leader learns of it.
 TEST_CASE("a message of a lower ballot gets not_accepted")

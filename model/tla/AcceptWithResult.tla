@@ -13,6 +13,7 @@
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
+          MaxReset,             \* prepare requests that a leader takes and promises of the same ballot, in one run
           MaxFaulty,            \* pairs <<node, request>> whose run gives a wrong result
           AcceptBeforeOwnSync,  \* the accept leaves while the sync of the leader runs
           NoCheckAtAccept,      \* mutation: a follower accepts without its own run
@@ -24,7 +25,9 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           NoRecovery,           \* a restarted node votes at once
           RecoveryWaitsForLeader,
           WorkWithoutBase,      \* the work carries no entries: a node answers only with its own log up to d
-          NoCheckAtDecide       \* mutation: a node applies a decided entry without its own run
+          NoCheckAtDecide,      \* mutation: a node applies a decided entry without its own run
+          NoPromiseAgain,       \* a node ignores a prepare of the ballot it promised (the old form)
+          NoKeepOnSameBallot    \* an accept sync of the accepted ballot can shorten the log (the old form)
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec. An entry is
@@ -34,9 +37,9 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
 \* at which a selection took a result other than the result of the taken entry.
 \* voted: the durable votes <<b, idx, entry, node>>; a sync makes the log of a
 \* node durable with its accepted ballot.
-VARIABLES cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted
+VARIABLES cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted, resets
 
-vars == <<cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted>>
+vars == <<cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted, resets>>
 
 N == Cardinality(Nodes)
 IsMajority(Q) == 2 * Cardinality(Q) > N
@@ -89,8 +92,9 @@ Init ==
     /\ badAt = {}
     /\ repaired = {}
     /\ voted = {}
+    /\ resets = 0
 
-Ghosts == <<crashes, faulty, repaired, voted>>
+Ghosts == <<crashes, faulty, repaired, voted, resets>>
 
 ----------------------------------------------------------------------------
 (* The sync.                                                              *)
@@ -103,7 +107,7 @@ SyncDone(i) ==
     /\ queue' = [queue EXCEPT ![i] = {}]
     /\ voted' = voted \cup IF cur[i].acc > 0
                            THEN {<<cur[i].acc, k, cur[i].log[k], i>> : k \in 1..Len(cur[i].log)} ELSE {}
-    /\ UNCHANGED <<cur, status, lead, answers, chosen, crashes, faulty, repaired, badAt>>
+    /\ UNCHANGED <<cur, status, lead, answers, chosen, crashes, faulty, repaired, resets, badAt>>
 
 ----------------------------------------------------------------------------
 (* Phase 1.                                                               *)
@@ -118,16 +122,26 @@ Prepare(i, b) ==
     /\ Hold(i, [type |-> "prepare", b |-> b, from |-> i])
     /\ UNCHANGED <<dur, status, answers, msgs, chosen, Ghosts, badAt>>
 
+\* A node promises a higher ballot. It promises the ballot it promised
+\* again when it is not the leader of that ballot: the leader sends a
+\* prepare again after a prepare request (handle_preparereq,
+\* sequence_paxos.hpp). Until the accept sync, the node takes no accept.
 HandlePrepare(j, m) ==
     /\ m.type = "prepare"
     /\ status[j] \in {"running", "rejoining"}
-    /\ m.b > cur[j].promise
+    /\ \/ /\ m.b > cur[j].promise
+          /\ UNCHANGED resets
+       \/ /\ ~NoPromiseAgain
+          /\ m.b = cur[j].promise
+          /\ Owner(m.b) # j
+          /\ resets < MaxReset
+          /\ resets' = resets + 1
     /\ Commit(j, [cur[j] EXCEPT !.promise = m.b])
-    /\ lead' = [lead EXCEPT ![j] = NoLead]
+    /\ lead' = [lead EXCEPT ![j] = [NoLead EXCEPT !.phase = "promised"]]
     /\ Hold(j, [type |-> "promise", b |-> m.b, from |-> j, to |-> m.from,
                 acc |-> cur[j].acc, log |-> cur[j].log, dec |-> cur[j].dec,
                 rejoin |-> status[j] = "rejoining"])
-    /\ UNCHANGED <<dur, status, answers, msgs, chosen, Ghosts, badAt>>
+    /\ UNCHANGED <<dur, status, answers, msgs, chosen, crashes, faulty, repaired, voted, badAt>>
 
 Best(P) == CHOOSE p \in P : \A q \in P : \/ p.acc > q.acc
                                          \/ p.acc = q.acc /\ Len(p.log) >= Len(q.log)
@@ -155,6 +169,19 @@ FirstChanged(T, d, S) ==
 \* and the highest decided index d. With the selection (plan 3.5) it
 \* first selects a result for each entry above d; without it, it syncs at
 \* once (the rule of Omni-Paxos).
+\* The leader, in any phase, takes a prepare request of node j: it forgets the promise of
+\* j and sends its prepare again (handle_preparereq). The prepare of the
+\* ballot is in msgs already.
+ResetPromise(i, j) ==
+    /\ status[i] = "running"
+    /\ lead[i].phase \in {"prepare", "verify", "accept"}
+    /\ j # i
+    /\ j \in {q.from : q \in lead[i].promises}
+    /\ resets < MaxReset
+    /\ resets' = resets + 1
+    /\ lead' = [lead EXCEPT ![i].promises = {q \in @ : q.from # j}]
+    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, repaired, voted, badAt>>
+
 HandlePromise(i, m) ==
     /\ m.type = "promise"
     /\ m.to = i
@@ -225,7 +252,7 @@ Select(i) ==
          /\ lead' = [lead EXCEPT ![i].sel = Append(@, [req |-> lead[i].taken[VIdx(i)].req, res |-> res])]
          /\ repaired' = IF res # lead[i].taken[VIdx(i)].res
                         THEN repaired \cup {<<VIdx(i), lead[i].taken[VIdx(i)].req>>} ELSE repaired
-    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt, voted>>
+    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt, voted, resets>>
 
 \* Every entry above d is selected: the leader syncs. The leader keeps its
 \* own prefix by the rule of the followers (append_on_prefix in
@@ -251,26 +278,36 @@ AgreedLen(j, L, dec) ==
     IF NoCheckAtSync THEN Len(L)
     ELSE SetMax({a \in dec..Len(L) : \A k \in (dec + 1)..a : Agrees(j, SubSeq(L, 1, k - 1), L[k])})
 
+\* An accept sync of the ballot that the node accepted already never
+\* shortens its log: the log of one leader only grows, so the sync is a
+\* prefix of the own log (Raft, Figure 2, AppendEntries step 3).
 HandleAcceptSync(j, m) ==
     /\ m.type = "acceptsync"
     /\ m.to = j
     /\ status[j] \in {"running", "rejoining"}
     /\ cur[j].promise = m.b
-    /\ cur[j].acc # m.b
+    /\ cur[j].acc # m.b \/ lead[j].phase = "promised"
     /\ status[j] = "rejoining" => m.b > SetMax({a[2] : a \in answers[j]})
     /\ m.keep <= Len(cur[j].log)
     /\ LET M == SubSeq(cur[j].log, 1, m.keep) \o SubSeq(m.log, m.keep + 1, Len(m.log))
            a == AgreedLen(j, M, m.dec)
            L == SubSeq(M, 1, a)
            d == Min(a, Max(cur[j].dec, m.dec))
-       IN /\ Commit(j, [cur[j] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
-          /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> a])
-          /\ IF a < Len(M)
-             THEN Send([type |-> "refused", b |-> m.b, from |-> j, idx |-> a + 1])
-             ELSE UNCHANGED msgs
+           own == Len(cur[j].log)
+           same == ~NoKeepOnSameBallot /\ cur[j].acc = m.b /\ own >= Len(M) /\ SubSeq(cur[j].log, 1, Len(M)) = M
+       IN /\ lead' = [lead EXCEPT ![j] = NoLead]
+          /\ IF same
+             THEN /\ Commit(j, [cur[j] EXCEPT !.dec = Max(@, Min(m.dec, own))])
+                  /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> own])
+                  /\ UNCHANGED msgs
+             ELSE /\ Commit(j, [cur[j] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
+                  /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> a])
+                  /\ IF a < Len(M)
+                     THEN Send([type |-> "refused", b |-> m.b, from |-> j, idx |-> a + 1])
+                     ELSE UNCHANGED msgs
     /\ status' = [status EXCEPT ![j] = "running"]
     /\ answers' = [answers EXCEPT ![j] = {}]
-    /\ UNCHANGED <<dur, lead, chosen, Ghosts, badAt>>
+    /\ UNCHANGED <<dur, chosen, Ghosts, badAt>>
 
 ----------------------------------------------------------------------------
 (* Phase 2.                                                               *)
@@ -298,7 +335,7 @@ Propose(i, r) ==
 HandleAccept(j, m) ==
     /\ m.type = "accept"
     /\ status[j] = "running"
-    /\ cur[j].promise = m.b /\ cur[j].acc = m.b
+    /\ cur[j].promise = m.b /\ cur[j].acc = m.b /\ lead[j].phase # "promised"
     /\ Owner(m.b) # j
     /\ m.idx = Len(cur[j].log) + 1
     /\ IF NoCheckAtAccept \/ Agrees(j, cur[j].log, m.e)
@@ -332,7 +369,7 @@ LeaderDecide(i) ==
 HandleDecide(j, m) ==
     /\ m.type = "decide"
     /\ status[j] = "running"
-    /\ cur[j].promise = m.b /\ cur[j].acc = m.b
+    /\ cur[j].promise = m.b /\ cur[j].acc = m.b /\ lead[j].phase # "promised"
     /\ cur[j].dec < Min(m.idx, Len(cur[j].log))
     /\ LET d == Min(m.idx, Len(cur[j].log))
            agrees == NoCheckAtDecide \/
@@ -359,7 +396,7 @@ Crash(i) ==
     /\ queue' = [queue EXCEPT ![i] = {}]
     /\ lead' = [lead EXCEPT ![i] = NoLead]
     /\ answers' = [answers EXCEPT ![i] = {}]
-    /\ UNCHANGED <<dur, msgs, chosen, faulty, repaired, voted, badAt>>
+    /\ UNCHANGED <<dur, msgs, chosen, faulty, repaired, voted, resets, badAt>>
 
 Restart(i) ==
     /\ status[i] = "down"
@@ -390,7 +427,7 @@ Next ==
     \/ \E i \in Nodes, b \in Ballots : Prepare(i, b)
     \/ \E i \in Nodes, r \in Requests : Propose(i, r)
     \/ \E i \in Nodes : Select(i) \/ FinishSelection(i) \/ LeaderDecide(i) \/ RecoveryComplete(i)
-    \/ \E i, j \in Nodes : AnswerWork(j, i) \/ RecoveryAnswer(i, j)
+    \/ \E i, j \in Nodes : AnswerWork(j, i) \/ RecoveryAnswer(i, j) \/ ResetPromise(i, j)
     \/ \E m \in msgs :
          \/ \E j \in Nodes : HandlePrepare(j, m) \/ HandleAccept(j, m) \/ HandleDecide(j, m)
          \/ HandlePromise(m.to, m)
@@ -428,5 +465,10 @@ NoWrongProposalRepaired ==
     ~ \E p \in repaired \cap badAt : \E x \in chosen : x[1] = p[1] /\ x[2].req = p[2]
 NoRefusal ==
     ~ \E m \in msgs : m.type = "refused"
+
+\* A cover, not a property: a run must violate it, so that the branch of
+\* a promise of the same ballot is reached.
+NoPromiseAgainReached ==
+    \A j \in Nodes : lead[j].phase # "promised"
 
 =============================================================================
