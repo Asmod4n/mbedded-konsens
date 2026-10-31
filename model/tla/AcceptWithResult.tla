@@ -163,12 +163,12 @@ FirstChanged(T, d, S) ==
 \* and the highest decided index d. With the selection (plan 3.5) it
 \* first selects a result for each entry above d; without it, it syncs at
 \* once (the rule of Omni-Paxos).
-\* The leader takes a prepare request of node j: it forgets the promise of
+\* The leader, in any phase, takes a prepare request of node j: it forgets the promise of
 \* j and sends its prepare again (handle_preparereq). The prepare of the
 \* ballot is in msgs already.
 ResetPromise(i, j) ==
     /\ status[i] = "running"
-    /\ lead[i].phase = "accept"
+    /\ lead[i].phase \in {"prepare", "verify", "accept"}
     /\ j # i
     /\ j \in {q.from : q \in lead[i].promises}
     /\ lead' = [lead EXCEPT ![i].promises = {q \in @ : q.from # j}]
@@ -448,5 +448,10 @@ NoWrongProposalRepaired ==
     ~ \E p \in repaired \cap badAt : \E x \in chosen : x[1] = p[1] /\ x[2].req = p[2]
 NoRefusal ==
     ~ \E m \in msgs : m.type = "refused"
+
+\* A cover, not a property: a run must violate it, so that the branch of
+\* a promise of the same ballot is reached.
+NoPromiseAgainReached ==
+    \A j \in Nodes : lead[j].phase # "promised"
 
 =============================================================================
