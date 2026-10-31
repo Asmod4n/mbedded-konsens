@@ -52,7 +52,7 @@ target_include_directories(konsens PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(konsens PRIVATE SQLite::SQLite3)
 target_link_libraries(konsens PRIVATE mbedded-cbor Boost::headers crc32c)
 target_include_directories(konsens PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
-target_include_directories(konsens PUBLIC $<TARGET_PROPERTY:mbedded-cbor,INTERFACE_INCLUDE_DIRECTORIES>)
+target_include_directories(konsens SYSTEM PUBLIC $<TARGET_PROPERTY:mbedded-cbor,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_options(konsens PRIVATE ${KONSENS_WARNINGS})
 
 enable_testing()
