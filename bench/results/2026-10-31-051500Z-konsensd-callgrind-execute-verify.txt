@@ -1,0 +1,37 @@
+Where the instructions of a write go, parts A, B and C, 64 in flight
+
+What was measured
+- callgrind (valgrind 3.27.1) on each of the three nodes of konsensd_g16ABCS2u (3a64734, sha256 97d724aa303c5dfb), g++-16 Release. Option sync_by_the_caller = true, Unix sockets, data on tmpfs. bench-logs/vg13.sh (sha256 02c458ce08bc8b81): 200 writes at 1 in flight to warm up, counters set to zero, then 4096 writes of 64 bytes at 64 in flight (dump c64). Leader: node 3. Counts of instructions (Ir), not time. One repetition.
+
+Totals for the 4096 writes
+- leader n3: 1 168 586 358 Ir, 285 000 per write
+- follower n1: 719 589 235 Ir, 176 000 per write
+- follower n2: 738 070 742 Ir, 180 000 per write
+
+Leader, inclusive share of the total
+- execute_verify 20.7 %
+- sqlite3_step 20.0 %
+- check_the_done_records 15.6 %
+- selection::select_results 15.3 %, of it find_the_counted_nodes 5.0 % (counts 4.8 %) and holds 3.5 %
+- run_the_tasks 8.9 %
+- apply_the_done_records 5.9 %
+- selection::count_answer 4.7 %
+- selection::find_the_done_records 3.9 %
+- selection::move_pointer 2.9 %
+- decode of request_result (cbor generic_read) 5.0 %
+
+Follower n1, inclusive share of the total
+- execute_verify 35.4 %
+- sqlite3_step 30.3 %
+- run_the_tasks 29.5 %
+- check_the_done_records 22.1 %
+- decode of request_result 7.7 %
+
+Calls on the leader
+- crc32c::Extend 1 035 221 calls (253 per write); 782 032 of them from compute_result_crc. compute_result_crc has 391 016 calls (95 per write): count_answer 128 542, select_results 122 789, holds 122 789.
+- select_results 6 973 calls; it calls holds and find_the_counted_nodes for each open entry from pointer_ + 1 on. holds and counts each walk again from pointer_ + 1 to the entry and compute the result CRC of each entry on the way (src/selection.cpp, holds, counts). The work of one call grows with the square of the open entries.
+- operator new 991 964 calls (242 per write); std::_Rb_tree_increment 1 763 897 calls.
+
+Reading
+- On the leader, the selection of results (select_results, count_answer, find_the_done_records, move_pointer) is 26.8 % of the instructions. Most of it is the repeated walk from pointer_ in holds and counts.
+- On every node, check_the_done_records decodes the CBOR result of the done records in each step.
