@@ -18,6 +18,7 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           NoCheckAtAccept,      \* mutation: a follower accepts without its own run
           NoCheckAtSync,        \* mutation: a follower takes an accept sync without its own run
           NoSelectionAtSync,    \* mutation: a new leader syncs the log of its promises as it is
+          NoRepairBound,        \* mutation: the kept prefix of a sync is not bounded by a repair
           LeaderCountsUnsynced, \* mutation: the leader counts its own entry before its sync
           NoRecovery,           \* a restarted node votes at once
           RecoveryWaitsForLeader
@@ -28,9 +29,11 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
 \* gives a wrong result. badAt: the pairs <<idx, r>> at which a leader
 \* proposed r with a wrong result of its own. repaired: the pairs <<idx, r>>
 \* at which a selection took a result other than the result of the taken entry.
-VARIABLES cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired
+\* voted: the durable votes <<b, idx, entry, node>>; a sync makes the log of a
+\* node durable with its accepted ballot.
+VARIABLES cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted
 
-vars == <<cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired>>
+vars == <<cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted>>
 
 N == Cardinality(Nodes)
 IsMajority(Q) == 2 * Cardinality(Q) > N
@@ -47,7 +50,7 @@ SetMax(S) == CHOOSE x \in S : \A y \in S : x >= y
 \* so two nodes that work give the same result on the same base.
 Results(B) == [k \in 1..Len(B) |-> B[k].res]
 Good(r, B) == [ok |-> TRUE, who |-> {}, req |-> r, base |-> Results(B)]
-Run(i, r, B) == IF <<i, r>> \in faulty THEN [ok |-> FALSE, who |-> {i}, req |-> r, base |-> <<>>]
+Run(i, r, B) == IF <<i, r>> \in faulty THEN [ok |-> FALSE, who |-> {i}, req |-> r, base |-> Results(B)]
                 ELSE Good(r, B)
 Agrees(i, B, e) == Run(i, e.req, B) = e.res
 
@@ -65,7 +68,8 @@ SendAll(S) == msgs' = msgs \cup S
 Hold(i, m) == queue' = [queue EXCEPT ![i] = @ \cup {m}]
 Commit(i, r) == cur' = [cur EXCEPT ![i] = r]
 
-NoLead == [b |-> 0, phase |-> "none", promises |-> {}, taken |-> <<>>, d |-> 0, sel |-> <<>>]
+NoLead == [b |-> 0, phase |-> "none", promises |-> {}, taken |-> <<>>, d |-> 0, sel |-> <<>>,
+           mmacc |-> 0, mmlen |-> 0, fc |-> 0]
 Empty == [promise |-> 0, acc |-> 0, log |-> <<>>, dec |-> 0]
 
 Init ==
@@ -81,8 +85,9 @@ Init ==
     /\ faulty \in FaultSets
     /\ badAt = {}
     /\ repaired = {}
+    /\ voted = {}
 
-Ghosts == <<crashes, faulty, repaired>>
+Ghosts == <<crashes, faulty, repaired, voted>>
 
 ----------------------------------------------------------------------------
 (* The sync.                                                              *)
@@ -93,7 +98,9 @@ SyncDone(i) ==
     /\ dur' = [dur EXCEPT ![i] = cur[i]]
     /\ SendAll(queue[i])
     /\ queue' = [queue EXCEPT ![i] = {}]
-    /\ UNCHANGED <<cur, status, lead, answers, chosen, Ghosts, badAt>>
+    /\ voted' = voted \cup IF cur[i].acc > 0
+                           THEN {<<cur[i].acc, k, cur[i].log[k], i>> : k \in 1..Len(cur[i].log)} ELSE {}
+    /\ UNCHANGED <<cur, status, lead, answers, chosen, crashes, faulty, repaired, badAt>>
 
 ----------------------------------------------------------------------------
 (* Phase 1.                                                               *)
@@ -122,9 +129,24 @@ HandlePrepare(j, m) ==
 Best(P) == CHOOSE p \in P : \A q \in P : \/ p.acc > q.acc
                                          \/ p.acc = q.acc /\ Len(p.log) >= Len(q.log)
 
-SyncMessages(i, b, P, L, d) ==
-    {[type |-> "acceptsync", b |-> b, from |-> i, to |-> q.from, log |-> L, dec |-> d] :
-        q \in {x \in P : x.from # i}}
+\* The prefix of its own log that follower p keeps: the rule of Omni-Paxos
+\* (send_accsync, sequence_paxos.hpp), bounded below the first index whose
+\* entry the selection changed (fc).
+Keep(p, ma, ml, fc) ==
+    LET v == IF p.acc = ma THEN Min(Len(p.log), ml) ELSE p.dec
+    IN IF NoRepairBound THEN v ELSE Min(v, fc - 1)
+
+SyncMessage(i, b, p, L, d, ma, ml, fc) ==
+    [type |-> "acceptsync", b |-> b, from |-> i, to |-> p.from, keep |-> Keep(p, ma, ml, fc), log |-> L, dec |-> d]
+
+SyncMessages(i, b, P, L, d, ma, ml, fc) ==
+    {SyncMessage(i, b, q, L, d, ma, ml, fc) : q \in {x \in P : x.from # i}}
+
+\* The first index above d whose selected entry differs from the taken one.
+FirstChanged(T, d, S) ==
+    IF \E k \in 1..Len(S) : S[k] # T[d + k]
+    THEN d + (CHOOSE k \in 1..Len(S) : S[k] # T[d + k] /\ \A x \in 1..(k - 1) : S[x] = T[d + x])
+    ELSE Len(T) + 1
 
 \* A majority of promises: the leader takes the log of the best promise
 \* and the highest decided index d. With the selection (plan 3.5) it
@@ -142,13 +164,16 @@ HandlePromise(i, m) ==
        THEN LET P == lead[i].promises \cup {p}
             IN IF IsMajority({q.from : q \in P})
                THEN LET L == Best(P).log
+                        ma == Best(P).acc
                         d == Min(Len(L), SetMax({q.dec : q \in P} \cup {cur[i].dec}))
                     IN IF NoSelectionAtSync
                        THEN /\ Commit(i, [cur[i] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
-                            /\ lead' = [lead EXCEPT ![i] = [@ EXCEPT !.phase = "accept", !.promises = P]]
-                            /\ SendAll(SyncMessages(i, m.b, P, L, d))
+                            /\ lead' = [lead EXCEPT ![i] = [@ EXCEPT !.phase = "accept", !.promises = P,
+                                                             !.mmacc = ma, !.mmlen = Len(L), !.fc = Len(L) + 1]]
+                            /\ SendAll(SyncMessages(i, m.b, P, L, d, ma, Len(L), Len(L) + 1))
                        ELSE /\ lead' = [lead EXCEPT ![i] = [@ EXCEPT !.phase = "verify", !.promises = P,
-                                                             !.taken = L, !.d = d, !.sel = <<>>]]
+                                                             !.taken = L, !.d = d, !.sel = <<>>,
+                                                             !.mmacc = ma, !.mmlen = Len(L)]]
                             /\ UNCHANGED <<cur, msgs>>
                ELSE /\ lead' = [lead EXCEPT ![i].promises = P]
                     /\ UNCHANGED <<cur, msgs>>
@@ -159,8 +184,7 @@ HandlePromise(i, m) ==
        ELSE /\ lead[i].phase = "accept"
             /\ m.from \notin {q.from : q \in lead[i].promises}
             /\ lead' = [lead EXCEPT ![i].promises = @ \cup {p}]
-            /\ Send([type |-> "acceptsync", b |-> m.b, from |-> i, to |-> m.from,
-                     log |-> cur[i].log, dec |-> cur[i].dec])
+            /\ Send(SyncMessage(i, m.b, p, cur[i].log, cur[i].dec, lead[i].mmacc, lead[i].mmlen, lead[i].fc))
             /\ UNCHANGED cur
     /\ UNCHANGED <<dur, queue, status, answers, chosen, Ghosts, badAt>>
 
@@ -177,6 +201,8 @@ AnswerWork(j, i) ==
     /\ lead[i].phase = "verify"
     /\ cur[j].promise = lead[i].b
     /\ VIdx(i) <= Len(lead[i].taken)
+    /\ Len(cur[j].log) >= lead[i].d
+    /\ SubSeq(cur[j].log, 1, lead[i].d) = SubSeq(lead[i].taken, 1, lead[i].d)
     /\ Send([type |-> "ran", b |-> lead[i].b, from |-> j, idx |-> VIdx(i),
              res |-> Run(j, lead[i].taken[VIdx(i)].req, VBase(i))])
     /\ UNCHANGED <<cur, dur, queue, status, lead, answers, chosen, Ghosts, badAt>>
@@ -192,7 +218,7 @@ Select(i) ==
          /\ lead' = [lead EXCEPT ![i].sel = Append(@, [req |-> lead[i].taken[VIdx(i)].req, res |-> res])]
          /\ repaired' = IF res # lead[i].taken[VIdx(i)].res
                         THEN repaired \cup {<<VIdx(i), lead[i].taken[VIdx(i)].req>>} ELSE repaired
-    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt>>
+    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt, voted>>
 
 \* Every entry above d is selected: the leader syncs.
 FinishSelection(i) ==
@@ -200,9 +226,11 @@ FinishSelection(i) ==
     /\ lead[i].phase = "verify"
     /\ VIdx(i) > Len(lead[i].taken)
     /\ LET L == VBase(i)
+           fc == FirstChanged(lead[i].taken, lead[i].d, lead[i].sel)
        IN /\ Commit(i, [cur[i] EXCEPT !.log = L, !.acc = lead[i].b, !.dec = lead[i].d])
-          /\ lead' = [lead EXCEPT ![i].phase = "accept"]
-          /\ SendAll(SyncMessages(i, lead[i].b, lead[i].promises, L, lead[i].d))
+          /\ lead' = [lead EXCEPT ![i].phase = "accept", ![i].fc = fc]
+          /\ SendAll(SyncMessages(i, lead[i].b, lead[i].promises, L, lead[i].d,
+                                   lead[i].mmacc, lead[i].mmlen, fc))
     /\ UNCHANGED <<dur, queue, status, answers, chosen, Ghosts, badAt>>
 
 \* The longest length a >= dec such that node j agrees with every entry of
@@ -218,12 +246,14 @@ HandleAcceptSync(j, m) ==
     /\ cur[j].promise = m.b
     /\ cur[j].acc # m.b
     /\ status[j] = "rejoining" => m.b > SetMax({a[2] : a \in answers[j]})
-    /\ LET a == AgreedLen(j, m.log, m.dec)
-           L == SubSeq(m.log, 1, a)
+    /\ m.keep <= Len(cur[j].log)
+    /\ LET M == SubSeq(cur[j].log, 1, m.keep) \o SubSeq(m.log, m.keep + 1, Len(m.log))
+           a == AgreedLen(j, M, m.dec)
+           L == SubSeq(M, 1, a)
            d == Min(a, Max(cur[j].dec, m.dec))
        IN /\ Commit(j, [cur[j] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
           /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> a])
-          /\ IF a < Len(m.log)
+          /\ IF a < Len(M)
              THEN Send([type |-> "refused", b |-> m.b, from |-> j, idx |-> a + 1])
              ELSE UNCHANGED msgs
     /\ status' = [status EXCEPT ![j] = "running"]
@@ -302,7 +332,7 @@ Crash(i) ==
     /\ queue' = [queue EXCEPT ![i] = {}]
     /\ lead' = [lead EXCEPT ![i] = NoLead]
     /\ answers' = [answers EXCEPT ![i] = {}]
-    /\ UNCHANGED <<dur, msgs, chosen, faulty, repaired, badAt>>
+    /\ UNCHANGED <<dur, msgs, chosen, faulty, repaired, voted, badAt>>
 
 Restart(i) ==
     /\ status[i] = "down"
@@ -359,6 +389,12 @@ DecidedIsChosen ==
 ChosenIsTrue ==
     \A x \in chosen : ChosenPrefixDefined(x[1] - 1) =>
         x[2].res = Good(x[2].req, ChosenPrefix(x[1] - 1))
+
+\* A value that a majority holds durable in one ballot is the only such
+\* value at its index (plan 4.3).
+MajorityVoted(k, e) == \E b \in Ballots : IsMajority({j \in Nodes : <<b, k, e, j>> \in voted})
+MajorityVotedOnce ==
+    \A v, w \in voted : v[2] = w[2] /\ MajorityVoted(v[2], v[3]) /\ MajorityVoted(w[2], w[3]) => v[3] = w[3]
 
 \* Covers: each must be violated by a trace.
 NoWrongProposalRepaired ==
