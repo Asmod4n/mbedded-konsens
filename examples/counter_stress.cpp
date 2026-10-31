@@ -944,16 +944,16 @@ struct stress {
         for (std::uint64_t r = 0; r < final_read_round_limit; ++r) {
             if (!pending || r - sent_round >= call_timeout_rounds) {
                 const auto id = next_call++;
-                pending.reset();
-                if (auto s = net.at(i).client_query(id, {}); !s) [[unlikely]] {
+                auto s = net.at(i).client_query(id, {});
+                if (!s) [[unlikely]] {
                     if (!is_transient(s.error())) [[unlikely]] {
                         return std::unexpected(failure{"a node refused the final read", s.error()});
                     }
                 } else {
                     net.add(i, *s);
-                    pending = id;
                     sent_round = r;
                 }
+                pending = s ? std::optional<std::uint64_t>{id} : std::nullopt;
             }
             if (auto ran = net.run_round(); !ran) [[unlikely]] {
                 return std::unexpected(failure{"run a round", ran.error()});
