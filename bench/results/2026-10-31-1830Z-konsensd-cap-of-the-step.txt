@@ -1,0 +1,48 @@
+Writes per second of konsensd when a step ends after a fixed number of entries
+
+What was measured
+- konsensd at c727402 plus bench/arms/cap-of-the-step.patch (sha256 efa06382742b959c, committed in 7a07e96). The patch ends the step of the leader after K client requests, and the step of a follower after each accept_decide. K is a compile-time value: 0 (no cap, the base), 4, 8 and 16. Each K is its own binary. The base of g++-16 is built twice (C0 and C0b) for the A/A comparison; both builds have sha256 68c4368fddaa896c.
+- Builds: Release, g++-16, g++-15 and clang++-22 in localhost/bench-logs with bench-logs/build-konsensd.sh. Base binaries sha256: g16 68c4368fddaa896c, g15 d4220a4698611b48, c22 088b67293940ce02. Pinned sources of mbedded-cbor, slipstreamIO and mruby-webmachine from local clones through FETCHCONTENT_SOURCE_DIR_*.
+- bench/arms/cap-of-the-step.sh (sha256 c4ec09fddad70331) with cluster2.sh (b5ccbdeaa4a5fac9): three nodes, client at the leader, sync_by_the_caller = true, Unix sockets. Driver sha256 f0ea99b7dcc29b95: 3 samples of 300 writes at 1 in flight and of 8192 writes at 64 in flight, 64 bytes each. Four rounds, the arms in turn inside each round.
+- podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, 4 vCPU Intel Xeon, three btrfs loop images compress=zstd:1 on one host disk. Run 2026-10-31 18:00 to 18:30 UTC.
+- The value per round is the median of its 3 samples. The table gives the median, the minimum and the maximum over the 4 rounds. cpu = user + sys us per write, summed over the three nodes.
+
+64 in flight, writes/s
+- g16C0: median 10002, min 9598, max 13582; latency median 6050 us; cpu median 124 us/write; rounds [10075, 9929, 13582, 9598]
+- g16C0b: median 10096, min 9714, max 10544; latency median 5909 us; cpu median 116 us/write; rounds [9714, 10226, 9967, 10544]
+- g16C4: median 9431, min 8710, max 9820; latency median 6344 us; cpu median 136 us/write; rounds [9586, 8710, 9820, 9276]
+- g16C8: median 9522, min 9371, max 11692; latency median 6128 us; cpu median 124 us/write; rounds [9431, 9612, 11692, 9371]
+- g16C16: median 11120, min 9324, max 12539; latency median 5384 us; cpu median 116 us/write; rounds [12539, 12394, 9846, 9324]
+- g15C0: median 10079, min 9144, max 10571; latency median 6089 us; cpu median 116 us/write; rounds [10571, 10090, 10068, 9144]
+- g15C4: median 9814, min 9517, max 9995; latency median 6092 us; cpu median 120 us/write; rounds [9517, 9824, 9804, 9995]
+- g15C8: median 9979, min 9072, max 11103; latency median 6022 us; cpu median 124 us/write; rounds [9072, 11103, 10070, 9888]
+- g15C16: median 9990, min 9234, max 10196; latency median 6018 us; cpu median 122 us/write; rounds [10096, 9234, 10196, 9885]
+- c22C0: median 10298, min 10012, max 13297; latency median 5838 us; cpu median 117 us/write; rounds [10348, 10012, 10249, 13297]
+- c22C4: median 9817, min 9603, max 10283; latency median 6088 us; cpu median 124 us/write; rounds [10283, 9960, 9674, 9603]
+- c22C8: median 9404, min 9262, max 11248; latency median 6430 us; cpu median 128 us/write; rounds [9533, 9262, 11248, 9274]
+- c22C16: median 9788, min 9731, max 12437; latency median 5808 us; cpu median 122 us/write; rounds [9843, 9731, 12437, 9733]
+
+1 in flight, writes/s
+- g16C0: median 480, min 419, max 613; latency median 1754 us; cpu median 1121 us/write; rounds [423, 538, 613, 419]
+- g16C0b: median 544, min 538, max 553; latency median 1738 us; cpu median 1099 us/write; rounds [545, 553, 538, 542]
+- g16C4: median 503, min 402, max 587; latency median 1884 us; cpu median 1227 us/write; rounds [402, 522, 587, 484]
+- g16C8: median 538, min 422, max 594; latency median 1716 us; cpu median 1110 us/write; rounds [422, 530, 545, 594]
+- g16C16: median 510, min 376, max 532; latency median 1832 us; cpu median 1194 us/write; rounds [376, 509, 532, 510]
+- g15C0: median 536, min 517, max 544; latency median 1762 us; cpu median 1094 us/write; rounds [544, 540, 517, 532]
+- g15C4: median 536, min 524, max 563; latency median 1753 us; cpu median 1094 us/write; rounds [537, 535, 524, 563]
+- g15C8: median 542, min 539, max 554; latency median 1720 us; cpu median 1099 us/write; rounds [539, 544, 554, 541]
+- g15C16: median 550, min 532, max 557; latency median 1745 us; cpu median 1099 us/write; rounds [545, 532, 557, 556]
+- c22C0: median 546, min 527, max 606; latency median 1746 us; cpu median 1088 us/write; rounds [563, 528, 527, 606]
+- c22C4: median 538, min 536, max 560; latency median 1738 us; cpu median 1094 us/write; rounds [541, 536, 560, 536]
+- c22C8: median 536, min 522, max 576; latency median 1758 us; cpu median 1121 us/write; rounds [522, 576, 526, 546]
+- c22C16: median 562, min 534, max 569; latency median 1690 us; cpu median 1127 us/write; rounds [558, 566, 534, 569]
+
+Noise
+- A/A at 64 in flight: g16C0 10002 against g16C0b 10097 writes/s, 0.9 %. The spread inside one arm over the 4 rounds is up to 42 % (g16C0: 9598 to 13582).
+- A/A at 1 in flight: g16C0 481 against g16C0b 544 writes/s, 12 %. 
+
+Result
+- At 64 in flight, no cap is faster than the base above the noise in the table as a whole. K = 4 and K = 8 are 2 to 9 % below the base in all three builds. K = 16 is 11 % above the base with g++-16, 1 % below with g++-15 and 5 % below with clang++-22. All of these differences are inside the spread of the rounds.
+- At 1 in flight, a step holds one entry, so the cap does not act. The differences are inside the A/A difference.
+- A smaller step does not make konsensd faster. The cost of each entry stays the same, and the steps only become more.
+- Not checked: the number of entries per step in the capped arms. The patch was not traced.
