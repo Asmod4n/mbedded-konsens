@@ -54,7 +54,6 @@ constexpr std::string_view store_schema =
 constexpr std::string_view node_schema =
     "CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, record BLOB NOT NULL) STRICT, WITHOUT ROWID;";
 
-constexpr std::size_t index_size = sizeof(std::uint64_t);
 constexpr std::size_t kind_size = sizeof(entry_kind);
 constexpr std::size_t crc_size = sizeof(std::uint32_t);
 constexpr std::size_t entry_crc_offset = 0;
