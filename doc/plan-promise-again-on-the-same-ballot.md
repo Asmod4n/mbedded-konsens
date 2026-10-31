@@ -46,6 +46,16 @@ The guard `role::follower` is equal to the guard `Owner(m.b) # j` of
 the model: no node sends a prepare to itself
 (`get_preparable_peers`).
 
+An accept sync of the accepted ballot that is not longer than the log
+changes no entry. This is the consensus of Raft: a follower truncates
+only at a conflict and never on entries that it already holds, because
+an outdated AppendEntries would take back entries (Raft, Figure 2,
+AppendEntries receiver step 3, https://raft.github.io/raft.pdf; Students'
+Guide to Raft, https://thesquareplanet.com/blog/students-guide-to-raft/;
+openraft log replication, which calls the truncation unsafe). Inside one
+ballot the log of the leader only grows, so a sync of that ballot has no
+conflict with the own log.
+
 Review 2026-10-31 (one round, approve, nothing blocking): applied
 items 3, 5, 6 and 7. Open from it: after a restart, `applied_sync_` is
 empty, so a pre-crash accept sync of the same ballot passes; this path

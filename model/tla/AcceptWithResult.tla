@@ -280,7 +280,7 @@ AgreedLen(j, L, dec) ==
 
 \* An accept sync of the ballot that the node accepted already never
 \* shortens its log: the log of one leader only grows, so the sync is a
-\* prefix of the own log (provisional, owner decides).
+\* prefix of the own log (Raft, Figure 2, AppendEntries step 3).
 HandleAcceptSync(j, m) ==
     /\ m.type = "acceptsync"
     /\ m.to = j
