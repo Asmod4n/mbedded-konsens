@@ -1,12 +1,12 @@
 # Plan: the selection of results walks each open entry once
 
-Source: the owner, 2026-10-31 04:59 ("du suchst die Ursachen").
+Source: the owner, 2026-10-31 04:59 (find the causes).
 Measurement: bench/results/2026-10-31-051500Z-konsensd-callgrind-execute-verify.txt.
 Base: one-transaction-per-round 86ea5da. Branch: linear-selection.
 
 ## 1. What is measured
 
-On the leader at 64 in flight, the selection of results is 26.8 % of
+Callgrind, konsensd g++ 16 Release, on the leader at 64 in flight: the selection of results is 26.8 % of
 the instructions (select_results 15.3 %, count_answer 4.7 %,
 find_the_done_records 3.9 %, move_pointer 2.9 %). compute_result_crc
 has 95 calls per write. `holds` and `counts` (src/selection.cpp) each
@@ -20,7 +20,11 @@ so its memory also grows with that square.
 
 `count_answer` computes `compute_result_crc(index, result)` of each
 result once, when it stores the result. The stored value sits beside
-the result in `counted_answer`. `counts`, `holds`, `count_answer` and
+the result in `counted_answer::result_crcs` (a map from index to CRC,
+next to `results`). `selected_result` gets the field `result_crc`, the
+computed CRC of its chosen result, copied from there. No code of the
+selection reads the CRC that the sender wrote (`indexed_result.crc`)
+for a verdict. `counts`, `holds`, `count_answer` and
 `move_pointer` read that value and do not compute it again. The CRC
 that the sender wrote into `indexed_result.crc` stays as it is: it
 goes into the done record as `result_crc`, and each follower checks it
@@ -45,27 +49,40 @@ already use.
 chain of the current selections below q.
 
 `move_pointer(p, chosen)` walks `selected_` once in ascending order.
-It builds the chain of the chosen results up to p, and then extends it
-with the current selections above p. A selection at q > p stays when
+It builds the chain of the chosen results with pointer_ < index <= p,
+in ascending order, from `compute_result_crc` of each chosen result;
+a chosen result at or below the old pointer_ is skipped, and a chosen
+span that is not in ascending order is a wrong use and throws
+std::logic_error. It then extends that chain with every entry of
+`selected_` above p, in ascending order, also with each entry that
+this walk drops; it reads an entry before it drops it. A selection at q > p stays when
 its `base_crc` is equal to that chain at q; its new `base_crc` is the
 chain of the selections from p + 1 to q - 1, from 0. Every other
 selection above p is dropped. The old form dropped a selection only
 when one of its base CRCs at or below p differed from the chosen one;
 a difference above p came out later in `holds`, and the selection was
-then made again. In the new form such a selection is dropped at once
-and is made again in the next `select_results`. The result of a
-selection is the same.
+then made again. In the new form such a selection is dropped at once.
+It is made again only after answers on pointer p come in, because
+move_pointer erases each answer with a pointer below p and `counts`
+needs the answer pointer to be pointer_. The old form kept the
+selection, but `holds` did not hold it there either. So no verdict
+changes; only `get_selected()` shows the difference.
 
 ## 4. Part C: one walk for each call
 
 `select_results` and `find_the_done_records` walk q from
 `pointer_ + 1` upwards and stop at the first request that is not held.
-Each keeps, during its walk, the chain of the selections below q, and
-for each node the state of `counts`: the chain of the selected
+Each keeps, during its walk, the chain of the selections below q. The
+walk takes the step for k into the chain only after k is final, that
+is after a new selection at k in this walk. `select_results` keeps
+also, for each node, the state of `counts`: the chain of the selected
 results below `from_idx` of its answer, and whether each of its
 results from `from_idx` to q - 1 is equal to the selected one. One
-type holds that state, `count_walk`, and it is the one form of the
-rule of `counts`. `find_the_counted_nodes` for one index
+type holds that state, provisionally named `count_walk` (no source
+names it; the name goes to the owner), and it is the one form of the
+rule of `counts`. `find_the_done_records` keeps only the chain of
+the selections; it builds the state of `counts` only for a node and
+index in `tried_` and `again_`, as now. `find_the_counted_nodes` for one index
 (find_the_nodes_out, find_the_rejected_record) runs the same walk from
 `pointer_ + 1`, as `counts` does now. So the rule exists once, and
 the walks of `select_results` and `find_the_done_records` cost one
@@ -76,18 +93,41 @@ step for each open entry and node.
 - The messages and their encoding on the wire.
 - `indexed_result`, `answer`, `work`, `entry`.
 - The verdicts of the selection for every input, except where two
-  different bases give the same CRC-32C chain.
-- The public interface of `selection`, except the type of
-  `selected_result::base`. `get_selected()` stays.
+  different bases give the same CRC-32C chain. One differing
+  selection always changes the chain: extend_base_crc is CRC-32C
+  over 12 bytes and is injective in base_crc and in result_crc. A
+  collision needs two or more differences.
+- The public interface of `selection`, except three types:
+  `selected_result::base` becomes `base_crc`, `selected_result` gets
+  `result_crc`, and `counted_answer` gets `result_crcs`.
+- The base of a selection and the base of an answer use one function,
+  extend_base_crc. The open plan doc/plan-chain-hash.md replaces that
+  chain with a cryptographic hash; the selection then follows it
+  through the same function.
 
 ## 6. Tests
 
 - test_execute_verify: every test of the selection runs unchanged.
-- New test: after `move_pointer`, a selection above the pointer stays
-  when the chosen results below it are equal to its base, and is
-  dropped when one of them differs.
-- New test: a selection whose base has one request less than the
-  current selections is not held.
+- New tests:
+  - after `move_pointer`, a selection above the pointer stays when the
+    chosen results below it are equal to its base, and is dropped
+    when one of them differs;
+  - `move_pointer` with a chosen result below the old pointer keeps
+    the selection above;
+  - three requests: the chosen result at 1 differs only for the
+    selection at 2, and the selection at 3, whose base matches the
+    old selection at 2, stays as in the old form;
+  - an answer whose `crc` field is wrong gives the same verdicts as
+    the same answer with a correct one;
+  - index 1 is selected again with another value in a second call,
+    and index 2 is then counted against the new value;
+  - a base with one request less, and one request more (an entry that
+    is no request in the log), than the current selections is not
+    held;
+  - counts: a wrong base_crc with from_idx in the middle, a missing
+    result at k >= from_idx, a result with other bytes at
+    k >= from_idx, an entry that is no request between pointer and
+    from_idx, an answer with an old pointer.
 - test_node, test_simulation (the selection runs in every write).
 
 ## 7. Measurement
@@ -96,7 +136,9 @@ step for each open entry and node.
   in flight: instructions per write on the leader, and the share of
   the selection, before (86ea5da) and after.
 - The bed run of arms3.sh: the base, its copy for A/A, and the arm,
-  4 rounds, 1 and 64 in flight, g++ 16. Medians compared.
+  4 rounds, 1 and 64 in flight, for each build that the image has
+  (g++ 15, g++ 16, clang 22; clang 23 is a cell with its error).
+  One table, a column for each build. Medians compared.
 - One result file for each run, with its context.
 
 ## Data that the plan leaves on the disk
