@@ -1,0 +1,30 @@
+The accept carries the result of the leader (arm F, stage 1 of doc/plan-accept-carries-the-result.md)
+
+What was measured
+- Arms, each its own binary, Release, built with bench-logs/build-konsensd.sh (sha256 17206b63a67eed07) in localhost/bench-logs:
+  - base: 1b4102e (linear-selection with the merges of mbedded-cbor-head, cbor-includes-system and counter-stress-warning), and a copy of each base binary for A/A.
+  - arm F: base plus bench/arms/accept-carries-the-result.patch (sha256 f6d692ad980eb224, committed in bfbb353). The leader runs each request and appends the entry with its own result at once; it sends no work, and no selection runs.
+  - Binaries (sha256): g++ 16 base e2d24d66053613ad, arm 31c4d822c6961ded; g++ 15 base 26458c78848e4580, arm d61946f6e84d05c7; clang 22 base 76c53793c100a1de, arm f62697f1ec8d1bdc. clang 23 is not in the image; that column is empty for this reason.
+- Bed: bench-logs/arms3.sh (e499f559db61c091) with cluster2.sh (b5ccbdeaa4a5fac9): 4 rounds, arms alternate in each round, 1 and 64 in flight, 64 bytes, option sync_by_the_caller = true, Unix sockets. podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, three btrfs loop images compress=zstd:1 on one host disk. Each cell: the median of 3 samples (300 writes at 1, 8192 at 64). Run 2026-10-31 08:45 to about 09:40 UTC.
+
+Writes/s at 64 in flight, the four rounds in run order, and the median
+- g++ 16 base 7188 7234 6825 7322 (7211); copy 7336 6772 7423 7268 (7302, A/A +1.3 %); arm 8224 8266 8998 8706 (8486, +17.7 %)
+- g++ 15 base 7324 7396 7204 7481 (7360); copy 7256 7333 7278 7380 (7305.5, A/A -0.7 %); arm 8539 8574 8633 8957 (8603.5, +16.9 %)
+- clang 22 base 7117 7278 6945 7574 (7197.5); copy 7091 7379 7723 7283 (7331, A/A +1.9 %); arm 8684 7959 8619 8976 (8651.5, +20.2 %)
+
+Writes/s at 1 in flight, the four rounds in run order, and the median
+- g++ 16 base 288 444 437 385 (411); copy 323 422 465 424 (423, A/A +2.9 %); arm 360 444 479 463 (453.5, +10.3 %)
+- g++ 15 base 352 469 432 411 (421.5); copy 438 431 434 432 (433, A/A +2.7 %); arm 457 465 451 453 (455, +7.9 %)
+- clang 22 base 426 442 436 416 (431); copy 412 407 428 433 (420, A/A -2.6 %); arm 428 433 451 459 (442, +2.6 %)
+
+Median latency per write (us, median of the four rounds), 64 in flight: g++ 16 base 8373, arm 7075.5; g++ 15 base 8265, arm 7046.5; clang 22 base 8366, arm 6922.5. 1 in flight: g++ 16 2341 -> 2090.5; g++ 15 2311 -> 2095.5; clang 22 2201.5 -> 2108.
+
+CPU per write at 64 in flight (us, all three nodes, median of the rounds), user and sys: g++ 16 base 95 / 99, arm 57.5 / 63.5; g++ 15 base 92.5 / 97.5, arm 60 / 64; clang 22 base 95 / 100, arm 60 / 62.5.
+
+Raw SQLite in the same rounds: batch 1 972 to 1032 writes/s, batch 64 51668 to 60362 writes/s.
+
+Reading
+- At 64 in flight the arm is 16.9 % to 20.2 % faster than the base in all three builds; the A/A differences are 1.9 % or less.
+- At 1 in flight the difference is +2.6 % to +10.3 % against A/A differences up to 2.9 %.
+- The CPU per write falls by about a third on all builds.
+- The arm fails 3 tests of test/test_execute_verify.cpp that check the selection of form 6 (a leader whose result differs, all results differ, a StopSign while a request is in work). Stage 2 of the plan (the selection at a new ballot) is needed before the arm can enter the tree.
