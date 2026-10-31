@@ -1,0 +1,27 @@
+Where the time of one write goes on stage 2, at 64 writes in flight
+
+What was measured
+- konsensd at c6d2114 (stage 2 with promise-again-on-the-same-ballot) plus bench/arms/timestamps-of-a-write.patch (sha256 91df7a3746fd8fb5). Build g++-16 Release in localhost/bench-logs with bench-logs/build-konsensd.sh, binary konsensd_g16TSG (sha256 670abe8c6f2db4cc). The pinned sources of mbedded-cbor, slipstreamIO and mruby-webmachine came from local clones through FETCHCONTENT_SOURCE_DIR_*.
+- bench-logs/ts-G.sh (sha256 c3eb4e821d1da730): bench/arms/timestamps-of-a-write.sh with cluster2.sh (b5ccbdeaa4a5fac9), so the client is at the leader. 4096 writes of 64 bytes at 64 in flight, three runs. Option sync_by_the_caller = true, Unix sockets. podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, 4 vCPU Intel Xeon, three btrfs loop images compress=zstd:1 on one host disk. Run 2026-10-31 17:26 to 17:28 UTC.
+- The record costs time, so the rates below are not the rates of the binary without it. The split is the result.
+
+Rates of the runs (the record is on)
+- 4026, 4079 and 3914 writes/s; median latency 14716, 14636 and 15195 us. The morning run of stage 2 without the record gave 9467 to 9625 writes/s (2026-10-31-094324Z); the sync times of the host disk were higher in this run (below).
+
+fdatasync, submit to completion, per node (us)
+- run 1: p50 2502, 2042, 2356; p90 5324, 3931, 4046.
+- run 3: p50 3714, 3515, 3900; p90 6989, 6655, 7075.
+- Each node syncs 173 to 227 times in about 1.1 s of writes, 18 to 24 writes per sync of the leader.
+
+The commit of phase one (SQLite commit without the sync, on the loop thread), per node
+- p50 43 to 592 us, p90 1152 to 2530 us; sum 306 to 594 ms per node in about 1.1 s of writes.
+- Split by whether the own fdatasync of the node is in flight when the commit starts:
+  - run 1: in flight p50 555, 463, 51 us; not in flight p50 89, 67, 53 us.
+  - run 2: in flight p50 455, 417, 65 us; not in flight p50 78, 60, 45 us.
+  - run 3: in flight p50 698, 714, 1391 us; not in flight p50 43, 46, 129 us.
+  - The p90 is 0.9 to 2.8 ms in both cases.
+- One window of node 1 (run 3): sync end at 10596 us, accept_decide received at 10831 to 10970 us, commit phase one from 11669 to 15151 us (3482 us), accepted sent at 15154 us. The accepted of a follower leaves at the end of the commit of the step that checks the entries.
+
+Result
+- The commit of phase one blocks the loop thread for up to some ms while a sync of the same node, or of a node on the same host disk, is in flight. While it blocks, the node sends nothing. This is the largest part of the wait that is not a sync.
+- Not checked: whether the cause is the write to the WAL behind the fdatasync of the same file in btrfs, or the shared host disk. Not checked on ext4 or XFS.
