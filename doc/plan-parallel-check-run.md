@@ -80,11 +80,35 @@ the owner decided.
    be in flight. A negative `res` on a CQE of a send is a fault of the
    machine and raises (finding 8).
 9. `M::apply` and `M::query` are const. The library calls them on
-   several threads at the same time. This is the rule of the C++
-   standard library for const member functions
-   ([res.on.data.races]/3): a const call does not change shared state.
-   The concept states it in its header comment (finding 2).
+   several threads at the same time. RULES.md already requires it: a
+   function reads no global, writes no global and keeps no static that
+   changes. The start comment of state_machine.hpp states it. The pool
+   reads through its own view type, which the concept accepts
+   (finding 2, review 2 N5).
 10. The leader takes the same path (finding 14).
+11. The range of the loop thread also writes its verdicts and an
+    exception into a result array. The loop waits for every answer
+    before it reads a result or rethrows, so no job holds a view into a
+    frame that unwinds (review 2, N1).
+12. The pool lives in a heap block that the node owns through a
+    unique_ptr, so a move of the node does not move it. The destructor
+    sends a stop job to each pool ring and joins each thread. The
+    committed applied index starts with the applied index read at open
+    (review 2, N2, N9).
+13. A pool thread that cannot send its answer (a negative res on its own
+    send) records the fault and ends the process. This is the rule for
+    the body of a thread in RULES.md ("main and the body of a thread
+    catch what reaches them, record it, and end") (review 2, N4).
+14. The loop reads the results in index order and stops at the first
+    refusal, at refusal_->index or at the first exception. A job leaves
+    out the entries from refusal_->index on (review 2, N3).
+15. An entry whose own result disagrees runs again, as today
+    (node.hpp:1309-1311), so the loop keeps its base for those entries
+    (review 2, N6).
+16. Each pool read transaction ends before the answer (review 2, N7).
+17. Provisional: the library takes liburing the way konsensd takes it
+    today, through the pinned slipstreamIO. The build image has no
+    liburing package. This is a question to the owner (review 2, N8).
 
 ## 3. What stays the same
 
@@ -125,7 +149,7 @@ for the step that sends and waits, and a concurrent queue for the pool.
 Arms `check_threads` = 0, 1 and 2, each its own binary, plus A/A of 0,
 in g++ 16, g++ 15 and clang 22. bench/arms/cap-of-the-step.sh with
 cluster3.sh, 64 and 1 in flight, 4 rounds. It measures writes/s,
-latency and cpu per write. The number comes after the measurement.
+latency, cpu per write, the WAL size and the checkpoints per second. The number comes after the measurement.
 
 ## 8. Data on the disk
 
