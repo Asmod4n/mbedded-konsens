@@ -24,7 +24,8 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           NoRecovery,           \* a restarted node votes at once
           RecoveryWaitsForLeader,
           WorkWithoutBase,      \* the work carries no entries: a node answers only with its own log up to d
-          NoCheckAtDecide       \* mutation: a node applies a decided entry without its own run
+          NoCheckAtDecide,      \* mutation: a node applies a decided entry without its own run
+          NoPromiseAgain        \* a node ignores a prepare of the ballot it promised (the old form)
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec. An entry is
@@ -118,12 +119,19 @@ Prepare(i, b) ==
     /\ Hold(i, [type |-> "prepare", b |-> b, from |-> i])
     /\ UNCHANGED <<dur, status, answers, msgs, chosen, Ghosts, badAt>>
 
+\* A node promises a higher ballot. It promises the ballot it promised
+\* again when it is not the leader of that ballot: the leader sends a
+\* prepare again after a prepare request (handle_preparereq,
+\* sequence_paxos.hpp). Until the accept sync, the node takes no accept.
 HandlePrepare(j, m) ==
     /\ m.type = "prepare"
     /\ status[j] \in {"running", "rejoining"}
-    /\ m.b > cur[j].promise
+    /\ \/ m.b > cur[j].promise
+       \/ /\ ~NoPromiseAgain
+          /\ m.b = cur[j].promise
+          /\ Owner(m.b) # j
     /\ Commit(j, [cur[j] EXCEPT !.promise = m.b])
-    /\ lead' = [lead EXCEPT ![j] = NoLead]
+    /\ lead' = [lead EXCEPT ![j] = [NoLead EXCEPT !.phase = "promised"]]
     /\ Hold(j, [type |-> "promise", b |-> m.b, from |-> j, to |-> m.from,
                 acc |-> cur[j].acc, log |-> cur[j].log, dec |-> cur[j].dec,
                 rejoin |-> status[j] = "rejoining"])
@@ -155,6 +163,17 @@ FirstChanged(T, d, S) ==
 \* and the highest decided index d. With the selection (plan 3.5) it
 \* first selects a result for each entry above d; without it, it syncs at
 \* once (the rule of Omni-Paxos).
+\* The leader takes a prepare request of node j: it forgets the promise of
+\* j and sends its prepare again (handle_preparereq). The prepare of the
+\* ballot is in msgs already.
+ResetPromise(i, j) ==
+    /\ status[i] = "running"
+    /\ lead[i].phase = "accept"
+    /\ j # i
+    /\ j \in {q.from : q \in lead[i].promises}
+    /\ lead' = [lead EXCEPT ![i].promises = {q \in @ : q.from # j}]
+    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, Ghosts, badAt>>
+
 HandlePromise(i, m) ==
     /\ m.type = "promise"
     /\ m.to = i
@@ -256,7 +275,7 @@ HandleAcceptSync(j, m) ==
     /\ m.to = j
     /\ status[j] \in {"running", "rejoining"}
     /\ cur[j].promise = m.b
-    /\ cur[j].acc # m.b
+    /\ cur[j].acc # m.b \/ lead[j].phase = "promised"
     /\ status[j] = "rejoining" => m.b > SetMax({a[2] : a \in answers[j]})
     /\ m.keep <= Len(cur[j].log)
     /\ LET M == SubSeq(cur[j].log, 1, m.keep) \o SubSeq(m.log, m.keep + 1, Len(m.log))
@@ -265,12 +284,13 @@ HandleAcceptSync(j, m) ==
            d == Min(a, Max(cur[j].dec, m.dec))
        IN /\ Commit(j, [cur[j] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
           /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> a])
+          /\ lead' = [lead EXCEPT ![j] = NoLead]
           /\ IF a < Len(M)
              THEN Send([type |-> "refused", b |-> m.b, from |-> j, idx |-> a + 1])
              ELSE UNCHANGED msgs
     /\ status' = [status EXCEPT ![j] = "running"]
     /\ answers' = [answers EXCEPT ![j] = {}]
-    /\ UNCHANGED <<dur, lead, chosen, Ghosts, badAt>>
+    /\ UNCHANGED <<dur, chosen, Ghosts, badAt>>
 
 ----------------------------------------------------------------------------
 (* Phase 2.                                                               *)
@@ -298,7 +318,7 @@ Propose(i, r) ==
 HandleAccept(j, m) ==
     /\ m.type = "accept"
     /\ status[j] = "running"
-    /\ cur[j].promise = m.b /\ cur[j].acc = m.b
+    /\ cur[j].promise = m.b /\ cur[j].acc = m.b /\ lead[j].phase # "promised"
     /\ Owner(m.b) # j
     /\ m.idx = Len(cur[j].log) + 1
     /\ IF NoCheckAtAccept \/ Agrees(j, cur[j].log, m.e)
@@ -332,7 +352,7 @@ LeaderDecide(i) ==
 HandleDecide(j, m) ==
     /\ m.type = "decide"
     /\ status[j] = "running"
-    /\ cur[j].promise = m.b /\ cur[j].acc = m.b
+    /\ cur[j].promise = m.b /\ cur[j].acc = m.b /\ lead[j].phase # "promised"
     /\ cur[j].dec < Min(m.idx, Len(cur[j].log))
     /\ LET d == Min(m.idx, Len(cur[j].log))
            agrees == NoCheckAtDecide \/
@@ -390,7 +410,7 @@ Next ==
     \/ \E i \in Nodes, b \in Ballots : Prepare(i, b)
     \/ \E i \in Nodes, r \in Requests : Propose(i, r)
     \/ \E i \in Nodes : Select(i) \/ FinishSelection(i) \/ LeaderDecide(i) \/ RecoveryComplete(i)
-    \/ \E i, j \in Nodes : AnswerWork(j, i) \/ RecoveryAnswer(i, j)
+    \/ \E i, j \in Nodes : AnswerWork(j, i) \/ RecoveryAnswer(i, j) \/ ResetPromise(i, j)
     \/ \E m \in msgs :
          \/ \E j \in Nodes : HandlePrepare(j, m) \/ HandleAccept(j, m) \/ HandleDecide(j, m)
          \/ HandlePromise(m.to, m)
