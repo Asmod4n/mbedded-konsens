@@ -1,0 +1,31 @@
+The accept carries the result of the leader, stage 2 (arm G, doc/plan-accept-carries-the-result.md)
+
+What was measured
+- Arms, each its own binary, Release, built with bench-logs/build-konsensd.sh (sha256 17206b63a67eed07) in localhost/bench-logs:
+  - base: 1b4102e, the same binaries as in 2026-10-31-084529Z-konsensd-accept-carries-the-result.txt, and a copy of each base binary for A/A.
+  - arm F: base plus bench/arms/accept-carries-the-result.patch (stage 1), the same binaries as in that file.
+  - arm G: a2a5030 (stage 2 in the tree: the fast path of stage 1, the selection of the taken log at a new ballot, the higher ballot in place of the throw, the run before the apply).
+  - Binaries of arm G (sha256): g++ 16 ec6ea47317c743cc, g++ 15 9d0d0db8d6c4423d, clang 22 f53acec1c2e5fff4. clang 23 is not in the image; that column is empty for this reason.
+- Bed: bench-logs/arms3.sh (e499f559db61c091) with cluster2.sh (b5ccbdeaa4a5fac9): 4 rounds, the 12 arms alternate in each round, 1 and 64 in flight, 64 bytes, option sync_by_the_caller = true, Unix sockets. podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, three btrfs loop images compress=zstd:1 on one host disk. Each cell: the median of 3 samples (300 writes at 1, 8192 at 64). Run 2026-10-31 09:43:24 to 09:50:10 UTC.
+
+Writes/s at 64 in flight, the four rounds in run order, and the median
+- g++ 16 base 7744 7856 8341 7273 (7800); copy 7993 7955 7962 7609 (7958.5, A/A +2.0 %); F 12147 9148 9512 9137 (9330, +19.6 %); G 9040 9708 9555 9695 (9625, +23.4 %)
+- g++ 15 base 9633 7640 7831 7943 (7887); copy 7843 7887 8212 7865 (7876, A/A -0.1 %); F 8892 9916 9104 9704 (9404, +19.2 %); G 9538 9396 10197 8604 (9467, +20.0 %)
+- clang 22 base 7950 7541 7881 7757 (7819); copy 8103 7808 7693 7951 (7879.5, A/A +0.8 %); F 9363 9147 9603 9735 (9483, +21.3 %); G 9822 9610 9515 9358 (9562.5, +22.3 %)
+
+Writes/s at 1 in flight, the four rounds in run order, and the median
+- g++ 16 base 396 527 527 464 (495.5); copy 349 471 449 480 (460, A/A -7.2 %); F 394 501 468 476 (472, -4.7 %); G 397 485 507 496 (490.5, -1.0 %)
+- g++ 15 base 438 491 470 459 (464.5); copy 472 471 460 491 (471.5, A/A +1.5 %); F 541 547 528 478 (534.5, +15.1 %); G 510 490 516 498 (504, +8.5 %)
+- clang 22 base 505 471 510 507 (506); copy 476 427 489 469 (472.5, A/A -6.6 %); F 502 465 523 479 (490.5, -3.1 %); G 480 505 528 484 (494.5, -2.3 %)
+
+Median latency per write (us, median of the four rounds), 64 in flight: g++ 16 base 7864.5, F 6456.5, G 6326.5; g++ 15 base 7745.5, F 6395.5, G 6438.5; clang 22 base 7765, F 6376, G 6269.5.
+
+CPU per write at 64 in flight (us, all three nodes, median of the rounds), user and sys: g++ 16 base 96 / 93, F 62 / 60, G 54.5 / 61; g++ 15 base 92 / 97.5, F 58.5 / 61.5, G 56 / 64.5; clang 22 base 91.5 / 95.5, F 57 / 60.5, G 57.5 / 61.5.
+
+Raw SQLite in the same rounds: batch 1 1117 to 1139 writes/s, batch 64 55248 to 66524 writes/s; three at once, batch 64, 41507 to 46746 writes/s each.
+
+Reading
+- At 64 in flight arm G is 20.0 % to 23.4 % faster than the base in all three builds; the A/A differences are 2.0 % or less.
+- G and F differ by 0.7 % to 3.2 % at 64 in flight, which is inside the spread of the rounds. The selection at a new ballot does not run in the steady state, so it costs nothing there.
+- At 1 in flight the A/A differences reach 7.2 %, so no difference at 1 in flight is shown.
+- At 64 in flight arm G gives 9467 to 9625 writes/s. Raw SQLite with batch 64 gives 55248 to 66524 writes/s on one node and 41507 to 46746 writes/s on each of three at once.
