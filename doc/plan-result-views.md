@@ -24,33 +24,54 @@ unless the caller uses it wrong.
 
 ## 2. The change
 
+Review 1 (doc/review-plan-result-views-1.md) approved after blocking
+fixes; this text holds them.
+
 1. New types in verdict.hpp: `mutation_view` {span key;
    optional<span> value} and `request_result_view` {uint64 error; span
-   reply; vector<mutation_view> mutations}. The name follows
-   std::string_view.
-2. `decode_result` returns `std::optional<request_result_view>`. It
-   decodes from the span of the caller with no copy of the bytes. The
-   views point into that span. The declaration states it: the result
-   lives as long as the span.
-3. `encode_result(const request_result&)` encodes the view of the
-   owning result. Each byte member is then a byte string, not a typed
-   array under tag 64. This changes the bytes of every result, so the
-   result CRC and the chain over the results change with it. No release
-   holds the old form (the library is before 0.2).
-4. `write_the_result`, `written_values_read_back`, `results_agree` and
-   `reply_to_the_client` take the view.
-5. The owning `request_result` and `mutation` stay for what
-   `run_request` produces.
+   reply; vector<mutation_view> mutations}. The members keep the names
+   of `request_result`, because the names are the CBOR keys. The name
+   follows std::string_view. The vector of views still allocates.
+2. `decode_result(std::shared_ptr<void const> owner,
+   std::span<const std::byte> encoded)` returns
+   `std::optional<request_result_view>`. It calls
+   `cbor::structs<request_result_view>::decode(owner, chars_of(encoded))`.
+   The owner keeps the bytes alive (structs.hpp:1337-1349). A caller in
+   node.hpp passes the owner of the open log
+   (`open_log_view::owner`, sequence_paxos.hpp:1162-1180) through the
+   aliasing constructor of shared_ptr. `done_log` carries that owner.
+   `results_agree` is a cold path: it keeps its own copy of the bytes as
+   the owner (review F2).
+3. `request_result` converts to `request_result_view`, as std::string
+   converts to std::string_view. `encode_result` encodes the view, so each
+   byte member is a byte string (RFC 8949 3.1, major type 2), not a typed
+   array under tag 64. `write_the_result` takes the view; a caller with
+   an owning result converts it (node.hpp:1826, 1934) (review F4).
+4. `reply_to_the_client` copies the reply into the vector it returns.
+   `session_record` stays owning. `own_result` holds no view into its own
+   bytes (review F3).
+5. A comparison of spans uses std::ranges::equal (review F5).
+6. The bytes of every result change, and results stand in the log. The
+   format version of the store goes from 6 to 7
+   (src/persistent_storage.cpp:39), so an open refuses a store of the old
+   form (review F7). No release holds the old form.
+7. `decode_bytes` stays for `decode_chosen_results`.
 
-Out of this plan: `key_value_write` of konsensd, because the client
-writes it; a change there changes the client protocol.
+Out of this plan:
+- `key_value_write` of konsensd, because the client writes it.
+- `entry::payload` and `entry::result`, which are typed arrays in
+  accept_decide too (review F1). Their share of the 16 % is not known.
+- doc/plan-execute-verify.md 2b (provisional) asks for a data item or
+  tag 24 for a result; this plan takes a byte string and names the
+  difference (review F8).
 
 ## 3. Tests
 
 - test_verdict: a result encodes each byte member as a byte string
-  (RFC 8949 3.1, major type 2), and decodes back to the same view.
+  (RFC 8949 3.1, major type 2); the expected bytes are written by hand
+  from the RFC. It decodes back to the same view.
 - test_verdict: a decoded view points into the span it was read from.
-- The suites of plan-promise-again §5 with g++ 16, plus test_verdict.
+- test_verdict, test_execute_verify, test_persistent_storage, test_node and test_simulation_clients with g++ 16.
 
 ## 4. Measurement
 
