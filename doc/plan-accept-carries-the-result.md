@@ -195,6 +195,21 @@ the go.
 4. Tests in test_execute_verify.cpp, one for each item of section 3, and
    the three simulation tests with 2 000 seeds.
 
+## 6a. Deviations of stage 2 from this plan
+
+- The work message carries decided_idx, decided_chain_crc and base: the
+  decided entries from the decided index of the follower up to d. A
+  follower whose log ends before d cannot check the entries above d
+  otherwise (simulation seed 291).
+- A node checks every entry above applied_idx, decided or not. A
+  decided entry with a result that differs writes the proof
+  chosen_result_differs and throws (rule 3.8).
+- After the selection, buffered proposals go through the accept path
+  and get results (simulation seed 1792).
+- A taken rejected entry is kept verbatim; the rest of the taken log
+  after a kept rejected entry stays unverified (9.3 open).
+- The model does not carry these deviations yet.
+
 ## 7. Measurement
 
 1. Arms: konsensd of linear-selection (7323c7a) and of this branch, and
