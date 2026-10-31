@@ -22,7 +22,9 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           LeaderCountsUnsynced, \* mutation: the leader counts its own entry before its sync
           NoLeaderCheck,        \* mutation: the leader counts a taken entry without its own run
           NoRecovery,           \* a restarted node votes at once
-          RecoveryWaitsForLeader
+          RecoveryWaitsForLeader,
+          WorkWithoutBase,      \* the work carries no entries: a node answers only with its own log up to d
+          NoCheckAtDecide       \* mutation: a node applies a decided entry without its own run
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec. An entry is
@@ -195,15 +197,19 @@ VBase(i) == SubSeq(lead[i].taken, 1, lead[i].d) \o lead[i].sel
 
 \* A node of the ballot runs the work of the selection and answers. The
 \* work message is not in the model: the answer is enabled while the
-\* leader works on the index.
+\* leader works on the index. The work carries the entries of the taken
+\* log from the decided index of the node up to d (keep_the_tasks,
+\* node.hpp), so the own log of the node must agree up to that index only.
 AnswerWork(j, i) ==
     /\ status[j] = "running"
     /\ status[i] = "running"
     /\ lead[i].phase = "verify"
     /\ cur[j].promise = lead[i].b
     /\ VIdx(i) <= Len(lead[i].taken)
-    /\ Len(cur[j].log) >= lead[i].d
-    /\ SubSeq(cur[j].log, 1, lead[i].d) = SubSeq(lead[i].taken, 1, lead[i].d)
+    /\ LET f == IF WorkWithoutBase THEN lead[i].d ELSE cur[j].dec
+       IN /\ f <= lead[i].d
+          /\ Len(cur[j].log) >= f
+          /\ SubSeq(cur[j].log, 1, f) = SubSeq(lead[i].taken, 1, f)
     /\ Send([type |-> "ran", b |-> lead[i].b, from |-> j, idx |-> VIdx(i),
              res |-> Run(j, lead[i].taken[VIdx(i)].req, VBase(i))])
     /\ UNCHANGED <<cur, dur, queue, status, lead, answers, chosen, Ghosts, badAt>>
@@ -320,13 +326,26 @@ LeaderDecide(i) ==
           /\ Send([type |-> "decide", b |-> b, idx |-> idx])
     /\ UNCHANGED <<dur, queue, status, lead, answers, Ghosts, badAt>>
 
+\* A node runs every decided entry above its decided index again. When
+\* its result differs from the decided result, it records the proof and
+\* throws (plan 3.8): the node is down and does not apply the entry.
 HandleDecide(j, m) ==
     /\ m.type = "decide"
     /\ status[j] = "running"
     /\ cur[j].promise = m.b /\ cur[j].acc = m.b
     /\ cur[j].dec < Min(m.idx, Len(cur[j].log))
-    /\ Commit(j, [cur[j] EXCEPT !.dec = Min(m.idx, Len(cur[j].log))])
-    /\ UNCHANGED <<dur, queue, status, lead, answers, msgs, chosen, Ghosts, badAt>>
+    /\ LET d == Min(m.idx, Len(cur[j].log))
+           agrees == NoCheckAtDecide \/
+                     \A k \in (cur[j].dec + 1)..d : Agrees(j, SubSeq(cur[j].log, 1, k - 1), cur[j].log[k])
+       IN IF agrees
+          THEN /\ Commit(j, [cur[j] EXCEPT !.dec = d])
+               /\ UNCHANGED <<queue, status, lead, answers>>
+          ELSE /\ status' = [status EXCEPT ![j] = "down"]
+               /\ cur' = [cur EXCEPT ![j] = dur[j]]
+               /\ queue' = [queue EXCEPT ![j] = {}]
+               /\ lead' = [lead EXCEPT ![j] = NoLead]
+               /\ answers' = [answers EXCEPT ![j] = {}]
+    /\ UNCHANGED <<dur, msgs, chosen, Ghosts, badAt>>
 
 ----------------------------------------------------------------------------
 (* Faults.                                                                *)
