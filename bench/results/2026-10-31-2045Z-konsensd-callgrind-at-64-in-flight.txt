@@ -1,0 +1,30 @@
+Where the instructions of konsensd go at 64 writes in flight, with a stable leader
+
+What was measured
+- konsensd_g16C0g: c727402 plus bench/arms/cap-of-the-step.patch at K = 0, g++-16 Release with -g. bench/arms/callgrind-of-the-nodes.sh with bench/arms/cluster3.sh in localhost/bench-vg (valgrind callgrind), election_ticks = 100, sync_by_the_caller = true, Unix sockets. 512 writes to warm up, counters zeroed, then 4096 writes of 64 bytes at 64 in flight, then a dump per node. Node 3 was the leader. podman --cpus=3, user 1001, kernel 6.18.44-fc-v185.
+- The event is Ir, instructions executed. Ir is not time: it misses cache misses and waits, and a rep stos or rep movs counts per iteration. The shares below are shares of instructions.
+- Split by bench/tools/cgsplit.py, bench/tools/cgself.py and bench/tools/cgcallers.py over the callgrind files. An inclusive value is the largest sum of the call costs into a function of that name; with recursion it can count twice.
+
+Totals
+- Follower (node 1): 379 M Ir, 92 k Ir per write. Follower (node 2): 382 M Ir, 93 k Ir per write. Leader (node 3): 556 M Ir, 136 k Ir per write.
+
+Self cost by object
+- Follower node 1: libsqlite3 37.1 %, konsensd 30.0 %, libc 29.6 %, libstdc++ 1.9 %.
+- Leader node 3: konsensd 36.5 %, libc 31.7 %, libsqlite3 27.1 %, libstdc++ 3.0 %.
+
+Inclusive, follower node 1 / leader node 3
+- sqlite3_step: 49.8 % / 35.6 %.
+- check_the_done_records (the check run of execute-verify, with its SQLite work): 39.4 % / 30.3 %.
+- apply_the_done_records: 16.6 % / 12.5 %.
+- CBOR decode (struct_read of accept_decide and entry, decode_*): 15.9 % / 17.4 %.
+- malloc: 6.7 % / 8.4 %; free: 6.0 % / 8.3 %.
+- write_the_result 3.4 % / 6.2 %; encode_result 1.7 % / 1.2 %; results_agree 1.1 % / 0.7 %; commit_phase_one 2.0 % / 1.6 %; commit_phase_two 2.1 % / 1.3 %.
+
+Self cost, follower node 1, top entries
+- memset 10.5 % (callers: sqlite3PagerGet 5.0 %, one static function of SQLite 4.9 %), cbor generic_read of std::vector<std::byte> 8.2 %, sqlite3VdbeExec 8.0 %, memcpy 3.7 %, _int_malloc 3.5 %, free 2.9 %, crc32c::ExtendSse42 2.7 %, malloc 2.5 %.
+
+Result
+- On a follower, half of the instructions run inside sqlite3_step. The other half is our code and libc: CBOR decode about 16 %, malloc and free about 13 %, CRC32C about 3 %.
+- Work outside SQLite that a pool could take: decode, CRC and the allocation for them, about 30 % of the instructions of a follower. This is a share of instructions, not of time, and not a gain.
+- generic_read of a byte vector costs 8.2 % self on a follower. Not checked: whether it reads byte by byte.
+- The memset under sqlite3PagerGet is counted per byte of rep stos. Not checked: its share of time.
