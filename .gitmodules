@@ -1,16 +1,6 @@
-[submodule "deps/mbedded-cbor"]
-	path = deps/mbedded-cbor
-	url = https://github.com/Asmod4n/mbedded-cbor
 [submodule "deps/crc32c"]
 	path = deps/crc32c
 	url = https://github.com/google/crc32c
 [submodule "deps/libhydrogen"]
 	path = deps/libhydrogen
 	url = https://github.com/jedisct1/libhydrogen
-[submodule "deps/slipstreamIO"]
-	path = deps/slipstreamIO
-	url = https://github.com/Asmod4n/slipstreamIO
-[submodule "deps/mruby-webmachine"]
-	path = deps/mruby-webmachine
-	url = https://github.com/Asmod4n/mruby-webmachine
-	branch = integration

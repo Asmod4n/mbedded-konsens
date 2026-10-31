@@ -1,6 +1,6 @@
 FROM docker.io/library/ubuntu:26.10 AS build
 RUN apt-get update \
- && apt-get install -y --no-install-recommends g++-16 gcc-16 cmake ninja-build make doctest-dev libboost-dev \
+ && apt-get install -y --no-install-recommends g++-16 gcc-16 cmake ninja-build make git ca-certificates doctest-dev libboost-dev \
     libsqlite3-dev sqlite3 libtomlplusplus-dev libada-url-dev \
  && rm -rf /var/lib/apt/lists/*
 COPY . /src
