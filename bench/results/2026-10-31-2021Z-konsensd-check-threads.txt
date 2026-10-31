@@ -1,0 +1,35 @@
+Writes per second of konsensd when the checks of a step run on a pool of threads
+
+What was measured
+- Arms: base dddb05e (no pool) and parallel-check-run 9b55df7 (pool), each in g++-16, g++-15 and clang++-22 Release, each its own binary. A second build of the g++-16 pool (g16poolB) for A/A. The pool binary runs with check_threads = 0, 1 and 2 in the TOML file of each node.
+- bench/arms/check-threads.sh (sha256 734f6a5fdbc925dd) with bench/arms/cluster3.sh (sha256 8d83a5fe926f111a): the client goes to the leader after no node changed its state for 3 s. 64 in flight, 3 samples of 8192 writes of 64 bytes per start, the median of the 3 samples per round, 4 rounds, the arms in turn inside each round. sync_by_the_caller = true, Unix sockets.
+- podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, 4 vCPU Intel Xeon, three btrfs loop images compress=zstd:1 on one host disk. The three nodes and their pool threads share the 3 cpus. The run ended 2026-10-31 20:21 UTC by the clock of the machine.
+- cpu = user + sys us per write, summed over the three nodes and their threads.
+
+64 in flight, writes/s, median of 4 rounds (rounds in brackets), latency median, cpu median
+- g16base:0: 13482 [13473, 14585, 13481, 13483]; 4290 us; cpu 97 us/write
+- g16pool:0: 13532 [13327, 14145, 13619, 13444]; 4366 us; cpu 104 us/write
+- g16poolB:0: 13812 [13723, 13900, 13322, 14777]; 4224 us; cpu 101 us/write
+- g16pool:1: 11944 [11783, 12350, 11585, 12105]; 4990 us; cpu 134 us/write
+- g16pool:2: 11858 [11694, 11699, 12263, 12017]; 4976 us; cpu 139 us/write
+- g15base:0: 13955 [13237, 13816, 14146, 14094]; 4186 us; cpu 101 us/write
+- g15pool:0: 13395 [13108, 13376, 13414, 13929]; 4382 us; cpu 106 us/write
+- g15pool:1: 11678 [12285, 11219, 12013, 11344]; 5089 us; cpu 132 us/write
+- g15pool:2: 12090 [12039, 11519, 12140, 12474]; 4889 us; cpu 130 us/write
+- c22base:0: 14422 [14610, 14212, 14233, 14627]; 4070 us; cpu 94 us/write
+- c22pool:0: 13682 [13652, 13432, 13712, 13964]; 4334 us; cpu 100 us/write
+- c22pool:1: 11868 [12078, 11477, 12685, 11658]; 5008 us; cpu 131 us/write
+- c22pool:2: 11744 [11637, 11033, 12096, 11850]; 5062 us; cpu 138 us/write
+
+Against the base of the same build, writes/s
+- g16: pool:0 +0.4 %, pool:1 -11.4 %, pool:2 -12.0 %
+- g15: pool:0 -4.0 %, pool:1 -16.3 %, pool:2 -13.4 %
+- c22: pool:0 -5.1 %, pool:1 -17.7 %, pool:2 -18.6 %
+
+Noise
+- A/A: g16pool:0 13532 against g16poolB:0 13812 writes/s, 2.1 %. The rounds of one arm spread up to 11 % (g16poolB 13322 to 14777).
+
+Result
+- With 1 or 2 threads, konsensd is slower in all three builds, by 11 to 19 %, and uses 30 to 44 us more cpu per write. The latency grows by 600 to 1000 us.
+- With 0 threads, g15 and c22 lose 4 to 5 %, above the A/A of 2.1 %; g16 shows no difference.
+- Not measured: which part of the pool costs the time. Each range replays the results from the committed applied index to its first entry, and each job is one MSG_RING round trip (24 to 31 us, 2026-10-31-1935Z) and one read transaction. On this machine the pool threads of the three nodes share 3 cpus. The result on three machines is not known.
