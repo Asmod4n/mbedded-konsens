@@ -13,6 +13,7 @@
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
+          MaxReset,             \* prepare requests that a leader takes and promises of the same ballot, in one run
           MaxFaulty,            \* pairs <<node, request>> whose run gives a wrong result
           AcceptBeforeOwnSync,  \* the accept leaves while the sync of the leader runs
           NoCheckAtAccept,      \* mutation: a follower accepts without its own run
@@ -25,7 +26,8 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           RecoveryWaitsForLeader,
           WorkWithoutBase,      \* the work carries no entries: a node answers only with its own log up to d
           NoCheckAtDecide,      \* mutation: a node applies a decided entry without its own run
-          NoPromiseAgain        \* a node ignores a prepare of the ballot it promised (the old form)
+          NoPromiseAgain,       \* a node ignores a prepare of the ballot it promised (the old form)
+          NoKeepOnSameBallot    \* an accept sync of the accepted ballot can shorten the log (the old form)
 
 \* cur[i]: the values of the last commit. dur[i]: the values at the last
 \* sync. A record has the fields promise, acc, log, dec. An entry is
@@ -35,9 +37,9 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
 \* at which a selection took a result other than the result of the taken entry.
 \* voted: the durable votes <<b, idx, entry, node>>; a sync makes the log of a
 \* node durable with its accepted ballot.
-VARIABLES cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted
+VARIABLES cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted, resets
 
-vars == <<cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted>>
+vars == <<cur, dur, queue, status, lead, answers, msgs, chosen, crashes, faulty, badAt, repaired, voted, resets>>
 
 N == Cardinality(Nodes)
 IsMajority(Q) == 2 * Cardinality(Q) > N
@@ -90,8 +92,9 @@ Init ==
     /\ badAt = {}
     /\ repaired = {}
     /\ voted = {}
+    /\ resets = 0
 
-Ghosts == <<crashes, faulty, repaired, voted>>
+Ghosts == <<crashes, faulty, repaired, voted, resets>>
 
 ----------------------------------------------------------------------------
 (* The sync.                                                              *)
@@ -104,7 +107,7 @@ SyncDone(i) ==
     /\ queue' = [queue EXCEPT ![i] = {}]
     /\ voted' = voted \cup IF cur[i].acc > 0
                            THEN {<<cur[i].acc, k, cur[i].log[k], i>> : k \in 1..Len(cur[i].log)} ELSE {}
-    /\ UNCHANGED <<cur, status, lead, answers, chosen, crashes, faulty, repaired, badAt>>
+    /\ UNCHANGED <<cur, status, lead, answers, chosen, crashes, faulty, repaired, resets, badAt>>
 
 ----------------------------------------------------------------------------
 (* Phase 1.                                                               *)
@@ -126,16 +129,19 @@ Prepare(i, b) ==
 HandlePrepare(j, m) ==
     /\ m.type = "prepare"
     /\ status[j] \in {"running", "rejoining"}
-    /\ \/ m.b > cur[j].promise
+    /\ \/ /\ m.b > cur[j].promise
+          /\ UNCHANGED resets
        \/ /\ ~NoPromiseAgain
           /\ m.b = cur[j].promise
           /\ Owner(m.b) # j
+          /\ resets < MaxReset
+          /\ resets' = resets + 1
     /\ Commit(j, [cur[j] EXCEPT !.promise = m.b])
     /\ lead' = [lead EXCEPT ![j] = [NoLead EXCEPT !.phase = "promised"]]
     /\ Hold(j, [type |-> "promise", b |-> m.b, from |-> j, to |-> m.from,
                 acc |-> cur[j].acc, log |-> cur[j].log, dec |-> cur[j].dec,
                 rejoin |-> status[j] = "rejoining"])
-    /\ UNCHANGED <<dur, status, answers, msgs, chosen, Ghosts, badAt>>
+    /\ UNCHANGED <<dur, status, answers, msgs, chosen, crashes, faulty, repaired, voted, badAt>>
 
 Best(P) == CHOOSE p \in P : \A q \in P : \/ p.acc > q.acc
                                          \/ p.acc = q.acc /\ Len(p.log) >= Len(q.log)
@@ -171,8 +177,10 @@ ResetPromise(i, j) ==
     /\ lead[i].phase \in {"prepare", "verify", "accept"}
     /\ j # i
     /\ j \in {q.from : q \in lead[i].promises}
+    /\ resets < MaxReset
+    /\ resets' = resets + 1
     /\ lead' = [lead EXCEPT ![i].promises = {q \in @ : q.from # j}]
-    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, Ghosts, badAt>>
+    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, repaired, voted, badAt>>
 
 HandlePromise(i, m) ==
     /\ m.type = "promise"
@@ -244,7 +252,7 @@ Select(i) ==
          /\ lead' = [lead EXCEPT ![i].sel = Append(@, [req |-> lead[i].taken[VIdx(i)].req, res |-> res])]
          /\ repaired' = IF res # lead[i].taken[VIdx(i)].res
                         THEN repaired \cup {<<VIdx(i), lead[i].taken[VIdx(i)].req>>} ELSE repaired
-    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt, voted>>
+    /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt, voted, resets>>
 
 \* Every entry above d is selected: the leader syncs. The leader keeps its
 \* own prefix by the rule of the followers (append_on_prefix in
@@ -270,6 +278,9 @@ AgreedLen(j, L, dec) ==
     IF NoCheckAtSync THEN Len(L)
     ELSE SetMax({a \in dec..Len(L) : \A k \in (dec + 1)..a : Agrees(j, SubSeq(L, 1, k - 1), L[k])})
 
+\* An accept sync of the ballot that the node accepted already never
+\* shortens its log: the log of one leader only grows, so the sync is a
+\* prefix of the own log (provisional, owner decides).
 HandleAcceptSync(j, m) ==
     /\ m.type = "acceptsync"
     /\ m.to = j
@@ -282,12 +293,18 @@ HandleAcceptSync(j, m) ==
            a == AgreedLen(j, M, m.dec)
            L == SubSeq(M, 1, a)
            d == Min(a, Max(cur[j].dec, m.dec))
-       IN /\ Commit(j, [cur[j] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
-          /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> a])
-          /\ lead' = [lead EXCEPT ![j] = NoLead]
-          /\ IF a < Len(M)
-             THEN Send([type |-> "refused", b |-> m.b, from |-> j, idx |-> a + 1])
-             ELSE UNCHANGED msgs
+           own == Len(cur[j].log)
+           same == ~NoKeepOnSameBallot /\ cur[j].acc = m.b /\ own >= Len(M)
+       IN /\ lead' = [lead EXCEPT ![j] = NoLead]
+          /\ IF same
+             THEN /\ Commit(j, [cur[j] EXCEPT !.dec = Max(@, Min(m.dec, own))])
+                  /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> own])
+                  /\ UNCHANGED msgs
+             ELSE /\ Commit(j, [cur[j] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
+                  /\ Hold(j, [type |-> "synced", b |-> m.b, from |-> j, idx |-> a])
+                  /\ IF a < Len(M)
+                     THEN Send([type |-> "refused", b |-> m.b, from |-> j, idx |-> a + 1])
+                     ELSE UNCHANGED msgs
     /\ status' = [status EXCEPT ![j] = "running"]
     /\ answers' = [answers EXCEPT ![j] = {}]
     /\ UNCHANGED <<dur, chosen, Ghosts, badAt>>
@@ -379,7 +396,7 @@ Crash(i) ==
     /\ queue' = [queue EXCEPT ![i] = {}]
     /\ lead' = [lead EXCEPT ![i] = NoLead]
     /\ answers' = [answers EXCEPT ![i] = {}]
-    /\ UNCHANGED <<dur, msgs, chosen, faulty, repaired, voted, badAt>>
+    /\ UNCHANGED <<dur, msgs, chosen, faulty, repaired, voted, resets, badAt>>
 
 Restart(i) ==
     /\ status[i] = "down"
