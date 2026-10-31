@@ -1645,6 +1645,9 @@ private:
         }
         write_or_throw(w.set_applied(m->decided_idx, *crc));
         own_.erase(own_.begin(), own_.upper_bound(m->decided_idx));
+        if (m->decided_idx > seq_paxos_.get_verified_idx()) {
+            return seq_paxos_.pass_the_checked_done_record(m->decided_idx);
+        }
         return {};
     }
 

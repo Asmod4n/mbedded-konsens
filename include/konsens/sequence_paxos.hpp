@@ -1582,7 +1582,7 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        if (!(m->promise < prep.n || (m->promise == prep.n && state_.second == phase::recover))) {
+        if (!(m->promise < prep.n || (m->promise == prep.n && state_.first == role::follower))) {
             return {};
         }
         write_or_throw(txn_->set_promise(prep.n));
@@ -1781,10 +1781,12 @@ private:
             [[unlikely]] {
             return {};
         }
-        write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
-        lower_the_synced_len(sync_idx);
-        if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
-            return r;
+        if (m->accepted_round != accsync.n || sync_idx + accsync.log_sync.suffix.size() > m->log_len) {
+            write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
+            lower_the_synced_len(sync_idx);
+            if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
+                return r;
+            }
         }
         if (accsync.decided_idx > m->decided_idx) {
             if (auto r = check_decided_chain_crc(accsync.decided_idx, accsync.decided_chain_crc, from); !r)
