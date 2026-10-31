@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -13,12 +14,25 @@
 
 namespace konsens {
 
+struct mutation_view {
+    std::span<const std::byte> key;
+    std::optional<std::span<const std::byte>> value;
+};
+
+struct request_result_view {
+    std::uint64_t error;
+    std::span<const std::byte> reply;
+    std::vector<mutation_view> mutations;
+};
+
 struct request_result {
     std::uint64_t error;
     std::vector<std::byte> reply;
     std::vector<mutation> mutations;
 
     friend bool operator==(const request_result&, const request_result&) = default;
+
+    operator request_result_view() const;
 };
 
 struct indexed_result {
@@ -37,8 +51,9 @@ struct chosen_result {
     friend bool operator==(const chosen_result&, const chosen_result&) = default;
 };
 
-[[nodiscard]] std::vector<std::byte> encode_result(const request_result& r);
-[[nodiscard]] std::optional<request_result> decode_result(std::span<const std::byte> encoded);
+[[nodiscard]] std::vector<std::byte> encode_result(const request_result_view& r);
+[[nodiscard]] std::optional<request_result_view> decode_result(std::shared_ptr<const void> owner,
+                                                               std::span<const std::byte> encoded);
 [[nodiscard]] std::uint32_t compute_result_crc(std::uint64_t index, std::span<const std::byte> encoded) noexcept;
 [[nodiscard]] std::vector<std::byte> encode_chosen_results(std::span<const chosen_result> list);
 [[nodiscard]] std::optional<std::vector<chosen_result>> decode_chosen_results(std::span<const std::byte> payload);

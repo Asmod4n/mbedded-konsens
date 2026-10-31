@@ -96,11 +96,55 @@ TEST_CASE("a result and a list of chosen results come back from their encoding")
 {
     const konsens::request_result r{
         0, bytes_of({1, 2}), {{bytes_of({'k'}), bytes_of({})}, {bytes_of({'e'}), std::nullopt}, {bytes_of({'v'}), bytes_of({9})}}};
-    const auto encoded = konsens::encode_result(r);
-    CHECK(konsens::decode_result(encoded) == r);
-    const std::vector<chosen_result> list{{{3, encoded, 7}, 2, {1, 3}}, chosen_at(4, 5)};
+    const auto encoded = std::make_shared<const std::vector<std::byte>>(konsens::encode_result(r));
+    const auto v = konsens::decode_result(encoded, *encoded);
+    REQUIRE(v.has_value());
+    CHECK(v->error == r.error);
+    CHECK(std::ranges::equal(v->reply, r.reply));
+    REQUIRE(v->mutations.size() == r.mutations.size());
+    for (std::size_t i = 0; i < r.mutations.size(); ++i) {
+        CHECK(std::ranges::equal(v->mutations[i].key, r.mutations[i].key));
+        REQUIRE(v->mutations[i].value.has_value() == r.mutations[i].value.has_value());
+        if (r.mutations[i].value) {
+            CHECK(std::ranges::equal(*v->mutations[i].value, *r.mutations[i].value));
+        }
+    }
+    const std::vector<chosen_result> list{{{3, *encoded, 7}, 2, {1, 3}}, chosen_at(4, 5)};
     CHECK(konsens::decode_chosen_results(konsens::encode_chosen_results(list)) == list);
-    CHECK_FALSE(konsens::decode_result(bytes_of({0xff})).has_value());
+    const auto broken = std::make_shared<const std::vector<std::byte>>(bytes_of({0xff}));
+    CHECK_FALSE(konsens::decode_result(broken, *broken).has_value());
+}
+
+// Plan result-views 2.3: each byte member of a result is a byte string
+// (RFC 8949 3.1, major type 2), not a typed array under tag 64. The
+// expectation is written by hand from RFC 8949 3.1: a map of three pairs
+// (0xa3), each key a text string of its length (0x65, 0x69), the error as
+// the unsigned integer 0, the reply as a byte string of two bytes (0x42),
+// and the mutations as an empty array (0x80).
+TEST_CASE("a result encodes its reply as a byte string")
+{
+    const konsens::request_result r{0, bytes_of({1, 2}), {}};
+    CHECK(konsens::encode_result(r) ==
+          bytes_of({0xa3, 0x65, 'e', 'r', 'r', 'o', 'r', 0x00, 0x65, 'r', 'e', 'p', 'l', 'y', 0x42, 0x01, 0x02, 0x69, 'm',
+                    'u', 't', 'a', 't', 'i', 'o', 'n', 's', 0x80}));
+}
+
+// Plan result-views 2.2: a decoded result copies no bytes. Its views point
+// into the bytes that the caller gave, so the owner keeps them alive.
+TEST_CASE("a decoded result points into the bytes it was read from")
+{
+    const konsens::request_result r{0, bytes_of({7, 8}), {{bytes_of({'k'}), bytes_of({9})}}};
+    const auto encoded = std::make_shared<const std::vector<std::byte>>(konsens::encode_result(r));
+    const auto v = konsens::decode_result(encoded, *encoded);
+    REQUIRE(v.has_value());
+    const auto* const first = encoded->data();
+    const auto* const last = encoded->data() + encoded->size();
+    CHECK(std::less_equal<>{}(first, v->reply.data()));
+    CHECK(std::less_equal<>{}(v->reply.data() + v->reply.size(), last));
+    REQUIRE(v->mutations.size() == 1);
+    CHECK(std::less_equal<>{}(first, v->mutations[0].key.data()));
+    REQUIRE(v->mutations[0].value.has_value());
+    CHECK(std::less_equal<>{}(v->mutations[0].value->data() + v->mutations[0].value->size(), last));
 }
 
 // Plan 2.1.2: the CRC32C of a result as the node that ran it computed it.

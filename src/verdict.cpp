@@ -24,6 +24,12 @@ namespace konsens {
 
 namespace {
 
+std::string_view chars_of(const std::span<const std::byte> bytes)
+{
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+
 template <typename T>
 std::vector<std::byte> encode_or_throw(const T& value)
 {
@@ -49,14 +55,29 @@ std::optional<T> decode_bytes(const std::span<const std::byte> encoded)
 
 }
 
-std::vector<std::byte> encode_result(const request_result& r)
+request_result::operator request_result_view() const
+{
+    request_result_view v{error, reply, {}};
+    v.mutations.reserve(mutations.size());
+    for (const auto& m : mutations) {
+        v.mutations.push_back({m.key, m.value ? std::optional<std::span<const std::byte>>{*m.value} : std::nullopt});
+    }
+    return v;
+}
+
+std::vector<std::byte> encode_result(const request_result_view& r)
 {
     return encode_or_throw(r);
 }
 
-std::optional<request_result> decode_result(const std::span<const std::byte> encoded)
+std::optional<request_result_view> decode_result(std::shared_ptr<const void> owner,
+                                                 const std::span<const std::byte> encoded)
 {
-    return decode_bytes<request_result>(encoded);
+    const auto decoded = cbor::structs<request_result_view>::decode(std::move(owner), chars_of(encoded));
+    if (!decoded) [[unlikely]] {
+        return std::nullopt;
+    }
+    return **decoded;
 }
 
 std::uint32_t compute_result_crc(const std::uint64_t index, const std::span<const std::byte> encoded) noexcept
@@ -97,11 +118,6 @@ constexpr std::uint64_t last_float_typed_array_tag = 87;
 constexpr std::uint64_t little_endian_field = 0b100;
 constexpr std::uint64_t length_field = 0b11;
 constexpr std::size_t smallest_float_size = 2;
-
-std::string_view chars_of(const std::span<const std::byte> bytes)
-{
-    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-}
 
 bool is_a_float(const cbor::item& n)
 {
@@ -517,14 +533,16 @@ bool results_agree(const std::span<const std::byte> a, const std::span<const std
     if (!rule || std::ranges::equal(a, b)) {
         return std::ranges::equal(a, b);
     }
-    const auto ra = decode_result(a);
-    const auto rb = decode_result(b);
+    const auto owner_a = std::make_shared<const std::vector<std::byte>>(a.begin(), a.end());
+    const auto owner_b = std::make_shared<const std::vector<std::byte>>(b.begin(), b.end());
+    const auto ra = decode_result(owner_a, *owner_a);
+    const auto rb = decode_result(owner_b, *owner_b);
     if (!ra || !rb || ra->error != rb->error || ra->mutations.size() != rb->mutations.size() ||
         !data_items_agree(ra->reply, rb->reply, *rule)) {
         return false;
     }
-    return std::ranges::equal(ra->mutations, rb->mutations, [&rule](const mutation& x, const mutation& y) {
-        return x.key == y.key && x.value.has_value() == y.value.has_value() &&
+    return std::ranges::equal(ra->mutations, rb->mutations, [&rule](const mutation_view& x, const mutation_view& y) {
+        return std::ranges::equal(x.key, y.key) && x.value.has_value() == y.value.has_value() &&
                (!x.value || data_items_agree(*x.value, *y.value, *rule));
     });
 }

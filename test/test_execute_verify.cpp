@@ -54,7 +54,7 @@ constexpr std::array<node_id, 3> three_nodes{1, 2, 3};
 
 std::vector<std::byte> result_of(const std::uint8_t v)
 {
-    return konsens::encode_result({0, {std::byte{v}}, {}});
+    return konsens::encode_result(konsens::request_result{0, {std::byte{v}}, {}});
 }
 
 konsens::indexed_result at(const std::uint64_t index, const std::uint8_t v)
@@ -655,7 +655,7 @@ TEST_CASE("a request gets its reply only after a majority synced its done record
     REQUIRE(log.size() == 2);
     CHECK(konsens::request_of(log[1]) == entry{entry_kind::client_request, bytes_of('a'), s, 1});
     CHECK(log[1].result ==
-          konsens::encode_result({0, bytes_of('a'), {{{marked::key.begin(), marked::key.end()}, bytes_of('a')}}}));
+          konsens::encode_result(konsens::request_result{0, bytes_of('a'), {{{marked::key.begin(), marked::key.end()}, bytes_of('a')}}}));
     for (const auto& n : c.nodes) {
         CHECK(n.get_applied_idx() == log.size());
         CHECK(state_of(n) == bytes_of('a'));
@@ -778,7 +778,7 @@ std::filesystem::path decided_log_with_a_wrong_crc()
     auto storage = sqlite_storage::open_in(directory);
     auto w = storage.begin();
     REQUIRE(w.has_value());
-    const auto bytes = konsens::encode_result({0, {}, {}});
+    const auto bytes = konsens::encode_result(konsens::request_result{0, {}, {}});
     const std::vector<entry> log{{.kind = entry_kind::register_client,
                                   .client_id = client_a,
                                   .pid = 1,
@@ -826,7 +826,7 @@ TEST_CASE("a chosen result whose CRC fails on the node throws node_fault")
     CHECK_THROWS_AS(static_cast<void>(start_after_a_clean_stop(directory, own_directory, marked{0}, 1)),
                     konsens::node_fault);
     // Plan 3.1: the proof is durable before the throw.
-    const auto bytes = konsens::encode_result({0, {}, {}});
+    const auto bytes = konsens::encode_result(konsens::request_result{0, {}, {}});
     const auto crc = konsens::compute_result_crc(1, bytes);
     const konsens::fault_proof proof{konsens::proof_kind::result_crc, 1, leader_ballot, crc + 1, crc};
     CHECK(sqlite_storage::open_node_storage_in(own_directory).get_fault_proof().value() == std::optional{proof});
@@ -950,7 +950,7 @@ auto change_the_synced_record_to(const node_id to, const ChangeRecord change_rec
 
 void give_another_result(entry& e)
 {
-    e.result = konsens::encode_result({0, bytes_of('z'), {}});
+    e.result = konsens::encode_result(konsens::request_result{0, bytes_of('z'), {}});
     e.result_crc = konsens::compute_result_crc(request_index, e.result);
 }
 
@@ -1072,9 +1072,9 @@ std::filesystem::path decided_log_with_a_listed(const std::vector<node_id>& out)
     auto storage = sqlite_storage::open_in(directory);
     auto w = storage.begin();
     REQUIRE(w.has_value());
-    const auto registration = konsens::encode_result({0, {}, {}});
+    const auto registration = konsens::encode_result(konsens::request_result{0, {}, {}});
     const auto request = konsens::encode_result(
-        {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
+        konsens::request_result{0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     constexpr std::uint64_t session = 1;
     const std::vector<entry> log{{.kind = entry_kind::register_client,
                                   .client_id = client_a,
@@ -1136,7 +1136,7 @@ TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
 {
     auto n = *start_after_a_clean_stop(decided_log_with_a_listed({1}), sqlite_storage::new_directory(), marked{0}, 1);
     const auto request = konsens::encode_result(
-        {0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
+        konsens::request_result{0, bytes_of('a'), {{{value_key.begin(), value_key.end()}, bytes_of('a')}}});
     const auto crc = konsens::compute_result_crc(2, request);
     CHECK(n.take_log_records() ==
           std::vector<konsens::fault_proof>{{konsens::proof_kind::wrong_list, 2, leader_ballot, crc, crc}});
@@ -1175,7 +1175,7 @@ TEST_CASE("a leader whose entry a majority refused takes a higher ballot and kee
     const auto log = c.decided_log(l);
     REQUIRE(log.size() == request_index);
     CHECK(log[request_index - 1].result ==
-          konsens::encode_result({0, bytes_of('a'), {{{marked::key.begin(), marked::key.end()}, bytes_of('a')}}}));
+          konsens::encode_result(konsens::request_result{0, bytes_of('a'), {{{marked::key.begin(), marked::key.end()}, bytes_of('a')}}}));
     for (const auto& n : c.nodes) {
         CHECK(state_of(n) == bytes_of('a'));
         CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of('a')});
