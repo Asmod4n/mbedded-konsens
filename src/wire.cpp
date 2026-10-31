@@ -111,6 +111,9 @@ std::error_code check_entries_of(const work& w) noexcept
     if (entry_is_done(w.request)) [[unlikely]] {
         return wire_errc::entry_field_of_another_kind;
     }
+    if (const auto e = check_entries(w.base.suffix)) [[unlikely]] {
+        return e;
+    }
     return check_entries(std::span(&w.request, 1));
 }
 

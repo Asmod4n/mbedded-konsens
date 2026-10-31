@@ -160,7 +160,8 @@ enum class proof_kind : std::uint8_t {
     read_back,
     refused_by_a_majority,
     listed_result_differs,
-    wrong_list
+    wrong_list,
+    chosen_result_differs
 };
 
 struct fault_proof {

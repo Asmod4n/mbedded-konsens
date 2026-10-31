@@ -50,7 +50,7 @@ struct try_again_target {
 class selection {
 public:
     static selection with(ballot n, std::span<const node_id> nodes, std::uint64_t pointer,
-                          std::optional<float_rule> rule);
+                          std::optional<float_rule> rule, std::span<const entry> taken = {});
 
     ballot get_ballot() const { return n_; }
     std::uint64_t get_pointer() const { return pointer_; }
@@ -63,9 +63,6 @@ public:
     [[nodiscard]] std::vector<entry> find_the_done_records(const leader_log& log) const;
     [[nodiscard]] bool asked_to_run_again(node_id node, std::uint64_t index) const;
     [[nodiscard]] bool ran_again(node_id node, std::uint64_t index) const;
-    void count_a_refusal(node_id node, std::uint64_t index);
-    void count_an_appended_done_record(std::uint64_t index);
-    [[nodiscard]] std::vector<std::uint64_t> find_the_entries_that_a_majority_refused() const;
 
 private:
     struct count_walk {
@@ -88,6 +85,7 @@ private:
     [[nodiscard]] std::vector<node_id> find_the_nodes_out(const leader_log& log, std::uint64_t index) const;
     [[nodiscard]] std::optional<entry> find_the_rejected_record(const leader_log& log, std::uint64_t index) const;
     [[nodiscard]] std::span<const std::byte> result_of(node_id node, std::uint64_t index) const;
+    [[nodiscard]] const entry* taken_at(std::uint64_t index) const;
     [[nodiscard]] std::size_t majority() const { return nodes_.size() / 2 + 1; }
 
     ballot n_;
@@ -98,8 +96,8 @@ private:
     std::set<std::pair<node_id, std::uint64_t>> tried_;
     std::set<std::pair<node_id, std::uint64_t>> again_;
     std::map<std::uint64_t, selected_result> selected_;
-    std::set<std::uint64_t> appended_;
-    std::set<std::pair<std::uint64_t, node_id>> refusals_;
+    std::vector<entry> taken_;
+    std::set<std::uint64_t> kept_;
 };
 
 }

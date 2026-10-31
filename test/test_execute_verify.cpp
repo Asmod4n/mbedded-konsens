@@ -96,36 +96,6 @@ std::vector<konsens::chosen_result> list_of(const entry& e)
 
 }
 
-// The check for refused done records runs in each step of the leader. It
-// reads the refusals, not each appended done record, so its cost does not
-// grow with the length of the log. Its result stays the same: each appended
-// index that a majority of the configuration refused, in ascending order.
-TEST_CASE("the leader finds each appended done record that a majority refused")
-{
-    auto s = new_selection();
-    for (std::uint64_t index = 1; index <= 6; ++index) {
-        if (index != 4) {
-            s.count_an_appended_done_record(index);
-        }
-    }
-    CHECK(s.find_the_entries_that_a_majority_refused().empty());
-    s.count_a_refusal(1, 2);
-    CHECK(s.find_the_entries_that_a_majority_refused().empty());
-    s.count_a_refusal(9, 2);
-    CHECK(s.find_the_entries_that_a_majority_refused().empty());
-    s.count_a_refusal(1, 4);
-    s.count_a_refusal(2, 4);
-    CHECK(s.find_the_entries_that_a_majority_refused().empty());
-    s.count_a_refusal(3, 5);
-    s.count_a_refusal(2, 5);
-    s.count_a_refusal(3, 2);
-    CHECK(s.find_the_entries_that_a_majority_refused() == std::vector<std::uint64_t>{2, 5});
-    s.count_a_refusal(1, 1);
-    s.count_a_refusal(2, 1);
-    s.count_a_refusal(3, 1);
-    CHECK(s.find_the_entries_that_a_majority_refused() == std::vector<std::uint64_t>{1, 2, 5});
-}
-
 // Plan 2.6.3 and 2.6.4: the leader selects the result that a majority of
 // the configuration agrees on, the agreeing node with the lowest id gives
 // the bytes, and each counted node that does not agree is asked once to
@@ -614,40 +584,13 @@ TEST_CASE("a request gets its reply only after a majority synced its done record
     }
 }
 
-// Plan 2.3.4, 2.6.4 and the mutation ApplyOwnResult of the model: a node
-// whose result differs is not selected, and it applies the chosen bytes,
-// not its own, so the states and the sessions of the nodes stay equal.
-TEST_CASE("a node whose result differs applies the chosen result")
-{
-    for (const node_id wrong : three_nodes) {
-        CAPTURE(wrong);
-        std::array<std::uint8_t, 3> marks{0, 0, 0};
-        marks.at(wrong - 1) = 'x';
-        auto c = elected(marks);
-        const auto l = c.leader();
-        const auto s = registered(c, l);
-        batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-        c.run(rounds, once);
-        const auto replies = c.at(l).take_client_replies();
-        REQUIRE(replies.size() == 1);
-        CHECK(replies[0].response == bytes_of('a'));
-        const auto log = c.decided_log(l);
-        REQUIRE(log.size() == 2);
-        // The selection does not wait for the second answer (2.6.4), and here
-        // the leader appends in the step of the selection, so the list holds
-        // the node only when its second answer came first.
-        CHECK((log[1].out.empty() || log[1].out == std::vector<node_id>{wrong}));
-        for (const auto& n : c.nodes) {
-            CHECK(state_of(n) == bytes_of('a'));
-            CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of('a')});
-        }
-    }
-}
-
-// Plan 2.3.4 and 2.6.5: when every node gives another result, no result has
-// a majority. The leader appends a rejected done record, which keeps the
-// index, changes no state and no session, and its client gets rejected.
-TEST_CASE("a request whose results all differ is void and its client gets rejected")
+// Plan 2.3.4, 2.6.5 and plan-accept-carries-the-result 3.4 and 3.5: when
+// every node gives another result, both followers refuse the entry of the
+// leader, and the leader takes a higher ballot. Its client gets retry, as
+// for each write of an older ballot. In the selection no result has a
+// majority, so the leader appends a rejected done record, which keeps the
+// index and changes no state and no session.
+TEST_CASE("a request whose results all differ is void and its client gets retry")
 {
     auto c = elected({'x', 'y', 'z'});
     const auto l = c.leader();
@@ -657,7 +600,7 @@ TEST_CASE("a request whose results all differ is void and its client gets reject
     const auto replies = c.at(l).take_client_replies();
     REQUIRE(replies.size() == 1);
     REQUIRE_FALSE(replies[0].response.has_value());
-    CHECK(replies[0].response.error() == client_errc::rejected);
+    CHECK(replies[0].response.error() == client_errc::retry);
     const auto log = c.decided_log(l);
     CHECK(std::ranges::count(log, true, &entry::rejected) == 1);
     for (const auto& n : c.nodes) {
@@ -665,22 +608,6 @@ TEST_CASE("a request whose results all differ is void and its client gets reject
         CHECK(n.find_client_session(s) == konsens::session_record{0, {}});
         CHECK(n.get_applied_idx() == log.size());
     }
-}
-
-// Plan-one-environment 7.7: a leader proposes a StopSign only when no
-// request is in work. Before, the call gives retry.
-TEST_CASE("a stop sign waits while a request is in work")
-{
-    auto c = elected({0, 0, 0});
-    const auto l = c.leader();
-    const auto s = registered(c, l);
-    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
-    batches::deliver(c.nodes, [](const message& m) -> std::size_t { return holds<answer>(m) ? 0 : 1; });
-    const auto refused = c.at(l).reconfigure(next_cluster);
-    REQUIRE_FALSE(refused.has_value());
-    CHECK(refused.error() == client_errc::retry);
-    c.run(rounds, once);
-    batches::commit(c.at(l), c.at(l).reconfigure(next_cluster));
 }
 
 // Plan reconfiguration 2.1, 2.4 and 2.6: a decided StopSign gives every
@@ -855,8 +782,8 @@ namespace {
 // entry finds later that its chain CRC differs from the leader. It throws
 // node_fault (plan 3.2), and the delivery leaves it out from then on, as a
 // process that ended. The result is the set of nodes that threw.
-template <typename Change>
-std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change change)
+template <typename Change, typename Keep>
+std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change change, const Keep keep)
 {
     std::set<node_id> faulted;
     for (bool more = true; more;) {
@@ -869,7 +796,9 @@ std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change chang
             for (auto& m : nodes[i].take_outgoing_messages()) {
                 more = true;
                 change(m);
-                inbox.at(batches::to_of(m) - 1).push_back(std::move(m));
+                if (keep(m)) {
+                    inbox.at(batches::to_of(m) - 1).push_back(std::move(m));
+                }
             }
         }
         for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -889,6 +818,12 @@ std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change chang
     return faulted;
 }
 
+template <typename Change>
+std::set<node_id> deliver_changed(std::vector<node_t>& nodes, const Change change)
+{
+    return deliver_changed(nodes, change, [](const message&) { return true; });
+}
+
 // The index of the done record of the request after the registration.
 constexpr std::uint64_t request_index = 2;
 
@@ -906,6 +841,27 @@ auto change_the_done_record_to(const node_id to, const ChangeRecord change_recor
             return;
         }
         for (auto& e : a->entries) {
+            if (e.kind == entry_kind::client_request) {
+                change_record(e);
+            }
+        }
+    };
+}
+
+// Changes the done record of the request in each accept_sync to node `to`.
+template <typename ChangeRecord>
+auto change_the_synced_record_to(const node_id to, const ChangeRecord change_record)
+{
+    return [to, change_record](message& m) {
+        auto* p = std::get_if<paxos_message>(&m);
+        if (p == nullptr || p->to != to) {
+            return;
+        }
+        auto* a = std::get_if<konsens::accept_sync>(&p->msg);
+        if (a == nullptr) {
+            return;
+        }
+        for (auto& e : a->log_sync.suffix) {
             if (e.kind == entry_kind::client_request) {
                 change_record(e);
             }
@@ -1111,11 +1067,48 @@ TEST_CASE("a listed node whose result agrees gives a record of the wrong list")
     }));
 }
 
-// Plan 2.7.6: a leader that gets refused from a majority for a done record
-// that its own ballot appended knows that its own selection or copy is
-// wrong. Here both followers get another result in the record, so both
-// refuse it. The leader throws after its proof is durable.
-TEST_CASE("a leader whose done record a majority refused throws")
+// Plan-accept-carries-the-result 3.4 to 3.6: both followers get another
+// result in the entry of the leader, as a bit flip in the leader would
+// give, and refuse it. The leader does not throw: the entry may be wrong
+// in the leader alone. It takes a higher ballot, and its selection on the
+// taken log finds that a majority agrees with the result of the entry, so
+// it keeps the entry with its bytes, and all nodes apply it.
+TEST_CASE("a leader whose entry a majority refused takes a higher ballot and keeps the entry")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto s = registered(c, l);
+    const auto before = c.at(l).get_sequence_paxos().get_leader_state().n_leader;
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    std::vector<std::function<void(message&)>> changes;
+    for (const auto p : three_nodes) {
+        if (p != l) {
+            changes.emplace_back(change_the_done_record_to(p, give_another_result));
+        }
+    }
+    const auto faulted = deliver_changed(c.nodes, [&changes](message& m) {
+        for (const auto& change : changes) {
+            change(m);
+        }
+    });
+    CHECK(faulted.empty());
+    CHECK(c.at(l).get_sequence_paxos().get_leader_state().n_leader > before);
+    const auto log = c.decided_log(l);
+    REQUIRE(log.size() == request_index);
+    CHECK(log[request_index - 1].result ==
+          konsens::encode_result({0, bytes_of('a'), {{{marked::key.begin(), marked::key.end()}, bytes_of('a')}}}));
+    for (const auto& n : c.nodes) {
+        CHECK(state_of(n) == bytes_of('a'));
+        CHECK(n.find_client_session(s) == konsens::session_record{1, bytes_of('a')});
+    }
+}
+
+// Plan-accept-carries-the-result 3.4: an entry that the leader selected
+// from a majority of answers and that a majority still refuses shows that
+// the selection or the copy of the leader is wrong. Here both followers get
+// another result in the entry of the fast path and in the entry of the
+// sync. The leader throws after its proof is durable.
+TEST_CASE("a leader whose selected entry a majority refused throws")
 {
     auto c = elected({0, 0, 0});
     const auto l = c.leader();
@@ -1125,6 +1118,7 @@ TEST_CASE("a leader whose done record a majority refused throws")
     for (const auto p : three_nodes) {
         if (p != l) {
             changes.emplace_back(change_the_done_record_to(p, give_another_result));
+            changes.emplace_back(change_the_synced_record_to(p, give_another_result));
         }
     }
     const auto faulted = deliver_changed(c.nodes, [&changes](message& m) {
@@ -1138,6 +1132,81 @@ TEST_CASE("a leader whose done record a majority refused throws")
     REQUIRE(proof->has_value());
     CHECK((*proof)->kind == konsens::proof_kind::refused_by_a_majority);
     CHECK((*proof)->index == request_index);
+}
+
+// Plan-accept-carries-the-result 3.2, 3.4, 3.5 and 3.8: a node whose own
+// result differs does not accept the entry. When it is a follower, the
+// other two nodes decide the entry. When it is the leader, both followers
+// refuse its entry, the leader takes a higher ballot, and its selection
+// gives the result of the followers. The node with the other result holds
+// the entry in its log, sees it decided, runs it again before it applies
+// it, and throws after its proof is durable. The other nodes apply the
+// result of the majority. A leader throws in the step that decides, so its
+// followers hold the entry as accepted and learn the decision from the
+// next leader.
+TEST_CASE("a node whose result differs throws when another result is decided")
+{
+    for (const node_id wrong : three_nodes) {
+        CAPTURE(wrong);
+        std::array<std::uint8_t, 3> marks{0, 0, 0};
+        marks.at(wrong - 1) = 'x';
+        auto c = elected(marks);
+        const auto l = c.leader();
+        const auto s = registered(c, l);
+        batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+        const auto faulted = deliver_changed(c.nodes, [](message&) {});
+        CHECK(faulted == std::set<node_id>{wrong});
+        const auto proof = c.at(wrong).get_fault_proof();
+        REQUIRE(proof.has_value());
+        REQUIRE(proof->has_value());
+        CHECK((*proof)->kind == konsens::proof_kind::chosen_result_differs);
+        CHECK((*proof)->index == request_index);
+        for (const auto n : three_nodes) {
+            if (n == wrong) {
+                continue;
+            }
+            if (wrong == l) {
+                CHECK(c.at(n).get_sequence_paxos().get_accepted_idx() == request_index);
+                continue;
+            }
+            CHECK(state_of(c.at(n)) == bytes_of('a'));
+            CHECK(c.at(n).find_client_session(s) == konsens::session_record{1, bytes_of('a')});
+        }
+    }
+}
+
+// Plan-one-environment 7.7 and plan-accept-carries-the-result 3.5: a
+// leader proposes a StopSign only when no request is in work. A request is
+// in work while a new leader selects the results of the taken log. Here
+// both followers refuse the entry of the leader, the leader takes a higher
+// ballot, and no answer reaches it. While it waits, the call gives retry.
+TEST_CASE("a stop sign waits while the leader selects the results of the taken log")
+{
+    auto c = elected({0, 0, 0});
+    const auto l = c.leader();
+    const auto s = registered(c, l);
+    batches::commit(c.at(l), c.at(l).client_request(client_a, s, 1, bytes_of('a')));
+    std::vector<std::function<void(message&)>> changes;
+    for (const auto p : three_nodes) {
+        if (p != l) {
+            changes.emplace_back(change_the_done_record_to(p, give_another_result));
+        }
+    }
+    const auto faulted = deliver_changed(
+        c.nodes,
+        [&changes](message& m) {
+            for (const auto& change : changes) {
+                change(m);
+            }
+        },
+        [](const message& m) { return !holds<answer>(m); });
+    CHECK(faulted.empty());
+    CHECK(c.at(l).get_sequence_paxos().get_state() == std::pair{role::leader, phase::prepare});
+    const auto refused = c.at(l).reconfigure(next_cluster);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error() == client_errc::retry);
+    c.run(rounds, once);
+    batches::commit(c.at(l), c.at(l).reconfigure(next_cluster));
 }
 
 // Plan 3.1 and 3.2: a damage that a step finds is no returned value any

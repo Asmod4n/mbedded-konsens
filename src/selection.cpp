@@ -7,7 +7,7 @@
 namespace konsens {
 
 selection selection::with(const ballot n, const std::span<const node_id> nodes, const std::uint64_t pointer,
-                          const std::optional<float_rule> rule)
+                          const std::optional<float_rule> rule, const std::span<const entry> taken)
 {
     selection s;
     s.n_ = n;
@@ -15,6 +15,7 @@ selection selection::with(const ballot n, const std::span<const node_id> nodes, 
     std::ranges::sort(s.nodes_);
     s.pointer_ = pointer;
     s.rule_ = rule;
+    s.taken_.assign(taken.begin(), taken.end());
     return s;
 }
 
@@ -108,6 +109,14 @@ bool selection::holds_a_request(const leader_log& log, const std::uint64_t index
 std::span<const std::byte> selection::result_of(const node_id node, const std::uint64_t index) const
 {
     return answers_.at(node).results.at(index).result;
+}
+
+const entry* selection::taken_at(const std::uint64_t index) const
+{
+    if (index <= pointer_ || index - pointer_ > taken_.size()) {
+        return nullptr;
+    }
+    return &taken_[index - pointer_ - 1];
 }
 
 const selected_result* selection::selection_at(const std::uint64_t index) const
@@ -208,6 +217,19 @@ std::vector<try_again_target> selection::select_results(const leader_log& log)
             if (counted.empty()) {
                 break;
             }
+            const auto* taken = taken_at(q);
+            if (taken != nullptr && entry_is_a_request(*taken) && !taken->rejected &&
+                count_the_agreeing(counted, q, taken->result) >= majority()) {
+                selected_.insert_or_assign(q, selected_result{{q, taken->result, taken->result_crc},
+                                                              compute_result_crc(q, taken->result), 0, chain});
+                kept_.insert(q);
+                chain = extend_base_crc(chain, q, selected_.at(q).result_crc);
+                for (auto& w : walks) {
+                    w.count_the_selection(q, selection_at(q));
+                }
+                continue;
+            }
+            kept_.erase(q);
             node_id candidate = counted.front();
             std::size_t most = 0;
             for (const auto c : counted) {
@@ -293,15 +315,18 @@ std::vector<entry> selection::find_the_done_records(const leader_log& log) const
             continue;
         }
         if (!holds_on(k, chain)) {
-            if (done.empty() || std::ranges::none_of(done, entry_is_a_request)) {
-                if (auto rejected = find_the_rejected_record(log, k)) {
-                    done.push_back(std::move(*rejected));
-                }
+            if (auto rejected = find_the_rejected_record(log, k)) {
+                const auto* taken = taken_at(k);
+                done.push_back(taken != nullptr && taken->rejected ? *taken : std::move(*rejected));
             }
             break;
         }
         const auto& s = selected_.at(k);
         chain = extend_base_crc(chain, k, s.result_crc);
+        if (kept_.contains(k)) {
+            done.push_back(*taken_at(k));
+            continue;
+        }
         auto e = task;
         e.result = s.chosen.result;
         e.result_crc = s.chosen.crc;
@@ -319,32 +344,6 @@ bool selection::asked_to_run_again(const node_id node, const std::uint64_t index
 bool selection::ran_again(const node_id node, const std::uint64_t index) const
 {
     return again_.contains({node, index});
-}
-
-void selection::count_a_refusal(const node_id node, const std::uint64_t index)
-{
-    if (std::ranges::contains(nodes_, node)) {
-        refusals_.insert({index, node});
-    }
-}
-
-void selection::count_an_appended_done_record(const std::uint64_t index)
-{
-    appended_.insert(index);
-}
-
-std::vector<std::uint64_t> selection::find_the_entries_that_a_majority_refused() const
-{
-    std::vector<std::uint64_t> refused;
-    for (auto first = refusals_.begin(); first != refusals_.end();) {
-        const auto index = first->first;
-        const auto end = refusals_.lower_bound({index + 1, 0});
-        if (appended_.contains(index) && static_cast<std::size_t>(std::distance(first, end)) >= majority()) {
-            refused.push_back(index);
-        }
-        first = end;
-    }
-    return refused;
 }
 
 }

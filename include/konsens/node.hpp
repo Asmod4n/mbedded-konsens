@@ -668,10 +668,11 @@ public:
             if (auto r = seq_paxos_.reconnected(pid); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
-            if (seq_paxos_.get_state() == std::pair{role::leader, phase::accept} &&
+            const auto& taken = seq_paxos_.get_leader_state().taken;
+            if (seq_paxos_.get_state() == std::pair{role::leader, phase::prepare} && taken &&
                 tasks_ballot_ == seq_paxos_.get_leader_state().n_leader) {
-                for (const auto& [index, e] : tasks_) {
-                    send_work(index, e, pid);
+                if (auto r = send_the_tasks(*taken, pid); !r) [[unlikely]] {
+                    return std::unexpected(r.error());
                 }
             }
             return current_transaction();
@@ -1216,10 +1217,10 @@ private:
         auto base_below = m->applied_idx + 1;
         for (;;) {
             const auto index = verified + 1;
-            if (index > m->log_len || (refusal_ && refusal_->index == index)) {
+            if (index > m->log_len || (refusal_ && refusal_->index == index && index > m->applied_idx)) {
                 break;
             }
-            if (index > m->decided_idx && index > m->applied_idx) {
+            if (index > m->applied_idx) {
                 const done_log b{m->applied_idx,
                                  tail->entries.subspan(m->applied_idx - first, index - 1 - m->applied_idx)};
                 if (!base) {
@@ -1260,9 +1261,7 @@ private:
             return;
         }
         if (promise.pid == seq_paxos_.get_pid()) {
-            if (selection_ && selection_->get_ballot() == promise) {
-                selection_->count_a_refusal(promise.pid, refusal_->index);
-            }
+            count_a_refusal(promise, promise.pid, refusal_->index);
             return;
         }
         if (promise.pid != 0) {
@@ -1362,7 +1361,13 @@ private:
             if (seq_paxos_.get_state().first != role::leader) {
                 answers_in_.clear();
             }
-            return {};
+            if (seq_paxos_.get_state() != std::pair{role::leader, phase::prepare} ||
+                !seq_paxos_.get_leader_state().taken) {
+                return {};
+            }
+            if (auto r = select_the_taken_entries(); !r || seq_paxos_.get_state().second != phase::accept) {
+                return r;
+            }
         }
         if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
             return r;
@@ -1372,22 +1377,101 @@ private:
             return seq_paxos_.stop_voting(m.error());
         }
         const auto n = seq_paxos_.get_leader_state().n_leader;
-        if (!selection_ || selection_->get_ballot() != n) {
-            selection_ = selection::with(n, nodes_, m->log_len, float_rule_of(machine_));
-        }
+        selection_.reset();
         assign_the_tasks(n, m->log_len);
-        count_the_answers();
         for (const auto& [from, x] : std::exchange(refusals_in_, {})) {
-            if (x.n == selection_->get_ballot()) {
-                selection_->count_a_refusal(from, x.index);
+            count_a_refusal(x.n, from, x.index);
+        }
+        if (const auto refused = find_the_first_entry_that_a_majority_refused(n)) [[unlikely]] {
+            if (selected_up_to_ && selected_up_to_->first == n && *refused <= selected_up_to_->second) {
+                write_the_proof_and_throw({proof_kind::refused_by_a_majority, *refused, n, 0, 0},
+                                          make_error_code(paxos_errc::result_differs),
+                                          "konsens: a majority refused an entry that this leader selected");
+            }
+            ble_.take_over_above(n);
+            return seq_paxos_.handle_leader(ble_.get_current_ballot());
+        }
+        return append_the_own_results(m->applied_idx, m->log_len);
+    }
+
+    void count_a_refusal(const ballot n, const node_id from, const std::uint64_t index)
+    {
+        if (!std::ranges::contains(nodes_, from)) [[unlikely]] {
+            return;
+        }
+        if (refusals_ballot_ != n) {
+            refusals_.clear();
+            refusals_ballot_ = n;
+        }
+        refusals_.insert({index, from});
+    }
+
+    std::optional<std::uint64_t> find_the_first_entry_that_a_majority_refused(const ballot n) const
+    {
+        if (refusals_ballot_ != n) {
+            return std::nullopt;
+        }
+        for (auto first = refusals_.begin(); first != refusals_.end();) {
+            const auto end = refusals_.lower_bound({first->first + 1, 0});
+            if (static_cast<std::size_t>(std::distance(first, end)) >= nodes_.size() / 2 + 1) {
+                return first->first;
+            }
+            first = end;
+        }
+        return std::nullopt;
+    }
+
+    result select_the_taken_entries()
+    {
+        if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
+            return r;
+        }
+        const auto& leader = seq_paxos_.get_leader_state();
+        const auto& t = *leader.taken;
+        const auto n = leader.n_leader;
+        const auto d = t.decided_idx;
+        if (!selection_ || selection_->get_ballot() != n) {
+            const auto above = seq_paxos_.read_the_taken_entries(t, d, t.log_len());
+            if (!above) [[unlikely]] {
+                return seq_paxos_.stop_voting(above.error());
+            }
+            selection_ = selection::with(n, nodes_, d, float_rule_of(machine_), *above);
+            tasks_.clear();
+            tasks_ballot_ = n;
+            own_.erase(own_.upper_bound(d), own_.end());
+            for (std::uint64_t k = 0; k < above->size(); ++k) {
+                tasks_.emplace(d + 1 + k, request_of((*above)[k]));
+            }
+            resend_work_ = true;
+        }
+        if (resend_work_) {
+            if (auto r = send_the_tasks(t, std::nullopt); !r) [[unlikely]] {
+                return r;
+            }
+            resend_work_ = false;
+        }
+        count_the_answers();
+        const auto open = open_tasks_after(d);
+        ask_to_run_again(selection_->select_results({d, open}));
+        auto done = selection_->find_the_done_records({d, open});
+        if (done.size() < open.size() && (done.empty() || !done.back().rejected)) {
+            return {};
+        }
+        const auto selected = d + done.size();
+        if (done.size() < open.size()) {
+            const auto rest = seq_paxos_.read_the_taken_entries(t, selected - 1, t.log_len());
+            if (!rest) [[unlikely]] {
+                return seq_paxos_.stop_voting(rest.error());
+            }
+            if (done.back() == rest->front()) {
+                done.insert(done.end(), std::next(rest->begin()), rest->end());
             }
         }
-        if (const auto refused = selection_->find_the_entries_that_a_majority_refused(); !refused.empty()) [[unlikely]] {
-            write_the_proof_and_throw({proof_kind::refused_by_a_majority, refused.front(), selection_->get_ballot(), 0, 0},
-                                      make_error_code(paxos_errc::result_differs),
-                                      "konsens: a majority refused a done record of this leader");
-        }
-        return append_the_done_records(m->log_len);
+        selected_up_to_ = {n, selected};
+        tasks_.clear();
+        selection_.reset();
+        own_.erase(own_.upper_bound(selected), own_.end());
+        return seq_paxos_.accept_the_selected_entries(done);
     }
 
     void assign_the_tasks(const ballot n, const std::uint64_t log_len)
@@ -1397,12 +1481,7 @@ private:
             tasks_ballot_ = n;
         }
         auto next = log_len + tasks_.size() + 1;
-        if (resend_work_) {
-            for (const auto& [index, e] : tasks_) {
-                send_work(index, e, std::nullopt);
-            }
-            resend_work_ = false;
-        }
+        resend_work_ = false;
         auto proposals = std::exchange(seq_paxos_.buffered_proposals_, {});
         std::ranges::move(std::exchange(waiting_, {}), std::back_inserter(proposals));
         for (auto& e : proposals) {
@@ -1412,22 +1491,32 @@ private:
             if (entry_is_a_stop_sign(e) && !decode_cluster_config(e.payload)) [[unlikely]] {
                 continue;
             }
-            auto request = request_of(std::move(e));
-            send_work(next, request, std::nullopt);
-            tasks_.emplace(next, std::move(request));
+            tasks_.emplace(next, request_of(std::move(e)));
             next += 1;
         }
     }
 
-    void send_work(const std::uint64_t index, const entry& e, const std::optional<node_id> only)
+    result send_the_tasks(const taken_log& t, const std::optional<node_id> only)
     {
-        const auto n = seq_paxos_.get_leader_state().n_leader;
-        const auto crc = compute_entry_crc(index, e);
-        for (const auto f : seq_paxos_.get_leader_state().get_promised_followers()) {
-            if (!only || *only == f) {
-                execute_verify_outgoing_.emplace_back(paxos_message{seq_paxos_.get_pid(), f, work{n, index, e, crc}});
+        const auto& leader = seq_paxos_.get_leader_state();
+        const auto d = t.decided_idx;
+        for (const auto f : leader.get_promised_followers()) {
+            if (only && *only != f) {
+                continue;
+            }
+            const auto from = std::min(leader.get_promise_meta(f).decided_idx, d);
+            const auto base = seq_paxos_.read_the_taken_entries(t, from, d);
+            if (!base) [[unlikely]] {
+                return seq_paxos_.stop_voting(base.error());
+            }
+            for (const auto& [index, e] : tasks_) {
+                execute_verify_outgoing_.emplace_back(
+                    paxos_message{seq_paxos_.get_pid(), f,
+                                  work{leader.n_leader, index, e, compute_entry_crc(index, e), d, t.decided_chain_crc,
+                                       {*base, from}}});
             }
         }
+        return {};
     }
 
     std::vector<std::reference_wrapper<const entry>> open_tasks_after(const std::uint64_t log_len) const
@@ -1440,35 +1529,38 @@ private:
         return open;
     }
 
-    result append_the_done_records(const std::uint64_t log_len)
+    result append_the_own_results(const std::uint64_t applied_idx, const std::uint64_t log_len)
     {
         const auto open = open_tasks_after(log_len);
         if (open.empty()) {
             return {};
         }
-        const leader_log log{log_len, open};
-        ask_to_run_again(selection_->select_results(log));
-        const auto done = selection_->find_the_done_records(log);
+        const auto log = seq_paxos_.read_the_open_log(applied_idx, log_len);
+        if (!log) [[unlikely]] {
+            return seq_paxos_.stop_voting(log.error());
+        }
+        run_the_tasks({log_len - log->entries.size(), log->entries});
+        std::vector<entry> done;
+        for (std::uint64_t k = 0; k < open.size(); ++k) {
+            const auto index = log_len + 1 + k;
+            auto e = open[k].get();
+            if (entry_is_a_request(e)) {
+                const auto o = own_.find(index);
+                if (o == own_.end()) [[unlikely]] {
+                    break;
+                }
+                e.result = o->second.bytes;
+                e.result_crc = o->second.crc;
+            }
+            done.push_back(std::move(e));
+        }
         if (done.empty()) {
             return {};
-        }
-        std::vector<indexed_result> chosen;
-        for (std::uint64_t k = 0; k < done.size(); ++k) {
-            const auto index = log_len + 1 + k;
-            if (!entry_is_a_request(done[k])) {
-                continue;
-            }
-            selection_->count_an_appended_done_record(index);
-            if (!done[k].rejected) {
-                chosen.push_back({index, done[k].result, done[k].result_crc});
-            }
         }
         if (auto r = seq_paxos_.accept_entries_leader(done); !r) [[unlikely]] {
             return r;
         }
-        const auto len = log_len + done.size();
-        tasks_.erase(tasks_.begin(), tasks_.upper_bound(len));
-        selection_->move_pointer(len, chosen);
+        tasks_.erase(tasks_.begin(), tasks_.upper_bound(log_len + done.size()));
         return check_the_done_records();
     }
 
@@ -1522,15 +1614,18 @@ private:
                                           make_error_code(paxos_errc::result_differs),
                                           "konsens: a chosen result fails its CRC on this node");
             }
-            if (std::ranges::contains(e.out, seq_paxos_.get_pid())) {
+            const bool listed = std::ranges::contains(e.out, seq_paxos_.get_pid());
+            if (listed || k > seq_paxos_.get_verified_idx()) {
                 const auto own = encode_result(run_request(request_of(e), begin_an_empty_write_set()));
-                const fault_proof proof{proof_kind::listed_result_differs, k, seq_paxos_.mark_.promise, e.result_crc,
-                                        compute_result_crc(k, own)};
+                const fault_proof proof{listed ? proof_kind::listed_result_differs : proof_kind::chosen_result_differs,
+                                        k, seq_paxos_.mark_.promise, e.result_crc, compute_result_crc(k, own)};
                 if (!results_agree(own, e.result, float_rule_of(machine_))) [[unlikely]] {
                     write_the_proof_and_throw(proof, make_error_code(paxos_errc::result_differs),
                                               "konsens: the result of this node differs from the chosen result");
                 }
-                log_records_.push_back({proof_kind::wrong_list, proof.index, proof.n, proof.crc, proof.other_crc});
+                if (listed) {
+                    log_records_.push_back({proof_kind::wrong_list, proof.index, proof.n, proof.crc, proof.other_crc});
+                }
             }
             write_the_result(e, k, *r, w);
             if (built_for_debugging && !written_values_read_back(*r, w)) [[unlikely]] {
@@ -1710,6 +1805,10 @@ private:
         try_agains_in_.clear();
         refusals_in_.clear();
         refusal_.reset();
+        verify_base_.reset();
+        verify_sync_ = {};
+        refusals_.clear();
+        refusals_ballot_.reset();
     }
 
     base_write_set begin_the_base(const done_log& b, const std::uint64_t below)
@@ -1744,30 +1843,55 @@ private:
         return {e, std::move(r), std::move(bytes), crc};
     }
 
-    void keep_the_tasks(const ballot promise, const std::uint64_t log_len)
+    std::expected<std::optional<std::uint64_t>, std::error_code> keep_the_tasks(const ballot promise,
+                                                                                const std::uint64_t applied_idx,
+                                                                                const std::uint64_t log_len)
     {
         if (tasks_ballot_ != promise) {
             tasks_.clear();
-            own_.erase(own_.upper_bound(log_len), own_.end());
+            verify_base_.reset();
+            verify_sync_ = {};
             tasks_ballot_ = promise;
         }
         for (const auto& [from, w] : std::exchange(works_in_, {})) {
-            if (w.n != promise || from != promise.pid || w.index <= log_len ||
+            if (w.n != promise || from != promise.pid || w.index <= w.decided_idx ||
                 compute_entry_crc(w.index, w.request) != w.entry_crc) [[unlikely]] {
                 continue;
+            }
+            const auto base = std::pair{w.decided_idx, w.decided_chain_crc};
+            if (verify_base_ != base) {
+                const auto own = w.base.sync_idx;
+                if (own > log_len || own < applied_idx || own + w.base.suffix.size() != w.decided_idx) {
+                    continue;
+                }
+                const auto chain = seq_paxos_.read_prefix_chain_crc(own);
+                if (!chain) [[unlikely]] {
+                    return seq_paxos_.stop_voting(chain.error());
+                }
+                if (compute_chain_crc(*chain, own, w.base.suffix) != w.decided_chain_crc) {
+                    continue;
+                }
+                verify_base_ = base;
+                verify_sync_ = w.base;
+                tasks_.clear();
+                own_.erase(own_.upper_bound(w.decided_idx), own_.end());
             }
             if (const auto it = tasks_.find(w.index); it != tasks_.end() && it->second != w.request) {
                 own_.erase(own_.lower_bound(w.index), own_.end());
             }
             tasks_.insert_or_assign(w.index, w.request);
         }
-        tasks_.erase(tasks_.begin(), tasks_.upper_bound(log_len));
-        for (auto it = own_.upper_bound(log_len); it != own_.end(); ++it) {
+        if (!verify_base_) {
+            return std::nullopt;
+        }
+        const auto d = verify_base_->first;
+        for (auto it = own_.upper_bound(d); it != own_.end(); ++it) {
             if (const auto t = tasks_.find(it->first); t == tasks_.end() || t->second != it->second.request) {
                 own_.erase(it, own_.end());
-                return;
+                break;
             }
         }
+        return d;
     }
 
     void check_the_own_results(const done_log& b)
@@ -1849,27 +1973,6 @@ private:
         execute_verify_outgoing_.emplace_back(paxos_message{seq_paxos_.get_pid(), to, std::move(a)});
     }
 
-    void follow_the_leader(const done_log& b)
-    {
-        if (seq_paxos_.get_state() != std::pair{role::leader, phase::accept}) {
-            selection_.reset();
-            return;
-        }
-        const auto n = seq_paxos_.get_leader_state().n_leader;
-        if (!selection_ || selection_->get_ballot() != n) {
-            selection_ = selection::with(n, nodes_, b.log_len(), float_rule_of(machine_));
-            return;
-        }
-        std::vector<indexed_result> chosen;
-        for (auto k = b.applied_idx + 1; k <= b.log_len(); ++k) {
-            const auto& e = b.done[k - b.applied_idx - 1];
-            if (entry_is_a_request(e) && !e.rejected) {
-                chosen.push_back({k, e.result, e.result_crc});
-            }
-        }
-        selection_->move_pointer(b.log_len(), chosen);
-    }
-
     void run_again_for_the_leader(const done_log& b, const ballot n)
     {
         const auto self = seq_paxos_.get_pid();
@@ -1894,14 +1997,51 @@ private:
             return seq_paxos_.stop_voting(m.error());
         }
         const auto promise = m->promise;
-        const auto log = seq_paxos_.read_the_open_log(m->applied_idx, m->log_len);
-        if (!log) [[unlikely]] {
-            return seq_paxos_.stop_voting(log.error());
+        if (resend_answer_) {
+            send_the_refusal(promise);
         }
-        const done_log b{m->log_len - log->entries.size(), log->entries};
-        const auto pointer = b.log_len();
-        follow_the_leader(b);
-        keep_the_tasks(promise, pointer);
+        const auto state = seq_paxos_.get_state();
+        const auto& taken = seq_paxos_.get_leader_state().taken;
+        std::vector<entry> held;
+        std::uint64_t pointer = 0;
+        if (state == std::pair{role::leader, phase::prepare} && taken) {
+            pointer = taken->decided_idx;
+            auto base = seq_paxos_.read_the_taken_entries(*taken, m->applied_idx, pointer);
+            if (!base) [[unlikely]] {
+                return seq_paxos_.stop_voting(base.error());
+            }
+            held = std::move(*base);
+        } else if (state == std::pair{role::follower, phase::prepare}) {
+            const auto d = keep_the_tasks(promise, m->applied_idx, m->log_len);
+            if (!d) [[unlikely]] {
+                return std::unexpected(d.error());
+            }
+            if (!*d) {
+                resend_answer_ = false;
+                return {};
+            }
+            pointer = **d;
+            const auto log = seq_paxos_.read_the_open_log(m->applied_idx, m->log_len);
+            if (!log) [[unlikely]] {
+                return seq_paxos_.stop_voting(log.error());
+            }
+            const auto own = log->entries.first(verify_sync_.sync_idx - m->applied_idx);
+            held.assign(own.begin(), own.end());
+            held.insert(held.end(), verify_sync_.suffix.begin(), verify_sync_.suffix.end());
+        } else {
+            if (state.first != role::leader) {
+                tasks_.clear();
+                tasks_ballot_.reset();
+                verify_base_.reset();
+                verify_sync_ = {};
+            }
+            works_in_.clear();
+            try_agains_in_.clear();
+            answers_in_.clear();
+            resend_answer_ = false;
+            return {};
+        }
+        const done_log b{m->applied_idx, held};
         check_the_own_results(b);
         const auto first = run_the_tasks(b);
         const auto answered = std::pair{promise, pointer};
@@ -1911,9 +2051,6 @@ private:
         } else if (first) {
             send_answer(promise.pid, answer_from(promise, pointer, *first, 0));
             answered_ = answered;
-        }
-        if (resend_answer_) {
-            send_the_refusal(promise);
         }
         resend_answer_ = false;
         for (const auto& [from, t] : std::exchange(try_agains_in_, {})) {
@@ -1930,9 +2067,6 @@ private:
         count_the_answers();
         const auto n = selection_->get_ballot();
         run_again_for_the_leader(b, n);
-        if (seq_paxos_.get_state().second != phase::accept) {
-            return {};
-        }
         const auto open = open_tasks_after(pointer);
         ask_to_run_again(selection_->select_results({pointer, open}));
         run_again_for_the_leader(b, n);
@@ -2048,6 +2182,11 @@ private:
     std::vector<std::pair<node_id, work>> works_in_;
     std::map<std::uint64_t, entry> tasks_;
     std::optional<ballot> tasks_ballot_;
+    std::optional<std::pair<std::uint64_t, std::uint32_t>> verify_base_;
+    log_sync verify_sync_;
+    std::optional<ballot> refusals_ballot_;
+    std::set<std::pair<std::uint64_t, node_id>> refusals_;
+    std::optional<std::pair<ballot, std::uint64_t>> selected_up_to_;
     bool resend_work_{};
     std::optional<refused> refusal_;
     std::vector<message> execute_verify_outgoing_;

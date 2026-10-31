@@ -7,6 +7,7 @@
 #include <expected>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -123,6 +124,15 @@ struct promised_higher {};
 
 using promise_state = std::variant<not_promised, promise_meta_data, promised_higher>;
 
+struct taken_log {
+    std::uint64_t sync_idx;
+    std::vector<entry> suffix;
+    std::uint64_t decided_idx;
+    std::uint32_t decided_chain_crc;
+
+    std::uint64_t log_len() const { return sync_idx + suffix.size(); }
+};
+
 struct leader_state {
     ballot n_leader;
     std::vector<node_id> nodes;
@@ -132,6 +142,8 @@ struct leader_state {
     promise_meta_data max_promise_meta;
     std::optional<konsens::log_sync> max_promise_sync;
     bool accepted_stop_sign;
+    std::optional<taken_log> taken{};
+    std::uint64_t first_changed_idx{std::numeric_limits<std::uint64_t>::max()};
 
     static leader_state with(ballot n_leader, std::span<const node_id> nodes)
     {
@@ -1332,19 +1344,26 @@ private:
         return {};
     }
 
-    std::expected<std::uint64_t, std::error_code> read_highest_verified_decided_idx(const std::uint64_t own) const
+    std::expected<std::uint32_t, std::error_code> read_the_taken_chain_crc(const taken_log& t,
+                                                                           const std::uint64_t length) const
     {
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return std::unexpected(m.error());
+        const auto own = read_prefix_chain_crc(std::min(length, t.sync_idx));
+        if (!own || length <= t.sync_idx) {
+            return own;
         }
+        return compute_chain_crc(*own, t.sync_idx, std::span(t.suffix).first(length - t.sync_idx));
+    }
+
+    std::expected<std::uint64_t, std::error_code> read_highest_verified_decided_idx(const taken_log& t,
+                                                                                    const std::uint64_t own) const
+    {
         auto highest = own;
         for (const auto& p : leader_state_.promises_meta) {
             const auto* meta = std::get_if<promise_meta_data>(&p);
-            if (meta == nullptr || meta->decided_idx <= highest || meta->decided_idx > m->log_len) {
+            if (meta == nullptr || meta->decided_idx <= highest || meta->decided_idx > t.log_len()) {
                 continue;
             }
-            const auto chain = read_prefix_chain_crc(meta->decided_idx);
+            const auto chain = read_the_taken_chain_crc(t, meta->decided_idx);
             if (!chain) [[unlikely]] {
                 return std::unexpected(chain.error());
             }
@@ -1572,6 +1591,7 @@ private:
             return stop_voting(p.error());
         }
         state_ = {role::follower, phase::prepare};
+        leader_state_.taken.reset();
         current_seq_num_ = {};
         answered_prepare_ = prep;
         outgoing_.push_back({pid_, from, std::move(*p)});
@@ -1585,6 +1605,10 @@ private:
         }
         const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from,
                                      prom.decided_chain_crc};
+        if (leader_state_.taken) {
+            leader_state_.set_promise(meta, std::nullopt, false);
+            return {};
+        }
         if (leader_state_.set_promise(meta, prom.log_sync, true)) {
             return handle_majority_promises();
         }
@@ -1609,17 +1633,90 @@ private:
             return stop_voting(m.error());
         }
         auto sync = leader_state_.take_max_promise_sync();
-        const auto sync_idx = sync ? sync->sync_idx : bound_by_the_verified_idx(m->log_len);
-        const auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
-        write_or_throw(txn_->append_on_prefix(sync_idx, suffix));
-        lower_the_synced_len(sync_idx);
-        const auto decided_idx = read_highest_verified_decided_idx(m->decided_idx);
+        taken_log t{sync ? sync->sync_idx : bound_by_the_verified_idx(m->log_len),
+                    sync ? std::move(sync->suffix) : std::vector<entry>{}, 0, 0};
+        if (t.sync_idx < m->applied_idx) [[unlikely]] {
+            throw std::logic_error("konsens: the taken log ends below the applied index of the leader");
+        }
+        const auto decided_idx = read_highest_verified_decided_idx(t, m->decided_idx);
         if (!decided_idx) [[unlikely]] {
             return stop_voting(decided_idx.error());
         }
+        const auto decided_chain = read_the_taken_chain_crc(t, *decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
+        }
+        t.decided_idx = *decided_idx;
+        t.decided_chain_crc = *decided_chain;
+        const auto above = read_the_taken_entries(t, t.decided_idx, t.log_len());
+        if (!above) [[unlikely]] {
+            return stop_voting(above.error());
+        }
+        if (std::ranges::any_of(*above, entry_is_a_request)) {
+            leader_state_.taken = std::move(t);
+            return {};
+        }
+        return accept_the_taken_log(t.sync_idx, t.suffix, t.decided_idx, leader_state_.first_changed_idx);
+    }
+
+    std::expected<std::vector<entry>, std::error_code> read_the_taken_entries(const taken_log& t,
+                                                                               const std::uint64_t from,
+                                                                               const std::uint64_t to) const
+    {
+        if (from > to || to > t.log_len()) [[unlikely]] {
+            throw std::logic_error("konsens: a read of the taken log outside of its range");
+        }
+        auto own = read_range(*txn_, std::min(from, t.sync_idx), std::min(to, t.sync_idx));
+        if (!own) [[unlikely]] {
+            return own;
+        }
+        const auto first = std::max(from, t.sync_idx) - t.sync_idx;
+        const auto last = std::max(to, t.sync_idx) - t.sync_idx;
+        own->insert(own->end(), std::next(t.suffix.begin(), static_cast<std::ptrdiff_t>(first)),
+                    std::next(t.suffix.begin(), static_cast<std::ptrdiff_t>(last)));
+        return own;
+    }
+
+    result accept_the_selected_entries(const std::vector<entry>& selected)
+    {
+        if (state_ != std::pair{role::leader, phase::prepare} || !leader_state_.taken) [[unlikely]] {
+            throw std::logic_error("konsens: the leader accepts selected entries only while it selects them");
+        }
+        const auto t = *std::exchange(leader_state_.taken, std::nullopt);
+        const auto d = t.decided_idx;
+        const auto above = read_the_taken_entries(t, d, t.log_len());
+        if (!above) [[unlikely]] {
+            return stop_voting(above.error());
+        }
+        if (selected.size() > above->size()) [[unlikely]] {
+            throw std::logic_error("konsens: more selected entries than taken entries");
+        }
+        const auto same = std::ranges::mismatch(selected, *above);
+        const auto changed = static_cast<std::uint64_t>(std::distance(selected.begin(), same.in1));
+        const auto fc = changed == above->size() ? leader_state_.first_changed_idx : d + changed + 1;
+        const auto kept = std::min(t.sync_idx, fc - 1);
+        auto suffix = read_the_taken_entries(t, std::min(kept, d), d);
+        if (!suffix) [[unlikely]] {
+            return stop_voting(suffix.error());
+        }
+        const auto from = std::max(kept, d) - d;
+        suffix->insert(suffix->end(), std::next(selected.begin(), static_cast<std::ptrdiff_t>(from)), selected.end());
+        return accept_the_taken_log(kept, *suffix, d, fc);
+    }
+
+    result accept_the_taken_log(const std::uint64_t sync_idx, const std::vector<entry>& suffix,
+                                const std::uint64_t decided_idx, const std::uint64_t first_changed_idx)
+    {
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        write_or_throw(txn_->append_on_prefix(sync_idx, suffix));
+        lower_the_synced_len(sync_idx);
+        leader_state_.first_changed_idx = first_changed_idx;
         write_or_throw(txn_->set_accepted_round(leader_state_.n_leader));
         lower_the_synced_len_if_the_round_changes(m->accepted_round, leader_state_.n_leader);
-        write_or_throw(txn_->set_decided_index(*decided_idx));
+        write_or_throw(txn_->set_decided_index(decided_idx));
         if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
             return r;
         }
@@ -1652,9 +1749,10 @@ private:
         }
         const auto& mm = leader_state_.max_promise_meta;
         const auto& fm = leader_state_.get_promise_meta(to);
-        const auto valid = fm.n_accepted == leader_state_.n_leader ? fm.accepted_idx
-                           : fm.n_accepted == mm.n_accepted        ? std::min(mm.accepted_idx, fm.accepted_idx)
-                                                                   : fm.decided_idx;
+        const auto valid = std::min(fm.n_accepted == leader_state_.n_leader ? fm.accepted_idx
+                                    : fm.n_accepted == mm.n_accepted ? std::min(mm.accepted_idx, fm.accepted_idx)
+                                                                     : fm.decided_idx,
+                                    leader_state_.first_changed_idx - 1);
         auto sync = create_log_sync(valid, *m);
         if (!sync) [[unlikely]] {
             return stop_voting(sync.error());

@@ -202,6 +202,9 @@ struct work {
     std::uint64_t index;
     entry request;
     std::uint32_t entry_crc;
+    std::uint64_t decided_idx;
+    std::uint32_t decided_chain_crc;
+    log_sync base;
     friend bool operator==(const work&, const work&) = default;
 };
 
@@ -305,7 +308,9 @@ CBOR_DEFINE_TYPE(konsens::try_again, cbor::tag{35691}, CBOR_MEMBER(konsens::try_
 CBOR_DEFINE_TYPE(konsens::refused, cbor::tag{35692}, CBOR_MEMBER(konsens::refused, n),
                  CBOR_MEMBER(konsens::refused, index), CBOR_MEMBER(konsens::refused, reason));
 CBOR_DEFINE_TYPE(konsens::work, cbor::tag{35693}, CBOR_MEMBER(konsens::work, n), CBOR_MEMBER(konsens::work, index),
-                 CBOR_MEMBER(konsens::work, request), CBOR_MEMBER(konsens::work, entry_crc));
+                 CBOR_MEMBER(konsens::work, request), CBOR_MEMBER(konsens::work, entry_crc),
+                 CBOR_MEMBER(konsens::work, decided_idx), CBOR_MEMBER(konsens::work, decided_chain_crc),
+                 CBOR_MEMBER(konsens::work, base));
 CBOR_DEFINE_TYPE(konsens::build_request, cbor::tag{35694}, CBOR_MEMBER(konsens::build_request, nonce),
                  CBOR_MEMBER(konsens::build_request, from_idx));
 CBOR_DEFINE_TYPE(konsens::build_response, cbor::tag{35695}, CBOR_MEMBER(konsens::build_response, nonce),
