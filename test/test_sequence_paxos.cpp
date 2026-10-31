@@ -396,6 +396,21 @@ TEST_CASE("an accept sync of the accepted ballot does not shorten the log")
     CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).log_len == 1);
 }
 
+// Raft, Figure 2, AppendEntries step 3: a follower keeps the entries that it
+// holds and replaces them only at a conflict. An entry that the disk of the
+// follower changed is such a conflict, so a sync of the accepted ballot with
+// another entry at that index replaces it.
+TEST_CASE("an accept sync of the accepted ballot replaces an entry that differs")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{make_entry(9)}, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {2, 1}, 0, {{make_entry(1)}, 0}, 0}}));
+    CHECK(sp.get_accepted_idx() == 1);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).last_chain_crc == chain_of({make_entry(1)}, 1));
+}
+
 // follower.rs:196-227 check_valid_ballot: a message of a lower ballot gets
 // NotAccepted with the promise, so that the old leader learns of it.
 TEST_CASE("a message of a lower ballot gets not_accepted")

@@ -54,7 +54,11 @@ AppendEntries receiver step 3, https://raft.github.io/raft.pdf; Students'
 Guide to Raft, https://thesquareplanet.com/blog/students-guide-to-raft/;
 openraft log replication, which calls the truncation unsafe). Inside one
 ballot the log of the leader only grows, so a sync of that ballot has no
-conflict with the own log.
+conflict with the own log of a sound disk. Raft finds a conflict by the
+term of each entry; here the chain CRC of the own log at the end of the
+sync is compared with the chain CRC of the own prefix extended by the
+suffix of the sync (`holds_the_sync_already`). An entry that a lying disk
+changed is a conflict, and the sync replaces it.
 
 Review 2026-10-31 (one round, approve, nothing blocking): applied
 items 3, 5, 6 and 7. Open from it: after a restart, `applied_sync_` is

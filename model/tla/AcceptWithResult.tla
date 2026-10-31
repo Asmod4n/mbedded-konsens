@@ -294,7 +294,7 @@ HandleAcceptSync(j, m) ==
            L == SubSeq(M, 1, a)
            d == Min(a, Max(cur[j].dec, m.dec))
            own == Len(cur[j].log)
-           same == ~NoKeepOnSameBallot /\ cur[j].acc = m.b /\ own >= Len(M)
+           same == ~NoKeepOnSameBallot /\ cur[j].acc = m.b /\ own >= Len(M) /\ SubSeq(cur[j].log, 1, Len(M)) = M
        IN /\ lead' = [lead EXCEPT ![j] = NoLead]
           /\ IF same
              THEN /\ Commit(j, [cur[j] EXCEPT !.dec = Max(@, Min(m.dec, own))])
