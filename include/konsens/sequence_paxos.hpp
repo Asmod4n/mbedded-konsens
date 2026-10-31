@@ -1659,9 +1659,8 @@ private:
         return accept_the_taken_log(t.sync_idx, t.suffix, t.decided_idx, leader_state_.first_changed_idx);
     }
 
-    std::expected<std::vector<entry>, std::error_code> read_the_taken_entries(const taken_log& t,
-                                                                               const std::uint64_t from,
-                                                                               const std::uint64_t to) const
+    std::expected<std::vector<entry>, std::error_code>
+    read_the_taken_entries(const taken_log& t, const std::uint64_t from, const std::uint64_t to) const
     {
         if (from > to || to > t.log_len()) [[unlikely]] {
             throw std::logic_error("konsens: a read of the taken log outside of its range");
@@ -1750,8 +1749,8 @@ private:
         const auto& mm = leader_state_.max_promise_meta;
         const auto& fm = leader_state_.get_promise_meta(to);
         const auto valid = std::min(fm.n_accepted == leader_state_.n_leader ? fm.accepted_idx
-                                    : fm.n_accepted == mm.n_accepted ? std::min(mm.accepted_idx, fm.accepted_idx)
-                                                                     : fm.decided_idx,
+                                    : fm.n_accepted == mm.n_accepted        ? std::min(mm.accepted_idx, fm.accepted_idx)
+                                                                            : fm.decided_idx,
                                     leader_state_.first_changed_idx - 1);
         auto sync = create_log_sync(valid, *m);
         if (!sync) [[unlikely]] {

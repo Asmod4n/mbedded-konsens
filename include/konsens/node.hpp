@@ -1510,10 +1510,14 @@ private:
                 return seq_paxos_.stop_voting(base.error());
             }
             for (const auto& [index, e] : tasks_) {
-                execute_verify_outgoing_.emplace_back(
-                    paxos_message{seq_paxos_.get_pid(), f,
-                                  work{leader.n_leader, index, e, compute_entry_crc(index, e), d, t.decided_chain_crc,
-                                       {*base, from}}});
+                execute_verify_outgoing_.emplace_back(paxos_message{seq_paxos_.get_pid(), f,
+                                                                    work{leader.n_leader,
+                                                                         index,
+                                                                         e,
+                                                                         compute_entry_crc(index, e),
+                                                                         d,
+                                                                         t.decided_chain_crc,
+                                                                         {*base, from}}});
             }
         }
         return {};
@@ -1843,9 +1847,8 @@ private:
         return {e, std::move(r), std::move(bytes), crc};
     }
 
-    std::expected<std::optional<std::uint64_t>, std::error_code> keep_the_tasks(const ballot promise,
-                                                                                const std::uint64_t applied_idx,
-                                                                                const std::uint64_t log_len)
+    std::expected<std::optional<std::uint64_t>, std::error_code>
+    keep_the_tasks(const ballot promise, const std::uint64_t applied_idx, const std::uint64_t log_len)
     {
         if (tasks_ballot_ != promise) {
             tasks_.clear();

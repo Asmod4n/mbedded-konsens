@@ -116,6 +116,85 @@ TEST_CASE("the leader selects the result of a majority and asks each other node 
     CHECK(s.select_results({0, refs}).empty());
 }
 
+// Plan-accept-carries-the-result 3.6: a new leader keeps the taken entry
+// with its bytes when a majority agrees with its result. A new done record
+// would list other nodes, so its bytes would change an entry that may be
+// chosen.
+TEST_CASE("the selection keeps a taken entry that a majority agrees with, with its bytes")
+{
+    const std::vector<entry> log{request(1)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto taken = request(1);
+    const auto r = at(1, 7);
+    taken.result = r.result;
+    taken.result_crc = r.crc;
+    taken.out = {3};
+    auto s = konsens::selection::with(leader_ballot, three_nodes, 0, std::nullopt, std::vector<entry>{taken});
+    s.count_answer(1, first_answer({at(1, 7)}));
+    s.count_answer(2, first_answer({at(1, 7)}));
+    s.count_answer(3, first_answer({at(1, 8)}));
+    CHECK(s.select_results({0, refs}).empty());
+    CHECK(s.find_the_done_records({0, refs}) == std::vector<entry>{taken});
+}
+
+// Plan-accept-carries-the-result 3.5: a taken entry whose result no
+// majority agrees with is replaced by the result that a majority agrees on.
+TEST_CASE("the selection replaces a taken entry that no majority agrees with")
+{
+    const std::vector<entry> log{request(1)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto taken = request(1);
+    const auto r = at(1, 9);
+    taken.result = r.result;
+    taken.result_crc = r.crc;
+    auto s = konsens::selection::with(leader_ballot, three_nodes, 0, std::nullopt, std::vector<entry>{taken});
+    s.count_answer(1, first_answer({at(1, 7)}));
+    s.count_answer(2, first_answer({at(1, 7)}));
+    s.count_answer(3, first_answer({at(1, 9)}));
+    static_cast<void>(s.select_results({0, refs}));
+    const auto done = s.find_the_done_records({0, refs});
+    REQUIRE(done.size() == 1);
+    CHECK(done[0].result == result_of(7));
+    CHECK(done[0] != taken);
+}
+
+// Plan-accept-carries-the-result 3.6 and 9.3: a taken rejected entry stays
+// with its bytes when the selection rejects the index too.
+TEST_CASE("the selection keeps a taken rejected entry when no result has a majority")
+{
+    const std::vector<entry> log{request(1)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto taken = request(1);
+    taken.rejected = true;
+    taken.result = konsens::encode_chosen_results(
+        std::vector<konsens::chosen_result>{{at(1, 4), 1, {}}, {at(1, 5), 2, {}}, {at(1, 6), 3, {}}});
+    taken.result_crc = konsens::compute_result_crc(1, taken.result);
+    auto s = konsens::selection::with(leader_ballot, three_nodes, 0, std::nullopt, std::vector<entry>{taken});
+    s.count_answer(1, first_answer({at(1, 7)}));
+    s.count_answer(2, first_answer({at(1, 8)}));
+    s.count_answer(3, first_answer({at(1, 9)}));
+    static_cast<void>(s.select_results({0, refs}));
+    CHECK(s.find_the_done_records({0, refs}) == std::vector<entry>{taken});
+}
+
+// Plan-accept-carries-the-result 3.5: the answers for a new ballot run on
+// the selected results, so a rejected done record may follow a selected
+// request.
+TEST_CASE("a rejected done record may follow a selected request")
+{
+    const std::vector<entry> log{request(1), request(2)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto s = new_selection();
+    s.count_answer(1, first_answer({at(1, 7), at(2, 4)}));
+    s.count_answer(2, first_answer({at(1, 7), at(2, 5)}));
+    s.count_answer(3, first_answer({at(1, 7), at(2, 6)}));
+    static_cast<void>(s.select_results({0, refs}));
+    const auto done = s.find_the_done_records({0, refs});
+    REQUIRE(done.size() == 2);
+    CHECK_FALSE(done[0].rejected);
+    CHECK(done[1].rejected);
+}
+
 // Plan 2.6.3: without a majority that agrees, nothing is selected, and the
 // answer that completes the majority selects.
 TEST_CASE("a result without a majority is not selected")

@@ -259,7 +259,13 @@ std::vector<message> every_kind()
         paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 21}),
         paxos(konsens::try_again{ballot_from(10), 20}),
         paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::result_differs}),
-        paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::client_request, payload_of({4}), 53, 54}, 21, 22, 23, {{entry{entry_kind::normal}}, 24}}),
+        paxos(konsens::work{ballot_from(10),
+                            20,
+                            entry{entry_kind::client_request, payload_of({4}), 53, 54},
+                            21,
+                            22,
+                            23,
+                            {{entry{entry_kind::normal}}, 24}}),
         paxos(konsens::accept_decide{ballot_from(10),
                                      {20, 21},
                                      22,
@@ -360,7 +366,9 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::answer{ballot_from(10), 20, 21, 22, {}, 0}), 13},
         {paxos(konsens::try_again{ballot_from(10), 20}), 14},
         {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 15},
-        {paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::normal}, 21, 22, 23, {{entry{entry_kind::normal}}, 24}}), 16},
+        {paxos(konsens::work{
+             ballot_from(10), 20, entry{entry_kind::normal}, 21, 22, 23, {{entry{entry_kind::normal}}, 24}}),
+         16},
         {paxos(konsens::build_request{10, 20}), 17},
         {paxos(konsens::build_response{10, 20, {}, 30, 40, 50}), 18},
         {paxos(konsens::build_refused{10}), 19},
@@ -574,16 +582,25 @@ TEST_CASE("work with a done record gives entry_field_of_another_kind")
     constexpr std::uint8_t work_kind = 16;
     const auto work_bytes = [](const std::vector<std::byte>& result, const bool rejected) {
         return header_bytes(work_kind, paxos_from, paxos_to) +
-               packed(konsens::work{ballot_from(10), 20,
+               packed(konsens::work{ballot_from(10),
+                                    20,
                                     entry{.kind = entry_kind::client_request,
                                           .session = 1,
                                           .request_number = 2,
                                           .result = result,
                                           .rejected = rejected},
-                                    21, 22, 23, {{entry{entry_kind::normal}}, 24}});
+                                    21,
+                                    22,
+                                    23,
+                                    {{entry{entry_kind::normal}}, 24}});
     };
-    CHECK(decoded_message(work_bytes({}, false)) ==
-          paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::client_request, {}, 1, 2}, 21, 22, 23, {{entry{entry_kind::normal}}, 24}}));
+    CHECK(decoded_message(work_bytes({}, false)) == paxos(konsens::work{ballot_from(10),
+                                                                        20,
+                                                                        entry{entry_kind::client_request, {}, 1, 2},
+                                                                        21,
+                                                                        22,
+                                                                        23,
+                                                                        {{entry{entry_kind::normal}}, 24}}));
     CHECK(error_of(work_bytes(payload_of({1}), false)) == wire_errc::entry_field_of_another_kind);
     CHECK(error_of(work_bytes({}, true)) == wire_errc::entry_field_of_another_kind);
 }

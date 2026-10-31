@@ -220,8 +220,9 @@ std::vector<try_again_target> selection::select_results(const leader_log& log)
             const auto* taken = taken_at(q);
             if (taken != nullptr && entry_is_a_request(*taken) && !taken->rejected &&
                 count_the_agreeing(counted, q, taken->result) >= majority()) {
-                selected_.insert_or_assign(q, selected_result{{q, taken->result, taken->result_crc},
-                                                              compute_result_crc(q, taken->result), 0, chain});
+                selected_.insert_or_assign(
+                    q, selected_result{
+                           {q, taken->result, taken->result_crc}, compute_result_crc(q, taken->result), 0, chain});
                 kept_.insert(q);
                 chain = extend_base_crc(chain, q, selected_.at(q).result_crc);
                 for (auto& w : walks) {
@@ -345,5 +346,4 @@ bool selection::ran_again(const node_id node, const std::uint64_t index) const
 {
     return again_.contains({node, index});
 }
-
 }
