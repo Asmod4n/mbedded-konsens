@@ -1,10 +1,10 @@
 #!/bin/bash
 for d in /z/b /zn1/b /zn2/b /zn3/b; do [ -w "$d" ] || { echo "the bed $d is not mounted or not writable"; exit 1; }; done
-source /b/cluster2.sh
+source /b/cluster3.sh
 cpu_of() { local u=0 s=0; for p in $(pgrep -u "$(id -u)" -f "bin/$KONSENSD --config"); do read a b < <(awk '{print $14, $15}' /proc/$p/stat); u=$((u+a)); s=$((s+b)); done; echo "$u $s"; }
 for round in $(seq 1 ${ROUNDS:-3}); do
  for size in ${SIZES:-64}; do
- for conc in 1 64; do
+ for conc in 64; do
   for k in ${ARMS}; do
    export KONSENSD=$k
    export NODE_EXTRA="sync_by_the_caller = true"
