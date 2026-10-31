@@ -43,13 +43,12 @@ in one file, like a lockfile.
 
 1. New file `cmake/dependencies.cmake`. It holds one
    `FetchContent_Declare` for each library, with `GIT_REPOSITORY` and
-   `GIT_TAG` set to the full commit hash, and nothing else:
+   `GIT_TAG` set to the full commit hash:
 
        FetchContent_Declare(mbedded-cbor
            GIT_REPOSITORY https://github.com/Asmod4n/mbedded-cbor
            GIT_TAG 9126904f11c51cd791d7ef80b76ba982fc66caa1
-           SYSTEM
-           FIND_PACKAGE_ARGS CONFIG)
+           SYSTEM)
        FetchContent_Declare(slipstreamio
            GIT_REPOSITORY https://github.com/Asmod4n/slipstreamIO
            GIT_TAG 50fea675302c1029f6036743a9c9c6a6d9cbc659
@@ -66,8 +65,8 @@ in one file, like a lockfile.
    `add_subdirectory(deps/mbedded-cbor EXCLUDE_FROM_ALL)`, with
    `CBOR_INSTALL OFF` as before. Every use of the target `mbedded-cbor`
    becomes `mbedded-cbor::mbedded-cbor`, because the installed package
-   has only that name. `SYSTEM` in the declaration gives the headers
-   `-isystem`; line 55 stays as it is.
+   has only that name; line 55 too. `SYSTEM` in the declaration gives
+   the headers `-isystem`.
 3. Inside `if(KONSENS_PROGRAM)`:
    `FetchContent_MakeAvailable(slipstreamio mruby-webmachine)`.
    `KONSENS_SLIPSTREAM` becomes `${slipstreamio_SOURCE_DIR}`, and line
@@ -77,8 +76,8 @@ in one file, like a lockfile.
 5. README.md: the table of requirements names
    `cmake/dependencies.cmake` for mbedded-cbor. The section
    Installation says that the configure step fetches it, that
-   `-DFETCHCONTENT_SOURCE_DIR_MBEDDED-CBOR=<dir>` takes a local tree,
-   and that an installed mbedded-cbor is used first.
+   and that `-DFETCHCONTENT_SOURCE_DIR_MBEDDED-CBOR=<dir>` takes a
+   local tree.
    `git submodule update --init --recursive` stays for crc32c and
    libhydrogen.
 6. Containerfile: `git` and `ca-certificates` join the packages of the
@@ -91,22 +90,45 @@ in one file, like a lockfile.
   `.recover` case, which the sqlite3 shell of Ubuntu cannot run.
 - The same with `KONSENS_PROGRAM=ON`, if toml++ and ada are packages
   of this machine; otherwise this check is marked as not run.
-- mbedded-cbor installed into a prefix in the scratchpad, then
-  konsens configured with `CMAKE_PREFIX_PATH` on it: the configure log
-  says that the package was found, and the build passes.
 - `-DFETCHCONTENT_SOURCE_DIR_MBEDDED-CBOR=/home/user/mbedded-cbor`:
   the configure log names that directory.
 - `git grep -n "deps/mbedded-cbor\|deps/slipstreamIO\|deps/mruby-webmachine"`
-  finds nothing outside doc/ history files.
+  finds nothing outside doc/ and bench/results/.
 
-## 4. Not in this change
+## 4. Review (second Claude agent, 2026-10-31) and changes
+
+The review asked for changes. Taken:
+
+1. No `FIND_PACKAGE_ARGS`. An installed mbedded-cbor of any version
+   would replace the pin, against the lockfile. A local tree comes
+   through `FETCHCONTENT_SOURCE_DIR_MBEDDED-CBOR`.
+2. Line 55 also names `mbedded-cbor::mbedded-cbor`.
+3. The grep check excludes bench/results/: recorded compile commands
+   name `deps/mbedded-cbor`.
+4. The program path needs toml++ and ada; ada is no package of this
+   machine, and podman is not installed here. The build with
+   `KONSENS_PROGRAM=ON` and the Containerfile stay not run in this
+   session.
+5. The fetch is recursive, as the rule says: mbedded-cbor brings 49 MB
+   (test vectors), mruby-webmachine 34 MB. Each new build directory
+   fetches again. The remedy is one shared `FETCHCONTENT_BASE_DIR`,
+   or `FETCHCONTENT_SOURCE_DIR_<NAME>` on a local clone.
+6. The pin 8c76f51 of mruby-webmachine is reachable only from the
+   branch `integration`. A rewrite of that branch breaks the build at
+   this pin.
+7. `EXCLUDE_FROM_ALL` is gone. In a declaration it needs CMake 3.28;
+   mbedded-cbor defines no target to build when it is not the top
+   level, so nothing more is built.
+8. The move of mbedded-cbor to 9126904 is a commit of its own.
+
+## 5. Not in this change
 
 - No watch of the three pins. A bump is one edit of
   `cmake/dependencies.cmake`.
 - crc32c and libhydrogen stay submodules.
 - No change to the code of konsens.
 
-## 5. After the merge
+## 6. After the merge
 
 Issue #2 is closed with a link to the commit: mbedded-cbor is no
 longer a submodule. The owner can delete the branch
