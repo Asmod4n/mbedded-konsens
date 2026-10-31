@@ -1816,7 +1816,9 @@ Wipe(i) ==
 \* doc/plan-start-checks.md section 3. A node restarts after a crash and
 \* reads a damaged durable state of one kind. Provisional names:
 \* StorageFault, StartChecks, the kinds.
-\* missing_entry: LMDB lost the key k. LogWithout is an approximation of
+\* The meta record is one row with one CRC, so a single field of it is never
+\* lost alone; a damaged record is a CRC error, and an earlier record is
+\* stale_meta. missing_entry: the store lost the row k (a lost page). LogWithout is an approximation of
 \* what the node reads without the checks: read_entries works by key, so a
 \* range read up to the count returns the keys below the count, and the
 \* last key is not read. Only the mutation StartCheckMissing uses it; with
@@ -1840,14 +1842,6 @@ DamagedStates(i, kind) ==
   LET d == DurableOf(i) IN
   CASE kind = "missing_entry" ->
          {[d EXCEPT !.log = LogWithout(log[i], k)] : k \in 1..Len(log[i])}
-    [] kind = "missing_accepted" ->
-         IF Len(log[i]) > 0 /\ n_accepted[i] # DefaultBallot
-         THEN {[d EXCEPT !.n_accepted = DefaultBallot]} ELSE {}
-    [] kind = "missing_promise" ->
-         IF promise[i] # DefaultBallot
-         THEN {[d EXCEPT !.promise = DefaultBallot]} ELSE {}
-    [] kind = "missing_decided" ->
-         IF decided_idx[i] > 0 THEN {[d EXCEPT !.decided_idx = 0]} ELSE {}
     [] kind = "stale_meta" ->
          {StaleOf(i, kind, q) : q \in past_durable[i]} \ {d}
     [] kind = "rollback" ->
@@ -1877,7 +1871,6 @@ Detected(i, kind, d, k) ==
 \* @type: (Int, Str, Int, $durable, $durable, $mark) => Bool;
 StepFinds(i, kind, k, q, d, h) ==
   \/ kind = "missing_entry" /\ (k < Len(log[i]) \/ ChainCheck)
-  \/ MetaRecord /\ kind \in {"missing_accepted", "missing_promise", "missing_decided"}
   \/ MetaRecord /\ kind = "stale_meta" /\ q.log # log[i]
   \/ HighWater /\ BelowMark(Mark(d), h)
   \/ ChecksFind(d)
@@ -3547,8 +3540,7 @@ ASSUME MaxInFlight \in Nat
 ASSUME StateRepair \in {"keep", "copy"}
 ASSUME StartDamageCounts \in BOOLEAN
 ASSUME RepairFromPeer \in BOOLEAN
-ASSUME StorageFaultKind \subseteq {"missing_entry", "missing_accepted", "missing_promise",
-                                   "missing_decided", "stale_meta", "rollback"}
+ASSUME StorageFaultKind \subseteq {"missing_entry", "stale_meta", "rollback"}
 ASSUME StaleReadNode \in BOOLEAN
 ASSUME ClientSessions \in BOOLEAN
 ASSUME ReadIndex \in BOOLEAN
