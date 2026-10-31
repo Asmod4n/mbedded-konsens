@@ -69,7 +69,10 @@ the go.
 4. The leader counts the refusals of the fast path for each index in
    its ballot, outside the selection. When a majority of the
    configuration refused index `k`, the leader takes a higher ballot. It
-   does not throw `refused_by_a_majority` in the fast path. In the
+   does not throw `refused_by_a_majority` in the fast path. The ballot
+   leader election has no call for this today (ballot_leader_election.hpp:
+   `handle`, `new_hb_round`, `update_leader`, `update_happiness`,
+   `check_takeover`); a new call is an owner question (9.2). In the
    selection of 3.5 that throw stays as now.
 5. New ballot. After a majority of promises, the leader takes the log of
    the promises as now, and `d`, the highest decided index of the
@@ -100,7 +103,12 @@ the go.
    `listed_result_differs` now (fact 1.3a: today it applies `k` with no
    check).
 9. The kept prefix of 1.3c is bounded: `valid` is at most the first index
-   above `d` whose entry the selection changed, minus one. Without the
+   above `d` whose entry the selection changed, minus one. "Changed" means
+   that the bytes of the entry differ, not only its result (an entry
+   selected again can differ in `out` or `rejected`). The leader keeps its
+   own log by the same bound: `handle_majority_promises` writes its log
+   from that index on with the selected entries (`append_on_prefix`,
+   sequence_paxos.hpp:1611-1614). Without the
    bound, a follower with the old entry keeps it, votes for it in the new
    ballot, and decides it (model mutation `NoRepairBound`).
 
@@ -157,10 +165,11 @@ the go.
 6. Covers, each must be reached: a request first proposed with a wrong
    result is chosen with the right result; a follower refuses; an entry
    is chosen after a crash.
-7. Runs: TLC breadth-first with small bounds (3 nodes, 2 requests, 3
-   ballots, log of 2, at most one crash), one run per configuration;
-   simulation only where breadth-first does not end. Results go to
-   model/results.
+7. Runs: TLC breadth-first with small bounds (3 nodes, 1 or 2 requests,
+   2 to 4 ballots, a log of 1 or 2, at most one crash), one run per
+   configuration. With 4 ballots the owner of ballot 1 leads again in
+   ballot 4, so a leader that holds a repaired entry is reached. Results
+   go to model/results.
 
 ## 6. Code (after the go)
 
@@ -207,9 +216,22 @@ the go.
    a log of 2 and no crash). Notes: 3.7 alone (mutation `NoCheckAtSync`
    alone), the code of 6.2c.
 
+2. Round 2 (2026-10-31): approve with fixes. Blocking: the leader's own
+   log kept a repaired entry (now 3.9, FinishSelection keeps the own
+   prefix by Keep, runs with 4 ballots). Should fix: no run had a second
+   change of leader (now 5.7). Notes: "changed" means the entry bytes
+   (3.9); the rejected entry stays an open model item (9.3); the call of
+   3.4 (9.2); a node whose prefix up to `d` differs never answers, which
+   costs liveness only: the leader syncs the prefix up to `d` to it first
+   (provisional).
+
 ## 9. Owner questions
 
 1. The name `AcceptWithResult` of the module has no source.
+2. How the leader takes a higher ballot after a majority refused (3.4).
+   Proposal: a call of the ballot leader election that raises the own
+   ballot, as `check_takeover` does for an unhappy node.
+3. Open model item: a `rejected` selection over a chosen entry.
 
 ## 10. Data on the disk
 

@@ -220,14 +220,19 @@ Select(i) ==
                         THEN repaired \cup {<<VIdx(i), lead[i].taken[VIdx(i)].req>>} ELSE repaired
     /\ UNCHANGED <<cur, dur, queue, status, answers, msgs, chosen, crashes, faulty, badAt, voted>>
 
-\* Every entry above d is selected: the leader syncs.
+\* Every entry above d is selected: the leader syncs. The leader keeps its
+\* own prefix by the rule of the followers (append_on_prefix in
+\* handle_majority_promises, sequence_paxos.hpp) and takes the rest.
 FinishSelection(i) ==
     /\ status[i] = "running"
     /\ lead[i].phase = "verify"
     /\ VIdx(i) > Len(lead[i].taken)
     /\ LET L == VBase(i)
            fc == FirstChanged(lead[i].taken, lead[i].d, lead[i].sel)
-       IN /\ Commit(i, [cur[i] EXCEPT !.log = L, !.acc = lead[i].b, !.dec = lead[i].d])
+           self == CHOOSE q \in lead[i].promises : q.from = i
+           k == Min(Keep(self, lead[i].mmacc, lead[i].mmlen, fc), Len(cur[i].log))
+           own == SubSeq(cur[i].log, 1, k) \o SubSeq(L, k + 1, Len(L))
+       IN /\ Commit(i, [cur[i] EXCEPT !.log = own, !.acc = lead[i].b, !.dec = lead[i].d])
           /\ lead' = [lead EXCEPT ![i].phase = "accept", ![i].fc = fc]
           /\ SendAll(SyncMessages(i, lead[i].b, lead[i].promises, L, lead[i].d,
                                    lead[i].mmacc, lead[i].mmlen, fc))
