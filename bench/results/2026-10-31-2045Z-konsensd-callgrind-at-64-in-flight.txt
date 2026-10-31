@@ -27,4 +27,4 @@ Result
 - On a follower, half of the instructions run inside sqlite3_step. The other half is our code and libc: CBOR decode about 16 %, malloc and free about 13 %, CRC32C about 3 %.
 - Work outside SQLite that a pool could take: decode, CRC and the allocation for them, about 30 % of the instructions of a follower. This is a share of instructions, not of time, and not a gain.
 - generic_read of a byte vector costs 8.2 % self on a follower. Not checked: whether it reads byte by byte.
-- The memset under sqlite3PagerGet is counted per byte of rep stos. Not checked: its share of time.
+- The memset under sqlite3PagerGet clears pages. If it uses rep stos for a page, valgrind counts each iteration, and its share of Ir is too high. This is inferred, not checked, and its share of time is not checked.
