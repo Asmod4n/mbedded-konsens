@@ -126,6 +126,14 @@ with one read-only SQLite reader per thread in WAL. It measures the time
 of one round trip and of a read transaction on a second thread. g++ 16,
 g++ 15 and clang 22. The result goes into this plan before the build.
 
+Result (bench/results/2026-10-31-1935Z-msg-ring-round-trip.txt): one
+round to one pool thread and back takes 23.8 to 24.3 us (median of 4
+p50), to two pool threads 30.0 to 31.4 us, in all three builds. A read
+transaction with one SELECT on the pool thread adds about 1 us. A first
+form of the file closed the writing connection before the readers
+opened; then a reader of two at the same time sometimes found no row.
+With the writing connection open, as in konsensd, no run failed.
+
 ## 5. Names
 
 Provisional, from libdispatch (the owner named it): `dispatch_apply`
