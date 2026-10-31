@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <expected>
 #include <iterator>
 #include <limits>
@@ -14,6 +15,7 @@
 #include <span>
 #include <stdexcept>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -23,6 +25,7 @@
 #include "konsens/client.hpp"
 #include "konsens/message.hpp"
 #include "konsens/persistent_storage.hpp"
+#include "konsens/ring.hpp"
 #include "konsens/selection.hpp"
 #include "konsens/sequence_paxos.hpp"
 #include "konsens/state_machine.hpp"
@@ -53,6 +56,7 @@ struct node_config {
     std::vector<node_id> build_from{};
     bool first_start{};
     bool sync_by_the_caller{};
+    std::size_t check_threads{};
 };
 
 struct sync_request {
@@ -133,6 +137,21 @@ private:
     std::uint64_t number_;
 };
 
+template <typename S>
+concept storage_with_readers = storage<S> && requires(const S& s) {
+    { s.open_a_reader() };
+};
+
+template <typename S>
+struct reader_of {
+    using type = std::monostate;
+};
+
+template <storage_with_readers S>
+struct reader_of<S> {
+    using type = typename decltype(std::declval<const S&>().open_a_reader())::value_type;
+};
+
 template <storage S, state_machine M>
 class node {
 public:
@@ -185,6 +204,17 @@ public:
         }
         auto ble = ballot_leader_election::with(ble_config_of(config), *promise);
         node n(config, std::move(*sp), std::move(own_storage), std::move(ble), std::move(machine), nonce);
+        if (config.check_threads != 0) {
+            if constexpr (storage_with_readers<S>) {
+                auto pool = start_the_check_pool(config.check_threads, n.seq_paxos_.internal_storage_);
+                if (!pool) [[unlikely]] {
+                    return std::unexpected(pool.error());
+                }
+                n.pool_ = std::move(*pool);
+            } else {
+                throw std::logic_error("konsens: check_threads needs a storage that opens a reader per thread");
+            }
+        }
         n.build_started_ = n.seq_paxos_.building();
         if (n.seq_paxos_.votes()) {
             if (auto r = n.check_the_applied_state();
@@ -1129,6 +1159,143 @@ private:
         std::uint64_t log_len() const { return applied_idx + done.size(); }
     };
 
+    struct check_job {
+        const node* checker;
+        done_log log;
+        std::uint64_t loop_applied_idx;
+        std::span<const std::uint64_t> indexes;
+        std::span<const std::span<const std::byte>> owns;
+    };
+
+    struct check_answer {
+        std::vector<std::optional<refusal_reason>> reasons;
+        std::exception_ptr fault;
+        std::optional<std::error_code> read_failure;
+    };
+
+    struct check_thread {
+        ring jobs;
+        typename reader_of<S>::type reader;
+        const check_job* job{};
+        check_answer answer;
+        std::jthread thread;
+    };
+
+    static constexpr std::uint64_t stop_job = std::numeric_limits<std::uint64_t>::max();
+    static constexpr unsigned jobs_in_flight_per_thread = 2;
+
+    struct check_pool {
+        ring answers;
+        std::vector<std::unique_ptr<check_thread>> threads;
+
+        explicit check_pool(ring a) noexcept : answers{std::move(a)} {}
+        check_pool(const check_pool&) = delete;
+        check_pool& operator=(const check_pool&) = delete;
+
+        ~check_pool()
+        {
+            for (auto& t : threads) {
+                if (!answers.msg_ring(t->jobs, stop_job)) [[unlikely]] {
+                    std::terminate();
+                }
+            }
+        }
+    };
+
+    template <typename T>
+    static T value_or_throw(std::expected<T, std::error_code> r, const char* const what)
+    {
+        if (!r) [[unlikely]] {
+            throw ring_error(r.error(), what);
+        }
+        return std::move(*r);
+    }
+
+    static void throw_if_the_ring_failed(const std::expected<void, std::error_code>& r, const char* const what)
+    {
+        if (!r) [[unlikely]] {
+            throw ring_error(r.error(), what);
+        }
+    }
+
+    static std::expected<std::unique_ptr<check_pool>, std::error_code>
+    start_the_check_pool(const std::size_t count, const S& storage)
+    {
+        auto answers = ring::with(static_cast<unsigned>(count));
+        if (!answers) [[unlikely]] {
+            return std::unexpected(answers.error());
+        }
+        auto pool = std::make_unique<check_pool>(std::move(*answers));
+        for (std::size_t i = 0; i < count; ++i) {
+            auto jobs = ring::with(jobs_in_flight_per_thread);
+            if (!jobs) [[unlikely]] {
+                return std::unexpected(jobs.error());
+            }
+            auto reader = storage.open_a_reader();
+            if (!reader) [[unlikely]] {
+                return std::unexpected(reader.error());
+            }
+            pool->threads.push_back(std::make_unique<check_thread>(std::move(*jobs), std::move(*reader)));
+            auto& t = *pool->threads.back();
+            t.thread = std::jthread(serve_check_jobs, std::ref(t), std::cref(pool->answers));
+        }
+        return pool;
+    }
+
+    static void serve_check_jobs(check_thread& t, const ring& answers)
+    {
+        for (;;) {
+            const auto id = value_or_throw(t.jobs.wait_cqe(), "konsens: a check thread failed to wait for a job");
+            if (id == stop_job) {
+                return;
+            }
+            t.answer = t.job->checker->run_the_check_job(*t.job, t.reader);
+            throw_if_the_ring_failed(t.jobs.msg_ring(answers, id), "konsens: a check thread failed to answer");
+        }
+    }
+
+    check_answer run_the_check_job(const check_job& j, const typename reader_of<S>::type& r) const
+    {
+        check_answer a;
+        a.reasons.resize(j.indexes.size());
+        try {
+            auto t = r.begin_read_only();
+            if (!t) [[unlikely]] {
+                a.read_failure = t.error();
+                return a;
+            }
+            const auto m = t->get_meta();
+            if (!m) [[unlikely]] {
+                a.read_failure = m.error();
+                return a;
+            }
+            if (m->applied_idx < j.log.applied_idx || m->applied_idx > j.loop_applied_idx) [[unlikely]] {
+                throw std::logic_error("konsens: a check thread reads an applied index outside the step");
+            }
+            write_set<typename S::read_only_transaction> base{*t};
+            judge_a_range(j, m->applied_idx, base, a);
+        } catch (...) {
+            a.fault = std::current_exception();
+        }
+        return a;
+    }
+
+    template <typename W>
+    void judge_a_range(const check_job& j, const std::uint64_t base_applied_idx, W& base, check_answer& a) const
+    {
+        auto below = base_applied_idx + 1;
+        for (std::size_t i = 0; i < j.indexes.size(); ++i) {
+            const auto k = j.indexes[i];
+            write_the_done_results(j.log, below, k, base);
+            below = k;
+            const done_log b{j.log.applied_idx, j.log.done.first(k - 1 - j.log.applied_idx)};
+            a.reasons[i] = judge_the_done_record(b, j.log.done[k - 1 - j.log.applied_idx], j.owns[i], base);
+            if (a.reasons[i]) {
+                return;
+            }
+        }
+    }
+
     result propose_a_request(entry e)
     {
         if (seq_paxos_.get_state() == std::pair{role::leader, phase::accept}) {
@@ -1204,13 +1371,27 @@ private:
         if (refusal_ && refusal_->n != m->promise) {
             refusal_.reset();
         }
-        const auto first = std::min(seq_paxos_.get_verified_idx(), m->applied_idx);
+        auto first = std::min(seq_paxos_.get_verified_idx(), m->applied_idx);
+        std::uint64_t committed_applied_idx = m->applied_idx;
+        if (pool_) {
+            committed_applied_idx = read_the_committed_meta().applied_idx;
+            first = std::min(first, committed_applied_idx);
+        }
         const auto tail = seq_paxos_.read_the_open_log(first, m->log_len);
         if (!tail) [[unlikely]] {
             return seq_paxos_.stop_voting(tail.error());
         }
         const auto at = [&tail, first](const std::uint64_t k) -> const entry& { return tail->entries[k - first - 1]; };
         auto verified = seq_paxos_.get_verified_idx();
+        std::map<std::uint64_t, std::optional<refusal_reason>> verdicts;
+        if (pool_) {
+            const done_log log{committed_applied_idx, tail->entries.subspan(committed_applied_idx - first)};
+            auto judged = judge_on_the_pool(log, *m, verified);
+            if (!judged) [[unlikely]] {
+                return seq_paxos_.stop_voting(judged.error());
+            }
+            verdicts = std::move(*judged);
+        }
         std::optional<std::uint64_t> passed;
         std::optional<refusal_reason> reason;
         std::optional<base_write_set> base;
@@ -1220,7 +1401,18 @@ private:
             if (index > m->log_len || (refusal_ && refusal_->index == index && index > m->applied_idx)) {
                 break;
             }
-            if (index > m->applied_idx) {
+            if (index > m->applied_idx && pool_) {
+                if (entry_is_a_request(at(index))) {
+                    const auto v = verdicts.find(index);
+                    if (v == verdicts.end()) [[unlikely]] {
+                        throw std::logic_error("konsens: the check pool has no verdict for an index of the step");
+                    }
+                    reason = v->second;
+                    if (reason) {
+                        break;
+                    }
+                }
+            } else if (index > m->applied_idx) {
                 const done_log b{m->applied_idx,
                                  tail->entries.subspan(m->applied_idx - first, index - 1 - m->applied_idx)};
                 if (!base) {
@@ -1253,6 +1445,82 @@ private:
             send_the_refusal(m->promise);
         }
         return {};
+    }
+
+    std::expected<std::map<std::uint64_t, std::optional<refusal_reason>>, std::error_code>
+    judge_on_the_pool(const done_log& log, const meta_record& m, const std::uint64_t verified)
+    {
+        std::vector<std::uint64_t> indexes;
+        for (auto index = verified + 1; index <= m.log_len; ++index) {
+            if (refusal_ && refusal_->index == index && index > m.applied_idx) {
+                break;
+            }
+            if (index > m.applied_idx && entry_is_a_request(log.done[index - 1 - log.applied_idx])) {
+                indexes.push_back(index);
+            }
+        }
+        std::vector<std::span<const std::byte>> owns;
+        owns.reserve(indexes.size());
+        const auto own_log = log.done.subspan(m.applied_idx - log.applied_idx);
+        for (const auto k : indexes) {
+            const done_log b{m.applied_idx, own_log.first(k - 1 - m.applied_idx)};
+            owns.push_back(find_the_own_result_on(b, log.done[k - 1 - log.applied_idx]));
+        }
+        auto& threads = pool_->threads;
+        const auto ranges = std::min(threads.size() + 1, indexes.size());
+        std::vector<check_job> jobs;
+        jobs.reserve(ranges);
+        for (std::size_t r = 0; r < ranges; ++r) {
+            const auto from = indexes.size() * r / ranges;
+            const auto to = indexes.size() * (r + 1) / ranges;
+            jobs.push_back({this, log, m.applied_idx, std::span{indexes}.subspan(from, to - from),
+                            std::span<const std::span<const std::byte>>{owns}.subspan(from, to - from)});
+        }
+        std::size_t sent = 0;
+        std::optional<std::error_code> send_failure;
+        for (std::size_t r = 1; r < jobs.size(); ++r) {
+            threads[r - 1]->job = &jobs[r];
+            if (auto s = pool_->answers.msg_ring(threads[r - 1]->jobs, r - 1); !s) [[unlikely]] {
+                send_failure = s.error();
+                break;
+            }
+            ++sent;
+        }
+        check_answer own;
+        if (!jobs.empty() && !send_failure) {
+            own.reasons.resize(jobs[0].indexes.size());
+            try {
+                auto base = begin_an_empty_write_set();
+                judge_a_range(jobs[0], m.applied_idx, base, own);
+            } catch (...) {
+                own.fault = std::current_exception();
+            }
+        }
+        for (std::size_t i = 0; i < sent; ++i) {
+            if (auto w = pool_->answers.wait_cqe(); !w && !send_failure) [[unlikely]] {
+                send_failure = w.error();
+            }
+        }
+        if (send_failure) [[unlikely]] {
+            throw ring_error(*send_failure, "konsens: the check pool failed to send a job or to get its answer");
+        }
+        std::map<std::uint64_t, std::optional<refusal_reason>> verdicts;
+        for (std::size_t r = 0; r < jobs.size(); ++r) {
+            auto& a = r == 0 ? own : threads[r - 1]->answer;
+            for (std::size_t i = 0; i < jobs[r].indexes.size(); ++i) {
+                if (a.fault) {
+                    std::rethrow_exception(std::exchange(a.fault, nullptr));
+                }
+                if (a.read_failure) [[unlikely]] {
+                    return std::unexpected(*a.read_failure);
+                }
+                verdicts.emplace(jobs[r].indexes[i], a.reasons[i]);
+                if (a.reasons[i]) {
+                    return verdicts;
+                }
+            }
+        }
+        return verdicts;
     }
 
     void send_the_refusal(const ballot promise)
@@ -1293,11 +1561,17 @@ private:
         if (!entry_is_a_request(e)) {
             return std::nullopt;
         }
+        return judge_the_done_record(b, e, find_the_own_result_on(b, e), w);
+    }
+
+    template <typename W>
+    std::optional<refusal_reason> judge_the_done_record(const done_log& b, const entry& e,
+                                                        std::span<const std::byte> own, W& w) const
+    {
         const auto q = b.log_len() + 1;
         if (compute_result_crc(q, e.result) != e.result_crc) [[unlikely]] {
             return refusal_reason::crc_mismatch;
         }
-        auto own = find_the_own_result_on(b, e);
         std::vector<std::byte> ran;
         if (own.empty()) {
             ran = run_on_the_base(request_of(e), q, w).bytes;
@@ -1744,7 +2018,8 @@ private:
         return round_each_float(data_item, *rule.float_denominator).value();
     }
 
-    request_result run_request(const entry& e, const base_write_set& t) const
+    template <typename W>
+    request_result run_request(const entry& e, const W& t) const
     {
         if (e.kind != entry_kind::client_request) {
             return {0, {}, {}};
@@ -1754,7 +2029,7 @@ private:
             return {static_cast<std::uint64_t>(std::to_underlying(client_errc::session_expired)), {}, {}};
         }
         if (e.request_number > s->request_number) {
-            auto a = machine_.apply(e.payload, transaction_view<base_write_set>{t});
+            auto a = machine_.apply(e.payload, transaction_view<W>{t});
             if constexpr (requires { machine_.float_digits; }) {
                 a.reply = round_the_data_item(std::move(a.reply), *float_rule_of(machine_));
                 for (auto& m : a.mutations) {
@@ -1828,8 +2103,8 @@ private:
         return w;
     }
 
-    static void write_the_done_results(const done_log& b, const std::uint64_t from, const std::uint64_t below,
-                                       base_write_set& w)
+    template <typename W>
+    static void write_the_done_results(const done_log& b, const std::uint64_t from, const std::uint64_t below, W& w)
     {
         for (auto k = from; k <= b.log_len() && k < below; ++k) {
             const auto& e = b.done[k - b.applied_idx - 1];
@@ -1842,7 +2117,8 @@ private:
         }
     }
 
-    own_result run_on_the_base(const entry& e, const std::uint64_t index, base_write_set& w) const
+    template <typename W>
+    own_result run_on_the_base(const entry& e, const std::uint64_t index, W& w) const
     {
         auto r = run_request(e, w);
         auto bytes = encode_result(r);
@@ -2195,6 +2471,7 @@ private:
     std::optional<std::pair<ballot, std::uint64_t>> selected_up_to_;
     bool resend_work_{};
     std::optional<refused> refusal_;
+    std::unique_ptr<check_pool> pool_;
     std::vector<message> execute_verify_outgoing_;
     std::vector<entry> waiting_;
     bool resend_answer_{};

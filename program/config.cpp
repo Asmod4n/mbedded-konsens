@@ -28,7 +28,8 @@ constexpr std::array node_keys{std::string_view{"pid"},
                                std::string_view{"max_body_bytes"},
                                std::string_view{"max_store_bytes"},
                                std::string_view{"build_from"},
-                               std::string_view{"sync_by_the_caller"}};
+                               std::string_view{"sync_by_the_caller"},
+                               std::string_view{"check_threads"}};
 constexpr std::array peer_keys{std::string_view{"pid"}, std::string_view{"address"}};
 constexpr std::array top_keys{std::string_view{"cluster"}, std::string_view{"node"}, std::string_view{"peers"}};
 
@@ -255,6 +256,10 @@ std::expected<config, config_error> parse_config(const std::string_view text)
     if (!sync_by_the_caller) [[unlikely]] {
         return std::unexpected(sync_by_the_caller.error());
     }
+    const auto check_threads = number_in<std::size_t>(n, "check_threads", std::size_t{0}, 0);
+    if (!check_threads) [[unlikely]] {
+        return std::unexpected(check_threads.error());
+    }
     auto peers = peers_in(top);
     if (!peers) [[unlikely]] {
         return std::unexpected(peers.error());
@@ -277,7 +282,8 @@ std::expected<config, config_error> parse_config(const std::string_view text)
                   *max_store_bytes,
                   std::move(*build_from),
                   std::move(*peers),
-                  *sync_by_the_caller};
+                  *sync_by_the_caller,
+                  *check_threads};
 }
 
 konsens::node_config node_config_of(const config& c, const bool first_start)
@@ -287,7 +293,8 @@ konsens::node_config node_config_of(const config& c, const bool first_start)
         peers.push_back(p.pid);
     }
     return {c.configuration_id, c.pid,         std::move(peers), c.leader_priority,
-            c.election_ticks,   c.resend_ticks, c.build_from,     first_start, c.sync_by_the_caller};
+            c.election_ticks,   c.resend_ticks, c.build_from,     first_start, c.sync_by_the_caller,
+            c.check_threads};
 }
 
 }

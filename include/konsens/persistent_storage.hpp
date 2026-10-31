@@ -30,6 +30,8 @@ class persistent_storage {
     struct environment;
 
 public:
+    struct reading;
+
     class read_only_transaction {
     public:
         [[nodiscard]] std::expected<meta_record, std::error_code> get_meta() const;
@@ -53,9 +55,25 @@ public:
     private:
         friend class persistent_storage;
 
-        explicit read_only_transaction(environment* env) noexcept;
+        explicit read_only_transaction(reading* r) noexcept;
 
-        environment* env_;
+        reading* reading_;
+    };
+
+    class reader {
+    public:
+        [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
+
+        reader(reader&&) noexcept;
+        reader& operator=(reader&&) noexcept;
+        ~reader();
+
+    private:
+        friend class persistent_storage;
+
+        explicit reader(std::unique_ptr<reading> r) noexcept;
+
+        std::unique_ptr<reading> reading_;
     };
 
     class nested_transaction {
@@ -138,6 +156,7 @@ public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> begin();
     [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
+    [[nodiscard]] std::expected<reader, std::error_code> open_a_reader() const;
     [[nodiscard]] std::expected<void, std::error_code> copy(const std::filesystem::path& directory) const;
     [[nodiscard]] int wal_file_descriptor() const;
     void the_sync_failed();

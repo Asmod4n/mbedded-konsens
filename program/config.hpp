@@ -42,6 +42,7 @@ struct config {
     std::vector<konsens::node_id> build_from;
     std::vector<peer> peers;
     bool sync_by_the_caller;
+    std::size_t check_threads;
 
     friend bool operator==(const config&, const config&) = default;
 };

@@ -532,7 +532,15 @@ constexpr std::uint64_t client_a = 10;
 
 const konsens::cluster_config next_cluster{2, {4, 5, 6}};
 
-konsens::node_config config_of(const node_id pid)
+// The second binary of this file builds with KONSENS_TEST_CHECK_THREADS, so
+// that each test also runs with the checks of a step on a pool.
+#ifdef KONSENS_TEST_CHECK_THREADS
+constexpr std::size_t check_threads_of_the_test = KONSENS_TEST_CHECK_THREADS;
+#else
+constexpr std::size_t check_threads_of_the_test = 0;
+#endif
+
+konsens::node_config config_of(const node_id pid, const std::size_t check_threads = check_threads_of_the_test)
 {
     std::vector<node_id> peers;
     for (const auto p : three_nodes) {
@@ -540,7 +548,7 @@ konsens::node_config config_of(const node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true, false, check_threads};
 }
 
 std::vector<std::byte> bytes_of(const char c)
@@ -591,11 +599,11 @@ struct cluster {
     std::vector<entry> decided_log(const node_id p) { return *at(p).read_decided_suffix(0); }
 };
 
-cluster elected(const std::array<std::uint8_t, 3> marks)
+cluster elected(const std::array<std::uint8_t, 3> marks, const std::size_t check_threads = check_threads_of_the_test)
 {
     cluster c;
     for (const auto p : three_nodes) {
-        c.nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_new(),
+        c.nodes.push_back(*node_t::with(config_of(p, check_threads), sqlite_storage::open_new(),
                                         sqlite_storage::open_new_node_storage(), marked{marks.at(p - 1)}, p));
     }
     c.run(rounds, once);
@@ -993,6 +1001,49 @@ TEST_CASE("a follower refuses a done record whose result differs from its own")
     const auto replies = c.at(l).take_client_replies();
     REQUIRE(replies.size() == 1);
     CHECK(replies[0].response == bytes_of('a'));
+}
+
+// Plan parallel-check-run 6: the checks of a step on a pool give the same
+// verdicts as the checks on the loop thread. Four requests reach the
+// followers in one step, so the pool takes a range of them. The record of
+// the third request that reaches one follower holds another result. With 0,
+// 1 and 2 threads the follower refuses that record and no earlier one, and
+// the cluster ends with the same log, state and replies.
+TEST_CASE("a follower with a check pool gives the verdicts of a follower without one")
+{
+    constexpr std::uint64_t requests = 4;
+    constexpr std::uint64_t changed_request = 3;
+    constexpr std::uint64_t changed_index = request_index + changed_request - 1;
+    std::optional<std::vector<entry>> first_log;
+    for (const std::size_t threads : {std::size_t{0}, std::size_t{1}, std::size_t{2}}) {
+        CAPTURE(threads);
+        auto c = elected({0, 0, 0}, threads);
+        const auto l = c.leader();
+        const auto f = first_follower_of(l);
+        const auto s = registered(c, l);
+        for (std::uint64_t n = 1; n <= requests; ++n) {
+            batches::commit(c.at(l), c.at(l).client_request(client_a, s, n, bytes_of(static_cast<char>('a' + n))));
+        }
+        deliver_changed(c.nodes, change_the_done_record_to(f, [](entry& e) {
+            if (e.request_number == changed_request) {
+                e.result = konsens::encode_result({0, bytes_of('z'), {}});
+                e.result_crc = konsens::compute_result_crc(changed_index, e.result);
+            }
+        }));
+        const auto& refusal = c.at(f).get_refusal();
+        REQUIRE(refusal.has_value());
+        CHECK(refusal->index == changed_index);
+        CHECK(refusal->reason == konsens::refusal_reason::result_differs);
+        CHECK(c.at(f).get_sequence_paxos().get_verified_idx() == changed_index - 1);
+        const auto replies = c.at(l).take_client_replies();
+        CHECK(replies.size() == requests);
+        const auto log = c.decided_log(l);
+        if (!first_log) {
+            first_log = log;
+        }
+        CHECK(log == *first_log);
+        CHECK(state_of(c.at(l)) == std::vector<std::byte>{std::byte{'b'}, std::byte{'c'}, std::byte{'d'}, std::byte{'e'}});
+    }
 }
 
 // Plan 2.7.1: a listed node accepts only when its result still does not

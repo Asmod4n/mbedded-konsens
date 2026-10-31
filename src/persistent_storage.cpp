@@ -1101,16 +1101,64 @@ std::expected<void, std::error_code> check_or_write_format(const link& l)
 
 }
 
+struct persistent_storage::reading {
+    connection db;
+    statements s;
+    bool open{};
+
+    link of() noexcept { return {db.get(), &s, nullptr}; }
+
+    void end() noexcept
+    {
+        end_the_read(s);
+        open = false;
+    }
+};
+
+namespace {
+
+std::expected<void, std::error_code> begin_a_read(persistent_storage::reading& r)
+{
+    if (r.open) [[unlikely]] {
+        throw std::logic_error("konsens: a read-only transaction of this storage is open");
+    }
+    const auto l = r.of();
+    if (auto begun = run(l, r.s.begin_deferred.get()); !begun) [[unlikely]] {
+        return std::unexpected(begun.error());
+    }
+    r.open = true;
+    const auto m = read_meta(l);
+    if (!m && m.error().category() != storage_category()) [[unlikely]] {
+        r.end();
+        return std::unexpected(m.error());
+    }
+    return {};
+}
+
+std::expected<persistent_storage::reading, std::error_code> open_a_reading(const std::filesystem::path& file)
+{
+    auto db = open_connection(file, synchronous_full);
+    if (!db) [[unlikely]] {
+        return std::unexpected(db.error());
+    }
+    auto s = prepare_statements(db->get());
+    if (!s) [[unlikely]] {
+        return std::unexpected(make_error_code(storage_errc::unsupported_format));
+    }
+    return persistent_storage::reading{std::move(*db), std::move(*s)};
+}
+
+}
+
 struct persistent_storage::environment {
     file_descriptor wal;
     connection writer_db;
-    connection reader_db;
+    reading reader;
     statements writer;
-    statements reader;
+    std::filesystem::path file;
     int frames{};
     bool writer_open{};
     bool nested_open{};
-    bool reader_open{};
     bool written{};
     bool log_written{};
     std::uint64_t entry_writes{};
@@ -1120,7 +1168,7 @@ struct persistent_storage::environment {
     std::optional<meta_record> writer_meta;
 
     link of_writer() noexcept { return {writer_db.get(), &writer, &failure}; }
-    link of_reader() noexcept { return {reader_db.get(), &reader, nullptr}; }
+    link of_reader() noexcept { return reader.of(); }
 
     std::expected<meta_record, std::error_code> read_the_meta()
     {
@@ -1144,11 +1192,7 @@ struct persistent_storage::environment {
         return w;
     }
 
-    void end_the_reader() noexcept
-    {
-        end_the_read(reader);
-        reader_open = false;
-    }
+    void end_the_reader() noexcept { reader.end(); }
 
     void roll_back_the_writer() noexcept
     {
@@ -1187,12 +1231,12 @@ std::string read_failure::message() const
     return std::format("The read of the log entry at index {} failed: {}", index, code.message());
 }
 
-persistent_storage::read_only_transaction::read_only_transaction(environment* const env) noexcept : env_{env}
+persistent_storage::read_only_transaction::read_only_transaction(reading* const r) noexcept : reading_{r}
 {
 }
 
 persistent_storage::read_only_transaction::read_only_transaction(read_only_transaction&& other) noexcept
-    : env_{std::exchange(other.env_, nullptr)}
+    : reading_{std::exchange(other.reading_, nullptr)}
 {
 }
 
@@ -1200,32 +1244,32 @@ persistent_storage::read_only_transaction&
 persistent_storage::read_only_transaction::operator=(read_only_transaction&& other) noexcept
 {
     if (this != &other) {
-        if (env_ != nullptr) {
-            env_->end_the_reader();
+        if (reading_ != nullptr) {
+            reading_->end();
         }
-        env_ = std::exchange(other.env_, nullptr);
+        reading_ = std::exchange(other.reading_, nullptr);
     }
     return *this;
 }
 
 persistent_storage::read_only_transaction::~read_only_transaction()
 {
-    if (env_ != nullptr) {
-        env_->end_the_reader();
+    if (reading_ != nullptr) {
+        reading_->end();
     }
 }
 
 std::expected<meta_record, std::error_code> persistent_storage::read_only_transaction::get_meta() const
 {
-    throw_if_no_environment(env_);
-    return read_meta(env_->of_reader());
+    throw_if_no_environment(reading_);
+    return read_meta(reading_->of());
 }
 
 std::expected<std::vector<entry>, read_failure>
 persistent_storage::read_only_transaction::read_entries(const std::uint64_t from, const std::uint64_t to) const
 {
-    throw_if_no_environment(env_);
-    return read_entries_in(env_->of_reader(), from, to);
+    throw_if_no_environment(reading_);
+    return read_entries_in(reading_->of(), from, to);
 }
 
 std::expected<std::vector<entry>, std::error_code>
@@ -1237,36 +1281,36 @@ persistent_storage::read_only_transaction::get_entries(const std::uint64_t from,
 std::expected<std::optional<last_entry>, std::error_code>
 persistent_storage::read_only_transaction::get_last_entry() const
 {
-    throw_if_no_environment(env_);
-    return read_last_entry(env_->of_reader());
+    throw_if_no_environment(reading_);
+    return read_last_entry(reading_->of());
 }
 
 std::expected<std::optional<std::uint32_t>, std::error_code>
 persistent_storage::read_only_transaction::get_chain_crc(const std::uint64_t index) const
 {
-    throw_if_no_environment(env_);
-    return read_chain_crc(env_->of_reader(), index);
+    throw_if_no_environment(reading_);
+    return read_chain_crc(reading_->of(), index);
 }
 
 std::expected<std::optional<std::uint64_t>, std::error_code>
 persistent_storage::read_only_transaction::get_config_first_idx() const
 {
-    throw_if_no_environment(env_);
-    return read_config_first_idx(env_->of_reader());
+    throw_if_no_environment(reading_);
+    return read_config_first_idx(reading_->of());
 }
 
 std::expected<std::optional<std::span<const std::byte>>, std::error_code>
 persistent_storage::read_only_transaction::find(const std::span<const std::byte> key) const
 {
-    throw_if_no_environment(env_);
-    return find_value(env_->of_reader(), key);
+    throw_if_no_environment(reading_);
+    return find_value(reading_->of(), key);
 }
 
 std::expected<std::optional<session_record>, std::error_code>
 persistent_storage::read_only_transaction::find_session(const std::uint64_t session) const
 {
-    throw_if_no_environment(env_);
-    return find_session_in(env_->of_reader(), session);
+    throw_if_no_environment(reading_);
+    return find_session_in(reading_->of(), session);
 }
 
 persistent_storage::transaction::transaction(environment* const env) noexcept : env_{env}
@@ -1728,7 +1772,7 @@ persistent_storage& persistent_storage::operator=(persistent_storage&&) noexcept
 
 persistent_storage::~persistent_storage()
 {
-    if (env_ && (env_->writer_open || env_->nested_open || env_->reader_open)) [[unlikely]] {
+    if (env_ && (env_->writer_open || env_->nested_open || env_->reader.open)) [[unlikely]] {
         std::terminate();
     }
 }
@@ -1769,16 +1813,12 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (!writer) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
-    auto reader_db = open_connection(file, synchronous_full);
-    if (!reader_db) [[unlikely]] {
-        return std::unexpected(reader_db.error());
-    }
-    auto reader = prepare_statements(reader_db->get());
+    auto reader = open_a_reading(file);
     if (!reader) [[unlikely]] {
-        return std::unexpected(make_error_code(storage_errc::unsupported_format));
+        return std::unexpected(reader.error());
     }
-    auto env = std::make_unique<environment>(file_descriptor{}, std::move(*writer_db), std::move(*reader_db),
-                                             std::move(*writer), std::move(*reader));
+    auto env = std::make_unique<environment>(file_descriptor{}, std::move(*writer_db), std::move(*reader),
+                                             std::move(*writer), file);
     sqlite3_wal_hook(env->writer_db.get(), count_frames, &env->frames);
     if (auto format = check_or_write_format(env->of_writer()); !format) [[unlikely]] {
         env->roll_back_the_writer();
@@ -1839,26 +1879,52 @@ std::expected<persistent_storage::transaction, std::error_code> persistent_stora
 std::expected<persistent_storage::read_only_transaction, std::error_code> persistent_storage::begin_read_only() const
 {
     throw_if_moved_from();
-    if (env_->reader_open) [[unlikely]] {
-        throw std::logic_error("konsens: a read-only transaction of this storage is open");
-    }
-    const auto l = env_->of_reader();
-    if (auto begun = run(l, env_->reader.begin_deferred.get()); !begun) [[unlikely]] {
+    if (auto begun = begin_a_read(env_->reader); !begun) [[unlikely]] {
         return std::unexpected(begun.error());
     }
-    env_->reader_open = true;
-    const auto m = read_meta(l);
-    if (!m && m.error().category() != storage_category()) [[unlikely]] {
-        env_->end_the_reader();
-        return std::unexpected(m.error());
+    return read_only_transaction{&env_->reader};
+}
+
+std::expected<persistent_storage::reader, std::error_code> persistent_storage::open_a_reader() const
+{
+    throw_if_moved_from();
+    auto r = open_a_reading(env_->file);
+    if (!r) [[unlikely]] {
+        return std::unexpected(r.error());
     }
-    return read_only_transaction{env_.get()};
+    return reader{std::make_unique<reading>(std::move(*r))};
+}
+
+persistent_storage::reader::reader(std::unique_ptr<reading> r) noexcept : reading_{std::move(r)}
+{
+}
+
+persistent_storage::reader::reader(reader&&) noexcept = default;
+persistent_storage::reader& persistent_storage::reader::operator=(reader&&) noexcept = default;
+
+persistent_storage::reader::~reader()
+{
+    if (reading_ && reading_->open) [[unlikely]] {
+        std::terminate();
+    }
+}
+
+std::expected<persistent_storage::read_only_transaction, std::error_code>
+persistent_storage::reader::begin_read_only() const
+{
+    if (!reading_) [[unlikely]] {
+        throw std::logic_error("The reader of a persistent_storage was moved from");
+    }
+    if (auto begun = begin_a_read(*reading_); !begun) [[unlikely]] {
+        return std::unexpected(begun.error());
+    }
+    return read_only_transaction{reading_.get()};
 }
 
 std::expected<void, std::error_code> persistent_storage::copy(const std::filesystem::path& directory) const
 {
     throw_if_moved_from();
-    if (env_->reader_open) [[unlikely]] {
+    if (env_->reader.open) [[unlikely]] {
         throw std::logic_error("konsens: a read-only transaction of this storage is open");
     }
     const auto file = directory / store_file_name;
@@ -1866,10 +1932,10 @@ std::expected<void, std::error_code> persistent_storage::copy(const std::filesys
         return std::unexpected(created.error());
     }
     const auto name = file.string();
-    sqlite3_stmt* const s = env_->reader.vacuum_into.get();
+    sqlite3_stmt* const s = env_->reader.s.vacuum_into.get();
     sqlite3_reset(s);
     if (const int bound = bind_text(s, 1, name); bound != SQLITE_OK) [[unlikely]] {
-        return std::unexpected(error_code_or_throw(bound, env_->reader_db.get(), access::read));
+        return std::unexpected(error_code_or_throw(bound, env_->reader.db.get(), access::read));
     }
     return run(env_->of_reader(), s);
 }

@@ -106,9 +106,27 @@ the owner decided.
     (node.hpp:1309-1311), so the loop keeps its base for those entries
     (review 2, N6).
 16. Each pool read transaction ends before the answer (review 2, N7).
-17. Provisional: the library takes liburing the way konsensd takes it
-    today, through the pinned slipstreamIO. The build image has no
-    liburing package. This is a question to the owner (review 2, N8).
+17. The library takes liburing the way konsensd takes it, through the
+    pinned slipstreamIO (owner 2026-10-31 19:46). What slipstreamIO
+    lacks is built into slipstreamIO, from the behaviour of a running
+    kernel, never from its source: IOSQE_CQE_SKIP_SUCCESS (slipstreamIO
+    branch cqe-skip-success, eight parity scenarios).
+
+## 2a. The form as built
+
+- `konsens::ring` (include/konsens/ring.hpp) holds one io_uring. Its
+  names come from liburing: `msg_ring` and `wait_cqe`. No liburing type
+  leaves src/ring.cpp. A failed send or wait is a `ring_error`, which
+  derives from std::system_error.
+- `persistent_storage::open_a_reader` opens one more SQLite connection to
+  the same file. A pool thread reads through its own `reader`.
+- Items 3 and 15 changed: the loop looks up the own result of each index
+  before it sends the jobs, and passes the views. Each range then judges
+  its entries on its own base, a run again included.
+- Item 12 changed: the loop reads the committed applied index at each
+  step that uses the pool, and does not keep it.
+- `read_write_view` is the view of a pool thread. The concept
+  `state_machine` requires `apply` for it. The name is provisional.
 
 ## 3. What stays the same
 

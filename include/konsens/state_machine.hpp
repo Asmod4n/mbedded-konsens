@@ -1,3 +1,5 @@
+// The form of a state machine and the views it reads the state through. apply and query are const, and the
+// library calls them on several threads at the same time.
 #pragma once
 
 #include <concepts>
@@ -51,13 +53,15 @@ private:
 
 using write_view = transaction_view<write_set<persistent_storage::transaction>>;
 using read_view = transaction_view<persistent_storage::read_only_transaction>;
+using read_write_view = transaction_view<write_set<persistent_storage::read_only_transaction>>;
 
-static_assert(state_view<write_view> && state_view<read_view>);
+static_assert(state_view<write_view> && state_view<read_view> && state_view<read_write_view>);
 
 template <typename M>
 concept state_machine = std::movable<M> && requires(const M& m, std::span<const std::byte> payload, const write_view& w,
-                                                    const read_view& r) {
+                                                    const read_view& r, const read_write_view& rw) {
     { m.apply(payload, w) } -> std::same_as<applied>;
+    { m.apply(payload, rw) } -> std::same_as<applied>;
     { m.query(payload, r) } -> std::same_as<std::vector<std::byte>>;
 };
 
