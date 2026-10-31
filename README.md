@@ -160,7 +160,7 @@ The cost of the checksum against a MAC:
 | System | Linux |
 | SQLite | the package of the distribution, `libsqlite3-dev` |
 | Boost | the headers |
-| mbedded-cbor | the submodule `deps/mbedded-cbor` |
+| mbedded-cbor | fetched by CMake at the commit in `cmake/dependencies.cmake` |
 | crc32c | the submodule `deps/crc32c`, Google crc32c, BSD-3-Clause license |
 | doctest | for the tests |
 
@@ -184,6 +184,11 @@ git submodule update --init --recursive
 CC=gcc-15 CXX=g++-15 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+The configure step fetches mbedded-cbor, and with `KONSENS_PROGRAM`
+also slipstreamIO and mruby-webmachine, at the commits in
+`cmake/dependencies.cmake`. `-DFETCHCONTENT_SOURCE_DIR_MBEDDED-CBOR=<dir>`
+builds against a local tree of mbedded-cbor instead.
 
 The library is the CMake target `konsens`.
 
