@@ -34,79 +34,104 @@ writes in strict order.
 
 ## 2. The change
 
-A follower checks the entries of a step on a pool of threads. The
-loop thread keeps the protocol, the writing connection and every
-write.
+Review 1 (doc/review-plan-parallel-check-run-1.md) rejected the first
+form, in which the verdicts came back after the step. This form follows
+its finding 9: `dispatch_apply` of libdispatch. The step sends the work,
+does its own share, and returns when all work is done. `step` blocks, as
+the owner decided.
 
-1. The pool has `check_threads` threads, a field of the configuration
-   struct. 0 keeps the form of today: the loop thread checks. The
-   binary reads the value from the TOML file.
-2. Each pool thread has its own io_uring and its own read-only SQLite
-   connection (SQLITE_OPEN_READONLY, SQLITE_OPEN_NOMUTEX). It opens no
-   other file.
-3. After the step that appended entries, the loop thread builds one
-   job for each entry that `check_the_done_records` would check. A job
-   holds the index, a view of the entry, applied_idx at the time of the
-   job, and a view of the results of the leader for the entries from
-   applied_idx + 1 to index - 1. The loop thread owns the job memory.
-   It sends a pointer to each job with IORING_OP_MSG_RING to a pool
-   ring, in turn.
-4. A pool thread takes the job from its completion queue. It begins a
-   read transaction, reads applied_idx of that snapshot (a), and builds
-   the write set over its read transaction with the results of the
-   entries from a + 1 to index - 1. If a >= index, the verdict is
-   "applied". It then runs `run_request`, encodes the result and calls
-   `results_agree`. It ends the read transaction. It sends the pointer
-   back to the loop ring with MSG_RING, with the verdict in the job.
-5. The loop thread collects the verdicts. It passes the verified index
-   only over a run of consecutive passed entries, as today. A refused
-   entry gives the refusal of today. The accepted of the follower goes
-   out at the next step after the verdicts arrive.
-6. A job is never shared: the loop thread writes it before the send,
-   the pool thread writes the verdict after it took the job, and the
-   loop thread reads it after it took the job back. MSG_RING orders
-   these accesses; there is no atomic and no lock.
-7. A pool thread does not write. A fault on a pool thread (a SQLite
-   error of the read, a thrown exception) goes back as a verdict with
-   its error code. The loop thread handles it as today.
-
-The leader keeps its form in this plan. It executes in the writing
-transaction.
+1. `check_threads` is a field of the configuration struct. 0 keeps the
+   form of today. The binary reads it from the TOML file.
+2. The library owns the pool: `check_threads` threads, each with its own
+   io_uring and its own read-only SQLite connection to the same file.
+   The node owns one ring of its own for the answers. The library links
+   liburing. The storage gets a read-only connection per pool thread
+   (a new function of `S`, finding 13).
+3. `check_the_done_records` first takes every entry that has an own
+   result (`find_the_own_result_on`, node.hpp:1272-1289) on the loop
+   thread, as today, because `own_` belongs to the loop (finding 2).
+4. It splits the remaining request entries of the step into contiguous
+   ranges, one per thread plus one for itself (finding 11). For each
+   range it sends one job by IORING_OP_MSG_RING with
+   IOSQE_CQE_SKIP_SUCCESS. A job is const for the pool. It holds: the
+   range of indexes, a view of the entries, the applied index of the last
+   commit (finding 1; `commit_phase_two` keeps it), a view of the leader
+   results from that index + 1, the majority, the pid and the float rule
+   (finding 2).
+5. A pool thread opens one read transaction, reads its applied index a,
+   and checks a against the job: a below the applied index of the last
+   commit, or above the applied index of the loop, is a fault of ours and
+   raises. It builds one base from the results a + 1 to the start of its
+   range, then checks its entries in order, as the loop does today. It
+   writes the verdicts into an array that the thread owns (finding 7),
+   and answers with MSG_RING: `user_data` names the job, `res` is 0.
+6. An exception on a pool thread is caught as `std::exception_ptr` in
+   the result array of the thread. The loop rethrows it in `step`, so the
+   caller sees the same type as today. This is the form of
+   std::promise and std::future ([futures.state]): a value or an
+   exception crosses threads as a shared state that the receiver reads
+   once. A SQLite error of a read is a value and goes back as an error
+   code (finding 6).
+7. The loop waits on its answer ring until every job came back. It then
+   reads the result arrays in index order and does what it does today:
+   it passes the verified index over the run of passed entries and sends
+   the first refusal.
+8. Each answer ring and each pool ring has room for every job that can
+   be in flight. A negative `res` on a CQE of a send is a fault of the
+   machine and raises (finding 8).
+9. `M::apply` and `M::query` are const. The library calls them on
+   several threads at the same time. This is the rule of the C++
+   standard library for const member functions
+   ([res.on.data.races]/3): a const call does not change shared state.
+   The concept states it in its header comment (finding 2).
+10. The leader takes the same path (finding 14).
 
 ## 3. What stays the same
 
-- The protocol and its messages. The model does not change: the
-  follower sends accepted later, with the same content.
-- `apply_the_done_records` and the commit on the loop thread.
-- A simulation test runs with `check_threads = 0`, so that a seed stays
-  deterministic.
+- The protocol, the messages and the model: the accepted leaves at the
+  end of the same step, as today, after the same checks.
+- `apply_the_done_records` and every write on the loop thread.
+- A simulation seed stays deterministic, because the result does not
+  depend on the order of the answers.
 
-## 4. Names
+## 4. A test in one file first
 
-Provisional, from libdispatch (the owner named it): the pool is a
-concurrent dispatch queue, a job is a dispatch work item. Not built
-before the owner has seen this form.
+Before the tree changes: one file outside the tree with two threads,
+each with a ring, that sends n jobs by MSG_RING and waits for n answers,
+with one read-only SQLite reader per thread in WAL. It measures the time
+of one round trip and of a read transaction on a second thread. g++ 16,
+g++ 15 and clang 22. The result goes into this plan before the build.
 
-## 5. Tests
+## 5. Names
+
+Provisional, from libdispatch (the owner named it): `dispatch_apply`
+for the step that sends and waits, and a concurrent queue for the pool.
+
+## 6. Tests
 
 - test_node: a follower with `check_threads = 2` gives the same
   verified index, the same refusals and the same applied state as with
   0, for a log of mixed entries (requests, rejected entries, a stop
   sign, an entry with a result that differs).
-- A test of a job where the snapshot is newer than the job (a >= index).
-- A test of a fault on a pool thread: the read fails, the loop thread
-  stops voting as today.
+- A check while a sync is out and the transaction holds ended steps
+  (finding 1).
+- A fault on a pool thread: a failed read stops voting as today; a
+  thrown std::logic_error leaves `step` as std::logic_error.
+- A full answer ring raises.
 - The suites of plan-promise-again §5 with g++ 16.
 
-## 6. Measurement
+## 7. Measurement
 
 Arms `check_threads` = 0, 1 and 2, each its own binary, plus A/A of 0,
 in g++ 16, g++ 15 and clang 22. bench/arms/cap-of-the-step.sh with
 cluster3.sh, 64 and 1 in flight, 4 rounds. It measures writes/s,
 latency and cpu per write. The number comes after the measurement.
 
-## 7. Data on the disk
+## 8. Data on the disk
 
-Build directories under bench-logs/kbuild (made again by a build
-command), the bed under /mnt/zrun/b (deleted after each run), one
-result file in bench/results.
+- Build directories under bench-logs/kbuild: made again by a build
+  command.
+- The bed under /mnt/zrun/b: deleted after each run.
+- One result file in bench/results: recorded in the state file.
+- The file of §4 and its binaries in the scratchpad: deleted after the
+  owner has seen the list.
