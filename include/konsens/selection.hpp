@@ -21,14 +21,16 @@ struct counted_answer {
     std::uint64_t from_idx;
     std::uint32_t base_crc;
     std::map<std::uint64_t, indexed_result> results;
+    std::map<std::uint64_t, std::uint32_t> result_crcs;
 
     friend bool operator==(const counted_answer&, const counted_answer&) = default;
 };
 
 struct selected_result {
     indexed_result chosen;
+    std::uint32_t result_crc;
     node_id node;
-    std::map<std::uint64_t, std::uint32_t> base;
+    std::uint32_t base_crc;
 
     friend bool operator==(const selected_result&, const selected_result&) = default;
 };
@@ -66,9 +68,20 @@ public:
     [[nodiscard]] std::vector<std::uint64_t> find_the_entries_that_a_majority_refused() const;
 
 private:
+    struct count_walk {
+        const counted_answer* answer;
+        std::uint32_t base_crc;
+        bool agrees;
+
+        void count_the_selection(std::uint64_t index, const selected_result* selected);
+        [[nodiscard]] bool counts(std::uint64_t index) const;
+    };
+
     [[nodiscard]] bool holds_a_request(const leader_log& log, std::uint64_t index) const;
+    [[nodiscard]] count_walk begin_the_count(const leader_log& log, node_id node) const;
+    [[nodiscard]] const selected_result* selection_at(std::uint64_t index) const;
     [[nodiscard]] bool counts(const leader_log& log, node_id node, std::uint64_t index) const;
-    [[nodiscard]] bool holds(const leader_log& log, std::uint64_t index) const;
+    [[nodiscard]] bool holds_on(std::uint64_t index, std::uint32_t base_crc) const;
     [[nodiscard]] std::vector<node_id> find_the_counted_nodes(const leader_log& log, std::uint64_t index) const;
     [[nodiscard]] std::size_t count_the_agreeing(std::span<const node_id> counted, std::uint64_t index,
                                                  std::span<const std::byte> result) const;

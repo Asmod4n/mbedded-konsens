@@ -223,6 +223,123 @@ TEST_CASE("a selection above an index whose chosen result differs is dropped")
     }
 }
 
+// The leader moves the pointer with the chosen results from applied_idx on,
+// and applied_idx can lie below the pointer. A chosen result at or below the
+// old pointer is in no base, so it must not drop a selection above.
+TEST_CASE("a chosen result at or below the old pointer keeps the selection above")
+{
+    const std::vector<entry> log{request(1), request(2), request(3)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto s = new_selection();
+    for (const node_id j : three_nodes) {
+        s.count_answer(j, first_answer({at(1, 7), at(2, 5), at(3, 4)}));
+    }
+    CHECK(s.select_results({0, refs}).empty());
+    REQUIRE(s.get_selected().size() == 3);
+    s.move_pointer(1, std::vector<konsens::indexed_result>{at(1, 7)});
+    REQUIRE(s.get_selected().size() == 2);
+    s.move_pointer(2, std::vector<konsens::indexed_result>{at(1, 7), at(2, 5)});
+    CHECK(s.get_pointer() == 2);
+    CHECK(s.get_selected().size() == 1);
+    CHECK(s.get_selected().contains(3));
+}
+
+// The chain of the chosen results names each index in ascending order. A
+// list out of that order is a wrong use.
+TEST_CASE("chosen results out of ascending order are a wrong use")
+{
+    auto s = new_selection();
+    CHECK_THROWS_AS(s.move_pointer(2, std::vector<konsens::indexed_result>{at(2, 5), at(1, 7)}), std::logic_error);
+}
+
+// The CRC in an answer is the claim of its sender. The selection computes
+// the CRC of each result itself, so a wrong claim changes no verdict.
+TEST_CASE("an answer whose CRC field is wrong gives the verdicts of a correct one")
+{
+    const std::vector<entry> log{request(1), request(2)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    for (const bool wrong : {false, true}) {
+        CAPTURE(wrong);
+        auto s = new_selection();
+        auto second = at(2, 5);
+        if (wrong) {
+            second.crc += 1;
+        }
+        for (const node_id j : three_nodes) {
+            s.count_answer(j, first_answer({at(1, 7), second}));
+        }
+        CHECK(s.select_results({0, refs}).empty());
+        CHECK(s.get_selected().size() == 2);
+        s.move_pointer(1, std::vector<konsens::indexed_result>{at(1, 7)});
+        CHECK(s.get_selected().contains(2));
+    }
+}
+
+// A selection holds only on the same set of requests below it. When the
+// entry below it is no request in the log, its base has one request more
+// than the log, so it is not held and no done record follows it.
+TEST_CASE("a selection whose base holds a request that the log does not hold is not held")
+{
+    const std::vector<entry> log{request(1), request(2)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto s = new_selection();
+    for (const node_id j : three_nodes) {
+        s.count_answer(j, first_answer({at(1, 7), at(2, 5)}));
+    }
+    CHECK(s.select_results({0, refs}).empty());
+    REQUIRE(s.find_the_done_records({0, refs}).size() == 2);
+    const std::vector<entry> other{{entry_kind::normal, {std::byte{4}}}, request(2)};
+    const std::vector<std::reference_wrapper<const entry>> other_refs(other.begin(), other.end());
+    const auto done = s.find_the_done_records({0, other_refs});
+    REQUIRE(done.size() == 1);
+    CHECK(done[0].kind == entry_kind::normal);
+}
+
+// An answer counts for an index only when each of its results from from_idx
+// on is the selected one, the selected results below from_idx give its base
+// and its pointer is the pointer of the selection.
+TEST_CASE("an answer counts only on the selected results before the index")
+{
+    const std::vector<entry> log{request(1), request(2), request(3)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    const auto selected_one_and_two = [&] {
+        auto s = new_selection();
+        for (const node_id j : {node_id{1}, node_id{2}}) {
+            s.count_answer(j, first_answer({at(1, 7), at(2, 5)}));
+        }
+        CHECK(s.select_results({0, refs}).empty());
+        REQUIRE(s.get_selected().size() == 2);
+        return s;
+    };
+    const auto third_is_selected_with = [&](const answer& a) {
+        auto s = selected_one_and_two();
+        s.count_answer(1, {leader_ballot, 0, 3, base_of({{1, 7}, {2, 5}}), {at(3, 4)}, 0});
+        s.count_answer(3, a);
+        static_cast<void>(s.select_results({0, refs}));
+        return s.get_selected().contains(3);
+    };
+    CHECK(third_is_selected_with({leader_ballot, 0, 2, base_of({{1, 7}}), {at(2, 5), at(3, 4)}, 0}));
+    CHECK(third_is_selected_with({leader_ballot, 0, 3, base_of({{1, 7}, {2, 5}}), {at(3, 4)}, 0}));
+    CHECK_FALSE(third_is_selected_with({leader_ballot, 0, 2, base_of({{1, 8}}), {at(2, 5), at(3, 4)}, 0}));
+    CHECK_FALSE(third_is_selected_with({leader_ballot, 0, 2, base_of({{1, 7}}), {at(2, 6), at(3, 4)}, 0}));
+    CHECK_FALSE(third_is_selected_with({leader_ballot, 0, 3, base_of({{1, 7}}), {at(3, 4)}, 0}));
+    CHECK_FALSE(third_is_selected_with({leader_ballot, 1, 2, base_of({{1, 7}}), {at(2, 5), at(3, 4)}, 0}));
+}
+
+// An entry that is no request has no result and is in no base.
+TEST_CASE("an entry that is no request between the pointer and from_idx is in no base")
+{
+    const std::vector<entry> log{request(1), {entry_kind::normal, {std::byte{4}}}, request(3)};
+    const std::vector<std::reference_wrapper<const entry>> refs(log.begin(), log.end());
+    auto s = new_selection();
+    for (const node_id j : {node_id{1}, node_id{2}}) {
+        s.count_answer(j, first_answer({at(1, 7)}));
+        s.count_answer(j, {leader_ballot, 0, 3, base_of({{1, 7}}), {at(3, 4)}, 0});
+    }
+    CHECK(s.select_results({0, refs}).empty());
+    CHECK(s.get_selected().contains(3));
+}
+
 // Plan 2.6.4 and 2.6.5: a node goes into the list only when its second
 // answer also does not agree. A node with no second answer at the append is
 // not listed. A node whose second answer agrees is not listed. The done

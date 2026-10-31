@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <stdexcept>
 
 namespace konsens {
 
@@ -36,23 +37,26 @@ void selection::count_answer(const node_id from, const answer& a)
         it != answers_.end() && it->second.pointer == a.pointer && a.from_idx >= it->second.from_idx) {
         auto& held = it->second;
         auto crc = held.base_crc;
-        for (const auto& [index, r] : held.results) {
+        for (const auto& [index, result_crc] : held.result_crcs) {
             if (index >= a.from_idx) {
                 break;
             }
-            crc = extend_base_crc(crc, index, compute_result_crc(index, r.result));
+            crc = extend_base_crc(crc, index, result_crc);
         }
         if (crc == a.base_crc) {
             held.results.erase(held.results.lower_bound(a.from_idx), held.results.end());
+            held.result_crcs.erase(held.result_crcs.lower_bound(a.from_idx), held.result_crcs.end());
             for (const auto& r : a.results) {
                 held.results.emplace(r.index, r);
+                held.result_crcs.emplace(r.index, compute_result_crc(r.index, r.result));
             }
             return;
         }
     }
-    counted_answer c{a.pointer, a.from_idx, a.base_crc, {}};
+    counted_answer c{a.pointer, a.from_idx, a.base_crc, {}, {}};
     for (const auto& r : a.results) {
         c.results.emplace(r.index, r);
+        c.result_crcs.emplace(r.index, compute_result_crc(r.index, r.result));
     }
     answers_.insert_or_assign(from, std::move(c));
 }
@@ -62,23 +66,33 @@ void selection::move_pointer(const std::uint64_t pointer, const std::span<const 
     if (pointer <= pointer_) {
         return;
     }
-    std::map<std::uint64_t, std::uint32_t> crcs;
+    std::uint32_t chain = 0;
+    std::uint64_t last = 0;
     for (const auto& c : chosen) {
-        crcs.emplace(c.index, compute_result_crc(c.index, c.result));
+        if (c.index <= last) [[unlikely]] {
+            throw std::logic_error("konsens: move_pointer takes the chosen results in ascending order");
+        }
+        last = c.index;
+        if (c.index > pointer_ && c.index <= pointer) {
+            chain = extend_base_crc(chain, c.index, compute_result_crc(c.index, c.result));
+        }
     }
-    std::erase_if(selected_, [pointer, &crcs](auto& s) {
-        if (s.first <= pointer) {
-            return true;
+    std::uint32_t rebased = 0;
+    for (auto it = selected_.begin(); it != selected_.end();) {
+        if (it->first <= pointer) {
+            it = selected_.erase(it);
+            continue;
         }
-        auto& base = s.second.base;
-        for (auto it = base.begin(); it != base.end() && it->first <= pointer; it = base.erase(it)) {
-            const auto c = crcs.find(it->first);
-            if (c == crcs.end() || c->second != it->second) {
-                return true;
-            }
+        const auto index = it->first;
+        const auto result_crc = it->second.result_crc;
+        const bool holds = it->second.base_crc == chain;
+        if (holds) {
+            it->second.base_crc = rebased;
         }
-        return false;
-    });
+        chain = extend_base_crc(chain, index, result_crc);
+        rebased = extend_base_crc(rebased, index, result_crc);
+        it = holds ? std::next(it) : selected_.erase(it);
+    }
     std::erase_if(answers_, [pointer](const auto& a) { return a.second.pointer < pointer; });
     std::erase_if(tried_, [pointer](const auto& t) { return t.second <= pointer; });
     std::erase_if(again_, [pointer](const auto& t) { return t.second <= pointer; });
@@ -96,57 +110,58 @@ std::span<const std::byte> selection::result_of(const node_id node, const std::u
     return answers_.at(node).results.at(index).result;
 }
 
-bool selection::counts(const leader_log& log, const node_id node, const std::uint64_t index) const
-{
-    const auto it = answers_.find(node);
-    if (it == answers_.end()) {
-        return false;
-    }
-    const auto& a = it->second;
-    if (a.pointer != pointer_ || log.pointer != pointer_ || !a.results.contains(index)) {
-        return false;
-    }
-    std::uint32_t crc = 0;
-    for (auto k = pointer_ + 1; k < index; ++k) {
-        if (!holds_a_request(log, k)) {
-            continue;
-        }
-        const auto s = selected_.find(k);
-        if (s == selected_.end()) {
-            return false;
-        }
-        if (k < a.from_idx) {
-            crc = extend_base_crc(crc, k, compute_result_crc(k, s->second.chosen.result));
-            continue;
-        }
-        const auto r = a.results.find(k);
-        if (r == a.results.end() || r->second.result != s->second.chosen.result) {
-            return false;
-        }
-    }
-    return crc == a.base_crc;
-}
-
-bool selection::holds(const leader_log& log, const std::uint64_t index) const
+const selected_result* selection::selection_at(const std::uint64_t index) const
 {
     const auto it = selected_.find(index);
-    if (it == selected_.end() || log.pointer != pointer_) {
-        return false;
+    return it == selected_.end() ? nullptr : &it->second;
+}
+
+selection::count_walk selection::begin_the_count(const leader_log& log, const node_id node) const
+{
+    const auto it = answers_.find(node);
+    if (it == answers_.end() || it->second.pointer != pointer_ || log.pointer != pointer_) {
+        return {nullptr, 0, false};
     }
-    std::size_t requests = 0;
-    for (auto k = pointer_ + 1; k < index; ++k) {
-        if (!holds_a_request(log, k)) {
-            continue;
-        }
-        const auto s = selected_.find(k);
-        const auto b = it->second.base.find(k);
-        if (s == selected_.end() || b == it->second.base.end() ||
-            b->second != compute_result_crc(k, s->second.chosen.result)) {
-            return false;
-        }
-        requests += 1;
+    return {&it->second, 0, true};
+}
+
+void selection::count_walk::count_the_selection(const std::uint64_t index, const selected_result* const selected)
+{
+    if (!agrees) {
+        return;
     }
-    return requests == it->second.base.size();
+    if (selected == nullptr) {
+        agrees = false;
+        return;
+    }
+    if (index < answer->from_idx) {
+        base_crc = extend_base_crc(base_crc, index, selected->result_crc);
+        return;
+    }
+    const auto r = answer->results.find(index);
+    agrees = r != answer->results.end() && r->second.result == selected->chosen.result;
+}
+
+bool selection::count_walk::counts(const std::uint64_t index) const
+{
+    return agrees && answer->results.contains(index) && base_crc == answer->base_crc;
+}
+
+bool selection::counts(const leader_log& log, const node_id node, const std::uint64_t index) const
+{
+    auto w = begin_the_count(log, node);
+    for (auto k = pointer_ + 1; k < index && w.agrees; ++k) {
+        if (holds_a_request(log, k)) {
+            w.count_the_selection(k, selection_at(k));
+        }
+    }
+    return w.counts(index);
+}
+
+bool selection::holds_on(const std::uint64_t index, const std::uint32_t base_crc) const
+{
+    const auto* s = selection_at(index);
+    return s != nullptr && s->base_crc == base_crc;
 }
 
 std::vector<node_id> selection::find_the_counted_nodes(const leader_log& log, const std::uint64_t index) const
@@ -173,39 +188,52 @@ std::vector<try_again_target> selection::select_results(const leader_log& log)
     if (log.pointer != pointer_) {
         return targets;
     }
+    std::vector<count_walk> walks;
+    walks.reserve(nodes_.size());
+    for (const auto j : nodes_) {
+        walks.push_back(begin_the_count(log, j));
+    }
+    std::uint32_t chain = 0;
     for (auto q = pointer_ + 1; q <= pointer_ + log.entries.size(); ++q) {
-        if (!holds_a_request(log, q) || holds(log, q)) {
+        if (!holds_a_request(log, q)) {
             continue;
         }
-        const auto counted = find_the_counted_nodes(log, q);
-        if (counted.empty()) {
-            break;
-        }
-        node_id candidate = counted.front();
-        std::size_t most = 0;
-        for (const auto c : counted) {
-            const auto agreeing = count_the_agreeing(counted, q, result_of(c, q));
-            if (agreeing > most) {
-                most = agreeing;
-                candidate = c;
+        if (!holds_on(q, chain)) {
+            std::vector<node_id> counted;
+            for (std::size_t i = 0; i < nodes_.size(); ++i) {
+                if (walks[i].counts(q)) {
+                    counted.push_back(nodes_[i]);
+                }
             }
-        }
-        if (most < majority()) {
-            break;
-        }
-        const auto chosen = result_of(candidate, q);
-        for (const auto j : counted) {
-            if (!results_agree(result_of(j, q), chosen, rule_) && tried_.insert({j, q}).second) {
-                targets.push_back({j, q});
+            if (counted.empty()) {
+                break;
             }
-        }
-        selected_result s{answers_.at(candidate).results.at(q), candidate, {}};
-        for (auto k = pointer_ + 1; k < q; ++k) {
-            if (holds_a_request(log, k)) {
-                s.base.emplace(k, compute_result_crc(k, selected_.at(k).chosen.result));
+            node_id candidate = counted.front();
+            std::size_t most = 0;
+            for (const auto c : counted) {
+                const auto agreeing = count_the_agreeing(counted, q, result_of(c, q));
+                if (agreeing > most) {
+                    most = agreeing;
+                    candidate = c;
+                }
             }
+            if (most < majority()) {
+                break;
+            }
+            const auto chosen = result_of(candidate, q);
+            for (const auto j : counted) {
+                if (!results_agree(result_of(j, q), chosen, rule_) && tried_.insert({j, q}).second) {
+                    targets.push_back({j, q});
+                }
+            }
+            const auto& a = answers_.at(candidate);
+            selected_.insert_or_assign(q, selected_result{a.results.at(q), a.result_crcs.at(q), candidate, chain});
         }
-        selected_.insert_or_assign(q, std::move(s));
+        const auto* s = selection_at(q);
+        chain = extend_base_crc(chain, q, s->result_crc);
+        for (auto& w : walks) {
+            w.count_the_selection(q, s);
+        }
     }
     return targets;
 }
@@ -257,13 +285,14 @@ std::vector<entry> selection::find_the_done_records(const leader_log& log) const
     if (log.pointer != pointer_) {
         return done;
     }
+    std::uint32_t chain = 0;
     for (auto k = pointer_ + 1; k <= pointer_ + log.entries.size(); ++k) {
         const entry& task = log.entries[k - pointer_ - 1].get();
         if (!entry_is_a_request(task)) {
             done.push_back(task);
             continue;
         }
-        if (!holds(log, k)) {
+        if (!holds_on(k, chain)) {
             if (done.empty() || std::ranges::none_of(done, entry_is_a_request)) {
                 if (auto rejected = find_the_rejected_record(log, k)) {
                     done.push_back(std::move(*rejected));
@@ -272,6 +301,7 @@ std::vector<entry> selection::find_the_done_records(const leader_log& log) const
             break;
         }
         const auto& s = selected_.at(k);
+        chain = extend_base_crc(chain, k, s.result_crc);
         auto e = task;
         e.result = s.chosen.result;
         e.result_crc = s.chosen.crc;
