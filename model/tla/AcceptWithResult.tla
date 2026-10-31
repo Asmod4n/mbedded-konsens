@@ -20,6 +20,7 @@ CONSTANTS Nodes, Requests, MaxBallot, MaxLog, MaxCrash,
           NoSelectionAtSync,    \* mutation: a new leader syncs the log of its promises as it is
           NoRepairBound,        \* mutation: the kept prefix of a sync is not bounded by a repair
           LeaderCountsUnsynced, \* mutation: the leader counts its own entry before its sync
+          NoLeaderCheck,        \* mutation: the leader counts a taken entry without its own run
           NoRecovery,           \* a restarted node votes at once
           RecoveryWaitsForLeader
 
@@ -169,7 +170,7 @@ HandlePromise(i, m) ==
                     IN IF NoSelectionAtSync
                        THEN /\ Commit(i, [cur[i] EXCEPT !.log = L, !.acc = m.b, !.dec = d])
                             /\ lead' = [lead EXCEPT ![i] = [@ EXCEPT !.phase = "accept", !.promises = P,
-                                                             !.mmacc = ma, !.mmlen = Len(L), !.fc = Len(L) + 1]]
+                                                             !.mmacc = ma, !.mmlen = Len(L), !.fc = Len(L) + 1, !.d = d]]
                             /\ SendAll(SyncMessages(i, m.b, P, L, d, ma, Len(L), Len(L) + 1))
                        ELSE /\ lead' = [lead EXCEPT ![i] = [@ EXCEPT !.phase = "verify", !.promises = P,
                                                              !.taken = L, !.d = d, !.sel = <<>>,
@@ -309,7 +310,9 @@ LeaderDecide(i) ==
     /\ LET b == lead[i].b
            idx == cur[i].dec + 1
            own == IF LeaderCountsUnsynced THEN cur[i] ELSE dur[i]
-           self == IF own.acc = b /\ Len(own.log) >= idx THEN {i} ELSE {}
+           checked == NoLeaderCheck \/
+                      \A k \in (lead[i].d + 1)..idx : Agrees(i, SubSeq(own.log, 1, k - 1), own.log[k])
+           self == IF own.acc = b /\ Len(own.log) >= idx /\ checked THEN {i} ELSE {}
            Q == self \cup {j \in Nodes : \E m \in msgs : m.type = "synced" /\ m.b = b /\ m.from = j /\ m.idx >= idx}
        IN /\ IsMajority(Q)
           /\ Commit(i, [cur[i] EXCEPT !.dec = idx])
