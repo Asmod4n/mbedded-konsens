@@ -34,4 +34,4 @@ Calls on the leader
 
 Reading
 - On the leader, the selection of results (select_results, count_answer, find_the_done_records, move_pointer) is 26.8 % of the instructions. Most of it is the repeated walk from pointer_ in holds and counts.
-- On every node, check_the_done_records decodes the CBOR result of the done records in each step.
+- check_the_done_records (15.6 % on the leader) is read_the_open_log 5.3 %, write_the_done_results 3.9 % (of it decode_result 2.6 %), check_the_done_record 3.7 % and begin_step 2.2 %. decode_result has 8 068 calls there, about 2 per write. It is not a repeated decode of the whole window.
