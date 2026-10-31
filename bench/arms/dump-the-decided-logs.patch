@@ -1,0 +1,32 @@
+--- a/test/simulation.hpp
++++ b/test/simulation.hpp
+@@ -1,3 +1,5 @@
++#include <cstdlib>
++#include <fstream>
+ #pragma once
+ 
+ #include <doctest/doctest.h>
+@@ -1042,6 +1044,23 @@
+         majority_decided = majority_decided && holders > node_count / 2;
+         all_decided = all_decided && holders == node_count - w.retired_count();
+     }
++    if (const char* dir = std::getenv("DUMP_DIR")) {
++        std::ofstream f(std::string(dir) + "/" + std::to_string(seed) + "-" + std::to_string(static_cast<int>(mode)) + "-" + std::to_string(static_cast<int>(people)) + ".txt");
++        for (std::size_t i = 0; i < node_count; ++i) {
++            const auto d = *w.nodes[i].read_decided_suffix(0);
++            f << "node " << i << " decided " << d.size() << "\n";
++            for (const auto& e : d) {
++                f << static_cast<int>(e.kind) << " s" << e.session << " r" << e.request_number << " c" << e.client_id << " p" << e.pid << " crc" << e.result_crc << " rej" << e.rejected << " pl";
++                for (auto b : e.payload) f << ' ' << static_cast<int>(b);
++                f << " res";
++                for (auto b : e.result) f << ' ' << static_cast<int>(b);
++                f << " out";
++                for (auto o : e.out) f << ' ' << o;
++                f << "\n";
++            }
++        }
++        f << "replies " << w.counts.replies << " reads " << w.counts.reads << " sessions " << w.counts.sessions << "\n";
++    }
+     return {std::nullopt, {}, majority_decided, all_decided, w.survived_crash, w.counts,
+             w.retired_count() > node_count / 2};
+ }
