@@ -639,6 +639,9 @@ public:
         if (auto r = refuse_if_building(); !r) [[unlikely]] {
             return r;
         }
+        if (auto r = refuse_if_repairing(); !r) [[unlikely]] {
+            return r;
+        }
         if (state_ == std::pair{role::leader, phase::prepare} || state_ == std::pair{role::leader, phase::accept}) {
             if (holds_a_stop_sign()) [[unlikely]] {
                 return std::unexpected(make_error_code(client_errc::reconfiguring));
@@ -741,6 +744,14 @@ public:
     {
         if (build_) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::building));
+        }
+        return {};
+    }
+
+    result refuse_if_repairing() const
+    {
+        if (repair_) [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::repairing));
         }
         return {};
     }
