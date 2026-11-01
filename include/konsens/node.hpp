@@ -1417,7 +1417,7 @@ private:
             const auto k = j.indexes[i];
             write_the_done_results(j.log, below, k, base);
             below = k;
-            const done_log b{j.log.applied_idx, j.log.done.first(k - 1 - j.log.applied_idx)};
+            const done_log b{j.log.applied_idx, j.log.done.first(k - 1 - j.log.applied_idx), j.log.owner};
             a.reasons[i] = judge_the_done_record(b, j.log.done[k - 1 - j.log.applied_idx], j.owns[i], base);
             if (a.reasons[i]) {
                 return;
@@ -1514,7 +1514,7 @@ private:
         auto verified = seq_paxos_.get_verified_idx();
         std::map<std::uint64_t, std::optional<refusal_reason>> verdicts;
         if (pool_) {
-            const done_log log{committed_applied_idx, tail->entries.subspan(committed_applied_idx - first)};
+            const done_log log{committed_applied_idx, tail->entries.subspan(committed_applied_idx - first), tail->owner};
             auto judged = judge_on_the_pool(log, *m, verified);
             if (!judged) [[unlikely]] {
                 return seq_paxos_.stop_voting(judged.error());
@@ -1592,7 +1592,7 @@ private:
         owns.reserve(indexes.size());
         const auto own_log = log.done.subspan(m.applied_idx - log.applied_idx);
         for (const auto k : indexes) {
-            const done_log b{m.applied_idx, own_log.first(k - 1 - m.applied_idx)};
+            const done_log b{m.applied_idx, own_log.first(k - 1 - m.applied_idx), log.owner};
             owns.push_back(find_the_own_result_on(b, log.done[k - 1 - log.applied_idx]));
         }
         auto& threads = pool_->threads;
