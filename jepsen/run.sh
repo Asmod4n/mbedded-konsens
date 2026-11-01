@@ -6,6 +6,12 @@ build=$here/build
 nodes=(n1 n2 n3 n4 n5)
 
 "$here/fetch.sh"
+if [ ! -x "$build/konsensd" ]; then
+    podman build -q -f "$here/../containers/konsensd/Containerfile" --target build -t localhost/konsensd-build "$here/.."
+    id=$(podman create localhost/konsensd-build)
+    podman cp "$id:/build/konsensd" "$build/konsensd"
+    podman rm "$id" > /dev/null
+fi
 podman build -q -f "$here/containers/node/Containerfile" -t localhost/jepsen-node "$build"
 podman build -q -f "$here/containers/control/Containerfile" -t localhost/jepsen-control "$build"
 podman network exists jepsen || podman network create jepsen

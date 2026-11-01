@@ -1,23 +1,27 @@
-FROM registry.opensuse.org/opensuse/tumbleweed:latest AS lazyfs
-RUN zypper -n -q in --no-recommends gcc-c++ cmake make fuse3-devel && zypper -n clean -a
-COPY lazyfs /lazyfs
+FROM docker.io/library/ubuntu:26.10 AS lazyfs
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++ cmake make libfuse3-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+COPY lazyfs /opt/jepsen/lazyfs
 COPY toml11 /toml11
-COPY spdlog /lazyfs/libs/libpcache/build/_deps/spdlog-src
-RUN cd /lazyfs/libs/libpcache/build \
+COPY spdlog /opt/jepsen/lazyfs/libs/libpcache/build/_deps/spdlog-src
+RUN cd /opt/jepsen/lazyfs/libs/libpcache/build \
  && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DFETCHCONTENT_SOURCE_DIR_TOML=/toml11 \
-    -DFETCHCONTENT_SOURCE_DIR_SPDLOG=/lazyfs/libs/libpcache/build/_deps/spdlog-src .. \
+    -DFETCHCONTENT_SOURCE_DIR_SPDLOG=/opt/jepsen/lazyfs/libs/libpcache/build/_deps/spdlog-src .. \
  && cmake --build . -j"$(nproc)" \
- && mkdir -p /lazyfs/lazyfs/build && cd /lazyfs/lazyfs/build \
+ && mkdir -p /opt/jepsen/lazyfs/lazyfs/build && cd /opt/jepsen/lazyfs/lazyfs/build \
  && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLAZYFS_BUILD_TESTS=OFF .. && cmake --build . -j"$(nproc)"
 
-FROM registry.opensuse.org/opensuse/tumbleweed:latest
-RUN zypper -n -q in --no-recommends openssh-server openssh-clients sudo bash tar gzip curl procps psmisc iproute2 \
-    nftables fuse3 libfuse3-4 sqlite3 util-linux shadow hostname iputils && zypper -n clean -a
-COPY --from=lazyfs /lazyfs/lazyfs/build/lazyfs /usr/local/bin/lazyfs
-COPY --from=lazyfs /lazyfs/libs/libpcache/build/libpcache.so /usr/local/lib64/libpcache.so
-RUN echo /usr/local/lib64 > /etc/ld.so.conf.d/local.conf && ldconfig \
- && ssh-keygen -A \
- && printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\nUsePAM no\n' > /etc/ssh/sshd_config.d/jepsen.conf \
+FROM docker.io/library/ubuntu:26.10
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server sudo bash tar gzip curl procps psmisc iproute2 \
+    nftables fuse3 sqlite3 util-linux iputils-ping ca-certificates libada-url0-3 libsqlite3-0 libssl4 libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=lazyfs /opt/jepsen/lazyfs /opt/jepsen/lazyfs
+RUN echo /opt/jepsen/lazyfs/libs/libpcache/build > /etc/ld.so.conf.d/lazyfs.conf && ldconfig \
+ && ln -s /usr/bin/fusermount3 /usr/local/bin/fusermount \
+ && mkdir -p /run/sshd && ssh-keygen -A \
+ && printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\n' > /etc/ssh/sshd_config.d/jepsen.conf \
  && echo user_allow_other >> /etc/fuse.conf \
  && useradd --create-home konsens
 COPY control.pub /root/.ssh/authorized_keys

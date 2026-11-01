@@ -170,6 +170,30 @@ clock of the host, and konsensd reads only `steady_clock`
   host are there. On a machine with a direct connection, Leiningen in
   the control container fetches them itself.
 
+## 6b. Result of step 2 (2026-11-01)
+
+- The node image is Ubuntu 26.10, as `containers/konsensd` is, and not
+  Tumbleweed: Tumbleweed has no package of ada-url and of toml++, so
+  konsensd does not build or run there, and Jepsen starts a daemon with
+  `start-stop-daemon`, which Tumbleweed does not have. The control image
+  stays Tumbleweed.
+- `jepsen/src/jepsen/konsensd/db.clj` uploads konsensd, mounts the data
+  directory on LazyFS with `jepsen.lazyfs/mount!` as the user konsens,
+  writes the TOML with the addresses of the peers, and starts all five
+  nodes with `--first-start`. Kill, pause and the log files are there for
+  step 3.
+- `client.clj` maps the replies as section 3 says. It uses one
+  `java.net.http.HttpClient` per process and makes a new one after each
+  `:info`.
+- Main d89007a, release g++ 16, no fault, 30 s, 20 operations per
+  second, ten processes. register: 613 operations, all `:ok`, Knossos
+  finds every key linearizable. rw-register: 599 transactions, Elle
+  finds no anomaly. No log holds a pattern of a fault. Results in
+  `jepsen/results/konsensd-register/` and
+  `jepsen/results/konsensd-rw-register/`.
+- Found on the way: rhizome needs `java.awt.headless=true`, and the
+  generator of Elle must go to the clients only.
+
 ## 7. What this does not cover
 
 - Transactions over several keys: konsensd has none.
