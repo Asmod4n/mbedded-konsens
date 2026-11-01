@@ -3,5 +3,5 @@
   :license {:name "Apache-2.0"}
   :dependencies [[org.clojure/clojure "1.12.0"]
                  [jepsen "0.3.15"]]
-  :jvm-opts ["-Djava.awt.headless=true"]
+  :jvm-opts ["-Djava.awt.headless=true" "-Xmx8g"]
   :main jepsen.konsensd)

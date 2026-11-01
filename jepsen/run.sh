@@ -26,13 +26,28 @@ remove_the_nodes() {
 remove_the_nodes
 trap remove_the_nodes EXIT
 for n in "${nodes[@]}"; do
-    podman run -d --name "jepsen-$n" --hostname "$n" --network jepsen --network-alias "$n" \
+    podman run -d --init --name "jepsen-$n" --hostname "$n" --network jepsen --network-alias "$n" \
         --cap-add NET_ADMIN,SYS_ADMIN --device /dev/fuse localhost/jepsen-node > /dev/null
 done
 
 mkdir -p "$build/m2" "$build/lein-home" "$here/results"
+status=0
 podman run --rm --network jepsen \
     -v "$here:/jepsen:Z" -v "$here/results:/jepsen/store:Z" \
     -v "$build/m2:/root/.m2:Z" -v "$build/lein-home:/root/.lein:Z" \
     -w /jepsen localhost/jepsen-control \
-    lein run test --nodes "$(IFS=,; echo "${nodes[*]}")" --username root --ssh-private-key /root/.ssh/id_rsa "$@"
+    lein run test --nodes "$(IFS=,; echo "${nodes[*]}")" --username root --ssh-private-key /root/.ssh/id_rsa "$@" ||
+    status=$?
+
+pack_the_runs() {
+    local run
+    for run in "$here"/results/*/20*/; do
+        [ -d "$run" ] || continue
+        run=${run%/}
+        tar -C "$(dirname "$run")" -cJf "$run.tar.xz" "$(basename "$run")"
+        rm -rf "$run"
+    done
+}
+
+pack_the_runs
+exit "$status"

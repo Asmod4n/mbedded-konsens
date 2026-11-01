@@ -5,61 +5,63 @@
                     [nemesis :as nemesis]]
             [jepsen.konsensd.db :as kdb]))
 
-(def most-retired-nodes 2)
-
 (def faults-that-retire #{:crash :lose-after-crash})
 
 (def faults #{:restart :crash :lose-after-stop :lose-after-crash})
-
-(defn retires?
-  [f outcome]
-  (or (faults-that-retire f) (= :killed outcome)))
 
 (defn act!
   [db f]
   (case f
     :restart         (kdb/stop-konsensd!)
-    :crash           (do (kdb/signal-konsensd! "KILL") :killed)
+    :crash           (kdb/kill-konsensd!)
     :lose-after-stop (let [outcome (kdb/stop-konsensd!)]
                        (lazyfs/lose-unfsynced-writes! (:lazyfs-map db))
                        outcome)
-    :lose-after-crash (do (kdb/signal-konsensd! "KILL")
-                         (lazyfs/lose-unfsynced-writes! (:lazyfs-map db))
-                         :killed)))
+    :lose-after-crash (let [outcome (kdb/kill-konsensd!)]
+                        (lazyfs/lose-unfsynced-writes! (:lazyfs-map db))
+                        outcome)))
 
 (defrecord ProcessNemesis [db retired]
   nemesis/Nemesis
   (setup! [this test] this)
   (invoke! [this test op]
-    (let [node (:value op)
-          outcome (c/on-nodes test [node]
-                              (fn [_ _]
-                                (let [outcome (act! db (:f op))]
-                                  (kdb/start-konsensd! false)
-                                  outcome)))
-          outcome (get outcome node)]
-      (when (retires? (:f op) outcome)
+    (let [nodes (:value op)
+          outcomes (c/on-nodes test nodes
+                               (fn [_ _]
+                                 (let [outcome (act! db (:f op))
+                                       starts (kdb/starts-in-the-log)]
+                                   (kdb/start-konsensd! false)
+                                   [outcome (if (kdb/start-retired? starts) :retired :votes)])))]
+      (doseq [[node [_ start]] outcomes
+              :when (= :retired start)]
         (swap! retired conj node))
-      (assoc op :type :info :value [node outcome])))
+      (assoc op :type :info :value outcomes)))
   (teardown! [this test])
   nemesis/Reflection
   (fs [this] faults))
 
+(defn counts-of-targets
+  [n]
+  (distinct [1 (inc (quot n 2)) n]))
+
 (defn process-generator
-  [enabled retired]
+  [enabled retired most-retired-nodes]
   (fn [test ctx]
-    (let [retiring? (< (count @retired) most-retired-nodes)
-          choices (cond->> (filter enabled faults)
-                    (not retiring?) (remove faults-that-retire))
-          nodes (remove @retired (:nodes test))]
-      (when (and (seq choices) (seq nodes))
-        {:type :info :f (rand-nth (vec choices)) :value (rand-nth (vec nodes))}))))
+    (let [budget (- most-retired-nodes (count @retired))
+          nodes (remove @retired (:nodes test))
+          choices (for [f (filter enabled faults)
+                        k (counts-of-targets (count nodes))
+                        :when (or (not (faults-that-retire f)) (<= k budget))]
+                    [f k])]
+      (when (seq choices)
+        (let [[f k] (rand-nth choices)]
+          {:type :info :f f :value (vec (take k (shuffle nodes)))})))))
 
 (defn package
-  [{:keys [db faults interval]}]
+  [{:keys [db faults interval most-retired-nodes]}]
   (let [enabled (filter faults jepsen.konsensd.nemesis/faults)
         retired (atom #{})]
     {:nemesis   (ProcessNemesis. db retired)
      :generator (when (seq enabled)
-                  (gen/stagger interval (process-generator (set enabled) retired)))
+                  (gen/stagger interval (process-generator (set enabled) retired most-retired-nodes)))
      :perf      #{{:name "process" :fs (set enabled) :color "#E9A4A0"}}}))

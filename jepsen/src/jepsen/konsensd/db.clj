@@ -60,18 +60,44 @@
 
 (def seconds-for-a-clean-stop 60)
 
+(defn await-the-end-of-konsensd
+  [seconds]
+  (util/await-fn (fn [] (when (konsensd-runs?) (throw (ex-info "konsensd runs" {}))))
+                 {:timeout        (* 1000 seconds)
+                  :retry-interval 100
+                  :log-message    "Waiting for konsensd to end"}))
+
+(defn kill-konsensd!
+  []
+  (signal-konsensd! "KILL")
+  (await-the-end-of-konsensd seconds-for-a-clean-stop)
+  :killed)
+
 (defn stop-konsensd!
   []
+  (signal-konsensd! "CONT")
   (signal-konsensd! "TERM")
-  (try (util/await-fn (fn [] (when (konsensd-runs?) (throw (ex-info "konsensd runs" {}))))
-                      {:timeout        (* 1000 seconds-for-a-clean-stop)
-                       :retry-interval 200
-                       :log-message    "Waiting for konsensd to stop"})
+  (try (await-the-end-of-konsensd seconds-for-a-clean-stop)
        :stopped
        (catch clojure.lang.ExceptionInfo e
          (if (= :timeout (:type (ex-data e)))
-           (do (signal-konsensd! "KILL") :killed)
+           (kill-konsensd!)
            (throw e)))))
+
+(defn starts-in-the-log
+  []
+  (parse-long (str/trim (c/exec :sh :-c (str "grep -c 'konsensd: node [0-9]* started' " log-file " || true")))))
+
+(defn start-retired?
+  [starts-before]
+  (util/await-fn (fn []
+                   (when (<= (starts-in-the-log) starts-before)
+                     (throw (ex-info "konsensd has not started" {})))
+                   (boolean (re-find #"started retired"
+                                     (c/exec :sh :-c (str "grep 'konsensd: node [0-9]* started' " log-file " | tail -1")))))
+                 {:timeout        30000
+                  :retry-interval 200
+                  :log-message    "Waiting for konsensd to start"}))
 
 (defrecord DB [lazyfs-map]
   db/DB

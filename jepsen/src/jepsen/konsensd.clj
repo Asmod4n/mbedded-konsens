@@ -16,7 +16,7 @@
    :rw-register rw-register/workload})
 
 (def patterns-of-a-fault
-  ["AddressSanitizer" "node_fault" "konsensd: konsens:"])
+  ["AddressSanitizer" "node_fault" "konsensd: konsens:" "Assertion" "terminate called"])
 
 (def known-faults (into #{:partition :pause} knemesis/faults))
 
@@ -29,6 +29,7 @@
         package-opts {:db        db
                       :interval  (:nemesis-interval opts)
                       :faults    (:faults opts)
+                      :most-retired-nodes (:most-retired-nodes opts)
                       :partition {:targets [:one :majority :majorities-ring]}
                       :pause     {:targets [:one :minority]}}
         package (nc/compose-packages [(nc/partition-package package-opts)
@@ -75,6 +76,9 @@
     :default  #{}
     :parse-fn (fn [s] (into #{} (map keyword) (remove empty? (str/split s #","))))
     :validate [(partial every? known-faults) "unknown fault"]]
+   [nil "--most-retired-nodes N" "Crashes that the nemesis may cause in a run; a crash retires a node"
+    :default  2
+    :parse-fn parse-long]
    [nil "--nemesis-interval SECONDS" "Seconds between faults"
     :default  10
     :parse-fn parse-double]

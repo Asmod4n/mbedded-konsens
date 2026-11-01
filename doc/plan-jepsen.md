@@ -194,6 +194,62 @@ clock of the host, and konsensd reads only `steady_clock`
 - Found on the way: rhizome needs `java.awt.headless=true`, and the
   generator of Elle must go to the clients only.
 
+## 6c. Result of step 3, first part (2026-11-01)
+
+Main d89007a, release g++ 16, ten processes, a fault every 10 s on
+average. Each run is one file `jepsen/results/<test>/<time>.tar.xz`.
+
+| Faults | Workload | Time | Result |
+|---|---|---|---|
+| partition | register, rw-register | 120 s | valid |
+| pause | register, rw-register | 120 s | valid |
+| restart, lose-after-stop | register | 120 s | valid; every node votes after each stop |
+| restart, crash, lose-after-stop, lose-after-crash | register | 120 s | valid; two nodes retire |
+| all six | register, rw-register | 300 s | valid; two nodes retire |
+
+Mutations, each on a branch that never merges:
+
+| Mutation | Faults | Result |
+|---|---|---|
+| `jepsen-mutation-read-index`: a read is answered without its read index | partition | found: Knossos finds three keys not linearizable |
+| `jepsen-mutation-no-sync`: no sync of the WAL, and no retirement | lose-after-stop, lose-after-crash on one, a majority or all nodes | found, but not by Knossos: konsensd finds the damage itself ("a step found a damage of the own log"), stops voting, and the checker of the log fails the run |
+| `jepsen-mutation-no-retire`: no retirement | crash, lose-after-crash | not found in 19 crashes |
+
+The third row is expected. A crash with a working sync loses nothing,
+so a node that votes again after a crash holds all it promised. The
+retirement guards against a loss that a working sync does not cause. No
+fault of this test causes such a loss alone; the second row shows the
+loss together with a missing sync.
+
+The nemesis of the process:
+
+- `restart`: SIGCONT, SIGTERM, then a start. A node that has not ended
+  after 60 s gets SIGKILL.
+- `crash`: SIGKILL, then a start.
+- `lose-after-stop` and `lose-after-crash`: the same, and LazyFS drops
+  what was not synced before the start.
+- It acts on one node, a majority or all nodes at once. After each start
+  it reads the log of konsensd, and a node that started retired counts.
+  A fault that retires never takes the count above two.
+
+Found in the test on the way: sshd as PID 1 reaps no child, so an ended
+konsensd stayed a zombie and counted as running; the node containers now
+run with `--init`. A stop of a paused node waited for nothing; the stop
+now sends SIGCONT first. Knossos ran out of memory with 100 writes per
+key and many `:info` writes; the runs with crashes use 20.
+
+Open:
+
+- In the runs with all faults, a clean stop took longer than 60 s three
+  times, and the node got SIGKILL after it had written "stopped cleanly".
+  So the node voted again. Not checked: whether the exit of the process
+  waits on sends to a peer behind a partition.
+- A retired node answers every write with 503, and the client must read
+  that as `:info`, because konsensd answers a `retry` with the same 503.
+  So two retired nodes give many `:info` writes, which cost Knossos
+  memory.
+- File damage (the last row of section 4) is not built yet.
+
 ## 7. What this does not cover
 
 - Transactions over several keys: konsensd has none.
