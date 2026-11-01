@@ -87,7 +87,7 @@ inline start_kind kind_of_the_start(const node_config& config, const std::option
         }
         return start_kind::first;
     }
-    return start_kind::retired;
+    return start_kind::clean;
 }
 
 struct logical_clock {

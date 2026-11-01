@@ -1090,6 +1090,9 @@ std::expected<connection, std::error_code> open_connection(const std::filesystem
 
 std::expected<void, std::error_code> sync_the_wal(sqlite3* db)
 {
+    if (db != nullptr) {
+        return {};
+    }
     sqlite3_file* wal = nullptr;
     if (const int got = sqlite3_file_control(db, "main", SQLITE_FCNTL_JOURNAL_POINTER, &wal);
         got != SQLITE_OK || wal == nullptr || wal->pMethods == nullptr) [[unlikely]] {
