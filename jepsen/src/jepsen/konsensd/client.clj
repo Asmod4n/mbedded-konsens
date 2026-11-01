@@ -10,6 +10,14 @@
 
 (def statuses-of-a-refusal-before-the-node #{400 404 405 411 413 431 501 505})
 
+(def problem-types-without-a-proposal
+  #{"https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#retired"
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#building"})
+
+(defn problem-type-of
+  [body]
+  (second (re-find #"\"type\":\"([^\"]*)\"" (or body ""))))
+
 (defn http-client
   []
   (-> (HttpClient/newBuilder)
@@ -52,6 +60,7 @@
     (cond (= 204 status) {:type :ok}
           (= 409 status) {:type :fail :error [:rejected body]}
           (statuses-of-a-refusal-before-the-node status) {:type :fail :error [:status status body]}
+          (problem-types-without-a-proposal (problem-type-of body)) {:type :fail :error [:status status body]}
           :else {:type :info :error [:status status body]})))
 
 (defn outcome-of-an-exception

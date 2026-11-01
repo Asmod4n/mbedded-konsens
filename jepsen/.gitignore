@@ -5,3 +5,4 @@ target/
 results/current
 results/latest
 results/*/latest
+store/

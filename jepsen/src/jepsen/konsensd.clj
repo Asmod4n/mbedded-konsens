@@ -22,6 +22,12 @@
 
 (def quiet-seconds-after-the-heal 10)
 
+(defn binary-suffix
+  [path]
+  (let [file (last (str/split path #"/"))]
+    (when (str/starts-with? file "konsensd-")
+      [(subs file (count "konsensd-"))])))
+
 (defn konsensd-test
   [opts]
   (let [workload ((workloads (:workload opts)) opts)
@@ -41,8 +47,9 @@
                        (gen/time-limit (:time-limit opts)))]
     (merge tests/noop-test
            opts
-           {:name      (str/join "-" (into ["konsensd" (name (:workload opts))]
-                                       (map name) (sort (:faults opts))))
+           {:name      (str/join "-" (concat ["konsensd" (name (:workload opts))]
+                                         (map name (sort (:faults opts)))
+                                         (binary-suffix (:konsensd opts))))
             :os        os/noop
             :db        db
             :client    (:client workload)
@@ -56,7 +63,8 @@
                          (merge {:workload   (:checker workload)
                                  :perf       (checker/perf {:nemeses (:perf package)})
                                  :stats      (checker/stats)
-                                 :exceptions (checker/unhandled-exceptions)}
+                                 :exceptions (checker/unhandled-exceptions)
+                                 :damage     (knemesis/damage-checker)}
                                 (into {} (for [p patterns-of-a-fault]
                                            [(keyword (str "log " p))
                                             (checker/log-file-pattern p "konsensd.log")]))))})))
@@ -72,7 +80,7 @@
    [nil "--per-key-limit N" "Writes per key"
     :default  100
     :parse-fn parse-long]
-   [nil "--faults LIST" "Comma-separated faults: partition, pause, restart, crash, lose-after-stop, lose-after-crash"
+   [nil "--faults LIST" "Comma-separated faults: partition, pause, restart, crash, lose-after-stop, lose-after-crash, damage-log, damage-data"
     :default  #{}
     :parse-fn (fn [s] (into #{} (map keyword) (remove empty? (str/split s #","))))
     :validate [(partial every? known-faults) "unknown fault"]]

@@ -88,6 +88,74 @@
   []
   (parse-long (str/trim (c/exec :sh :-c (str "grep -c 'konsensd: node [0-9]* started' " log-file " || true")))))
 
+(def database-file (str data-directory "/log/konsens.db"))
+
+(defn repairs-in-the-log
+  []
+  (parse-long (str/trim (c/exec :sh :-c (str "grep -c 'konsensd: node [0-9]* repairs its store' " log-file " || true")))))
+
+(defn start-repairs?
+  [repairs-before]
+  (try (util/await-fn (fn []
+                        (when (<= (repairs-in-the-log) repairs-before)
+                          (throw (ex-info "konsensd does not repair" {})))
+                        true)
+                      {:timeout        10000
+                       :retry-interval 200
+                       :log-message    "Waiting for konsensd to repair"})
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :timeout (:type (ex-data e)))
+           false
+           (throw e)))))
+
+(defn sqlite!
+  [& sql]
+  (c/sudo user (c/exec :sqlite3 database-file (str/join " " sql))))
+
+(defn damage-a-log-record!
+  []
+  (sqlite! "UPDATE log SET record = unhex(CASE substr(hex(record),1,2) WHEN 'FF' THEN 'FE' ELSE 'FF' END"
+           "|| substr(hex(record),3))"
+           "WHERE idx = (SELECT idx FROM log ORDER BY random() LIMIT 1)"
+           "RETURNING idx"))
+
+(defn damage-a-value!
+  []
+  (let [row (str/trim (sqlite! "SELECT hex(key) || ' ' || hex(value) FROM data ORDER BY random() LIMIT 1"))]
+    (when-not (str/blank? row)
+      (let [[key value] (str/split row #" ")
+            last-byte (Integer/parseInt (subs value (- (count value) 2)) 16)
+            changed (str (subs value 0 (- (count value) 2)) (format "%02X" (bit-xor last-byte 1)))]
+        (sqlite! (str "UPDATE data SET value = X'" changed "' WHERE key = X'" key "'"))
+        {:key key :from value :to changed}))))
+
+(defn text-of-hex
+  [hex]
+  (String. (byte-array (map #(unchecked-byte (Integer/parseInt (apply str %) 16)) (partition 2 hex)))
+           "UTF-8"))
+
+(defn hex-of-text
+  [text]
+  (apply str (map #(format "%02X" %) (.getBytes ^String text "UTF-8"))))
+
+(defn local-value
+  [key-hex]
+  (try (util/await-fn (fn []
+                        (let [r (c/exec :curl :-s :-w "\n%{http_code}"
+                                        (str "http://127.0.0.1:" client-port "/kv/" (text-of-hex key-hex)))
+                              [body status] (str/split r #"\n" 2)]
+                          (case status
+                            "200" (hex-of-text body)
+                            "404" :absent
+                            (throw (ex-info "no answer" {:status status})))))
+                      {:timeout        10000
+                       :retry-interval 200
+                       :log-message    "Waiting for a local read"})
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :timeout (:type (ex-data e)))
+           :no-answer
+           (throw e)))))
+
 (defn start-retired?
   [starts-before]
   (util/await-fn (fn []

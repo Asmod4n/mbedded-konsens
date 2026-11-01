@@ -30,24 +30,30 @@ for n in "${nodes[@]}"; do
         --cap-add NET_ADMIN,SYS_ADMIN --device /dev/fuse localhost/jepsen-node > /dev/null
 done
 
-mkdir -p "$build/m2" "$build/lein-home" "$here/results"
+mkdir -p "$build/m2" "$build/lein-home" "$here/store" "$here/results"
 status=0
 podman run --rm --network jepsen \
-    -v "$here:/jepsen:Z" -v "$here/results:/jepsen/store:Z" \
+    -v "$here:/jepsen:Z" -v "$here/store:/jepsen/store:Z" \
     -v "$build/m2:/root/.m2:Z" -v "$build/lein-home:/root/.lein:Z" \
     -w /jepsen localhost/jepsen-control \
     lein run test --nodes "$(IFS=,; echo "${nodes[*]}")" --username root --ssh-private-key /root/.ssh/id_rsa "$@" ||
     status=$?
 
-pack_the_runs() {
-    local run
-    for run in "$here"/results/*/20*/; do
+keep_the_summaries() {
+    local run summary
+    for run in "$here"/store/*/20*/; do
         [ -d "$run" ] || continue
         run=${run%/}
+        summary="$here/results/$(basename "$(dirname "$run")")/$(basename "$run")"
+        mkdir -p "$summary"
+        [ ! -f "$run/results.edn" ] || xz -9 -c "$run/results.edn" > "$summary/results.edn.xz"
+        for log in "$run"/n*/konsensd.log; do
+            [ -f "$log" ] || continue
+            cp "$log" "$summary/$(basename "$(dirname "$log")")-konsensd.log"
+        done
         tar -C "$(dirname "$run")" -cJf "$run.tar.xz" "$(basename "$run")"
         rm -rf "$run"
     done
 }
-
-pack_the_runs
+keep_the_summaries
 exit "$status"

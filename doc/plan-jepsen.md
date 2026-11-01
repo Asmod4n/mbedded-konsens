@@ -248,7 +248,44 @@ Open:
   that as `:info`, because konsensd answers a `retry` with the same 503.
   So two retired nodes give many `:info` writes, which cost Knossos
   memory.
-- File damage (the last row of section 4) is not built yet.
+- File damage: built in section 6d.
+
+## 6d. Result of step 3, second part (2026-11-01)
+
+Two faults damage the store of one stopped node, and then start it:
+
+- `damage-log` changes the first byte of one random record of the
+  table `log`. The node must repair its log from a peer. A node is
+  damaged once, because konsensd allows one repair without the
+  operator.
+- `damage-data` changes the last byte of one random value of the table
+  `data`. After the start, the nemesis reads that key at the node
+  itself.
+
+A checker of its own fails the run when a damaged log gives no repair,
+or when the local read gives the damaged value back.
+
+| Faults | konsensd | Result |
+|---|---|---|
+| damage-log | main d89007a | valid; five damages, five repairs |
+| damage-log | `jepsen-mutation-no-log-check`: no CRC check of a record, no scan of the log at start | found: ten damages, no repair |
+| damage-data | main d89007a | found: the node serves the damaged value in 8 of 9 damages |
+| crash, damage-log | branch problem-types 5efff24 | valid; two nodes retire, three repairs |
+
+The third row shows the open item of the state file: a row of the
+table `data` carries no checksum, so a local read gives a damaged value
+back with no error. Knossos did not see it, because the damaged value
+was written over before a client read it at that node. `damage-data`
+stays out of the nightly run until the rows carry a check.
+
+The fourth row reads the problem type of a 503. A retired or a building
+node took no part in the call, so the client records `:fail`: 237 such
+writes, and 9 writes stayed `:info`.
+
+Each run keeps `results.edn.xz` and the log of konsensd of each node in
+`jepsen/results/<test>/<time>/`, owner 2026-11-01. The whole store of a
+run stays outside the tree, in `jepsen/store/`. A run with a binary
+`konsensd-<name>` carries `<name>` at the end of its test name.
 
 ## 7. What this does not cover
 
@@ -288,7 +325,10 @@ start it.
 
 ## 10. Data this plan leaves on the disk
 
-- `jepsen/results/<time stamp>/`: kept, one per run, in the tree.
+- `jepsen/results/<test>/<time stamp>/`: the summary of each run, kept
+  in the tree.
+- `jepsen/store/`: the whole store of each run, one tar.xz each, outside
+  the tree; not needed by open work.
 - The podman images of the control and the nodes: made again by their
   Containerfiles in `jepsen/`.
 - The konsensd builds with mutations: made again from their branches,
