@@ -1,0 +1,28 @@
+Writes per second of konsensd when a result is read as views into the bytes of the log
+
+What was measured
+- Arms: base dddb05e and result-views 82cdd38, each in g++-16, g++-15 and clang++-22 Release, and a second build of the g++-16 base (g16baseB) for A/A. Each arm is its own binary.
+- bench/arms/cap-of-the-step.sh (sha256 fd88d1cc864ca404) with bench/arms/cluster3.sh (sha256 8d83a5fe926f111a): the client goes to the leader after no node changed its state for 3 s. 64 in flight, 3 samples of 8192 writes of 64 bytes per start, the median of the 3 samples per round, 6 rounds, the arms in turn inside each round. sync_by_the_caller = true, Unix sockets.
+- podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, 4 vCPU Intel Xeon, three btrfs loop images compress=zstd:1 on one host disk. The run ended 2026-10-31 19:43 UTC by the clock of the machine. That clock is behind the time stamps of the earlier result files of this day.
+- cpu = user + sys us per write, summed over the three nodes.
+
+64 in flight, writes/s, median of 6 rounds (rounds in brackets), latency median, cpu median
+- g16base: 13391 [12714, 13841, 13962, 13339, 13443, 13262]; 4414 us; cpu 100 us/write
+- g16baseB: 13484 [11965, 13281, 14923, 13176, 13981, 13688]; 4433 us; cpu 102 us/write
+- g16rv: 13506 [12690, 13306, 13706, 14046, 14022, 12372]; 4371 us; cpu 100 us/write
+- g15base: 13292 [13703, 13413, 12729, 13768, 12482, 13171]; 4477 us; cpu 104 us/write
+- g15rv: 13677 [13641, 12987, 14268, 14645, 13713, 13028]; 4296 us; cpu 100 us/write
+- c22base: 13368 [14221, 12985, 13550, 13187, 12449, 14090]; 4394 us; cpu 102 us/write
+- c22rv: 13747 [14062, 13598, 13457, 14182, 13896, 12908]; 4318 us; cpu 97 us/write
+
+Against the base of the same build
+- g16: +0.9 % writes/s, cpu 100 against 100 us/write
+- g15: +2.9 % writes/s, cpu 100 against 104 us/write
+- c22: +2.8 % writes/s, cpu 97 against 102 us/write
+
+Noise
+- A/A: g16base 13391 against g16baseB 13484 writes/s, 0.7 %; cpu 100 against 102 us/write. The rounds of one arm spread up to 25 % (g16baseB 11965 to 14923), most arms 10 to 14 %.
+
+Result
+- Every arm of result-views has a median above its base, by 0.9 to 2.9 %, and a cpu per write at most equal to its base. Each difference is inside the spread of the rounds of both arms. So this run shows no difference in writes/s that stands above the noise.
+- The rate follows the latency of a write (2026-10-31-1920Z). A smaller cpu cost on the step does not change that latency at 64 in flight.

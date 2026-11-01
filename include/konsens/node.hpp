@@ -1283,6 +1283,7 @@ private:
     struct done_log {
         std::uint64_t applied_idx;
         std::span<const entry> done;
+        std::shared_ptr<const void> owner;
 
         std::uint64_t log_len() const { return applied_idx + done.size(); }
     };
@@ -1542,7 +1543,7 @@ private:
                 }
             } else if (index > m->applied_idx) {
                 const done_log b{m->applied_idx,
-                                 tail->entries.subspan(m->applied_idx - first, index - 1 - m->applied_idx)};
+                                 tail->entries.subspan(m->applied_idx - first, index - 1 - m->applied_idx), tail->owner};
                 if (!base) {
                     base.emplace(begin_an_empty_write_set());
                 }
@@ -1715,7 +1716,7 @@ private:
         if (listed ? !still : still) {
             return listed ? refusal_reason::wrong_list : refusal_reason::result_differs;
         }
-        if (!decode_result(e.result)) [[unlikely]] {
+        if (!decode_result(b.owner, e.result)) [[unlikely]] {
             return refusal_reason::result_differs;
         }
         return std::nullopt;
@@ -1945,7 +1946,7 @@ private:
         if (!log) [[unlikely]] {
             return seq_paxos_.stop_voting(log.error());
         }
-        run_the_tasks({log_len - log->entries.size(), log->entries});
+        run_the_tasks({log_len - log->entries.size(), log->entries, log->owner});
         std::vector<entry> done;
         for (std::uint64_t k = 0; k < open.size(); ++k) {
             const auto index = log_len + 1 + k;
@@ -2010,7 +2011,7 @@ private:
             if (!entry_is_a_request(e)) {
                 continue;
             }
-            const auto r = e.rejected ? std::nullopt : decode_result(e.result);
+            const auto r = e.rejected ? std::nullopt : decode_result(log->owner, e.result);
             if (!r) [[unlikely]] {
                 reply_to_the_client(e, k, nullptr);
                 continue;
@@ -2053,10 +2054,11 @@ private:
         return {};
     }
 
-    static bool written_values_read_back(const request_result& r, const typename S::transaction& w)
+    static bool written_values_read_back(const request_result_view& r, const typename S::transaction& w)
     {
         for (auto m = r.mutations.begin(); m != r.mutations.end(); ++m) {
-            if (std::any_of(std::next(m), r.mutations.end(), [&m](const mutation& later) { return later.key == m->key; })) {
+            if (std::any_of(std::next(m), r.mutations.end(),
+                            [&m](const mutation_view& later) { return std::ranges::equal(later.key, m->key); })) {
                 continue;
             }
             const auto found = read_or_throw(w.find(m->key));
@@ -2078,7 +2080,7 @@ private:
         return make_error_code(client_errc::rejected);
     }
 
-    void reply_to_the_client(const entry& e, const std::uint64_t index, const request_result* const r)
+    void reply_to_the_client(const entry& e, const std::uint64_t index, const request_result_view* const r)
     {
         const auto response = [r]() -> std::expected<std::vector<std::byte>, std::error_code> {
             if (r == nullptr) [[unlikely]] {
@@ -2087,7 +2089,7 @@ private:
             if (r->error != 0) [[unlikely]] {
                 return std::unexpected(error_of(r->error));
             }
-            return r->reply;
+            return std::vector<std::byte>(r->reply.begin(), r->reply.end());
         };
         auto& replies = index <= seq_paxos_.mark_.log_len ? replies_before_the_sync_ : client_replies_;
         switch (e.kind) {
@@ -2175,7 +2177,7 @@ private:
     }
 
     template <typename T>
-    static void write_the_result(const entry& e, const std::uint64_t index, const request_result& r, T& w)
+    static void write_the_result(const entry& e, const std::uint64_t index, const request_result_view& r, T& w)
     {
         switch (e.kind) {
         case entry_kind::register_client:
@@ -2195,7 +2197,7 @@ private:
                     write_or_throw(w.erase(m.key));
                 }
             }
-            write_or_throw(w.insert_or_assign_session(e.session, {e.request_number, r.reply}));
+            write_or_throw(w.insert_or_assign_session(e.session, {e.request_number, {r.reply.begin(), r.reply.end()}}));
             break;
         case entry_kind::normal:
         case entry_kind::stop_sign:
@@ -2226,7 +2228,7 @@ private:
         auto w = begin_an_empty_write_set();
         write_the_done_results(b, b.applied_idx + 1, below, w);
         for (auto it = own_.upper_bound(b.log_len()); it != own_.end() && it->first < below; ++it) {
-            write_the_result(it->second.request, it->first, it->second.result, w);
+            write_the_result(it->second.request, it->first, static_cast<request_result_view>(it->second.result), w);
         }
         return w;
     }
@@ -2239,7 +2241,7 @@ private:
             if (!entry_is_a_request(e) || e.rejected) {
                 continue;
             }
-            if (const auto r = decode_result(e.result)) {
+            if (const auto r = decode_result(b.owner, e.result)) {
                 write_the_result(e, k, *r, w);
             }
         }
@@ -2335,7 +2337,7 @@ private:
                 base.emplace(begin_the_base(b, q));
             }
             auto o = run_on_the_base(t->second, q, *base);
-            write_the_result(o.request, q, o.result, *base);
+            write_the_result(o.request, q, static_cast<request_result_view>(o.result), *base);
             own_.emplace(q, std::move(o));
             if (!first) {
                 first = q;
@@ -2412,7 +2414,7 @@ private:
         }
         const auto state = seq_paxos_.get_state();
         const auto& taken = seq_paxos_.get_leader_state().taken;
-        std::vector<entry> held;
+        auto held = std::make_shared<std::vector<entry>>();
         std::uint64_t pointer = 0;
         if (state == std::pair{role::leader, phase::prepare} && taken) {
             pointer = taken->decided_idx;
@@ -2420,7 +2422,7 @@ private:
             if (!base) [[unlikely]] {
                 return seq_paxos_.stop_voting(base.error());
             }
-            held = std::move(*base);
+            *held = std::move(*base);
         } else if (state == std::pair{role::follower, phase::prepare}) {
             const auto d = keep_the_tasks(promise, m->applied_idx, m->log_len);
             if (!d) [[unlikely]] {
@@ -2436,8 +2438,8 @@ private:
                 return seq_paxos_.stop_voting(log.error());
             }
             const auto own = log->entries.first(verify_sync_.sync_idx - m->applied_idx);
-            held.assign(own.begin(), own.end());
-            held.insert(held.end(), verify_sync_.suffix.begin(), verify_sync_.suffix.end());
+            held->assign(own.begin(), own.end());
+            held->insert(held->end(), verify_sync_.suffix.begin(), verify_sync_.suffix.end());
         } else {
             if (state.first != role::leader) {
                 tasks_.clear();
@@ -2451,7 +2453,7 @@ private:
             resend_answer_ = false;
             return {};
         }
-        const done_log b{m->applied_idx, held};
+        const done_log b{m->applied_idx, *held, held};
         check_the_own_results(b);
         const auto first = run_the_tasks(b);
         const auto answered = std::pair{promise, pointer};
