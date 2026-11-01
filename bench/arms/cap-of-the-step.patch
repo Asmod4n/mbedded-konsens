@@ -1,0 +1,66 @@
+diff --git a/program/serve.cpp b/program/serve.cpp
+index 54c9a3b..5c9f330 100644
+--- a/program/serve.cpp
++++ b/program/serve.cpp
+@@ -141,6 +141,7 @@ struct loop {
+     buffer_ring peer_buffers;
+     buffer_ring client_buffers;
+     std::vector<std::uint64_t> waiting_for_buffers;
++    std::size_t calls_in_step = 0;
+ };
+ 
+ std::uint64_t user_data_of(const op o, const std::uint64_t id)
+@@ -351,6 +352,15 @@ void queue_on(connection& c, std::string bytes)
+     c.out.push_back(std::move(bytes));
+ }
+ 
++#ifndef KONSENS_CAP_VALUE
++#define KONSENS_CAP_VALUE 0
++#endif
++constexpr std::size_t cap_of_the_step()
++{
++    return KONSENS_CAP_VALUE;
++}
++
++void commit_the_step(loop& l);
+ void take_the_requests_of(loop& l, std::uint64_t id, connection& c);
+ 
+ void answer(loop& l, const std::uint64_t id, connection& c, std::string response, const bool closes)
+@@ -426,6 +436,9 @@ void take_the_requests_of(loop& l, const std::uint64_t id, connection& c)
+     c.http_in.erase(0, (*r)->bytes);
+     c.call = std::move(**r);
+     start_the_call(l, id, c);
++    if (cap_of_the_step() != 0 && ++l.calls_in_step >= cap_of_the_step()) {
++        commit_the_step(l);
++    }
+ }
+ 
+ void take_a_reply_after_the_close(loop& l, const konsens::client_reply& r)
+@@ -588,6 +601,7 @@ void arm_the_sends(loop& l);
+ 
+ void commit_the_step(loop& l)
+ {
++    l.calls_in_step = 0;
+     if (!l.batch.empty()) {
+         keep_the_step(l, l.node.handle_incoming(std::exchange(l.batch, {})), "handle_incoming");
+     }
+@@ -676,8 +690,9 @@ void take_the_frames_of(loop& l, const std::uint64_t id, connection& c)
+             begin_the_close(l, id, c);
+             return;
+         }
++        const bool carries_entries = konsens::kind_of(*r) == 4;
+         l.batch.push_back(std::move(*r));
+-        if (l.batch.size() == konsens::max_batch_size) {
++        if (l.batch.size() == konsens::max_batch_size || (cap_of_the_step() != 0 && carries_entries)) {
+             commit_the_step(l);
+         }
+     }
+@@ -893,7 +908,7 @@ int serve(const config& c, const start_options options)
+     }
+     std::println(std::cerr, "konsensd: node {} started{}", c.pid, n->retired() ? " retired" : "");
+     loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}, 0, {}, {},
+-           {}, {}};
++           {}, {}, 0};
+     for (const auto& p : c.peers) {
+         const auto a = resolve(p.address);
+         if (!a) [[unlikely]] {

@@ -1,0 +1,80 @@
+konsensd: part A of plan-one-read-per-round (one read of the open log) against parts B and C, six rounds
+
+What was measured
+- konsensd writes of 64 B through PUT /kv, three nodes, Unix sockets, sync_by_the_caller = true.
+- Arms, each its own binary, g++ 16 Release: konsensd_g16BCS2u (03a0cd6), konsensd_g16ABCS2u (3a64734), konsensd_g16BCS2uc (the B+C binary copied, A/A).
+- Tests of the changed code, green with g++ 16 Release: test_persistent_storage (48), test_sequence_paxos (39), test_execute_verify (32), test_node (12), test_simulation.
+- Statement count (bench/sqlcount.cpp, one run, 4096 writes at 64 in flight): rows of the range read of the log on the most reading node 208584 (B+C) and 36386 (A+B+C).
+- Setup as in 2026-10-30-213000Z, arms2.sh 10a7387afd5d5713. Binaries: B+C 269c6dbb4c0455ef; A+B+C 97d724aa303c5dfb; copy 269c6dbb4c0455ef. Only g++ 16.
+
+Medians over the 6 rounds (writes/s)
+| Arm | 1 in flight | 64 in flight |
+| B+C | 454.5 | 8473 |
+| B+C copy (A/A) | 456 | 7282.5 |
+| A+B+C | 441.5 | 7604 |
+- A/A floor: 0.3 % at 1 in flight, 16.3 % at 64. At 64 the floor is above every difference of this run; no difference is shown.
+- A+B+C against B+C: -2.9 % at 1 (above the floor of 0.3 %), -10.3 % at 64 (under the floor).
+- User CPU per write at 64 in flight, three nodes together, median over rounds: 111 us (B+C), 110 us (copy), 94.5 us (A+B+C). System CPU: 90.5, 98.5, 93 us.
+- Raw SQLite in this run, medians: 1169 writes/s at batch 1, 70023 at batch 64, 45171 at batch 64 three at once.
+
+Rows
+round=1 arm=konsensd_g16BCS2u size=64 conc=1 median_writes_per_s=406 min=377 max=406 median_latency_us=2338 user_us_per_write=455 sys_us_per_write=1011
+round=1 arm=konsensd_g16ABCS2u size=64 conc=1 median_writes_per_s=436 min=413 max=478 median_latency_us=2132 user_us_per_write=422 sys_us_per_write=966
+round=1 arm=konsensd_g16BCS2uc size=64 conc=1 median_writes_per_s=483 min=481 max=483 median_latency_us=1964 user_us_per_write=388 sys_us_per_write=900
+round=1 arm=konsensd_g16BCS2u size=64 conc=64 median_writes_per_s=8826 min=8471 max=8841 median_latency_us=6912 user_us_per_write=116 sys_us_per_write=88
+round=1 arm=konsensd_g16ABCS2u size=64 conc=64 median_writes_per_s=7458 min=6629 max=10032 median_latency_us=8174 user_us_per_write=93 sys_us_per_write=93
+round=1 arm=konsensd_g16BCS2uc size=64 conc=64 median_writes_per_s=7343 min=7202 max=7418 median_latency_us=8330 user_us_per_write=108 sys_us_per_write=100
+round=1 raw_sqlite batch=1 median_writes_per_s=1159
+round=1 raw_sqlite batch=64 median_writes_per_s=66665
+round=1 raw_sqlite_three_at_once batch=1 median_writes_per_s=709 median_writes_per_s=698 median_writes_per_s=701
+round=1 raw_sqlite_three_at_once batch=64 median_writes_per_s=45435 median_writes_per_s=45808 median_writes_per_s=46061
+round=2 arm=konsensd_g16BCS2u size=64 conc=1 median_writes_per_s=454 min=449 max=466 median_latency_us=2038 user_us_per_write=477 sys_us_per_write=888
+round=2 arm=konsensd_g16ABCS2u size=64 conc=1 median_writes_per_s=455 min=438 max=473 median_latency_us=2032 user_us_per_write=477 sys_us_per_write=944
+round=2 arm=konsensd_g16BCS2uc size=64 conc=1 median_writes_per_s=455 min=435 max=501 median_latency_us=2087 user_us_per_write=488 sys_us_per_write=844
+round=2 arm=konsensd_g16BCS2u size=64 conc=64 median_writes_per_s=8246 min=5895 max=8337 median_latency_us=7308 user_us_per_write=115 sys_us_per_write=92
+round=2 arm=konsensd_g16ABCS2u size=64 conc=64 median_writes_per_s=7586 min=6882 max=9463 median_latency_us=8078 user_us_per_write=92 sys_us_per_write=93
+round=2 arm=konsensd_g16BCS2uc size=64 conc=64 median_writes_per_s=8134 min=7185 max=8734 median_latency_us=7465 user_us_per_write=112 sys_us_per_write=90
+round=2 raw_sqlite batch=1 median_writes_per_s=1217
+round=2 raw_sqlite batch=64 median_writes_per_s=75352
+round=2 raw_sqlite_three_at_once batch=1 median_writes_per_s=740 median_writes_per_s=746 median_writes_per_s=743
+round=2 raw_sqlite_three_at_once batch=64 median_writes_per_s=43975 median_writes_per_s=43666 median_writes_per_s=43742
+round=3 arm=konsensd_g16BCS2u size=64 conc=1 median_writes_per_s=478 min=450 max=506 median_latency_us=1994 user_us_per_write=411 sys_us_per_write=944
+round=3 arm=konsensd_g16ABCS2u size=64 conc=1 median_writes_per_s=483 min=431 max=500 median_latency_us=1963 user_us_per_write=488 sys_us_per_write=933
+round=3 arm=konsensd_g16BCS2uc size=64 conc=1 median_writes_per_s=423 min=404 max=427 median_latency_us=2226 user_us_per_write=455 sys_us_per_write=1000
+round=3 arm=konsensd_g16BCS2u size=64 conc=64 median_writes_per_s=7406 min=6997 max=7532 median_latency_us=8296 user_us_per_write=109 sys_us_per_write=103
+round=3 arm=konsensd_g16ABCS2u size=64 conc=64 median_writes_per_s=7622 min=7418 max=7711 median_latency_us=7956 user_us_per_write=98 sys_us_per_write=93
+round=3 arm=konsensd_g16BCS2uc size=64 conc=64 median_writes_per_s=6753 min=6550 max=6970 median_latency_us=8854 user_us_per_write=113 sys_us_per_write=107
+round=3 raw_sqlite batch=1 median_writes_per_s=1181
+round=3 raw_sqlite batch=64 median_writes_per_s=71693
+round=3 raw_sqlite_three_at_once batch=1 median_writes_per_s=751 median_writes_per_s=762 median_writes_per_s=752
+round=3 raw_sqlite_three_at_once batch=64 median_writes_per_s=48014 median_writes_per_s=47248 median_writes_per_s=47397
+round=4 arm=konsensd_g16BCS2u size=64 conc=1 median_writes_per_s=460 min=424 max=480 median_latency_us=2062 user_us_per_write=400 sys_us_per_write=988
+round=4 arm=konsensd_g16ABCS2u size=64 conc=1 median_writes_per_s=432 min=423 max=477 median_latency_us=2104 user_us_per_write=488 sys_us_per_write=944
+round=4 arm=konsensd_g16BCS2uc size=64 conc=1 median_writes_per_s=455 min=449 max=488 median_latency_us=2097 user_us_per_write=511 sys_us_per_write=933
+round=4 arm=konsensd_g16BCS2u size=64 conc=64 median_writes_per_s=8700 min=7262 max=9014 median_latency_us=7139 user_us_per_write=105 sys_us_per_write=89
+round=4 arm=konsensd_g16ABCS2u size=64 conc=64 median_writes_per_s=9287 min=9085 max=9398 median_latency_us=6447 user_us_per_write=89 sys_us_per_write=86
+round=4 arm=konsensd_g16BCS2uc size=64 conc=64 median_writes_per_s=7066 min=6458 max=7378 median_latency_us=8445 user_us_per_write=114 sys_us_per_write=96
+round=4 raw_sqlite batch=1 median_writes_per_s=993
+round=4 raw_sqlite batch=64 median_writes_per_s=85504
+round=4 raw_sqlite_three_at_once batch=1 median_writes_per_s=741 median_writes_per_s=748 median_writes_per_s=729
+round=4 raw_sqlite_three_at_once batch=64 median_writes_per_s=40056 median_writes_per_s=40586 median_writes_per_s=39691
+round=5 arm=konsensd_g16BCS2u size=64 conc=1 median_writes_per_s=442 min=428 max=451 median_latency_us=2109 user_us_per_write=544 sys_us_per_write=933
+round=5 arm=konsensd_g16ABCS2u size=64 conc=1 median_writes_per_s=441 min=430 max=469 median_latency_us=2092 user_us_per_write=433 sys_us_per_write=911
+round=5 arm=konsensd_g16BCS2uc size=64 conc=1 median_writes_per_s=457 min=444 max=469 median_latency_us=2036 user_us_per_write=488 sys_us_per_write=866
+round=5 arm=konsensd_g16BCS2u size=64 conc=64 median_writes_per_s=8738 min=6982 max=8800 median_latency_us=6961 user_us_per_write=113 sys_us_per_write=86
+round=5 arm=konsensd_g16ABCS2u size=64 conc=64 median_writes_per_s=6765 min=6763 max=7244 median_latency_us=8621 user_us_per_write=97 sys_us_per_write=108
+round=5 arm=konsensd_g16BCS2uc size=64 conc=64 median_writes_per_s=7222 min=6612 max=8311 median_latency_us=8491 user_us_per_write=102 sys_us_per_write=100
+round=5 raw_sqlite batch=1 median_writes_per_s=993
+round=5 raw_sqlite batch=64 median_writes_per_s=64714
+round=5 raw_sqlite_three_at_once batch=1 median_writes_per_s=723 median_writes_per_s=739 median_writes_per_s=720
+round=5 raw_sqlite_three_at_once batch=64 median_writes_per_s=44534 median_writes_per_s=45156 median_writes_per_s=44173
+round=6 arm=konsensd_g16BCS2u size=64 conc=1 median_writes_per_s=455 min=455 max=464 median_latency_us=2016 user_us_per_write=433 sys_us_per_write=977
+round=6 arm=konsensd_g16ABCS2u size=64 conc=1 median_writes_per_s=442 min=420 max=443 median_latency_us=2164 user_us_per_write=455 sys_us_per_write=1011
+round=6 arm=konsensd_g16BCS2uc size=64 conc=1 median_writes_per_s=490 min=424 max=501 median_latency_us=1962 user_us_per_write=488 sys_us_per_write=900
+round=6 arm=konsensd_g16BCS2u size=64 conc=64 median_writes_per_s=7033 min=6963 max=7391 median_latency_us=8607 user_us_per_write=109 sys_us_per_write=106
+round=6 arm=konsensd_g16ABCS2u size=64 conc=64 median_writes_per_s=8776 min=8432 max=9301 median_latency_us=6818 user_us_per_write=96 sys_us_per_write=101
+round=6 arm=konsensd_g16BCS2uc size=64 conc=64 median_writes_per_s=8370 min=7170 max=8407 median_latency_us=7258 user_us_per_write=105 sys_us_per_write=97
+round=6 raw_sqlite batch=1 median_writes_per_s=1179
+round=6 raw_sqlite batch=64 median_writes_per_s=68353
+round=6 raw_sqlite_three_at_once batch=1 median_writes_per_s=723 median_writes_per_s=721 median_writes_per_s=723
+round=6 raw_sqlite_three_at_once batch=64 median_writes_per_s=47731 median_writes_per_s=46060 median_writes_per_s=47085

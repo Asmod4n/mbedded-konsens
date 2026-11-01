@@ -1,0 +1,16 @@
+diff --git a/include/konsens/node.hpp b/include/konsens/node.hpp
+index c084649..1a86888 100644
+--- a/include/konsens/node.hpp
++++ b/include/konsens/node.hpp
+@@ -864,6 +864,11 @@ private:
+     void hold_the_output_until_its_sync()
+     {
+         tag_or_drop_the_pending_steps();
++        if (seq_paxos_.the_transaction_holds_ended_steps()) {
++            for (auto& m : seq_paxos_.take_the_messages_before_the_sync(peers_with_held_messages())) {
++                released_messages_.emplace_back(std::move(m));
++            }
++        }
+         for (auto& m : ble_.take_outgoing_messages()) {
+             released_messages_.emplace_back(std::move(m));
+         }

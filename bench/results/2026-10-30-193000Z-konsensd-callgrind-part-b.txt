@@ -1,0 +1,20 @@
+What: callgrind instruction counts (Ir) and calls into operator new,
+konsensd, three nodes, 64 B values, driver -conc 64, 4096 writes
+(dump 2). Counts, not time. One repetition per arm. Same run setup as
+2026-10-30-190000Z (script vg11.sh, the binary name changed).
+Arms: part A konsensd_g16A26 (write-path 35a6b5d) and part B
+konsensd_g16B26 (write-path 76d7e8a: done_log carries the results,
+decoded once for the whole range that a step reads). Leader: node 2.
+
+                     part A          part B          B / A
+leader Ir            1,087,702,701   1,113,472,197   1.024
+leader new calls     919,977         1,090,524       1.185
+follower 1 Ir        779,651,813     815,196,943     1.046
+follower 1 new       662,785         777,593         1.173
+follower 3 Ir        857,465,003     921,462,193     1.075
+follower 3 new       739,381         900,538         1.218
+
+Part B decodes the result of every record of each range read, also
+where the step before read no result of it: execute_verify decodes all
+records from applied_idx on, and the old code decoded them only in
+begin_the_base, which runs only when a task runs. Part B is reverted.

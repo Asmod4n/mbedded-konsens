@@ -129,7 +129,7 @@ TEST_CASE("each client error has its own message")
     }
     std::ranges::sort(messages);
     CHECK(std::ranges::adjacent_find(messages) == messages.end());
-    CHECK(std::ranges::find(messages, "Unknown client error") == messages.end());
+    CHECK(std::ranges::find(messages, std::string_view{"Unknown client error"}) == messages.end());
 }
 
 // Plan clean-stop 2.4: a leader that starts after a crash retires. It
@@ -353,7 +353,6 @@ struct recording_storage {
         auto get_meta() const { return t_.get_meta(); }
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
-        auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_hash(const std::uint64_t index) const { return t_.get_chain_hash(index); }
         auto get_unchecked_entry(const std::uint64_t index) const { return t_.get_unchecked_entry(index); }
         auto get_config_first_idx() const { return t_.get_config_first_idx(); }
@@ -375,6 +374,8 @@ struct recording_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
+        bool has_log_writes() const { return t_.has_log_writes(); }
+        std::uint64_t count_of_entry_writes() const { return t_.count_of_entry_writes(); }
 
         auto append_entries(const std::span<const konsens::entry> entries)
         {
@@ -394,6 +395,10 @@ struct recording_storage {
         auto set_decided_index(const std::uint64_t index) { return t_.set_decided_index(index); }
         auto set_config_first_idx(const std::uint64_t index) { return t_.set_config_first_idx(index); }
         std::expected<void, std::error_code> commit() && { return std::move(t_).commit(); }
+        std::expected<void, std::error_code> commit_without_a_sync() &&
+        {
+            return std::move(t_).commit_without_a_sync();
+        }
 
     private:
         persistent_storage::transaction t_;
@@ -409,6 +414,8 @@ struct recording_storage {
             [this](persistent_storage::transaction t) { return transaction{std::move(t), appended}; });
     }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return inner.begin_read_only(); }
+    int wal_file_descriptor() const { return inner.wal_file_descriptor(); }
+    void the_sync_failed() { inner.the_sync_failed(); }
 };
 
 }

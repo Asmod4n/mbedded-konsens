@@ -1,0 +1,30 @@
+Writes per second of konsensd when a step ends after a fixed number of entries, with a stable leader
+
+What was measured
+- The same 13 binaries as 2026-10-31-1830Z-konsensd-cap-of-the-step.txt: c727402 plus bench/arms/cap-of-the-step.patch (sha256 efa06382742b959c), K = 0 (base), 4, 8 and 16, g++-16, g++-15 and clang++-22 Release, and a second build of the g++-16 base (C0b) for A/A.
+- bench/arms/cap-of-the-step.sh now sources bench/arms/cluster3.sh (sha256 8d83a5fe926f111a): the client goes to the leader after no node changed its state for 3 s (see 2026-10-31-1920Z-konsensd-spread-of-the-bed.txt). 64 in flight only, 3 samples of 8192 writes of 64 bytes per start, the median of the 3 samples per round, 4 rounds, the arms in turn inside each round. sync_by_the_caller = true, Unix sockets.
+- podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, 4 vCPU Intel Xeon, three btrfs loop images compress=zstd:1 on one host disk. Run 2026-10-31 19:25 to 20:05 UTC.
+- cpu = user + sys us per write, summed over the three nodes.
+
+64 in flight, writes/s, median of 4 rounds (rounds in brackets), cpu median
+- g16C0: 13955 [14030, 13189, 13880, 14095], +0 % against g16C0; cpu 102 us/write
+- g16C0b: 13877 [12530, 14292, 13710, 14044], -1 % against g16C0; cpu 98 us/write
+- g16C4: 9647 [10022, 9169, 9603, 9691], -31 % against g16C0; cpu 144 us/write
+- g16C8: 11576 [11724, 11429, 11901, 10985], -17 % against g16C0; cpu 124 us/write
+- g16C16: 13145 [13138, 11991, 13884, 13152], -6 % against g16C0; cpu 104 us/write
+- g15C0: 14164 [14868, 14182, 14147, 13731], +0 % against g15C0; cpu 100 us/write
+- g15C4: 9700 [9697, 9496, 10103, 9704], -32 % against g15C0; cpu 146 us/write
+- g15C8: 11636 [10517, 12118, 11668, 11604], -18 % against g15C0; cpu 122 us/write
+- g15C16: 13305 [14215, 12931, 13679, 12575], -6 % against g15C0; cpu 106 us/write
+- c22C0: 14195 [14549, 14070, 14227, 14163], +0 % against c22C0; cpu 99 us/write
+- c22C4: 9895 [9776, 9958, 9832, 10101], -30 % against c22C0; cpu 146 us/write
+- c22C8: 11965 [12155, 11513, 11775, 12363], -16 % against c22C0; cpu 120 us/write
+- c22C16: 12797 [12742, 12852, 13116, 12391], -10 % against c22C0; cpu 112 us/write
+
+Noise
+- A/A: g16C0 13955 against g16C0b 13877 writes/s, 0.6 %. The rounds of one arm spread up to 14 % (g16C0b 12530 to 14292); most arms spread under 8 %.
+
+Result
+- A cap on the entries of a step makes konsensd slower in all three builds: K = 4 by 30 to 32 %, K = 8 by 16 to 18 %, K = 16 by 6 to 10 %. The cpu per write grows as the step gets smaller.
+- A fit of cpu = a + b / K to K = 4 and K = 8 gives a = 99 us per write (all three nodes) and b = 184 us per step. The base, with no cap, uses 98 to 103 us per write. So in the base the cost of a step is spread over many entries, and the cost per write is about the cost of the entries alone. The fit is arithmetic on two points, not a measurement of a and b.
+- The run of 1830Z showed no difference because the client wrote to a follower and an election happened during the run.

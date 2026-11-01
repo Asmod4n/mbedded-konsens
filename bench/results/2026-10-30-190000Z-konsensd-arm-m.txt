@@ -1,0 +1,37 @@
+What was measured
+- Arm M (plan section 20): multishot accept and multishot recv with two provided buffer rings, against the commit before it. Both on Unix sockets, option sync_by_the_caller on.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh): konsensd_g16FS2u (56608d2, 7042cc0e20a3c102), konsensd_g16MS2u (2600937, 4ed95b68d10fc921), konsensd_g16MS2uc (the same binary copied, A/A).
+- Same bed, settings, samples, container, seccomp profile and scripts as 2026-10-30-180000Z-konsensd-arm-u.txt. The CPU columns are left out.
+
+round=1 arm=konsensd_g16FS2u conc=1 median_writes_per_s=406 min=398 max=477 median_latency_us=2251
+round=1 arm=konsensd_g16MS2u conc=1 median_writes_per_s=389 min=375 max=403 median_latency_us=2364
+round=1 arm=konsensd_g16MS2uc conc=1 median_writes_per_s=421 min=403 max=466 median_latency_us=2174
+round=1 arm=konsensd_g16FS2u conc=64 median_writes_per_s=7239 min=7226 max=7342 median_latency_us=8295
+round=1 arm=konsensd_g16MS2u conc=64 median_writes_per_s=6287 min=6221 max=7027 median_latency_us=9760
+round=1 arm=konsensd_g16MS2uc conc=64 median_writes_per_s=6429 min=6349 max=7378 median_latency_us=9586
+round=1 raw_sqlite batch=1 median_writes_per_s=1185
+round=1 raw_sqlite batch=64 median_writes_per_s=71413
+round=2 arm=konsensd_g16FS2u conc=1 median_writes_per_s=435 min=431 max=439 median_latency_us=2176
+round=2 arm=konsensd_g16MS2u conc=1 median_writes_per_s=410 min=406 max=452 median_latency_us=2318
+round=2 arm=konsensd_g16MS2uc conc=1 median_writes_per_s=426 min=421 max=431 median_latency_us=2122
+round=2 arm=konsensd_g16FS2u conc=64 median_writes_per_s=6863 min=6773 max=7094 median_latency_us=8683
+round=2 arm=konsensd_g16MS2u conc=64 median_writes_per_s=7893 min=6483 max=7958 median_latency_us=7731
+round=2 arm=konsensd_g16MS2uc conc=64 median_writes_per_s=6662 min=6265 max=7435 median_latency_us=9318
+round=2 raw_sqlite batch=1 median_writes_per_s=1153
+round=2 raw_sqlite batch=64 median_writes_per_s=72693
+round=3 arm=konsensd_g16FS2u conc=1 median_writes_per_s=411 min=387 max=416 median_latency_us=2268
+round=3 arm=konsensd_g16MS2u conc=1 median_writes_per_s=406 min=373 max=428 median_latency_us=2297
+round=3 arm=konsensd_g16MS2uc conc=1 median_writes_per_s=419 min=408 max=459 median_latency_us=2187
+round=3 arm=konsensd_g16FS2u conc=64 median_writes_per_s=8510 min=7129 max=8820 median_latency_us=7154
+round=3 arm=konsensd_g16MS2u conc=64 median_writes_per_s=6507 min=6438 max=6509 median_latency_us=9296
+round=3 arm=konsensd_g16MS2uc conc=64 median_writes_per_s=6429 min=6401 max=6768 median_latency_us=9466
+round=3 raw_sqlite batch=1 median_writes_per_s=1185
+round=3 raw_sqlite batch=64 median_writes_per_s=75235
+
+Medians of the three rounds (writes/s)
+- 1 in flight: before M 411, M 406, M copy 421.
+- 64 in flight: before M 7 239, M 6 507, M copy 6 429.
+- The A/A pair of M differs by 4 % at 1 in flight and by 1 % at 64 in flight. The cells before M spread from 6 773 to 8 820 at 64 in flight.
+- At 1 in flight no difference is shown.
+- At 64 in flight M is 10 % below the commit before it (6 507 against 7 239). In two of three rounds the median of M lies below the lowest sample before M. M is not faster in this bench. Why it is slower is not measured.
+- Accept runs about 64 times per cell; the accept path is not measured.

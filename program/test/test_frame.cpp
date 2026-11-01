@@ -1,7 +1,12 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <cstddef>
+#include <cstring>
 #include <string>
+#include <string_view>
+
+#include <sys/un.h>
 
 #include "address.hpp"
 #include "frame.hpp"
@@ -83,4 +88,71 @@ TEST_CASE("an address splits into host and port")
     }
     CHECK(konsensd::resolve("127.0.0.1:7151").has_value());
     CHECK(konsensd::resolve("[::1]:7151").has_value());
+}
+
+// Each form of an address that resolve takes: the family that it gives,
+// and whether the socket speaks TCP.
+TEST_CASE("each form of an address resolves to its family")
+{
+    const auto v4 = konsensd::resolve("127.0.0.1:7151");
+    REQUIRE(v4);
+    CHECK(v4->storage.ss_family == AF_INET);
+    CHECK(konsensd::uses_tcp(*v4));
+    const auto name = konsensd::resolve("localhost:7151");
+    REQUIRE(name);
+    CHECK(konsensd::uses_tcp(*name));
+    const auto v6 = konsensd::resolve("[::1]:7151");
+    REQUIRE(v6);
+    CHECK(v6->storage.ss_family == AF_INET6);
+    CHECK(konsensd::uses_tcp(*v6));
+    const auto un = konsensd::resolve("unix:/run/konsensd/peer.sock");
+    REQUIRE(un);
+    CHECK(un->storage.ss_family == AF_UNIX);
+    CHECK(!konsensd::uses_tcp(*un));
+}
+
+namespace {
+
+std::string path_in(const konsensd::socket_address& a)
+{
+    sockaddr_un u{};
+    std::memcpy(&u, &a.storage, sizeof u);
+    return std::string{u.sun_path};
+}
+
+}
+
+// unix(7) gives the length of a path address as the offset of sun_path,
+// the bytes of the path and its NUL. A relative path stays relative, as
+// bind resolves it against the working directory. The prefix is read
+// before the split, so "unix:7151" names a file and not a port.
+TEST_CASE("a unix: address names a socket file")
+{
+    for (const std::string path : {"/run/konsensd/peer.sock", "peer.sock", "7151"}) {
+        const auto a = konsensd::resolve("unix:" + path);
+        REQUIRE(a);
+        CHECK(a->storage.ss_family == AF_UNIX);
+        CHECK(path_in(*a) == path);
+        CHECK(a->length == offsetof(sockaddr_un, sun_path) + path.size() + 1);
+    }
+}
+
+// sun_path holds 108 bytes, so a path of 107 bytes and its NUL fit, and
+// 108 bytes do not. An empty path names no file. A path that starts
+// with a NUL names the abstract namespace of Linux, which has no file
+// permissions, and a NUL inside cuts the path. TOML can carry a NUL in
+// a string, so the check is needed.
+TEST_CASE("a unix: address outside the bounds is malformed")
+{
+    using konsensd::address_errc;
+    CHECK(konsensd::most_unix_path_bytes == 107);
+    const auto longest = konsensd::resolve("unix:/" + std::string(konsensd::most_unix_path_bytes - 1, 'x'));
+    REQUIRE(longest);
+    CHECK(longest->length == sizeof(sockaddr_un));
+    CHECK(konsensd::resolve("unix:/" + std::string(konsensd::most_unix_path_bytes, 'x')).error() ==
+          address_errc::malformed);
+    CHECK(konsensd::resolve("unix:").error() == address_errc::malformed);
+    using namespace std::string_view_literals;
+    CHECK(konsensd::resolve("unix:\0peer"sv).error() == address_errc::malformed);
+    CHECK(konsensd::resolve("unix:/run/\0peer"sv).error() == address_errc::malformed);
 }

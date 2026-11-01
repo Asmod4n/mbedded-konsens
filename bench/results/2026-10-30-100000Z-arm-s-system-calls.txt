@@ -1,0 +1,10 @@
+What was measured
+- System calls per node at 64 in flight, 4096 writes, for D1 and S (strace -f -c, io_uring_enter, fdatasync, pwrite64, pread64). strace slows the run; the rates are not results. One run of each.
+- Binaries and settings as in 2026-10-30-094500Z-konsensd-arm-s.txt. Script count.sh outside the tree (31349ce6cd7a22b8).
+
+Results (node 1, node 2, node 3)
+- D1: io_uring_enter 3 713, 5 740, 7 029; pwrite64 8 431, 8 091, 8 585; pread64 8 560, 5 303, 8 124; fdatasync 284, 283, 286.
+- S: io_uring_enter 8 055, 7 448, 9 792; pwrite64 14 168, 14 924, 13 725; pread64 16 844, 9 481, 14 726; fdatasync 34, 37, 34 (the syncs of S run as io_uring operations and are not counted here).
+
+Reading
+- S makes about 1.7 times the pwrite64 and 1.6 to 2 times the pread64 of D1 per write. The loop of S does not wait for the disk, so it commits more often with fewer writes in each commit.

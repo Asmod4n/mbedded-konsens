@@ -1,0 +1,21 @@
+Raw SQLite: one INSERT per write against the statements of a konsensd node per write, 12 and 64 writes per commit
+
+What was measured
+- bench/raw_konsens.cpp runs per write the statements that bench/results/2026-10-30-203500Z-konsensd-sql-statements.txt counted on the leader: log INSERT, 31 rows of a range read, 3 point reads of the log, session read and upsert, data read and upsert, log UPDATE; per commit 5 meta reads and 3 meta upserts; the schema of persistent_storage. Record sizes are guessed (64 B value plus 40 B, plus 16 B of result); they are not read from konsensd.
+- raw_sqlite.cpp (scratchpad) runs one INSERT into a WITHOUT ROWID table per write.
+- Both built in the container with g++-16 -O2 against the distro libsqlite3; WAL, synchronous=FULL, a passive checkpoint at 1000 frames. One process, one btrfs loop image compress=zstd:1, podman --cpus=3, user 1001.
+- 3 rounds, each cell the median of 31 samples of 192 writes. No A/A run: the noise floor of this pair is not known, and raw_sqlite at 12 per commit spreads from 4548 to 11322 between rounds.
+
+Rows (writes/s)
+round=1 raw_sqlite batch=12 median_writes_per_s=11322
+round=1 raw_konsens batch=12 median_writes_per_s=5026
+round=1 raw_sqlite batch=64 median_writes_per_s=27557
+round=1 raw_konsens batch=64 median_writes_per_s=20726
+round=2 raw_sqlite batch=12 median_writes_per_s=4548
+round=2 raw_konsens batch=12 median_writes_per_s=4697
+round=2 raw_sqlite batch=64 median_writes_per_s=34352
+round=2 raw_konsens batch=64 median_writes_per_s=21066
+round=3 raw_sqlite batch=12 median_writes_per_s=4751
+round=3 raw_konsens batch=12 median_writes_per_s=5286
+round=3 raw_sqlite batch=64 median_writes_per_s=36355
+round=3 raw_konsens batch=64 median_writes_per_s=22385

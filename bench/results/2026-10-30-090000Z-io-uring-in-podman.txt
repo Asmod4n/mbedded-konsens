@@ -1,0 +1,11 @@
+What was checked
+- Whether IORING_OP_FSYNC works for the bench, inside podman and outside.
+- A probe in one file outside the tree (/tmp/claude-0/-home-claude/64e53525-a4cd-52b2-b5cd-548b48dafcc6/scratchpad/hyp-s/probe.cpp, sha256 71586f644817df6a), linked with the liburing and the syscall shim that konsensd carries from slipstreamIO (libslipstream.a of the build g16D1). It calls fdatasync, then submits IORING_OP_FSYNC with and without IORING_FSYNC_DATASYNC on a read-only and a read-write descriptor of a WAL file, and asks the probe of io_uring for IORING_OP_FSYNC.
+- podman 4.9.3, default seccomp profile /usr/share/containers/seccomp.json, image localhost/bench-logs; kernel 6.18.44-fc-v185.
+
+Results
+- Host, as root and as user 1001: fdatasync 0; IORING_OP_FSYNC 0 on both descriptors, with and without DATASYNC; the probe reports the opcode as supported.
+- podman, default profile, as root and as user 1001: fdatasync 0; IORING_OP_FSYNC -95 (EOPNOTSUPP) on both descriptors; the probe reports the opcode as not supported.
+- The default seccomp profile of podman names no io_uring system call; its default action is SCMP_ACT_ERRNO with 38 (ENOSYS).
+- slipstreamIO asks once whether io_uring works for the process (src/uring_available.h) and uses its own engine when it does not (src/slipstream_syscall.c). So konsensd in the bench container ran on the engine of slipstreamIO, not on io_uring of the kernel. This holds for every konsensd measurement of the write path in bench/results/ of 2026-10-29 and 2026-10-30.
+- A test in one file of SQLite with the WAL synced through io_uring gave -95 for the same reason; it gave no rate.

@@ -124,6 +124,12 @@ static_assert(konsens::state_machine<concatenation>);
 template <typename Cluster>
 using node_of = konsens::node<typename Cluster::storage_type, concatenation>;
 
+#ifdef KONSENS_TEST_CHECK_THREADS
+constexpr std::size_t check_threads_of_the_test = KONSENS_TEST_CHECK_THREADS;
+#else
+constexpr std::size_t check_threads_of_the_test = 0;
+#endif
+
 konsens::node_config config_of(node_id pid)
 {
     std::vector<node_id> peers;
@@ -132,7 +138,7 @@ konsens::node_config config_of(node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true, false, check_threads_of_the_test};
 }
 
 std::vector<std::byte> bytes_of(std::uint64_t v)

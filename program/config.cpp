@@ -27,7 +27,9 @@ constexpr std::array node_keys{std::string_view{"pid"},
                                std::string_view{"max_frame_bytes"},
                                std::string_view{"max_body_bytes"},
                                std::string_view{"max_store_bytes"},
-                               std::string_view{"build_from"}};
+                               std::string_view{"build_from"},
+                               std::string_view{"sync_by_the_caller"},
+                               std::string_view{"check_threads"}};
 constexpr std::array peer_keys{std::string_view{"pid"}, std::string_view{"address"}};
 constexpr std::array top_keys{std::string_view{"cluster"}, std::string_view{"node"}, std::string_view{"peers"}};
 
@@ -79,6 +81,19 @@ std::expected<T, config_error> number_in(const toml::table& t, const std::string
         return std::unexpected(error_at(config_errc::out_of_range, key, n->source()));
     }
     return static_cast<T>(value);
+}
+
+std::expected<bool, config_error> flag_in(const toml::table& t, const std::string_view key, const bool fallback)
+{
+    const toml::node* n = t.get(key);
+    if (n == nullptr) {
+        return fallback;
+    }
+    const auto* v = n->as_boolean();
+    if (v == nullptr) [[unlikely]] {
+        return std::unexpected(error_at(config_errc::wrong_type, key, n->source()));
+    }
+    return v->get();
 }
 
 std::expected<std::string, config_error> text_in(const toml::table& t, const std::string_view key)
@@ -237,6 +252,14 @@ std::expected<config, config_error> parse_config(const std::string_view text)
     if (!build_from) [[unlikely]] {
         return std::unexpected(build_from.error());
     }
+    const auto sync_by_the_caller = flag_in(n, "sync_by_the_caller", false);
+    if (!sync_by_the_caller) [[unlikely]] {
+        return std::unexpected(sync_by_the_caller.error());
+    }
+    const auto check_threads = number_in<std::size_t>(n, "check_threads", std::size_t{0}, 0);
+    if (!check_threads) [[unlikely]] {
+        return std::unexpected(check_threads.error());
+    }
     auto peers = peers_in(top);
     if (!peers) [[unlikely]] {
         return std::unexpected(peers.error());
@@ -258,7 +281,9 @@ std::expected<config, config_error> parse_config(const std::string_view text)
                   *max_body_bytes,
                   *max_store_bytes,
                   std::move(*build_from),
-                  std::move(*peers)};
+                  std::move(*peers),
+                  *sync_by_the_caller,
+                  *check_threads};
 }
 
 konsens::node_config node_config_of(const config& c, const bool first_start)
@@ -268,7 +293,8 @@ konsens::node_config node_config_of(const config& c, const bool first_start)
         peers.push_back(p.pid);
     }
     return {c.configuration_id, c.pid,         std::move(peers), c.leader_priority,
-            c.election_ticks,   c.resend_ticks, c.build_from,     first_start};
+            c.election_ticks,   c.resend_ticks, c.build_from,     first_start, c.sync_by_the_caller,
+            c.check_threads};
 }
 
 }

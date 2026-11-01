@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -100,15 +101,6 @@ std::expected<std::vector<konsens::entry>, std::error_code> entries_of(const kon
     return t->get_entries(from, to);
 }
 
-std::optional<konsens::entry_state> state_of(const konsens::persistent_storage& storage, const std::uint64_t index)
-{
-    const auto t = storage.begin_read_only();
-    REQUIRE(t.has_value());
-    const auto state = t->get_entry_state(index);
-    REQUIRE(state.has_value());
-    return *state;
-}
-
 using sqlite_damage::change_with_sqlite;
 
 void delete_entry(const std::filesystem::path& directory, const std::uint64_t index)
@@ -143,6 +135,98 @@ TEST_CASE("entries and meta values survive a close and a reopen")
     CHECK(m.decided_idx == 2u);
     CHECK(m.accepted_round == accepted);
     CHECK(entries_of(storage, 0, 3) == written);
+}
+
+// A step that only applies decided entries commits without a sync. The
+// consensus layer tells such a step from the others by has_log_writes, so
+// every write that changes the log or the votes must count, and the writes
+// of the apply must not.
+TEST_CASE("only the writes of the log and of the votes count as log writes")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    write(storage, [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("a"), normal_entry("b")})); });
+    const std::array<std::function<void(konsens::persistent_storage::transaction&)>, 5> log_writes{
+        [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("c")})); },
+        [](auto& t) { REQUIRE(t.append_on_prefix(1, std::vector{normal_entry("d")})); },
+        [](auto& t) { REQUIRE(t.set_promise({1, 2, 0, 1})); },
+        [](auto& t) { REQUIRE(t.set_accepted_round({1, 2, 0, 1})); },
+        [](auto& t) { REQUIRE(t.set_config_first_idx(1)); },
+    };
+    for (const auto& w : log_writes) {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        CHECK_FALSE(t->has_log_writes());
+        w(*t);
+        CHECK(t->has_log_writes());
+        REQUIRE(std::move(*t).commit().has_value());
+    }
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    REQUIRE(t->set_decided_index(1));
+    REQUIRE(t->insert_or_assign(bytes_of("k"), bytes_of("v")));
+    REQUIRE(t->insert_or_assign_session(1, {1, bytes_of("r")}));
+    REQUIRE(t->set_applied(1, {}));
+    REQUIRE(t->erase(bytes_of("k")));
+    REQUIRE(t->erase_session(1));
+    CHECK(t->has_writes());
+    CHECK_FALSE(t->has_log_writes());
+    REQUIRE(std::move(*t).commit().has_value());
+}
+
+// A commit without a sync is a commit: the values are there for a reader at
+// once, and after a clean close and a reopen. Only a power loss may undo it.
+TEST_CASE("a commit without a sync is read back and survives a close and a reopen")
+{
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        write(storage, [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("a")})); });
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->set_decided_index(1));
+        REQUIRE(t->insert_or_assign(bytes_of("k"), bytes_of("v")));
+        REQUIRE(std::move(*t).commit_without_a_sync().has_value());
+        CHECK(meta_of(storage).decided_idx == 1u);
+        write(storage, [](auto& w) { REQUIRE(w.append_entries(std::vector{normal_entry("b")})); });
+    }
+    const auto storage = open_storage(dir.path());
+    CHECK(meta_of(storage).decided_idx == 1u);
+    CHECK(meta_of(storage).log_len == 2u);
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    const auto found = r->find(bytes_of("k"));
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK(std::ranges::equal(**found, bytes_of("v")));
+}
+
+// A write transaction keeps its meta record in memory after the first read.
+// A transaction that is rolled back must not leave its meta record for the
+// next transaction, and a write must be seen by the next read in the same
+// transaction.
+TEST_CASE("the meta record of a rolled back transaction does not reach the next transaction")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    write(storage, [](auto& t) { REQUIRE(t.append_entries(std::vector{normal_entry("a")})); });
+    {
+        auto t = storage.begin();
+        REQUIRE(t.has_value());
+        REQUIRE(t->get_meta().has_value());
+        REQUIRE(t->append_entries(std::vector{normal_entry("b")}));
+        REQUIRE(t->set_decided_index(2));
+        const auto m = t->get_meta();
+        REQUIRE(m.has_value());
+        CHECK(m->log_len == 2u);
+        CHECK(m->decided_idx == 2u);
+    }
+    auto t = storage.begin();
+    REQUIRE(t.has_value());
+    const auto m = t->get_meta();
+    REQUIRE(m.has_value());
+    CHECK(m->log_len == 1u);
+    CHECK(m->decided_idx == 0u);
 }
 
 // A user opens a new directory and reads first. A new storage has an empty
@@ -603,11 +687,10 @@ TEST_CASE("the chain hash after a cut is the chain hash of the same log written 
     CHECK(meta_of(cut) == konsens::meta_record{});
 }
 
-// Plan lmdb-only-source 2.2 item 2: each raise of the decided index from o
-// to d sets the state committed on the entries o to d - 1, and the entries
-// from d on stay in work. A decided index above the log length is
+// The decided index lives in the meta record only; a raise writes no
+// entry again (owner, 2026-10-30). A decided index above the log length is
 // missing_entry (the start-checks plan, item 2.5).
-TEST_CASE("set_decided_index commits the entries below it and nothing above")
+TEST_CASE("set_decided_index stores the index and keeps every entry")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
@@ -616,24 +699,17 @@ TEST_CASE("set_decided_index commits the entries below it and nothing above")
         REQUIRE(t.append_entries(four));
         REQUIRE(t.set_decided_index(1));
     });
-    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 1) == konsens::entry_state::in_work);
+    CHECK(meta_of(storage).decided_idx == 1);
     write(storage, [&](auto& t) { REQUIRE(t.set_decided_index(3)); });
-    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 1) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 2) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 3) == konsens::entry_state::in_work);
-    CHECK(state_of(storage, 4) == std::nullopt);
+    CHECK(meta_of(storage).decided_idx == 3);
     CHECK(entries_of(storage, 0, 4) == four);
     auto t = storage.begin();
     REQUIRE(t.has_value());
     CHECK(t->set_decided_index(5) == std::unexpected(make_error_code(konsens::storage_errc::missing_entry)));
 }
 
-// An entry of more than about 2000 bytes lay on LMDB overflow pages. A
-// raise of the decided index over two or more such entries in one
-// transaction once wrote each new state under a key that pointed into a page
-// of the previous put, so the next entry was lost or failed its CRC.
+// Large entries span several pages of SQLite. A raise of the decided index
+// over them must leave each one whole.
 TEST_CASE("a raise of the decided index over large entries keeps every entry")
 {
     const temporary_directory dir;
@@ -643,16 +719,13 @@ TEST_CASE("a raise of the decided index over large entries keeps every entry")
                               normal_entry(large + "d"), normal_entry(std::string(2100, 'e'))};
     write(storage, [&](auto& t) { REQUIRE(t.append_entries(entries)); });
     write(storage, [&](auto& t) { REQUIRE(t.set_decided_index(5)); });
-    for (const auto index : std::views::iota(std::uint64_t{0}, std::uint64_t{5})) {
-        CHECK(state_of(storage, index) == konsens::entry_state::committed);
-    }
+    CHECK(meta_of(storage).decided_idx == 5);
     CHECK(entries_of(storage, 0, 5) == entries);
 }
 
-// append_on_prefix can write the log again from index 0. An entry that it
-// writes below the decided index is a decided entry, so it is written
-// committed.
-TEST_CASE("an entry written below the decided index is committed")
+// append_on_prefix can write the log again from index 0, below the decided
+// index. The decided index and the entries stay.
+TEST_CASE("an entry written below the decided index keeps the decided index")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
@@ -662,9 +735,8 @@ TEST_CASE("an entry written below the decided index is committed")
         REQUIRE(t.set_decided_index(2));
         REQUIRE(t.append_on_prefix(0, three));
     });
-    CHECK(state_of(storage, 0) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 1) == konsens::entry_state::committed);
-    CHECK(state_of(storage, 2) == konsens::entry_state::in_work);
+    CHECK(meta_of(storage).decided_idx == 2);
+    CHECK(entries_of(storage, 0, 3) == three);
 }
 
 // A full store is an error value of a write, which the node raises as
@@ -1257,6 +1329,47 @@ TEST_CASE("a node.db without its format row, or with another version, is refused
         REQUIRE(konsens::node_storage::open(dir.path(), non_root_user_id).has_value());
         CHECK(konsens::node_storage::open(dir.path(), non_root_user_id).has_value());
     }
+}
+
+// R8 of section 15 of doc/plan-write-path.md: the caller syncs the WAL
+// through the descriptor that the storage keeps. The sync covers the log
+// only if the descriptor names the file that SQLite writes, so the test
+// compares the device and the inode with the file at the path. The
+// descriptor is read only and does not pass to a child process.
+TEST_CASE("the WAL descriptor names the -wal file of the store, read only and closed on exec")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector one{normal_entry("one")};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
+    const int fd = storage.wal_file_descriptor();
+    REQUIRE(fd >= 0);
+    struct stat by_descriptor {};
+    struct stat by_path {};
+    REQUIRE(::fstat(fd, &by_descriptor) == 0);
+    REQUIRE(::stat((dir.path() / sqlite_damage::wal_file_name).c_str(), &by_path) == 0);
+    CHECK(by_descriptor.st_dev == by_path.st_dev);
+    CHECK(by_descriptor.st_ino == by_path.st_ino);
+    CHECK((::fcntl(fd, F_GETFL) & O_ACCMODE) == O_RDONLY);
+    CHECK((::fcntl(fd, F_GETFD) & FD_CLOEXEC) == FD_CLOEXEC);
+    CHECK(::fdatasync(fd) == 0);
+}
+
+// R6: a sync of the caller that failed may have lost dirty pages, and a
+// later commit would stand on them. After the report every write
+// transaction is a wrong use; a read still works, so the node can stop.
+TEST_CASE("after the_sync_failed every begin throws and a read still works")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector one{normal_entry("one")};
+    write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
+    storage.the_sync_failed();
+    CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(storage.begin()), std::logic_error);
+    const auto t = storage.begin_read_only();
+    REQUIRE(t);
+    CHECK(t->get_meta().value().log_len == 1);
 }
 
 // Plan clean-stop 2.1 and 4.1: the mark lives in node.db only. A start

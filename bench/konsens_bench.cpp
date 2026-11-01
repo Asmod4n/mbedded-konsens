@@ -347,7 +347,6 @@ struct counted_storage {
         auto get_meta() const { return t_.get_meta(); }
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
-        auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_hash(const std::uint64_t index) const { return t_.get_chain_hash(index); }
         auto get_unchecked_entry(const std::uint64_t index) const { return t_.get_unchecked_entry(index); }
         auto get_config_first_idx() const { return t_.get_config_first_idx(); }
@@ -369,6 +368,8 @@ struct counted_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
+        bool has_log_writes() const { return t_.has_log_writes(); }
+        std::uint64_t count_of_entry_writes() const { return t_.count_of_entry_writes(); }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
         auto replace_entries(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
@@ -387,6 +388,11 @@ struct counted_storage {
             *commits_ += 1;
             return std::move(t_).commit();
         }
+        std::expected<void, std::error_code> commit_without_a_sync() &&
+        {
+            *commits_ += 1;
+            return std::move(t_).commit_without_a_sync();
+        }
 
     private:
         konsens::persistent_storage::transaction t_;
@@ -402,6 +408,8 @@ struct counted_storage {
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), commits.get()}; });
     }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return store.begin_read_only(); }
+    int wal_file_descriptor() const { return store.wal_file_descriptor(); }
+    void the_sync_failed() { store.the_sync_failed(); }
 };
 
 static_assert(konsens::storage<counted_storage>);

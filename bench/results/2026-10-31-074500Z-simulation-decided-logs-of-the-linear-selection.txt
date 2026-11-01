@@ -1,0 +1,12 @@
+The linear selection decides the same logs as the selection before it
+
+What was compared
+- Arm old: 0060a40 (one-transaction-per-round). Arm new: 723006e with the merge a9b5fd5 (linear-selection). The only difference in src, include and test is include/konsens/selection.hpp, src/selection.cpp and test/test_execute_verify.cpp.
+- bench/arms/dump-the-decided-logs.patch (sha256 ff6ce1a49dce5779) is applied to test/simulation.hpp of both arms. At the end of each seed that has no violation, it writes for each of the three nodes the complete decided log: for each entry the kind, session, request number, client id, pid, result CRC, rejected flag, payload bytes, result bytes and output list. It also writes the counts of replies, reads and sessions.
+- bench/arms/dump-the-decided-logs.sh (sha256 8747d5ab4f17b441) builds test_simulation, test_simulation_clients and test_simulation_rollback and runs each with seeds 1 to 2000. test_simulation also runs seed 57 with reordered delivery.
+- Build g++-16 16.2.0 Release in localhost/bench-logs, podman --cpus=2, user 1001, kernel 6.18.44-fc-v185.
+
+Result
+- Both arms pass all three tests: 7 536 411, 12 017 625 and 7 198 811 assertions.
+- Each arm writes 6 001 files. diff -r of the two directories finds no difference.
+- The files hold 18 003 node logs with 482 471 decided entries; 451 226 of the entries in both arms together carry a result. The clients test answers 74 510 requests in each arm.

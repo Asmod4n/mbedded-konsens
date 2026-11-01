@@ -1,0 +1,51 @@
+What was measured
+- The arms of the write path again, with io_uring of the kernel. podman runs with a seccomp profile: the default profile of podman plus io_uring_setup, io_uring_enter and io_uring_register (sha256 ccce5e3325a9449a). Each node held an io_uring descriptor (/proc/<pid>/fd) and no epoll descriptor during the run.
+- konsensd writes of 64 B through PUT /kv, three nodes, one btrfs file system per node (loop images, compress=zstd:1), 1 and 64 in flight.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh): konsensd_g16 (edfb54f, 02dc8a4ea7798eef) and konsensd_g16cp (the same binary copied, A/A); konsensd_g16A (7234281, d5ae0f2b9a9fa365); konsensd_g16F2 (dd179cb, 486d1b0efe993860); konsensd_g16D1 (6207a7d, 51f8368f11e53270).
+- 3 rounds; in each round the arms alternate; each cell is the median of 3 samples (300 writes at 1 in flight, 8192 at 64). Raw SQLite on the file system of node 1 in each round.
+- podman --cpus=3, user 1001, not pinned, kernel 6.18.44-fc-v185, Intel Xeon (Firecracker VM), libsqlite3-0 3.53.4-2. Scripts arms.sh and cluster.sh outside the tree: 7d685173ed1f99df d9bad1b2fb550242.
+
+round=1 arm=konsensd_g16 conc=1 median_writes_per_s=156 min=141 max=162 median_latency_us=6151 user_us_per_write=1044 sys_us_per_write=1622
+round=1 arm=konsensd_g16cp conc=1 median_writes_per_s=132 min=126 max=156 median_latency_us=7223 user_us_per_write=966 sys_us_per_write=2600
+round=1 arm=konsensd_g16A conc=1 median_writes_per_s=241 min=234 max=272 median_latency_us=3929 user_us_per_write=755 sys_us_per_write=1722
+round=1 arm=konsensd_g16F2 conc=1 median_writes_per_s=366 min=363 max=406 median_latency_us=2619 user_us_per_write=644 sys_us_per_write=1100
+round=1 arm=konsensd_g16D1 conc=1 median_writes_per_s=363 min=353 max=400 median_latency_us=2507 user_us_per_write=677 sys_us_per_write=1066
+round=1 arm=konsensd_g16 conc=64 median_writes_per_s=3098 min=2465 max=3831 median_latency_us=18043 user_us_per_write=199 sys_us_per_write=96
+round=1 arm=konsensd_g16cp conc=64 median_writes_per_s=3381 min=2440 max=3532 median_latency_us=17964 user_us_per_write=192 sys_us_per_write=98
+round=1 arm=konsensd_g16A conc=64 median_writes_per_s=3121 min=2331 max=3499 median_latency_us=19884 user_us_per_write=238 sys_us_per_write=110
+round=1 arm=konsensd_g16F2 conc=64 median_writes_per_s=4412 min=3976 max=4420 median_latency_us=13690 user_us_per_write=168 sys_us_per_write=75
+round=1 arm=konsensd_g16D1 conc=64 median_writes_per_s=4501 min=4013 max=4836 median_latency_us=12662 user_us_per_write=161 sys_us_per_write=76
+round=1 raw_sqlite batch=1 median_writes_per_s=1102
+round=1 raw_sqlite batch=64 median_writes_per_s=74405
+round=2 arm=konsensd_g16 conc=1 median_writes_per_s=174 min=169 max=177 median_latency_us=5444 user_us_per_write=800 sys_us_per_write=1711
+round=2 arm=konsensd_g16cp conc=1 median_writes_per_s=179 min=176 max=183 median_latency_us=5237 user_us_per_write=866 sys_us_per_write=1744
+round=2 arm=konsensd_g16A conc=1 median_writes_per_s=251 min=249 max=270 median_latency_us=3749 user_us_per_write=833 sys_us_per_write=1633
+round=2 arm=konsensd_g16F2 conc=1 median_writes_per_s=380 min=367 max=436 median_latency_us=2441 user_us_per_write=722 sys_us_per_write=1011
+round=2 arm=konsensd_g16D1 conc=1 median_writes_per_s=394 min=337 max=397 median_latency_us=2404 user_us_per_write=588 sys_us_per_write=1144
+round=2 arm=konsensd_g16 conc=64 median_writes_per_s=4338 min=3312 max=5281 median_latency_us=13185 user_us_per_write=170 sys_us_per_write=80
+round=2 arm=konsensd_g16cp conc=64 median_writes_per_s=3241 min=2264 max=3894 median_latency_us=18176 user_us_per_write=219 sys_us_per_write=100
+round=2 arm=konsensd_g16A conc=64 median_writes_per_s=3204 min=2194 max=3507 median_latency_us=18675 user_us_per_write=253 sys_us_per_write=114
+round=2 arm=konsensd_g16F2 conc=64 median_writes_per_s=4242 min=4054 max=4711 median_latency_us=13474 user_us_per_write=159 sys_us_per_write=82
+round=2 arm=konsensd_g16D1 conc=64 median_writes_per_s=3725 min=3689 max=4704 median_latency_us=13450 user_us_per_write=173 sys_us_per_write=80
+round=2 raw_sqlite batch=1 median_writes_per_s=1137
+round=2 raw_sqlite batch=64 median_writes_per_s=81979
+round=3 arm=konsensd_g16 conc=1 median_writes_per_s=176 min=162 max=187 median_latency_us=5418 user_us_per_write=944 sys_us_per_write=1700
+round=3 arm=konsensd_g16cp conc=1 median_writes_per_s=165 min=160 max=178 median_latency_us=5436 user_us_per_write=933 sys_us_per_write=1711
+round=3 arm=konsensd_g16A conc=1 median_writes_per_s=255 min=247 max=256 median_latency_us=3748 user_us_per_write=888 sys_us_per_write=1555
+round=3 arm=konsensd_g16F2 conc=1 median_writes_per_s=412 min=407 max=424 median_latency_us=2264 user_us_per_write=666 sys_us_per_write=1055
+round=3 arm=konsensd_g16D1 conc=1 median_writes_per_s=410 min=392 max=413 median_latency_us=2305 user_us_per_write=677 sys_us_per_write=1111
+round=3 arm=konsensd_g16 conc=64 median_writes_per_s=3456 min=2410 max=4495 median_latency_us=16737 user_us_per_write=196 sys_us_per_write=90
+round=3 arm=konsensd_g16cp conc=64 median_writes_per_s=3428 min=2309 max=3649 median_latency_us=17400 user_us_per_write=197 sys_us_per_write=102
+round=3 arm=konsensd_g16A conc=64 median_writes_per_s=3105 min=1949 max=3371 median_latency_us=19976 user_us_per_write=259 sys_us_per_write=118
+round=3 arm=konsensd_g16F2 conc=64 median_writes_per_s=4390 min=3641 max=4470 median_latency_us=13798 user_us_per_write=172 sys_us_per_write=86
+round=3 arm=konsensd_g16D1 conc=64 median_writes_per_s=4257 min=3761 max=4457 median_latency_us=13966 user_us_per_write=170 sys_us_per_write=81
+round=3 raw_sqlite batch=1 median_writes_per_s=1154
+round=3 raw_sqlite batch=64 median_writes_per_s=80115
+
+Medians of the three rounds (writes/s)
+- 1 in flight: old 174, old copy 165, A+F1 251, F2 380, D1 394. Raw SQLite, 1 write per commit: 1 137.
+- 64 in flight: old 3 456, old copy 3 381, A+F1 3 121, F2 4 390, D1 4 257. Raw SQLite, 64 writes per commit: 80 115.
+- A/A at 1 in flight: 156 to 176 against 132 to 179; at 64 in flight: 3 098 to 4 338 against 3 241 to 3 428.
+- D1 against F2: +4 % at 1 in flight and -3 % at 64 in flight, both under the A/A floor. In 2026-10-30-084500Z-konsensd-arm-d1.txt, on the engine of slipstreamIO, D1 gave +23 % at 1 in flight.
+- The arms on io_uring give the same rates as on the engine of slipstreamIO within the A/A floor.
+- D1 against raw SQLite: 35 % at 1 in flight, 5.3 % at 64 in flight.

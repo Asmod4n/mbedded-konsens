@@ -31,14 +31,11 @@ constexpr std::uint64_t first_nonce = 1;
 constexpr std::uint64_t log_len = 5;
 constexpr std::uint64_t decided_idx = 3;
 
-// The tail of a record, from its end: the state CRC in 4 bytes, the state
-// in 1 byte, the chain hash in 32 bytes and the record CRC in 4 bytes. The
-// record CRC covers the index, the encoded entry and the chain hash.
-constexpr std::size_t state_crc_size = 4;
-constexpr std::size_t state_size = 1;
+// The tail of a record, from its end: the chain hash in 32 bytes and the
+// record CRC in 4 bytes. The record CRC covers the index, the encoded entry
+// and the chain hash.
 constexpr std::size_t record_crc_size = 4;
-constexpr std::size_t state_from_the_end = state_crc_size + state_size;
-constexpr std::size_t chain_from_the_end = state_from_the_end + konsens::chain_hash_size;
+constexpr std::size_t chain_from_the_end = konsens::chain_hash_size;
 constexpr std::size_t record_crc_from_the_end = chain_from_the_end + record_crc_size;
 constexpr std::size_t tail_size = record_crc_from_the_end;
 
@@ -72,8 +69,7 @@ std::vector<entry> written_entries()
     return written;
 }
 
-// A log of five entries, accepted in one round, with three of them decided,
-// so that the log holds both states of a record.
+// A log of five entries, accepted in one round, with three of them decided.
 std::filesystem::path directory_with_a_log()
 {
     const auto directory = sqlite_storage::new_directory();
@@ -134,14 +130,14 @@ std::vector<index_range> damaged_ranges_of(const sp_t& sp)
 // field together, so a mismatch does not say which of them changed. The
 // local repair takes the entry from the record without the record CRC and
 // keeps it only when the chain of the next record follows from it. A change
-// of the chain field, of the record CRC, of the state or of the state CRC
-// leaves the entry as it was, so the node writes the record again from its
-// own bytes. The test changes the first record, a record in the middle, the
-// last decided record, the first record in work and the last record, so that
-// both states and both ends of the log are checked.
-TEST_CASE("a flipped chain field, record CRC, state or state CRC is repaired locally")
+// of the chain field or of the record CRC leaves the entry as it was, so the
+// node writes the record again from its own bytes. The test changes the
+// first record, a record in the middle, the last decided record, the first
+// record that is not decided and the last record, so that decided and
+// undecided records and both ends of the log are checked.
+TEST_CASE("a flipped chain field or record CRC is repaired locally")
 {
-    const std::vector from_the_end{chain_from_the_end, record_crc_from_the_end, state_from_the_end, state_crc_size};
+    const std::vector from_the_end{chain_from_the_end, record_crc_from_the_end};
     for (const auto offset : from_the_end) {
         for (std::uint64_t index = 0; index < log_len; ++index) {
             CAPTURE(offset);
@@ -237,9 +233,6 @@ TEST_CASE("a break of the chain between two records that hold is inconsistent_st
             tail[i] = static_cast<std::byte>(crc >> (8 * i));
         }
         std::ranges::copy(chain, tail.subspan(record_crc_size).begin());
-        const auto old = sqlite_damage::entry_record_of(db, 2);
-        std::ranges::copy(std::span{old}.last(state_from_the_end),
-                          tail.subspan(record_crc_size + konsens::chain_hash_size).begin());
         sqlite_damage::put_entry_record(db, 2, record);
     });
     auto sp = node_on(directory);

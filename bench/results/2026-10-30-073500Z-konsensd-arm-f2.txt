@@ -1,0 +1,42 @@
+What was measured
+- konsensd writes of 64 B through PUT /kv, three nodes, one btrfs file system per node (loop images, compress=zstd:1), 1 and 64 in flight.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh):
+  konsensd_g16cp: commit edfb54f, the old path (sha256 02dc8a4ea7798eef).
+  konsensd_g16A: commit 7234281, arms A and F1 (sha256 d5ae0f2b9a9fa365).
+  konsensd_g16F2: commit dd179cb, arms A, F1 and F2 (sha256 486d1b0efe993860).
+- No A/A pair in this run. The A/A floor of the same bed is in 2026-10-30-064500Z-konsensd-arm-a-f1.txt: at 1 in flight 166 to 187 against 171 to 188 writes/s; at 64 in flight 3 735 to 4 316 against 3 533 to 3 785 writes/s.
+- 3 rounds; in each round the arms alternate; each cell is the median of 3 samples (300 writes at 1 in flight, 8192 at 64). Raw SQLite on the file system of node 1 in each round.
+- podman --cpus=3, user 1001, not pinned, kernel 6.18.44-fc-v185, Intel Xeon (Firecracker VM), libsqlite3-0 3.53.4-2. Scripts arms.sh and cluster.sh outside the tree: 7d685173ed1f99df d9bad1b2fb550242.
+- CPU per write: user and system time of the three nodes (/proc/<pid>/stat) over the three samples.
+- A first run of the same arms is void: the stop of cluster.sh did not name konsensd_g16F2, so its nodes kept their ports and every later start failed.
+
+round=1 arm=konsensd_g16cp conc=1 median_writes_per_s=159 min=155 max=170 median_latency_us=5912 user_us_per_write=933 sys_us_per_write=1700
+round=1 arm=konsensd_g16A conc=1 median_writes_per_s=245 min=241 max=270 median_latency_us=3908 user_us_per_write=800 sys_us_per_write=1555
+round=1 arm=konsensd_g16F2 conc=1 median_writes_per_s=363 min=359 max=397 median_latency_us=2625 user_us_per_write=666 sys_us_per_write=1077
+round=1 arm=konsensd_g16cp conc=64 median_writes_per_s=3691 min=2892 max=4360 median_latency_us=15563 user_us_per_write=193 sys_us_per_write=88
+round=1 arm=konsensd_g16A conc=64 median_writes_per_s=2995 min=2144 max=3737 median_latency_us=20957 user_us_per_write=265 sys_us_per_write=113
+round=1 arm=konsensd_g16F2 conc=64 median_writes_per_s=4011 min=2819 max=5101 median_latency_us=14175 user_us_per_write=212 sys_us_per_write=82
+round=1 raw_sqlite batch=1 median_writes_per_s=1126
+round=1 raw_sqlite batch=64 median_writes_per_s=75983
+round=2 arm=konsensd_g16cp conc=1 median_writes_per_s=176 min=173 max=208 median_latency_us=5330 user_us_per_write=944 sys_us_per_write=1588
+round=2 arm=konsensd_g16A conc=1 median_writes_per_s=266 min=261 max=272 median_latency_us=3594 user_us_per_write=777 sys_us_per_write=1577
+round=2 arm=konsensd_g16F2 conc=1 median_writes_per_s=417 min=405 max=434 median_latency_us=2274 user_us_per_write=622 sys_us_per_write=1111
+round=2 arm=konsensd_g16cp conc=64 median_writes_per_s=4151 min=2474 max=4638 median_latency_us=14636 user_us_per_write=192 sys_us_per_write=88
+round=2 arm=konsensd_g16A conc=64 median_writes_per_s=2985 min=2278 max=3782 median_latency_us=20302 user_us_per_write=234 sys_us_per_write=110
+round=2 arm=konsensd_g16F2 conc=64 median_writes_per_s=4293 min=2305 max=5247 median_latency_us=14409 user_us_per_write=231 sys_us_per_write=84
+round=2 raw_sqlite batch=1 median_writes_per_s=1140
+round=2 raw_sqlite batch=64 median_writes_per_s=71711
+round=3 arm=konsensd_g16cp conc=1 median_writes_per_s=178 min=171 max=180 median_latency_us=5425 user_us_per_write=855 sys_us_per_write=1688
+round=3 arm=konsensd_g16A conc=1 median_writes_per_s=261 min=244 max=270 median_latency_us=3600 user_us_per_write=733 sys_us_per_write=1644
+round=3 arm=konsensd_g16F2 conc=1 median_writes_per_s=359 min=359 max=433 median_latency_us=2501 user_us_per_write=700 sys_us_per_write=1033
+round=3 arm=konsensd_g16cp conc=64 median_writes_per_s=3774 min=2669 max=4428 median_latency_us=15243 user_us_per_write=198 sys_us_per_write=79
+round=3 arm=konsensd_g16A conc=64 median_writes_per_s=3085 min=2199 max=3734 median_latency_us=19786 user_us_per_write=253 sys_us_per_write=109
+round=3 arm=konsensd_g16F2 conc=64 median_writes_per_s=4086 min=2705 max=4885 median_latency_us=15070 user_us_per_write=206 sys_us_per_write=91
+round=3 raw_sqlite batch=1 median_writes_per_s=1205
+round=3 raw_sqlite batch=64 median_writes_per_s=74625
+
+Medians of the three rounds (writes/s)
+- 1 in flight: old 176, A+F1 261, A+F1+F2 363. Raw SQLite, 1 write per commit: 1 140.
+- 64 in flight: old 3 774, A+F1 2 995, A+F1+F2 4 086. Raw SQLite, 64 writes per commit: 74 625.
+- A+F1+F2 against A+F1: +39 % at 1 in flight, +36 % at 64 in flight. Both are above the A/A floor.
+- A+F1+F2 against raw SQLite: 32 % at 1 in flight, 5.5 % at 64 in flight. The goal is 50 %.

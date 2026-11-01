@@ -1,0 +1,17 @@
+What was measured
+- Where the time of one write goes at 1 in flight. konsensd_g16P3 (1e7ea2b), option sync_by_the_caller off, so SQLite syncs the WAL inside the loop. strace -f --seccomp-bpf -ttt -T -e trace=io_uring_enter,fdatasync on each node. 400 writes, 64 bytes. The window is the middle 40 % of the run, about 232 writes. Own bed, podman --cpus=3, user 1001, seccomp profile ccce5e3325a9449a. seg.sh 355341652fa515ed, waits.sh f1bd22517aab14c6.
+- strace slows the run: 263 writes/s against about 400 without it. The split below holds under strace; its absolute times are longer than without strace.
+
+Per node and write (microseconds): time in io_uring_enter (waits for a message), in fdatasync, and the rest (work of the loop)
+- n1 (follower): 1 108, 1 727 (1.08 fdatasync per write), 968; 9.4 turns of the loop per write.
+- n2 (follower): 1 052, 1 781 (1.08), 969; 9.2 turns.
+- n3 (leader): 965, 1 746 (1.09), 1 092; 10.9 turns.
+- Time in which at least one node works or syncs: 3 438 of 3 802 per write.
+
+Overlap of the syncs
+- The sum of the fdatasync time of the three nodes is 5 253 per write. Their union is 2 023 per write. The three nodes sync the same write at the same time; the start of the three syncs differs by 0.05 to 0.2 ms.
+
+Reading
+- Each write holds one sync slot, in which all three nodes sync in parallel, and one stretch without a sync, in which the work goes from node to node: decide, apply, reply, the next request, execute, work, answer, select, append.
+- Under strace the stretch without a sync is about 1.3 ms of a cycle of about 2.5 ms. Without strace the cycle is about 2.4 ms and a sync about 1.0 ms (2026-10-30 hyp-sync, 958 to 1 086 us per commit); the stretch without a sync is then about 1.4 ms. This last figure is derived, not measured.
+- Some syscall form counts from strace -c -w over 2 000 writes on the leader (waits.sh): 23 fcntl, 14 pwrite64 and 2.9 pread64 per write.

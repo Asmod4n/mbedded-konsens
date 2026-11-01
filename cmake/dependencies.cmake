@@ -1,6 +1,6 @@
 FetchContent_Declare(mbedded-cbor
     GIT_REPOSITORY https://github.com/Asmod4n/mbedded-cbor
-    GIT_TAG 55418aaa3730c3a091a26704b3c71452c7adc57a
+    GIT_TAG 9126904f11c51cd791d7ef80b76ba982fc66caa1
     SYSTEM)
 FetchContent_Declare(slipstreamio
     GIT_REPOSITORY https://github.com/Asmod4n/slipstreamIO

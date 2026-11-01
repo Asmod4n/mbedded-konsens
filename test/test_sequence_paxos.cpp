@@ -350,6 +350,69 @@ TEST_CASE("handle_prepare promises only a higher ballot")
     CHECK(committed_messages_of(sp).empty());
 }
 
+// Simulation seed 410: a duplicated prepare_req makes the leader forget the
+// promise of a follower in phase accept and send prepare of the same
+// ballot. A follower that ignores it leaves the link dead.
+TEST_CASE("a follower in phase accept promises its ballot again")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, {}}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::accept});
+    committed_messages_of(sp);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::prepare});
+    const auto out = committed_messages_of(sp);
+    REQUIRE(out.size() == 1);
+    CHECK(out[0].to == 3);
+    CHECK(std::get<konsens::promise>(out[0].msg).n == ballot_of(1, 3));
+}
+
+// After the second promise the node waits for the next accept sync. An
+// accept of the old session must not reach the log in phase prepare.
+TEST_CASE("after a promise of the same ballot an accept of the old session is dropped")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, {}}}));
+    CHECK(sp.get_accepted_idx() == 0);
+}
+
+// Model run promise_again_recovery_l1 (2026-10-31): an older accept sync of
+// the accepted ballot shortened the log and lost a voted entry. The log of
+// one leader only grows, so a sync of the accepted ballot that is not
+// longer than the log changes no entry.
+TEST_CASE("an accept sync of the accepted ballot does not shorten the log")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {2, 1}, 0, {{}, 0}, {}}}));
+    CHECK(sp.get_state() == std::pair{role::follower, phase::accept});
+    CHECK(sp.get_accepted_idx() == 1);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).log_len == 1);
+}
+
+// Raft, Figure 2, AppendEntries step 3: a follower keeps the entries that it
+// holds and replaces them only at a conflict. An entry that the disk of the
+// follower changed is such a conflict, so a sync of the accepted ballot with
+// another entry at that index replaces it.
+TEST_CASE("an accept sync of the accepted ballot replaces an entry that differs")
+{
+    auto sp = make(1);
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{make_entry(9)}, 0}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {2, 1}, 0, {{make_entry(1)}, 0}, {}}}));
+    CHECK(sp.get_accepted_idx() == 1);
+    CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).last_chain_hash == chain_of({make_entry(1)}, 1));
+}
+
 // follower.rs:196-227 check_valid_ballot: a message of a lower ballot gets
 // NotAccepted with the promise, so that the old leader learns of it.
 TEST_CASE("a message of a lower ballot gets not_accepted")
@@ -563,27 +626,10 @@ TEST_CASE("a first start does not recover")
 
 namespace {
 
-std::vector<konsens::entry_state> states_of(const persistent_storage& s)
+std::pair<std::uint64_t, std::uint64_t> decided_and_length_of(const persistent_storage& s)
 {
-    const auto t = s.begin_read_only();
-    REQUIRE(t.has_value());
-    const auto m = t->get_meta();
-    REQUIRE(m.has_value());
-    std::vector<konsens::entry_state> states;
-    for (std::uint64_t i = 0; i < m->log_len; ++i) {
-        const auto state = t->get_entry_state(i);
-        REQUIRE(state.has_value());
-        REQUIRE(state->has_value());
-        states.push_back(**state);
-    }
-    return states;
-}
-
-std::vector<konsens::entry_state> committed_below(const std::uint64_t decided_idx, const std::uint64_t log_len)
-{
-    std::vector<konsens::entry_state> states(log_len, konsens::entry_state::in_work);
-    std::fill_n(states.begin(), decided_idx, konsens::entry_state::committed);
-    return states;
+    const auto m = sqlite_storage::meta_of(s);
+    return {m.decided_idx, m.log_len};
 }
 
 const std::vector<entry> one_two{make_entry(1), make_entry(2)};
@@ -670,9 +716,11 @@ TEST_CASE("a promise lost while the node runs is found at the next step")
 
 // Plan 2.3 item 7: the node keeps the highest values that it committed. A
 // disk that gives back an older meta record, with a valid CRC, gives a
-// value below that mark. A getter between two steps runs the same check
-// (plan 2.1 item 3), so no value of the old record leaves the node.
-TEST_CASE("a value below the mark stops the vote, and a getter between two steps runs the step check")
+// value below that mark. A getter between two steps returns the values of
+// the mark (plan-write-path.md 19, arm P), so it gives the committed
+// promise and no value of the old record. The next step runs the check,
+// finds the older record and stops the vote.
+TEST_CASE("a value below the mark stops the vote at the next step, and a getter between two steps returns the mark")
 {
     const auto directory = sqlite_storage::new_directory();
     auto sp = make(1, sqlite_storage::open_in(directory));
@@ -686,9 +734,10 @@ TEST_CASE("a value below the mark stops the vote, and a getter between two steps
     REQUIRE(sp.get_promise() == ballot_of(2, 2));
     sqlite_damage::change_with_sqlite(directory, [&value](sqlite3* db) { sqlite_damage::put_meta_value(db, value); });
     const auto inconsistent = make_error_code(konsens::paxos_errc::inconsistent_storage);
+    CHECK(sp.get_promise() == ballot_of(2, 2));
+    CHECK(sp.handle({3, 1, konsens::prepare{ballot_of(3, 3), 0, ballot{}, 0}}) == std::unexpected(inconsistent));
     CHECK(sp.get_promise() == std::unexpected(inconsistent));
     CHECK(sp.get_decided_idx() == std::unexpected(inconsistent));
-    CHECK(sp.handle({3, 1, konsens::prepare{ballot_of(3, 3), 0, ballot{}, 0}}) == std::unexpected(inconsistent));
     CHECK(!sp.votes());
     CHECK(committed_messages_of(sp).empty());
 }
@@ -740,10 +789,11 @@ TEST_CASE("a resent promise carries the stored values")
     CHECK(resent[0] == stored);
 }
 
-// Plan 2.2 item 2: each step that raises the decided index sets the state
-// committed on the entries below it, in the same transaction. One test for
-// each writer of the decided index in sequence_paxos.
-TEST_CASE("each writer of the decided index sets the state of its entries")
+// The decided index in the meta record is the only mark of a committed
+// entry (owner, 2026-10-30, after Raft, TigerBeetle and FoundationDB). Each
+// step that raises it writes it with the log in the same transaction. One
+// test for each writer of the decided index in sequence_paxos.
+TEST_CASE("each writer of the decided index stores it in the meta record")
 {
     SUBCASE("handle_majority_promises")
     {
@@ -753,7 +803,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({1, 3,
                            konsens::promise{ballot_of(1, 3), ballot_of(1, 1), 1, 2, konsens::log_sync{one_two, 0},
                                             chain_of(one_two, 1), last_crc_of(one_two)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{1, 2});
     }
     SUBCASE("accept_sync")
     {
@@ -761,7 +811,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(
             sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 1, {one_two, 0}, chain_of(one_two, 1)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{1, 2});
     }
     SUBCASE("accept_decide")
     {
@@ -769,7 +819,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 1, one_two, chain_of(one_two, 1)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{1, 2});
     }
     SUBCASE("decide")
     {
@@ -777,9 +827,9 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, {}}}));
         REQUIRE(sp.commit());
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(0, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{0, 2});
         REQUIRE(sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, chain_of(one_two, 2)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{2, 2});
     }
     SUBCASE("accepted at the leader")
     {
@@ -791,7 +841,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         REQUIRE(sp.append(make_entry(2)));
         committed_messages_of(sp);
         REQUIRE(sp.handle({1, 3, konsens::accepted{ballot_of(1, 3), 2, last_crc_of(one_two)}}));
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{2, 2});
     }
     SUBCASE("handle_build_response")
     {
@@ -803,7 +853,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         committed_messages_of(sp);
         REQUIRE(sp.handle({2, 1, konsens::build_response{first_nonce, 0, log, last_crc_of(log), 2, last_crc_of(log)}}));
         REQUIRE(!sp.building());
-        CHECK(states_of(committed_storage_of(sp)) == committed_below(2, 2));
+        CHECK(decided_and_length_of(committed_storage_of(sp)) == std::pair<std::uint64_t, std::uint64_t>{2, 2});
     }
 }
 
@@ -880,7 +930,7 @@ TEST_CASE("each paxos error has its own message")
     }
     std::ranges::sort(messages);
     CHECK(std::ranges::adjacent_find(messages) == messages.end());
-    CHECK(std::ranges::find(messages, "Unknown paxos error") == messages.end());
+    CHECK(std::ranges::find(messages, std::string_view{"Unknown paxos error"}) == messages.end());
 }
 
 // Plan 2.5 item 4: the leader takes the decided index of a promise only
@@ -900,7 +950,7 @@ TEST_CASE("the majority of promises does not decide on another chain hash")
     const auto& st = committed_storage_of(sp);
     CHECK(sqlite_storage::log_of(st) == one_two);
     CHECK(sqlite_storage::meta_of(st).decided_idx == 0);
-    CHECK(states_of(st) == committed_below(0, 2));
+    CHECK(decided_and_length_of(st) == std::pair<std::uint64_t, std::uint64_t>{0, 2});
 }
 
 // Plan 2.3 item 6: on one connection a peer sends its ballots in order, and
@@ -1028,4 +1078,102 @@ TEST_CASE("a StopSign that is not decided is removed by a new leader")
     for (auto* n : nodes) {
         CHECK(decided_of(*n) == std::vector{make_entry(1)});
     }
+}
+
+namespace {
+
+sp_t make_synced_by_the_caller(const node_id pid)
+{
+    return *sp_t::with({1, pid, peers_of(pid), {}, konsens::start_kind::first, 0, true}, sqlite_storage::open_new(),
+                       first_nonce);
+}
+
+// Under arm S2 the steps that end while a sync is out stay in one open
+// transaction. The commit after the report commits that transaction and
+// takes the next sync number, so the caller reports until no sync is out.
+void report_the_sync(sp_t& sp)
+{
+    while (sp.get_last_sync_number() > sp.get_synced_sync_number()) {
+        REQUIRE(sp.the_log_is_synced(sp.get_last_sync_number()));
+        static_cast<void>(sp.commit());
+    }
+}
+
+}
+
+// R1 of section 15 of doc/plan-write-path.md: the synced length of the log
+// counts only the prefix that is durable and still the same. Node 3 syncs
+// its entry 1 of round 1, and node 2 then accepts entry 2 at the same index
+// in round 2. When node 3 leads again, it adopts entry 2 over its synced
+// entry 1. With node 1 alone beside it, it may decide only after its own
+// sync of entry 2; a synced length that kept the old entry 1 would let it
+// count its cache as a vote.
+TEST_CASE("a new leader that adopts a suffix over synced entries decides only after its sync")
+{
+    auto a = make_synced_by_the_caller(1);
+    auto b = make_synced_by_the_caller(2);
+    auto c = make_synced_by_the_caller(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(make_entry(1)));
+    deliver_among(nodes, {false, false, true});
+    report_the_sync(c);
+    CHECK(c.get_synced_len() == 1);
+    CHECK(c.get_decided_idx().value() == 0);
+    REQUIRE(b.handle_leader(ballot_of(2, 2)));
+    deliver_among(nodes, {true, true, false});
+    REQUIRE(b.get_state() == std::pair{role::leader, phase::accept});
+    REQUIRE(b.append(make_entry(2)));
+    deliver_among(nodes, {true, true, false});
+    report_the_sync(a);
+    REQUIRE(c.handle_leader(ballot_of(3, 3)));
+    deliver_among(nodes, {true, false, true});
+    REQUIRE(c.get_state() == std::pair{role::leader, phase::accept});
+    CHECK(c.get_synced_len() == 0);
+    CHECK(c.get_decided_idx().value() == 0);
+    report_the_sync(c);
+    deliver_among(nodes, {true, false, true});
+    CHECK(c.get_decided_idx().value() == 1);
+    CHECK(decided_of(c) == std::vector{make_entry(2)});
+}
+
+// R2: a sync report may make several indexes chosen at once; the leader
+// decides the highest, the majority-th largest accepted index, and not
+// only the index of the last Accepted.
+TEST_CASE("a sync report decides the highest chosen index")
+{
+    auto a = make_synced_by_the_caller(1);
+    auto b = make_synced_by_the_caller(2);
+    auto c = make_synced_by_the_caller(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_among(nodes, {true, false, true});
+    report_the_sync(c);
+    deliver_among(nodes, {true, false, true});
+    REQUIRE(c.append(make_entry(1)));
+    deliver_among(nodes, {true, false, true});
+    REQUIRE(c.append(make_entry(2)));
+    deliver_among(nodes, {true, false, true});
+    CHECK(c.get_decided_idx().value() == 0);
+    report_the_sync(c);
+    CHECK(c.get_decided_idx().value() == 2);
+}
+
+// With sync_by_the_caller off a step with log writes takes no sync number:
+// the commit syncs, as before.
+TEST_CASE("without sync_by_the_caller no step takes a sync number")
+{
+    auto a = make(1);
+    auto b = make(2);
+    auto c = make(3);
+    const std::array<sp_t*, 3> nodes{&a, &b, &c};
+    REQUIRE(c.handle_leader(ballot_of(1, 3)));
+    deliver_all(nodes);
+    REQUIRE(c.append(make_entry(1)));
+    deliver_all(nodes);
+    for (auto* n : nodes) {
+        CHECK(n->get_last_sync_number() == 0);
+    }
+    CHECK(c.get_decided_idx().value() == 1);
 }

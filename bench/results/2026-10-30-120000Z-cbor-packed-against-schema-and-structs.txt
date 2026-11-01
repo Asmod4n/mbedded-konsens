@@ -1,0 +1,84 @@
+CBOR: cbor::packed against cbor::schema and cbor::structs, one message of the write path
+
+What was measured
+- Encode and decode of one accept_decide message with 1 and 16 entries (64 B payload, 30 B result per entry), as in 2026-10-30-171500Z-cbor-structs-against-schema.txt.
+- mbedded-cbor fe7eaf2 (main). Every arm uses the same cbor::describe_members description, written with CBOR_DEFINE_TYPE.
+- The test file stands outside the tree: c.cpp b3531d09bb20455c.
+- Each value is the median of 15 samples of 20000 iterations, in ns per message. 3 rounds; in each round the arms alternate.
+- Arms, each its own binary, -O2 -DNDEBUG:
+  - structs, schema, packed: g++ 16, -std=c++26 -freflection
+  - structs_aa, schema_aa, packed_aa: copies (A/A)
+  - packed_g16_23: g++ 16, -std=c++23
+  - packed23: g++ 15, -std=c++23
+  - packed_clang: clang 22, -std=c++23
+- podman image localhost/cxx-matrix-sqlite, not pinned, kernel 6.18.44-fc-v185, Intel Xeon (Firecracker VM).
+- Compilers: g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0;g++-15 (Ubuntu 15.3.0-4ubuntu1) 15.3.0;Ubuntu clang version 22.1.8 (1ubuntu1);
+
+Rows
+round=1 arm=structs entries=1 encode_ns median=91 min=89 max=93 decode_ns median=283 min=277 max=291 sink=2
+round=1 arm=structs_aa entries=1 encode_ns median=92 min=89 max=93 decode_ns median=283 min=275 max=290 sink=2
+round=1 arm=schema entries=1 encode_ns median=27 min=26 max=28 decode_ns median=98 min=96 max=100 sink=0
+round=1 arm=schema_aa entries=1 encode_ns median=27 min=25 max=28 decode_ns median=98 min=97 max=100 sink=0
+round=1 arm=packed entries=1 encode_ns median=26 min=26 max=28 decode_ns median=99 min=98 max=104 sink=0
+round=1 arm=packed_aa entries=1 encode_ns median=26 min=26 max=27 decode_ns median=99 min=97 max=104 sink=0
+round=1 arm=packed_g16_23 entries=1 encode_ns median=30 min=29 max=31 decode_ns median=96 min=94 max=99 sink=0
+round=1 arm=packed23 entries=1 encode_ns median=74 min=72 max=75 decode_ns median=107 min=105 max=110 sink=0
+round=1 arm=packed_clang entries=1 encode_ns median=67 min=66 max=69 decode_ns median=79 min=74 max=80 sink=0
+round=1 arm=structs entries=16 encode_ns median=1003 min=988 max=1019 decode_ns median=2824 min=2807 max=2837 sink=6
+round=1 arm=structs_aa entries=16 encode_ns median=994 min=983 max=1004 decode_ns median=2841 min=2819 max=2950 sink=6
+round=1 arm=schema entries=16 encode_ns median=194 min=190 max=198 decode_ns median=929 min=923 max=937 sink=0
+round=1 arm=schema_aa entries=16 encode_ns median=192 min=190 max=193 decode_ns median=929 min=925 max=935 sink=0
+round=1 arm=packed entries=16 encode_ns median=192 min=188 max=195 decode_ns median=935 min=929 max=973 sink=0
+round=1 arm=packed_aa entries=16 encode_ns median=197 min=194 max=206 decode_ns median=949 min=932 max=955 sink=0
+round=1 arm=packed_g16_23 entries=16 encode_ns median=194 min=190 max=236 decode_ns median=934 min=919 max=952 sink=0
+round=1 arm=packed23 entries=16 encode_ns median=593 min=588 max=598 decode_ns median=989 min=980 max=998 sink=0
+round=1 arm=packed_clang entries=16 encode_ns median=604 min=600 max=614 decode_ns median=710 min=700 max=833 sink=0
+round=2 arm=structs entries=1 encode_ns median=92 min=90 max=93 decode_ns median=280 min=276 max=295 sink=2
+round=2 arm=structs_aa entries=1 encode_ns median=96 min=92 max=99 decode_ns median=294 min=284 max=303 sink=2
+round=2 arm=schema entries=1 encode_ns median=27 min=26 max=28 decode_ns median=100 min=97 max=102 sink=0
+round=2 arm=schema_aa entries=1 encode_ns median=33 min=32 max=35 decode_ns median=101 min=99 max=104 sink=0
+round=2 arm=packed entries=1 encode_ns median=27 min=26 max=28 decode_ns median=100 min=97 max=104 sink=0
+round=2 arm=packed_aa entries=1 encode_ns median=27 min=26 max=30 decode_ns median=101 min=99 max=105 sink=0
+round=2 arm=packed_g16_23 entries=1 encode_ns median=28 min=27 max=30 decode_ns median=96 min=94 max=100 sink=0
+round=2 arm=packed23 entries=1 encode_ns median=75 min=73 max=77 decode_ns median=108 min=107 max=111 sink=0
+round=2 arm=packed_clang entries=1 encode_ns median=68 min=67 max=70 decode_ns median=80 min=78 max=83 sink=0
+round=2 arm=structs entries=16 encode_ns median=996 min=986 max=1007 decode_ns median=2849 min=2815 max=2870 sink=6
+round=2 arm=structs_aa entries=16 encode_ns median=987 min=971 max=1003 decode_ns median=2820 min=2795 max=2886 sink=6
+round=2 arm=schema entries=16 encode_ns median=192 min=190 max=196 decode_ns median=929 min=925 max=942 sink=0
+round=2 arm=schema_aa entries=16 encode_ns median=200 min=198 max=209 decode_ns median=930 min=922 max=942 sink=0
+round=2 arm=packed entries=16 encode_ns median=200 min=198 max=202 decode_ns median=934 min=925 max=942 sink=0
+round=2 arm=packed_aa entries=16 encode_ns median=192 min=190 max=198 decode_ns median=934 min=931 max=942 sink=0
+round=2 arm=packed_g16_23 entries=16 encode_ns median=193 min=191 max=196 decode_ns median=935 min=929 max=945 sink=0
+round=2 arm=packed23 entries=16 encode_ns median=598 min=595 max=648 decode_ns median=984 min=979 max=998 sink=0
+round=2 arm=packed_clang entries=16 encode_ns median=568 min=562 max=575 decode_ns median=881 min=876 max=890 sink=0
+round=3 arm=structs entries=1 encode_ns median=91 min=89 max=94 decode_ns median=282 min=277 max=290 sink=2
+round=3 arm=structs_aa entries=1 encode_ns median=91 min=90 max=100 decode_ns median=286 min=280 max=307 sink=2
+round=3 arm=schema entries=1 encode_ns median=27 min=26 max=32 decode_ns median=99 min=98 max=105 sink=0
+round=3 arm=schema_aa entries=1 encode_ns median=26 min=25 max=27 decode_ns median=98 min=96 max=100 sink=0
+round=3 arm=packed entries=1 encode_ns median=26 min=26 max=31 decode_ns median=101 min=98 max=119 sink=0
+round=3 arm=packed_aa entries=1 encode_ns median=26 min=26 max=36 decode_ns median=99 min=98 max=107 sink=0
+round=3 arm=packed_g16_23 entries=1 encode_ns median=28 min=28 max=34 decode_ns median=99 min=96 max=114 sink=0
+round=3 arm=packed23 entries=1 encode_ns median=74 min=72 max=76 decode_ns median=107 min=105 max=110 sink=0
+round=3 arm=packed_clang entries=1 encode_ns median=68 min=66 max=71 decode_ns median=80 min=77 max=93 sink=0
+round=3 arm=structs entries=16 encode_ns median=989 min=977 max=1004 decode_ns median=2810 min=2775 max=2861 sink=6
+round=3 arm=structs_aa entries=16 encode_ns median=1008 min=993 max=1492 decode_ns median=2897 min=2808 max=3409 sink=6
+round=3 arm=schema entries=16 encode_ns median=194 min=190 max=270 decode_ns median=961 min=934 max=1287 sink=0
+round=3 arm=schema_aa entries=16 encode_ns median=198 min=194 max=199 decode_ns median=937 min=926 max=945 sink=0
+round=3 arm=packed entries=16 encode_ns median=200 min=197 max=207 decode_ns median=929 min=924 max=1030 sink=0
+round=3 arm=packed_aa entries=16 encode_ns median=194 min=191 max=330 decode_ns median=941 min=932 max=981 sink=0
+round=3 arm=packed_g16_23 entries=16 encode_ns median=191 min=190 max=197 decode_ns median=944 min=931 max=952 sink=0
+round=3 arm=packed23 entries=16 encode_ns median=594 min=591 max=620 decode_ns median=997 min=992 max=1011 sink=0
+round=3 arm=packed_clang entries=16 encode_ns median=602 min=599 max=608 decode_ns median=896 min=866 max=932 sink=0
+
+Medians of the three rounds (ns per message, encode / decode)
+| Arm | 1 entry | 16 entries |
+| structs, g++ 16 | 91 / 282 | 996 / 2824 |
+| schema, g++ 16 | 27 / 99 | 194 / 929 |
+| packed, g++ 16, C++26 | 26 / 100 | 200 / 934 |
+| packed, g++ 16, C++23 | 28 / 96 | 193 / 935 |
+| packed, g++ 15, C++23 | 74 / 107 | 594 / 989 |
+| packed, clang 22, C++23 | 68 / 80 | 602 / 881 |
+- A/A: under 4 % in every cell but one (schema_aa encode, 1 entry, one round at 33).
+- packed with g++ 16 equals schema, in C++26 and in C++23.
+- packed with g++ 15 and with clang 22 encodes 2.7 to 3.1 times slower than with g++ 16. Decode is within 7 % with g++ 15, and 5 to 20 % faster with clang 22.
+- packed against structs, g++ 16: encode 3.5 to 5 times faster, decode 2.8 to 3 times faster.

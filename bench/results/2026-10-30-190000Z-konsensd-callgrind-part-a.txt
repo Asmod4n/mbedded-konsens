@@ -1,0 +1,21 @@
+What: callgrind instruction counts (Ir) and calls into operator new per
+write, konsensd, three nodes, 64 B values, driver -conc 64, 4096
+writes (dump 2). Counts, not time. One repetition per arm.
+Arms: base konsensd_g16T (write-path 799c365, code as 4314cd3) and
+part A konsensd_g16A26 (write-path 35a6b5d), both g++-16 Release, built
+with bench-logs/build-konsensd.sh.
+Run: podman --cpus=3, user 1001, seccomp-io-uring.json, image
+localhost/bench-vg, node data on tmpfs, scripts bench-logs/vg9.sh and
+vg10.sh (same script, binary name changed). Calls counted with
+tools/callers.py of the scratchpad over the callgrind file (calls into
+`operator new(unsigned long)`). The leader is the node without
+handle_acceptdecide: node 2 in both runs.
+
+                     base            part A          part A / base
+leader Ir            1,271,057,857   1,087,702,701   0.856
+leader new calls     1,219,348       919,977         0.754
+  per write          297.7           224.6
+follower 1 Ir        857,309,901     779,651,813     0.909
+follower 1 new       762,839         662,785         0.869
+follower 3 Ir        953,059,546     857,465,003     0.900
+follower 3 new       848,760         739,381         0.871

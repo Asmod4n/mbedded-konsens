@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <system_error>
@@ -45,11 +46,14 @@ constexpr std::uint32_t config_id = 1;
 // The disk of a node outlives the node, so a test can end a node between a
 // call and its commit, as a crash does, and start it again on the same
 // disk. The disk counts the commits of write transactions and the entries
-// of each append_entries. Its store is SQLite.
+// of each append_entries. Its store is SQLite. A test that sets
+// meta_read_error makes every read of the meta in a write transaction fail
+// with it, as a disk that fails under a step.
 struct disk {
     konsens::persistent_storage store;
     std::uint64_t commits;
     std::vector<std::size_t> appended;
+    std::optional<std::error_code> meta_read_error{};
 };
 
 struct disk_storage {
@@ -59,10 +63,15 @@ struct disk_storage {
     public:
         transaction(konsens::persistent_storage::transaction t, disk* d) : t_{std::move(t)}, d_{d} {}
 
-        auto get_meta() const { return t_.get_meta(); }
+        std::expected<konsens::meta_record, std::error_code> get_meta() const
+        {
+            if (d_->meta_read_error) {
+                return std::unexpected(*d_->meta_read_error);
+            }
+            return t_.get_meta();
+        }
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
-        auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_hash(const std::uint64_t index) const { return t_.get_chain_hash(index); }
         auto get_unchecked_entry(const std::uint64_t index) const { return t_.get_unchecked_entry(index); }
         auto get_config_first_idx() const { return t_.get_config_first_idx(); }
@@ -84,6 +93,8 @@ struct disk_storage {
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
+        bool has_log_writes() const { return t_.has_log_writes(); }
+        std::uint64_t count_of_entry_writes() const { return t_.count_of_entry_writes(); }
         auto append_entries(const std::span<const entry> entries)
         {
             d_->appended.push_back(entries.size());
@@ -106,6 +117,11 @@ struct disk_storage {
             d_->commits += 1;
             return std::move(t_).commit();
         }
+        std::expected<void, std::error_code> commit_without_a_sync() &&
+        {
+            d_->commits += 1;
+            return std::move(t_).commit_without_a_sync();
+        }
 
     private:
         konsens::persistent_storage::transaction t_;
@@ -120,6 +136,8 @@ struct disk_storage {
             [this](konsens::persistent_storage::transaction t) { return transaction{std::move(t), d.get()}; });
     }
     std::expected<read_only_transaction, std::error_code> begin_read_only() const { return d->store.begin_read_only(); }
+    int wal_file_descriptor() const { return d->store.wal_file_descriptor(); }
+    void the_sync_failed() { d->store.the_sync_failed(); }
 };
 
 inline std::shared_ptr<disk> disk_in(const std::filesystem::path& directory)
@@ -214,6 +232,7 @@ struct cluster {
     std::array<bool, node_count> started{};
     std::vector<node_t> nodes;
     std::uint64_t next_nonce{1};
+    bool sync_by_the_caller{};
 
     // The node storage of a node lives beside its disk, so that a clean
     // stop leaves its mark for the next start. Only the first start of a
@@ -223,6 +242,7 @@ struct cluster {
         next_nonce += 1;
         auto config = config_of(pid_of(i));
         config.first_start = !started.at(i);
+        config.sync_by_the_caller = sync_by_the_caller;
         started.at(i) = true;
         return *node_t::with(config, disk_storage{disks.at(i)}, sqlite_storage::open_node_storage_in(states.at(i)),
                              counter{}, next_nonce);

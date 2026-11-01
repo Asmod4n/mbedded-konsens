@@ -1,0 +1,32 @@
+Why the rate of konsensd at 64 in flight spreads from one start of the cluster to the next
+
+What was measured
+- konsensd_g16C0 (sha256 68c4368fddaa896c): c727402 with bench/arms/cap-of-the-step.patch at K = 0, g++-16 Release. Three nodes, sync_by_the_caller = true, Unix sockets, 3 samples of 8192 writes of 64 bytes at 64 in flight per start, 12 starts per series.
+- podman --cpus=3, user 1001, not pinned, seccomp profile with io_uring, kernel 6.18.44-fc-v185, 4 vCPU Intel Xeon, three btrfs loop images compress=zstd:1 on one host disk. Run 2026-10-31 18:45 to 19:20 UTC.
+
+1. The disk
+- dd bs=4k oflag=dsync, 300 writes per value, on the three images at the same time for 300 s: 957 to 960 values per image. ms per write: p10 0.90, p50 0.99, p90 1.08, max 1.36 on each image. The median of each 20 s window is between 0.97 and 1.02 ms.
+- The disk does not explain the spread at this resolution. Not checked: the time of an fdatasync of the SQLite WAL from one start to the next.
+
+2. The CPU
+- The cgroup (v1) of the container has nr_throttled=0 before and after every start. The quota of --cpus=3 does not throttle the nodes.
+- The nodes run on all 4 CPUs in each start (samples of /proc/<pid>/stat every 50 ms).
+
+3. The leader (bench-logs/spread2.sh with cluster2.sh, b5ccbdeaa4a5fac9)
+- cluster2.sh sends the client to the node that is leader 0.5 s after the first answer. In 12 of 12 starts that was node 3.
+- In 12 of 12 starts, node 1 became leader during the measurement ("node 1 is leader in prepare", then "in accept"). In 7 of 12 starts a follower also went through the phase recover.
+- So the client wrote to a follower for most of the run, and an election happened inside the run.
+- Rates: 9512 to 11253 writes/s, median of the 12 starts 10655.
+
+4. With a stable leader (bench/arms/spread-of-the-bed.sh with bench/arms/cluster3.sh)
+- cluster3.sh waits until no node writes a new state line for 3 s, then sends the client to the node that is leader in accept.
+- No state line was written during the measurement in 12 of 12 starts. The client went to node 1 in 10 starts and to node 2 in 2.
+- Starts (run, client node, median, min, max writes/s, median latency us): 1 n2 14124 13905-14439 4235; 2 n1 14189 13953-14774 4186; 3 n1 14934 13724-15084 3973; 4 n2 14544 14062-14832 4072; 5 n1 13962 13295-15104 4185; 6 n1 15102 14441-15251 3910; 7 n1 14388 14311-15348 3918; 8 n1 13112 10480-13763 4317; 9 n1 14101 13531-14803 4166; 10 n1 10439 9881-11672 5047; 11 n1 13519 7953-14813 4211; 12 n1 13280 12798-14251 4395
+- Median of the 12 starts 14112 writes/s, min 10439, max 15102. Without start 10 (below), 13112 to 15102.
+
+Result
+- The spread between starts comes from the bed, not from the disk. The client wrote to a follower, and the leader changed during the run.
+- With a stable leader and the client at the leader, the median of 12 starts is 14112 writes/s against 10655 writes/s in series 3, 32 % more, with the same binary. The two series ran one after the other in this session, not alternated.
+- Every result of konsensd at 64 in flight that used cluster2.sh holds the forwarding through a follower and an election inside the run. A comparison of arms in those results is a comparison under these conditions.
+- Left: start 10 (10439 writes/s) and the low sample of start 11 (7953 writes/s) have no state change. Their cause is not found.
+- Not checked: why node 1 always takes the leadership from the first leader after the start.

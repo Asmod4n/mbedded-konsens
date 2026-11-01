@@ -1,0 +1,35 @@
+What was measured
+- Arm P4 (plan section 19, changes after review): execute_verify takes the promise from its meta record and does not call get_promise.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh), option sync_by_the_caller on in all three: konsensd_g16R1S2 (2a8cd3b, b44668830471453d), konsensd_g16R1S2c (the same binary copied, A/A), konsensd_g16P4S2 (b6b62a6, 5b915169675ff001).
+- Same bed, settings, samples, container and seccomp profile as 2026-10-30-140000Z-konsensd-arms-after-the-refusal-check.txt. arms.sh 4dc1641035e931fa, cluster.sh d9bad1b2fb550242. The CPU columns are left out; they read 0 for names longer than 15 bytes.
+
+round=1 arm=konsensd_g16R1S2 conc=1 median_writes_per_s=368 min=355 max=386 median_latency_us=2583
+round=1 arm=konsensd_g16R1S2c conc=1 median_writes_per_s=387 min=370 max=398 median_latency_us=2443
+round=1 arm=konsensd_g16P4S2 conc=1 median_writes_per_s=390 min=360 max=415 median_latency_us=2421
+round=1 arm=konsensd_g16R1S2 conc=64 median_writes_per_s=6149 min=6074 max=7328 median_latency_us=9818
+round=1 arm=konsensd_g16R1S2c conc=64 median_writes_per_s=6438 min=6365 max=6979 median_latency_us=9672
+round=1 arm=konsensd_g16P4S2 conc=64 median_writes_per_s=7380 min=5215 max=7706 median_latency_us=8283
+round=1 raw_sqlite batch=1 median_writes_per_s=1212
+round=1 raw_sqlite batch=64 median_writes_per_s=72763
+round=2 arm=konsensd_g16R1S2 conc=1 median_writes_per_s=427 min=393 max=438 median_latency_us=2185
+round=2 arm=konsensd_g16R1S2c conc=1 median_writes_per_s=373 min=372 max=411 median_latency_us=2512
+round=2 arm=konsensd_g16P4S2 conc=1 median_writes_per_s=427 min=407 max=434 median_latency_us=2230
+round=2 arm=konsensd_g16R1S2 conc=64 median_writes_per_s=6360 min=6322 max=6466 median_latency_us=9434
+round=2 arm=konsensd_g16R1S2c conc=64 median_writes_per_s=6484 min=6380 max=7119 median_latency_us=9487
+round=2 arm=konsensd_g16P4S2 conc=64 median_writes_per_s=6378 min=6185 max=6554 median_latency_us=9679
+round=2 raw_sqlite batch=1 median_writes_per_s=1153
+round=2 raw_sqlite batch=64 median_writes_per_s=60281
+round=3 arm=konsensd_g16R1S2 conc=1 median_writes_per_s=395 min=365 max=403 median_latency_us=2355
+round=3 arm=konsensd_g16R1S2c conc=1 median_writes_per_s=380 min=371 max=408 median_latency_us=2437
+round=3 arm=konsensd_g16P4S2 conc=1 median_writes_per_s=411 min=393 max=431 median_latency_us=2277
+round=3 arm=konsensd_g16R1S2 conc=64 median_writes_per_s=6278 min=6266 max=6464 median_latency_us=9559
+round=3 arm=konsensd_g16R1S2c conc=64 median_writes_per_s=7772 min=6215 max=7926 median_latency_us=8008
+round=3 arm=konsensd_g16P4S2 conc=64 median_writes_per_s=6243 min=6193 max=6844 median_latency_us=9681
+round=3 raw_sqlite batch=1 median_writes_per_s=1200
+round=3 raw_sqlite batch=64 median_writes_per_s=59803
+
+Medians of the three rounds (writes/s)
+- 1 in flight: R1 with S2 395, its copy 380, P4 with S2 411.
+- 64 in flight: R1 with S2 6 278, its copy 6 484, P4 with S2 6 378.
+- The A/A pair differs by 4 % at 1 in flight and by 3 % at 64 in flight. P4 differs from R1 by 4 % and by 2 %.
+- No difference is shown above the A/A floor. The call that P4 removes was about 2 % of the instructions of the leader at 1 in flight (callgrind, plan section 19).

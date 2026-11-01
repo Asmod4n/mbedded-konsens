@@ -9,6 +9,8 @@
 #include <variant>
 #include <vector>
 
+#include <cbor/schema.hpp>
+
 #include "konsens/storage.hpp"
 #include "konsens/verdict.hpp"
 
@@ -200,6 +202,9 @@ struct work {
     std::uint64_t index;
     entry request;
     std::uint32_t entry_crc;
+    std::uint64_t decided_idx;
+    chain_hash decided_chain_hash;
+    log_sync base;
     friend bool operator==(const work&, const work&) = default;
 };
 
@@ -275,3 +280,64 @@ struct ble_message {
 using message = std::variant<paxos_message, ble_message>;
 
 }
+
+CBOR_DEFINE_TYPE(konsens::sequence_number, cbor::tag{35675}, CBOR_MEMBER(konsens::sequence_number, session),
+                 CBOR_MEMBER(konsens::sequence_number, counter));
+CBOR_DEFINE_TYPE(konsens::log_sync, cbor::tag{35676}, CBOR_MEMBER(konsens::log_sync, suffix),
+                 CBOR_MEMBER(konsens::log_sync, sync_idx));
+CBOR_DEFINE_TYPE(konsens::prepare_req, cbor::tag{35677}, CBOR_MEMBER(konsens::prepare_req, n));
+CBOR_DEFINE_TYPE(konsens::prepare, cbor::tag{35678}, CBOR_MEMBER(konsens::prepare, n),
+                 CBOR_MEMBER(konsens::prepare, decided_idx), CBOR_MEMBER(konsens::prepare, n_accepted),
+                 CBOR_MEMBER(konsens::prepare, accepted_idx));
+CBOR_DEFINE_TYPE(konsens::promise, cbor::tag{35679}, CBOR_MEMBER(konsens::promise, n),
+                 CBOR_MEMBER(konsens::promise, n_accepted), CBOR_MEMBER(konsens::promise, decided_idx),
+                 CBOR_MEMBER(konsens::promise, accepted_idx), CBOR_MEMBER(konsens::promise, log_sync),
+                 CBOR_MEMBER(konsens::promise, decided_chain_hash), CBOR_MEMBER(konsens::promise, last_chain_hash));
+CBOR_DEFINE_TYPE(konsens::accept_sync, cbor::tag{35680}, CBOR_MEMBER(konsens::accept_sync, n),
+                 CBOR_MEMBER(konsens::accept_sync, seq_num), CBOR_MEMBER(konsens::accept_sync, decided_idx),
+                 CBOR_MEMBER(konsens::accept_sync, log_sync), CBOR_MEMBER(konsens::accept_sync, decided_chain_hash));
+CBOR_DEFINE_TYPE(konsens::accept_decide, cbor::tag{35681}, CBOR_MEMBER(konsens::accept_decide, n),
+                 CBOR_MEMBER(konsens::accept_decide, seq_num), CBOR_MEMBER(konsens::accept_decide, decided_idx),
+                 CBOR_MEMBER(konsens::accept_decide, entries), CBOR_MEMBER(konsens::accept_decide, decided_chain_hash));
+CBOR_DEFINE_TYPE(konsens::accepted, cbor::tag{35682}, CBOR_MEMBER(konsens::accepted, n),
+                 CBOR_MEMBER(konsens::accepted, accepted_idx), CBOR_MEMBER(konsens::accepted, accepted_chain_hash));
+CBOR_DEFINE_TYPE(konsens::decide, cbor::tag{35683}, CBOR_MEMBER(konsens::decide, n),
+                 CBOR_MEMBER(konsens::decide, seq_num), CBOR_MEMBER(konsens::decide, decided_idx),
+                 CBOR_MEMBER(konsens::decide, decided_chain_hash));
+CBOR_DEFINE_TYPE(konsens::not_accepted, cbor::tag{35684}, CBOR_MEMBER(konsens::not_accepted, n));
+CBOR_DEFINE_TYPE(konsens::proposal_forward, cbor::tag{35685}, CBOR_MEMBER(konsens::proposal_forward, entries));
+CBOR_DEFINE_TYPE(konsens::read_index_request, cbor::tag{35686}, CBOR_MEMBER(konsens::read_index_request, read));
+CBOR_DEFINE_TYPE(konsens::heartbeat, cbor::tag{35687}, CBOR_MEMBER(konsens::heartbeat, n),
+                 CBOR_MEMBER(konsens::heartbeat, id));
+CBOR_DEFINE_TYPE(konsens::heartbeat_ack, cbor::tag{35688}, CBOR_MEMBER(konsens::heartbeat_ack, n),
+                 CBOR_MEMBER(konsens::heartbeat_ack, id));
+CBOR_DEFINE_TYPE(konsens::read_index_reply, cbor::tag{35689}, CBOR_MEMBER(konsens::read_index_reply, reads),
+                 CBOR_MEMBER(konsens::read_index_reply, read_index));
+CBOR_DEFINE_TYPE(konsens::answer, cbor::tag{35690}, CBOR_MEMBER(konsens::answer, n),
+                 CBOR_MEMBER(konsens::answer, pointer), CBOR_MEMBER(konsens::answer, from_idx),
+                 CBOR_MEMBER(konsens::answer, base_crc), CBOR_MEMBER(konsens::answer, results),
+                 CBOR_MEMBER(konsens::answer, second_run));
+CBOR_DEFINE_TYPE(konsens::try_again, cbor::tag{35691}, CBOR_MEMBER(konsens::try_again, n),
+                 CBOR_MEMBER(konsens::try_again, index));
+CBOR_DEFINE_TYPE(konsens::refused, cbor::tag{35692}, CBOR_MEMBER(konsens::refused, n),
+                 CBOR_MEMBER(konsens::refused, index), CBOR_MEMBER(konsens::refused, reason));
+CBOR_DEFINE_TYPE(konsens::work, cbor::tag{35693}, CBOR_MEMBER(konsens::work, n), CBOR_MEMBER(konsens::work, index),
+                 CBOR_MEMBER(konsens::work, request), CBOR_MEMBER(konsens::work, entry_crc),
+                 CBOR_MEMBER(konsens::work, decided_idx), CBOR_MEMBER(konsens::work, decided_chain_hash),
+                 CBOR_MEMBER(konsens::work, base));
+CBOR_DEFINE_TYPE(konsens::build_request, cbor::tag{35694}, CBOR_MEMBER(konsens::build_request, nonce),
+                 CBOR_MEMBER(konsens::build_request, from_idx));
+CBOR_DEFINE_TYPE(konsens::build_response, cbor::tag{35695}, CBOR_MEMBER(konsens::build_response, nonce),
+                 CBOR_MEMBER(konsens::build_response, from_idx), CBOR_MEMBER(konsens::build_response, entries),
+                 CBOR_MEMBER(konsens::build_response, last_chain_hash),
+                 CBOR_MEMBER(konsens::build_response, decided_idx),
+                 CBOR_MEMBER(konsens::build_response, decided_chain_hash));
+CBOR_DEFINE_TYPE(konsens::build_refused, cbor::tag{35696}, CBOR_MEMBER(konsens::build_refused, nonce));
+CBOR_DEFINE_TYPE(konsens::repair_request, cbor::tag{35700}, CBOR_MEMBER(konsens::repair_request, nonce),
+                 CBOR_MEMBER(konsens::repair_request, from_idx), CBOR_MEMBER(konsens::repair_request, to_idx));
+CBOR_DEFINE_TYPE(konsens::repair_entries, cbor::tag{35701}, CBOR_MEMBER(konsens::repair_entries, nonce),
+                 CBOR_MEMBER(konsens::repair_entries, from_idx), CBOR_MEMBER(konsens::repair_entries, entries));
+CBOR_DEFINE_TYPE(konsens::heartbeat_request, cbor::tag{35697}, CBOR_MEMBER(konsens::heartbeat_request, round));
+CBOR_DEFINE_TYPE(konsens::heartbeat_reply, cbor::tag{35698}, CBOR_MEMBER(konsens::heartbeat_reply, round),
+                 CBOR_MEMBER(konsens::heartbeat_reply, ballot), CBOR_MEMBER(konsens::heartbeat_reply, leader),
+                 CBOR_MEMBER(konsens::heartbeat_reply, happy));

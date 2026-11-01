@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <charconv>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 
@@ -42,8 +44,31 @@ std::expected<host_and_port, address_errc> split_host_and_port(const std::string
     return host_and_port{std::string{host}, std::string{port}};
 }
 
+namespace {
+
+static_assert(sizeof(sockaddr_un) <= sizeof(sockaddr_storage));
+
+std::expected<socket_address, address_errc> unix_address_of(const std::string_view path)
+{
+    if (path.empty() || path.size() > most_unix_path_bytes || path.contains('\0')) [[unlikely]] {
+        return std::unexpected(address_errc::malformed);
+    }
+    sockaddr_un u{};
+    u.sun_family = AF_UNIX;
+    std::ranges::copy(path, std::ranges::begin(u.sun_path));
+    socket_address out{};
+    std::memcpy(&out.storage, &u, sizeof u);
+    out.length = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1);
+    return out;
+}
+
+}
+
 std::expected<socket_address, address_errc> resolve(const std::string_view address)
 {
+    if (address.starts_with(unix_prefix)) {
+        return unix_address_of(address.substr(unix_prefix.size()));
+    }
     const auto split = split_host_and_port(address);
     if (!split) [[unlikely]] {
         return std::unexpected(split.error());
@@ -63,6 +88,11 @@ std::expected<socket_address, address_errc> resolve(const std::string_view addre
     std::memcpy(&out.storage, found->ai_addr, found->ai_addrlen);
     out.length = found->ai_addrlen;
     return out;
+}
+
+bool uses_tcp(const socket_address& address)
+{
+    return address.storage.ss_family == AF_INET || address.storage.ss_family == AF_INET6;
 }
 
 }

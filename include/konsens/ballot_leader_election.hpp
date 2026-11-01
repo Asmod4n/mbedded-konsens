@@ -74,6 +74,13 @@ public:
         return std::nullopt;
     }
 
+    void take_over_above(const ballot promise)
+    {
+        current_ballot_.n = std::max(leader_.n, promise.n) + 1;
+        leader_ = current_ballot_;
+        happy_ = true;
+    }
+
     std::vector<ble_message> take_outgoing_messages() { return std::exchange(outgoing_, {}); }
 
     ballot get_current_ballot() const { return current_ballot_; }

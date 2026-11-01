@@ -53,3 +53,11 @@ https://www.rfc-editor.org/errata/rfcNNNN, read on 2026-10-29.
 
 "none" means that errata.json has no record for that RFC, and that its
 page says "No matching errata found." (2026-10-29).
+
+## RFC 9110
+
+refs/rfc9110.txt comes from doc-rfc-std 20230121-1 (the digest in the
+table above, checked again on 2026-10-30), file
+usr/share/doc/RFC/standard/rfc9110.txt.gz. Its errata are not here:
+www.rfc-editor.org could not be reached from the session on
+2026-10-30.

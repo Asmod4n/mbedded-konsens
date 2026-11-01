@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 project(mbedded-konsens VERSION 0.0.1 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 23)
+if(NOT DEFINED CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 23)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -45,6 +47,30 @@ block(SCOPE_FOR VARIABLES)
 endblock()
 set_target_properties(hydrogen-tests PROPERTIES EXCLUDE_FROM_ALL OFF)
 
+include(ExternalProject)
+FetchContent_MakeAvailable(slipstreamio)
+set(KONSENS_SLIPSTREAM ${slipstreamio_SOURCE_DIR})
+set(KONSENS_LIBURING_TREE ${CMAKE_BINARY_DIR}/liburing)
+set(KONSENS_LIBURING_OUT ${CMAKE_BINARY_DIR}/liburing-out)
+ExternalProject_Add(carried_liburing
+    SOURCE_DIR ${KONSENS_LIBURING_TREE}
+    DOWNLOAD_COMMAND ${CMAKE_COMMAND} -E copy_directory ${KONSENS_SLIPSTREAM}/deps/liburing ${KONSENS_LIBURING_TREE}
+    PATCH_COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_syscall.h ${KONSENS_LIBURING_TREE}/src/syscall.h
+          COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_arch_syscall.h
+                  ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.h ${KONSENS_LIBURING_TREE}/src/
+    CONFIGURE_COMMAND ./configure --prefix=${KONSENS_LIBURING_OUT} --cc=${CMAKE_C_COMPILER} --cxx=${CMAKE_CXX_COMPILER}
+    BUILD_COMMAND make -C src ENABLE_SHARED=0 AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} liburing.a
+    INSTALL_COMMAND make -C src ENABLE_SHARED=0 AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} install
+    BUILD_IN_SOURCE ON
+    BUILD_BYPRODUCTS ${KONSENS_LIBURING_OUT}/lib/liburing.a)
+file(MAKE_DIRECTORY ${KONSENS_LIBURING_OUT}/include)
+file(GLOB KONSENS_SLIPSTREAM_ENGINE ${KONSENS_SLIPSTREAM}/src/engine_*.c)
+add_library(slipstream STATIC ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.c ${KONSENS_SLIPSTREAM}/src/slipstream_engine.c
+                              ${KONSENS_SLIPSTREAM}/src/slipstream_signal.c ${KONSENS_SLIPSTREAM_ENGINE})
+target_include_directories(slipstream SYSTEM PUBLIC ${KONSENS_SLIPSTREAM}/src ${KONSENS_LIBURING_OUT}/include)
+add_dependencies(slipstream carried_liburing)
+target_link_libraries(slipstream PUBLIC Threads::Threads)
+
 set(KONSENS_WARNINGS -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror)
 
 file(GLOB KONSENS_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/src/*.cpp)
@@ -52,6 +78,7 @@ add_library(konsens ${KONSENS_SOURCES})
 target_include_directories(konsens PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(konsens PRIVATE SQLite::SQLite3 OpenSSL::Crypto)
 target_link_libraries(konsens PRIVATE mbedded-cbor::mbedded-cbor Boost::headers crc32c)
+target_link_libraries(konsens PRIVATE ${KONSENS_LIBURING_OUT}/lib/liburing.a slipstream)
 target_include_directories(konsens PRIVATE ${KONSENS_CRC32C_INTERNAL_INCLUDES})
 target_include_directories(konsens SYSTEM PUBLIC $<TARGET_PROPERTY:mbedded-cbor::mbedded-cbor,INTERFACE_INCLUDE_DIRECTORIES>)
 target_compile_options(konsens PRIVATE ${KONSENS_WARNINGS})
@@ -72,6 +99,14 @@ foreach(example_source ${KONSENS_EXAMPLES})
     add_executable(${example_name} ${example_source})
     target_link_libraries(${example_name} PRIVATE konsens)
     target_compile_options(${example_name} PRIVATE ${KONSENS_WARNINGS})
+endforeach()
+
+foreach(test_name test_execute_verify test_simulation_clients)
+    add_executable(${test_name}_check_threads ${PROJECT_SOURCE_DIR}/test/${test_name}.cpp)
+    target_link_libraries(${test_name}_check_threads PRIVATE konsens doctest::doctest)
+    target_compile_options(${test_name}_check_threads PRIVATE ${KONSENS_WARNINGS})
+    target_compile_definitions(${test_name}_check_threads PRIVATE KONSENS_TEST_CHECK_THREADS=2)
+    add_test(NAME ${test_name}_check_threads COMMAND ${test_name}_check_threads)
 endforeach()
 
 target_link_libraries(test_wire PRIVATE mbedded-cbor::mbedded-cbor)
@@ -136,31 +171,9 @@ endif()
 
 option(KONSENS_PROGRAM "Build konsensd, the program that runs one node over TCP and HTTP" OFF)
 if(KONSENS_PROGRAM)
-    include(ExternalProject)
     find_package(tomlplusplus REQUIRED)
     find_package(ada REQUIRED)
-    FetchContent_MakeAvailable(slipstreamio mruby-webmachine)
-    set(KONSENS_SLIPSTREAM ${slipstreamio_SOURCE_DIR})
-    set(KONSENS_LIBURING_TREE ${CMAKE_BINARY_DIR}/liburing)
-    set(KONSENS_LIBURING_OUT ${CMAKE_BINARY_DIR}/liburing-out)
-    ExternalProject_Add(carried_liburing
-        SOURCE_DIR ${KONSENS_LIBURING_TREE}
-        DOWNLOAD_COMMAND ${CMAKE_COMMAND} -E copy_directory ${KONSENS_SLIPSTREAM}/deps/liburing ${KONSENS_LIBURING_TREE}
-        PATCH_COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_syscall.h ${KONSENS_LIBURING_TREE}/src/syscall.h
-              COMMAND ${CMAKE_COMMAND} -E copy ${KONSENS_SLIPSTREAM}/src/liburing_arch_syscall.h
-                      ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.h ${KONSENS_LIBURING_TREE}/src/
-        CONFIGURE_COMMAND ./configure --prefix=${KONSENS_LIBURING_OUT} --cc=${CMAKE_C_COMPILER} --cxx=${CMAKE_CXX_COMPILER}
-        BUILD_COMMAND make -C src ENABLE_SHARED=0 AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} liburing.a
-        INSTALL_COMMAND make -C src ENABLE_SHARED=0 AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} install
-        BUILD_IN_SOURCE ON
-        BUILD_BYPRODUCTS ${KONSENS_LIBURING_OUT}/lib/liburing.a)
-    file(MAKE_DIRECTORY ${KONSENS_LIBURING_OUT}/include)
-    file(GLOB KONSENS_SLIPSTREAM_ENGINE ${KONSENS_SLIPSTREAM}/src/engine_*.c)
-    add_library(slipstream STATIC ${KONSENS_SLIPSTREAM}/src/slipstream_syscall.c ${KONSENS_SLIPSTREAM}/src/slipstream_engine.c
-                                  ${KONSENS_SLIPSTREAM}/src/slipstream_signal.c ${KONSENS_SLIPSTREAM_ENGINE})
-    target_include_directories(slipstream SYSTEM PUBLIC ${KONSENS_SLIPSTREAM}/src ${KONSENS_LIBURING_OUT}/include)
-    add_dependencies(slipstream carried_liburing)
-    target_link_libraries(slipstream PUBLIC Threads::Threads)
+    FetchContent_MakeAvailable(mruby-webmachine)
 
     file(GLOB KONSENS_PROGRAM_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/program/*.cpp)
     list(FILTER KONSENS_PROGRAM_SOURCES EXCLUDE REGEX "/main\\.cpp$")
@@ -183,4 +196,6 @@ if(KONSENS_PROGRAM)
         add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
     add_test(NAME three_nodes COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd>)
+    add_test(NAME three_nodes_unix
+             COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd> 17150 unix)
 endif()

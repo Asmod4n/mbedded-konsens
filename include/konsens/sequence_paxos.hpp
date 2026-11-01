@@ -5,8 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <iterator>
 #include <map>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -127,6 +130,15 @@ struct promised_higher {};
 
 using promise_state = std::variant<not_promised, promise_meta_data, promised_higher>;
 
+struct taken_log {
+    std::uint64_t sync_idx;
+    std::vector<entry> suffix;
+    std::uint64_t decided_idx;
+    chain_hash decided_chain_hash;
+
+    std::uint64_t log_len() const { return sync_idx + suffix.size(); }
+};
+
 struct leader_state {
     ballot n_leader;
     std::vector<node_id> nodes;
@@ -136,6 +148,8 @@ struct leader_state {
     promise_meta_data max_promise_meta;
     std::optional<konsens::log_sync> max_promise_sync;
     bool accepted_stop_sign;
+    std::optional<taken_log> taken{};
+    std::uint64_t first_changed_idx{std::numeric_limits<std::uint64_t>::max()};
 
     static leader_state with(ballot n_leader, std::span<const node_id> nodes)
     {
@@ -227,6 +241,14 @@ struct leader_state {
         const auto n = std::ranges::count_if(accepted_indexes, [idx](std::uint64_t a) { return a >= idx; });
         return static_cast<std::size_t>(n) >= majority();
     }
+
+    std::uint64_t highest_chosen_idx() const
+    {
+        auto sorted = accepted_indexes;
+        const auto at = std::next(sorted.begin(), static_cast<std::ptrdiff_t>(majority() - 1));
+        std::ranges::nth_element(sorted, at, std::ranges::greater{});
+        return *at;
+    }
 };
 
 struct pending_read {
@@ -259,6 +281,7 @@ struct sequence_paxos_config {
     std::vector<node_id> build_from{};
     start_kind start{};
     std::uint64_t verified_idx{};
+    bool sync_by_the_caller{};
 };
 
 struct build_state {
@@ -353,6 +376,7 @@ public:
             throw std::logic_error("konsens: the configuration_id differs from the configuration of the store");
         }
         sp.mark_ = mark_of(*m);
+        sp.synced_len_ = m->log_len;
         sp.leader_state_ = leader_state::with(m->promise, sp.nodes_);
         sp.nonce_ = nonce;
         const auto t = sp.internal_storage_.begin_read_only();
@@ -426,7 +450,7 @@ public:
             return {};
         }
         if (error_) [[unlikely]] {
-            txn_.reset();
+            roll_back_the_transaction();
             drop_incoming_and_outgoing();
             return error_unless_retired();
         }
@@ -448,6 +472,15 @@ public:
 
     [[nodiscard]] result commit()
     {
+        if (auto r = commit_phase_one(); !r) [[unlikely]] {
+            return r;
+        }
+        commit_phase_two();
+        return {};
+    }
+
+    [[nodiscard]] result commit_phase_one()
+    {
         const auto ended = end_step();
         step_ended_ = false;
         if (!ended) [[unlikely]] {
@@ -457,7 +490,7 @@ public:
             return write_the_passed_copies();
         }
         if (error_) [[unlikely]] {
-            txn_.reset();
+            roll_back_the_transaction();
             drop_incoming_and_outgoing();
             return error_unless_retired();
         }
@@ -470,20 +503,156 @@ public:
             drop_incoming_and_outgoing();
             return stopped;
         }
+        incoming_.clear();
+        step_open_ = false;
+        if (txn_->has_writes() && a_sync_is_out()) {
+            the_transaction_holds_ended_steps_ = true;
+            return {};
+        }
         auto txn = std::move(*txn_);
         txn_.reset();
-        incoming_.clear();
+        open_log_.reset();
+        the_transaction_holds_ended_steps_ = false;
         if (!txn.has_writes()) {
             mark_ = raise_mark(mark_, mark_of(*m));
             return {};
         }
+        pending_commit_.emplace(std::move(txn), *m);
+        return {};
+    }
+
+    void commit_phase_two()
+    {
+        if (!pending_commit_) {
+            return;
+        }
+        auto u = std::move(*pending_commit_);
+        pending_commit_.reset();
         write_unfinished_ = true;
-        if (auto c = std::move(txn).commit(); !c) [[unlikely]] {
+        const bool log_writes = u.txn.has_log_writes();
+        const bool synced = log_writes && !sync_by_the_caller_;
+        if (auto c = synced ? std::move(u.txn).commit() : std::move(u.txn).commit_without_a_sync(); !c) [[unlikely]] {
             throw write_error(c.error(), "konsens: the storage failed to commit the step");
         }
         write_unfinished_ = false;
-        mark_ = raise_mark(mark_, mark_of(*m));
-        return {};
+        a_commit_waits_for_its_sync_ = !synced;
+        mark_ = raise_mark(mark_, mark_of(u.meta));
+        if (sync_by_the_caller_ && log_writes) {
+            last_sync_number_ += 1;
+            unsynced_steps_.push_back({last_sync_number_, u.meta.log_len});
+        }
+    }
+
+    void commit_the_open_transaction()
+    {
+        throw_if_a_write_did_not_finish();
+        throw_if_a_step_is_open();
+        if (!txn_) {
+            return;
+        }
+        const auto m = read_checked_meta(*txn_);
+        if (!m) [[unlikely]] {
+            throw write_error(m.error(), "konsens: the storage failed to read the meta for the commit of the open transaction");
+        }
+        pending_commit_.emplace(std::move(*txn_), *m);
+        txn_.reset();
+        open_log_.reset();
+        the_transaction_holds_ended_steps_ = false;
+        commit_phase_two();
+    }
+
+    bool a_sync_is_out() const { return last_sync_number_ > synced_sync_number_; }
+    bool the_transaction_holds_ended_steps() const { return the_transaction_holds_ended_steps_; }
+    std::uint64_t get_last_sync_number() const { return last_sync_number_; }
+    std::uint64_t get_synced_sync_number() const { return synced_sync_number_; }
+    std::uint64_t get_synced_len() const { return synced_len_; }
+
+    result the_log_is_synced(const std::uint64_t sync_number)
+    {
+        throw_if_a_write_did_not_finish();
+        synced_sync_number_ = sync_number;
+        const auto covered = std::ranges::find_if(
+            unsynced_steps_, [sync_number](const unsynced_step& u) { return u.sync_number > sync_number; });
+        if (covered != unsynced_steps_.begin()) {
+            synced_len_ = std::max(synced_len_, std::prev(covered)->log_len);
+        }
+        unsynced_steps_.erase(unsynced_steps_.begin(), covered);
+        if (error_ || retired_ || build_ || state_ != std::pair{role::leader, phase::accept}) {
+            return {};
+        }
+        if (auto r = begin_step(); !r) [[unlikely]] {
+            return r;
+        }
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        if (leader_state_.n_leader != m->promise) {
+            return {};
+        }
+        const auto own = std::max(bound_by_the_synced_len(bound_by_the_verified_idx(m->log_len)),
+                                  leader_state_.accepted_indexes.at(leader_state_.pid_to_idx(pid_)));
+        leader_state_.set_accepted_idx(pid_, own);
+        const auto chosen = leader_state_.highest_chosen_idx();
+        if (chosen <= m->decided_idx) {
+            return {};
+        }
+        const auto chain = read_prefix_chain_hash(chosen);
+        if (!chain) [[unlikely]] {
+            return stop_voting(chain.error());
+        }
+        return decide_if_chosen(chosen, *chain, *m);
+    }
+
+    void the_sync_failed()
+    {
+        internal_storage_.the_sync_failed();
+        write_unfinished_ = true;
+        roll_back_the_transaction();
+        drop_incoming_and_outgoing();
+    }
+
+    int wal_file_descriptor() const { return internal_storage_.wal_file_descriptor(); }
+
+    void sync_the_last_commit()
+    {
+        if (!a_commit_waits_for_its_sync_) {
+            return;
+        }
+        auto t = internal_storage_.begin();
+        if (!t) [[unlikely]] {
+            throw write_error(t.error(), "konsens: the storage failed to begin the sync of the last commit");
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            throw write_error(m.error(), "konsens: the storage failed to read the meta for the sync of the last commit");
+        }
+        if (auto w = t->set_decided_index(m->decided_idx); !w) [[unlikely]] {
+            throw write_error(w.error(), "konsens: the storage failed to write the meta for the sync of the last commit");
+        }
+        if (auto c = std::move(*t).commit(); !c) [[unlikely]] {
+            throw write_error(c.error(), "konsens: the storage failed to sync the last commit");
+        }
+        a_commit_waits_for_its_sync_ = false;
+    }
+
+    std::vector<paxos_message>
+    take_the_messages_before_the_sync(const std::span<const node_id> peers_with_held_messages)
+    {
+        std::vector<paxos_message> early;
+        std::vector<paxos_message> held;
+        std::vector<node_id> held_peers(peers_with_held_messages.begin(), peers_with_held_messages.end());
+        for (auto& m : outgoing_) {
+            const bool may_leave = std::holds_alternative<accept_decide>(m.msg) || std::holds_alternative<decide>(m.msg);
+            if (may_leave && !std::ranges::contains(held_peers, m.to)) {
+                early.push_back(std::move(m));
+            } else {
+                held_peers.push_back(m.to);
+                held.push_back(std::move(m));
+            }
+        }
+        outgoing_ = std::move(held);
+        return early;
     }
 
 private:
@@ -822,19 +991,19 @@ public:
     std::pair<role, phase> get_state() const { return state_; }
     std::expected<ballot, std::error_code> get_promise() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.promise; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.promise; });
     }
     std::expected<ballot, std::error_code> get_accepted_round() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.accepted_round; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.accepted_round; });
     }
     std::expected<std::uint64_t, std::error_code> get_decided_idx() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.decided_idx; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.decided_idx; });
     }
     std::expected<std::uint64_t, std::error_code> get_accepted_idx() const
     {
-        return read_meta_between_steps().transform([](const meta_record& m) { return m.log_len; });
+        return values_between_steps().transform([](const high_water_mark& m) { return m.log_len; });
     }
     std::expected<chain_hash, std::error_code> get_prefix_chain_hash(const std::uint64_t length) const
     {
@@ -890,11 +1059,11 @@ public:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto log = read_range(*txn_, std::min(from_idx, m->log_len), m->log_len);
+        const auto log = read_the_open_log(from_idx, m->log_len);
         if (!log) [[unlikely]] {
             return stop_voting(log.error());
         }
-        return std::ranges::contains(*log, e);
+        return std::ranges::contains(log->entries, e);
     }
     node_id get_pid() const { return pid_; }
     std::uint64_t get_verified_idx() const { return verified_idx_; }
@@ -1081,7 +1250,7 @@ public:
 private:
     sequence_paxos(const sequence_paxos_config& config, S internal_storage, sha256 h)
         : configuration_id_(config.configuration_id), pid_(config.pid), peers_(config.peers),
-          internal_storage_(std::move(internal_storage)), sha256_(std::move(h))
+          internal_storage_(std::move(internal_storage)), sha256_(std::move(h)), sync_by_the_caller_(config.sync_by_the_caller)
     {
         nodes_ = peers_;
         peers_seen_.assign(peers_.size() + 1, peer_seen{});
@@ -1129,17 +1298,39 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        const auto verified = find_the_verified_idx(*txn_, from, m->log_len);
-        if (!verified) [[unlikely]] {
-            return stop_voting(verified.error());
+        const auto first = std::min(from, m->log_len);
+        const auto log = read_the_open_log(first, m->log_len);
+        if (!log) [[unlikely]] {
+            return stop_voting(log.error());
         }
-        verified_idx_ = *verified;
+        const auto done = std::ranges::find_if(log->entries, entry_is_a_request);
+        verified_idx_ = first + static_cast<std::uint64_t>(std::distance(log->entries.begin(), done));
         return {};
     }
 
     std::uint64_t bound_by_the_verified_idx(const std::uint64_t accepted_idx) const
     {
         return std::min(accepted_idx, verified_idx_);
+    }
+
+    std::uint64_t bound_by_the_synced_len(const std::uint64_t accepted_idx) const
+    {
+        return sync_by_the_caller_ ? std::min(accepted_idx, synced_len_) : accepted_idx;
+    }
+
+    void lower_the_synced_len(const std::uint64_t first_changed_idx)
+    {
+        synced_len_ = std::min(synced_len_, first_changed_idx);
+        for (auto& u : unsynced_steps_) {
+            u.log_len = std::min(u.log_len, first_changed_idx);
+        }
+    }
+
+    void lower_the_synced_len_if_the_round_changes(const ballot before, const ballot after)
+    {
+        if (before != after) {
+            lower_the_synced_len(0);
+        }
     }
 
     std::expected<accepted, std::error_code> accepted_up_to_the_verified_idx(const ballot n) const
@@ -1154,6 +1345,27 @@ private:
             return std::unexpected(chain.error());
         }
         return accepted{n, bound, *chain};
+    }
+
+    struct open_log_view {
+        std::shared_ptr<const std::vector<entry>> owner;
+        std::span<const entry> entries;
+    };
+
+    std::expected<open_log_view, std::error_code> read_the_open_log(const std::uint64_t from, const std::uint64_t log_len)
+    {
+        const auto first = std::min(from, log_len);
+        const auto writes = txn_->count_of_entry_writes();
+        if (!open_log_ || open_log_->entry_writes != writes || first < open_log_->from ||
+            open_log_->from + open_log_->entries->size() != log_len) {
+            auto entries = read_range(*txn_, first, log_len);
+            if (!entries) [[unlikely]] {
+                return std::unexpected(entries.error());
+            }
+            open_log_.emplace(first, writes, std::make_shared<const std::vector<entry>>(std::move(*entries)));
+        }
+        const std::span<const entry> all{*open_log_->entries};
+        return open_log_view{open_log_->entries, all.subspan(first - open_log_->from)};
     }
 
     template <typename T>
@@ -1186,24 +1398,6 @@ private:
         if (!meta_values_are_consistent(*m) || is_below_mark(mark_of(*m), mark_)) [[unlikely]] {
             return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
         }
-        if (m->decided_idx > 0) {
-            const auto state = t.get_entry_state(m->decided_idx - 1);
-            if (!state) [[unlikely]] {
-                return std::unexpected(state.error());
-            }
-            if (state->value_or(entry_state::in_work) != entry_state::committed) [[unlikely]] {
-                return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
-            }
-        }
-        if (m->decided_idx < m->log_len) {
-            const auto state = t.get_entry_state(m->decided_idx);
-            if (!state) [[unlikely]] {
-                return std::unexpected(state.error());
-            }
-            if (state->value_or(entry_state::committed) != entry_state::in_work) [[unlikely]] {
-                return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
-            }
-        }
         return m;
     }
 
@@ -1221,10 +1415,22 @@ private:
 
     std::expected<meta_record, std::error_code> read_meta() const { return txn_->get_meta(); }
 
+    std::expected<high_water_mark, std::error_code> values_between_steps() const
+    {
+        if (txn_) {
+            return txn_->get_meta().transform(mark_of);
+        }
+        if (!error_ && !write_unfinished_) {
+            return mark_;
+        }
+        return read_meta_between_steps().transform(mark_of);
+    }
+
     result begin_step()
     {
         throw_if_a_write_did_not_finish();
         if (txn_) {
+            step_open_ = true;
             return {};
         }
         auto t = internal_storage_.begin();
@@ -1232,6 +1438,8 @@ private:
             return stop_voting(t.error());
         }
         txn_.emplace(std::move(*t));
+        open_log_.reset();
+        step_open_ = true;
         const auto m = read_checked_meta(*txn_);
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
@@ -1242,7 +1450,7 @@ private:
     void write_or_throw(const std::expected<void, std::error_code>& written)
     {
         if (!written) [[unlikely]] {
-            txn_.reset();
+            roll_back_the_transaction();
             write_unfinished_ = true;
             throw write_error(written.error(), "konsens: the storage failed to write in the step");
         }
@@ -1251,13 +1459,21 @@ private:
     std::unexpected<std::error_code> stop_voting(std::error_code e)
     {
         error_ = e;
-        txn_.reset();
+        roll_back_the_transaction();
         return std::unexpected(e);
+    }
+
+    void roll_back_the_transaction()
+    {
+        txn_.reset();
+        open_log_.reset();
+        step_open_ = false;
+        the_transaction_holds_ended_steps_ = false;
     }
 
     void throw_if_a_step_is_open() const
     {
-        if (txn_) [[unlikely]] {
+        if (step_open_) [[unlikely]] {
             throw std::logic_error("konsens: a read of the storage or a take of messages while a step is open");
         }
     }
@@ -1316,19 +1532,26 @@ private:
         return {};
     }
 
-    std::expected<std::uint64_t, std::error_code> read_highest_verified_decided_idx(const std::uint64_t own) const
+    std::expected<chain_hash, std::error_code> read_the_taken_chain_hash(const taken_log& t,
+                                                                           const std::uint64_t length) const
     {
-        const auto m = read_meta();
-        if (!m) [[unlikely]] {
-            return std::unexpected(m.error());
+        const auto own = read_prefix_chain_hash(std::min(length, t.sync_idx));
+        if (!own || length <= t.sync_idx) {
+            return own;
         }
+        return compute_chain_hash(sha256_, *own, t.sync_idx, std::span(t.suffix).first(length - t.sync_idx));
+    }
+
+    std::expected<std::uint64_t, std::error_code> read_highest_verified_decided_idx(const taken_log& t,
+                                                                                    const std::uint64_t own) const
+    {
         auto highest = own;
         for (const auto& p : leader_state_.promises_meta) {
             const auto* meta = std::get_if<promise_meta_data>(&p);
-            if (meta == nullptr || meta->decided_idx <= highest || meta->decided_idx > m->log_len) {
+            if (meta == nullptr || meta->decided_idx <= highest || meta->decided_idx > t.log_len()) {
                 continue;
             }
-            const auto chain = read_prefix_chain_hash(meta->decided_idx);
+            const auto chain = read_the_taken_chain_hash(t, meta->decided_idx);
             if (!chain) [[unlikely]] {
                 return std::unexpected(chain.error());
             }
@@ -1515,7 +1738,7 @@ private:
         if (!decided_chain) [[unlikely]] {
             return stop_voting(decided_chain.error());
         }
-        leader_state_.set_accepted_idx(pid_, bound_by_the_verified_idx(m->log_len));
+        leader_state_.set_accepted_idx(pid_, bound_by_the_synced_len(bound_by_the_verified_idx(m->log_len)));
         for (const auto f : leader_state_.get_promised_followers()) {
             outgoing_.push_back({pid_, f,
                                  accept_decide{leader_state_.n_leader,
@@ -1547,7 +1770,7 @@ private:
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
         }
-        if (!(m->promise < prep.n || (m->promise == prep.n && state_.second == phase::recover))) {
+        if (!(m->promise < prep.n || (m->promise == prep.n && state_.first == role::follower))) {
             return {};
         }
         write_or_throw(txn_->set_promise(prep.n));
@@ -1556,6 +1779,7 @@ private:
             return stop_voting(p.error());
         }
         state_ = {role::follower, phase::prepare};
+        leader_state_.taken.reset();
         current_seq_num_ = {};
         answered_prepare_ = prep;
         outgoing_.push_back({pid_, from, std::move(*p)});
@@ -1569,6 +1793,10 @@ private:
         }
         const promise_meta_data meta{prom.n_accepted, prom.accepted_idx, prom.decided_idx, from,
                                      prom.decided_chain_hash};
+        if (leader_state_.taken) {
+            leader_state_.set_promise(meta, std::nullopt, false);
+            return {};
+        }
         if (leader_state_.set_promise(meta, prom.log_sync, true)) {
             return handle_majority_promises();
         }
@@ -1593,15 +1821,89 @@ private:
             return stop_voting(m.error());
         }
         auto sync = leader_state_.take_max_promise_sync();
-        const auto sync_idx = sync ? sync->sync_idx : bound_by_the_verified_idx(m->log_len);
-        const auto suffix = sync ? std::move(sync->suffix) : std::vector<entry>{};
-        write_or_throw(txn_->append_on_prefix(sync_idx, suffix));
-        const auto decided_idx = read_highest_verified_decided_idx(m->decided_idx);
+        taken_log t{sync ? sync->sync_idx : bound_by_the_verified_idx(m->log_len),
+                    sync ? std::move(sync->suffix) : std::vector<entry>{}, 0, {}};
+        if (t.sync_idx < m->applied_idx) [[unlikely]] {
+            throw std::logic_error("konsens: the taken log ends below the applied index of the leader");
+        }
+        const auto decided_idx = read_highest_verified_decided_idx(t, m->decided_idx);
         if (!decided_idx) [[unlikely]] {
             return stop_voting(decided_idx.error());
         }
+        const auto decided_chain = read_the_taken_chain_hash(t, *decided_idx);
+        if (!decided_chain) [[unlikely]] {
+            return stop_voting(decided_chain.error());
+        }
+        t.decided_idx = *decided_idx;
+        t.decided_chain_hash = *decided_chain;
+        const auto above = read_the_taken_entries(t, t.decided_idx, t.log_len());
+        if (!above) [[unlikely]] {
+            return stop_voting(above.error());
+        }
+        if (std::ranges::any_of(*above, entry_is_a_request)) {
+            leader_state_.taken = std::move(t);
+            return {};
+        }
+        return accept_the_taken_log(t.sync_idx, t.suffix, t.decided_idx, leader_state_.first_changed_idx);
+    }
+
+    std::expected<std::vector<entry>, std::error_code>
+    read_the_taken_entries(const taken_log& t, const std::uint64_t from, const std::uint64_t to) const
+    {
+        if (from > to || to > t.log_len()) [[unlikely]] {
+            throw std::logic_error("konsens: a read of the taken log outside of its range");
+        }
+        auto own = read_range(*txn_, std::min(from, t.sync_idx), std::min(to, t.sync_idx));
+        if (!own) [[unlikely]] {
+            return own;
+        }
+        const auto first = std::max(from, t.sync_idx) - t.sync_idx;
+        const auto last = std::max(to, t.sync_idx) - t.sync_idx;
+        own->insert(own->end(), std::next(t.suffix.begin(), static_cast<std::ptrdiff_t>(first)),
+                    std::next(t.suffix.begin(), static_cast<std::ptrdiff_t>(last)));
+        return own;
+    }
+
+    result accept_the_selected_entries(const std::vector<entry>& selected)
+    {
+        if (state_ != std::pair{role::leader, phase::prepare} || !leader_state_.taken) [[unlikely]] {
+            throw std::logic_error("konsens: the leader accepts selected entries only while it selects them");
+        }
+        const auto t = *std::exchange(leader_state_.taken, std::nullopt);
+        const auto d = t.decided_idx;
+        const auto above = read_the_taken_entries(t, d, t.log_len());
+        if (!above) [[unlikely]] {
+            return stop_voting(above.error());
+        }
+        if (selected.size() > above->size()) [[unlikely]] {
+            throw std::logic_error("konsens: more selected entries than taken entries");
+        }
+        const auto same = std::ranges::mismatch(selected, *above);
+        const auto changed = static_cast<std::uint64_t>(std::distance(selected.begin(), same.in1));
+        const auto fc = changed == above->size() ? leader_state_.first_changed_idx : d + changed + 1;
+        const auto kept = std::min(t.sync_idx, fc - 1);
+        auto suffix = read_the_taken_entries(t, std::min(kept, d), d);
+        if (!suffix) [[unlikely]] {
+            return stop_voting(suffix.error());
+        }
+        const auto from = std::max(kept, d) - d;
+        suffix->insert(suffix->end(), std::next(selected.begin(), static_cast<std::ptrdiff_t>(from)), selected.end());
+        return accept_the_taken_log(kept, *suffix, d, fc);
+    }
+
+    result accept_the_taken_log(const std::uint64_t sync_idx, const std::vector<entry>& suffix,
+                                const std::uint64_t decided_idx, const std::uint64_t first_changed_idx)
+    {
+        const auto m = read_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        write_or_throw(txn_->append_on_prefix(sync_idx, suffix));
+        lower_the_synced_len(sync_idx);
+        leader_state_.first_changed_idx = first_changed_idx;
         write_or_throw(txn_->set_accepted_round(leader_state_.n_leader));
-        write_or_throw(txn_->set_decided_index(*decided_idx));
+        lower_the_synced_len_if_the_round_changes(m->accepted_round, leader_state_.n_leader);
+        write_or_throw(txn_->set_decided_index(decided_idx));
         if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
             return r;
         }
@@ -1617,7 +1919,7 @@ private:
         leader_state_.accepted_stop_sign =
             after->log_len > config_first_idx_ && std::ranges::any_of(*last, entry_is_a_stop_sign);
         state_ = {role::leader, phase::accept};
-        leader_state_.set_accepted_idx(pid_, bound_by_the_verified_idx(after->log_len));
+        leader_state_.set_accepted_idx(pid_, bound_by_the_synced_len(bound_by_the_verified_idx(after->log_len)));
         for (const auto f : leader_state_.get_promised_followers()) {
             if (auto r = send_accsync(f); !r) [[unlikely]] {
                 return r;
@@ -1634,9 +1936,10 @@ private:
         }
         const auto& mm = leader_state_.max_promise_meta;
         const auto& fm = leader_state_.get_promise_meta(to);
-        const auto valid = fm.n_accepted == leader_state_.n_leader ? fm.accepted_idx
-                           : fm.n_accepted == mm.n_accepted        ? std::min(mm.accepted_idx, fm.accepted_idx)
-                                                                   : fm.decided_idx;
+        const auto valid = std::min(fm.n_accepted == leader_state_.n_leader ? fm.accepted_idx
+                                    : fm.n_accepted == mm.n_accepted        ? std::min(mm.accepted_idx, fm.accepted_idx)
+                                                                            : fm.decided_idx,
+                                    leader_state_.first_changed_idx - 1);
         auto sync = create_log_sync(valid, *m);
         if (!sync) [[unlikely]] {
             return stop_voting(sync.error());
@@ -1650,6 +1953,24 @@ private:
         outgoing_.push_back(
             {pid_, to, accept_sync{leader_state_.n_leader, seq_num, m->decided_idx, std::move(*sync), *decided_chain}});
         return {};
+    }
+
+    std::expected<bool, std::error_code> holds_the_sync_already(const meta_record& m, const accept_sync& accsync) const
+    {
+        const auto from = accsync.log_sync.sync_idx;
+        const auto end = from + accsync.log_sync.suffix.size();
+        if (m.accepted_round != accsync.n || end > m.log_len) {
+            return false;
+        }
+        const auto before = read_prefix_chain_hash(from);
+        if (!before) [[unlikely]] {
+            return std::unexpected(before.error());
+        }
+        const auto own = read_prefix_chain_hash(end);
+        if (!own) [[unlikely]] {
+            return std::unexpected(own.error());
+        }
+        return compute_chain_hash(sha256_, *before, from, accsync.log_sync.suffix) == *own;
     }
 
     result handle_acceptsync(const accept_sync& accsync, const node_id from)
@@ -1666,9 +1987,16 @@ private:
             [[unlikely]] {
             return {};
         }
-        write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
-        if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
-            return r;
+        const auto held = holds_the_sync_already(*m, accsync);
+        if (!held) [[unlikely]] {
+            return stop_voting(held.error());
+        }
+        if (!*held) {
+            write_or_throw(txn_->append_on_prefix(sync_idx, accsync.log_sync.suffix));
+            lower_the_synced_len(sync_idx);
+            if (auto r = extend_the_verified_idx(std::min(verified_idx_, sync_idx)); !r) [[unlikely]] {
+                return r;
+            }
         }
         if (accsync.decided_idx > m->decided_idx) {
             if (auto r = check_decided_chain_hash(accsync.decided_idx, accsync.decided_chain_hash, from); !r)
@@ -1678,6 +2006,7 @@ private:
             write_or_throw(txn_->set_decided_index(accsync.decided_idx));
         }
         write_or_throw(txn_->set_accepted_round(accsync.n));
+        lower_the_synced_len_if_the_round_changes(m->accepted_round, accsync.n);
         const auto after = read_meta();
         if (!after) [[unlikely]] {
             return stop_voting(after.error());
@@ -1800,7 +2129,8 @@ private:
             return stop_voting(m.error());
         }
         if (state_ == std::pair{role::leader, phase::accept} && leader_state_.n_leader == m->promise) {
-            const auto own = std::max(bound_by_the_verified_idx(m->log_len), leader_state_.accepted_indexes.at(leader_state_.pid_to_idx(pid_)));
+            const auto own = std::max(bound_by_the_synced_len(bound_by_the_verified_idx(m->log_len)),
+                                      leader_state_.accepted_indexes.at(leader_state_.pid_to_idx(pid_)));
             leader_state_.set_accepted_idx(pid_, own);
             const auto chain = read_prefix_chain_hash(own);
             if (!chain) [[unlikely]] {
@@ -2118,6 +2448,7 @@ private:
         if (m->promise != start) {
             write_or_throw(txn_->set_promise(start));
             write_or_throw(txn_->set_accepted_round(start));
+            lower_the_synced_len_if_the_round_changes(m->accepted_round, start);
         }
         write_or_throw(txn_->append_entries(resp.entries));
         write_or_throw(txn_->set_decided_index(length));
@@ -2264,6 +2595,30 @@ private:
     S internal_storage_;
     sha256 sha256_;
     std::optional<typename S::transaction> txn_;
+
+    struct open_log_read {
+        std::uint64_t from;
+        std::uint64_t entry_writes;
+        std::shared_ptr<const std::vector<entry>> entries;
+    };
+    std::optional<open_log_read> open_log_;
+    bool step_open_{};
+    bool the_transaction_holds_ended_steps_{};
+    struct pending_commit {
+        typename S::transaction txn;
+        meta_record meta;
+    };
+    std::optional<pending_commit> pending_commit_;
+    bool a_commit_waits_for_its_sync_{};
+    bool sync_by_the_caller_{};
+    struct unsynced_step {
+        std::uint64_t sync_number;
+        std::uint64_t log_len;
+    };
+    std::vector<unsynced_step> unsynced_steps_;
+    std::uint64_t last_sync_number_{};
+    std::uint64_t synced_sync_number_{};
+    std::uint64_t synced_len_{};
     high_water_mark mark_{};
     std::pair<role, phase> state_{role::follower, phase::none};
     leader_state leader_state_{};

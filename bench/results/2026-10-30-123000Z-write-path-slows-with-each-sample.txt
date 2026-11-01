@@ -1,0 +1,66 @@
+What was measured
+- The rate of one cluster over nine samples in a row. Each sample is 4096 writes of 64 bytes, 64 in flight, with new keys and 64 new sessions. Nothing is restarted between the samples.
+- Bed, settings and container as in 2026-10-30-110000Z-konsensd-arm-s2.txt: podman --cpus=3, user 1001, not pinned, seccomp profile ccce5e3325a9449a, btrfs loop images, g++ 16.2.0 Release (build-konsensd.sh). Kernel 6.18.44, 4 processors.
+- spread.sh 21a346f9938ef5b1 (records the size of the largest -wal file every 50 ms), cluster.sh d9bad1b2fb550242.
+- Arms: konsensd_g16D1 (6207a7d, 8d3784078c28f748), konsensd_g16S2 (3fa6039, fa81e1156f810499, option off in run 2), konsensd_g16C1 = 56c9fb4 with "PRAGMA cache_size = -65536" on each connection (patch 8788670d68673977, binary 51f8368f11e53270).
+
+Run 1: D1, and S2 with sync_by_the_caller = true (writes/s per sample)
+- D1: 4864, 4742, 4365, 4092, 3518, 3733, 2759, 2609, 1929.
+- S2: 6381, 5986, 4986, 3742, 2815, 2054, 1721, 1488, 1092.
+- The -wal file stays at about 4.18 MB in each sample. The checkpoints keep it small.
+
+Run 2: page cache of 64 MiB against the default, option off, order S2 C1 S2 C1
+- konsensd_g16S2 sample=1 4380 wal=4173592
+- konsensd_g16S2 sample=2 4220 wal=4173592
+- konsensd_g16S2 sample=3 3810 wal=4173592
+- konsensd_g16S2 sample=4 3729 wal=4173592
+- konsensd_g16S2 sample=5 3890 wal=4173592
+- konsensd_g16S2 sample=6 2844 wal=4194192
+- konsensd_g16S2 sample=7 2435 wal=4194192
+- konsensd_g16S2 sample=8 1963 wal=4194192
+- konsensd_g16S2 sample=9 1874 wal=4194192
+- konsensd_g16S2 max_wal_bytes=4194192 leader=127.0.0.1:7163
+- konsensd_g16C1 sample=1 4451 wal=4177712
+- konsensd_g16C1 sample=2 4255 wal=4185952
+- konsensd_g16C1 sample=3 4099 wal=4185952
+- konsensd_g16C1 sample=4 3907 wal=4185952
+- konsensd_g16C1 sample=5 3397 wal=4185952
+- konsensd_g16C1 sample=6 3521 wal=4185952
+- konsensd_g16C1 sample=7 2704 wal=4185952
+- konsensd_g16C1 sample=8 2083 wal=4185952
+- konsensd_g16C1 sample=9 2374 wal=4185952
+- konsensd_g16C1 max_wal_bytes=4185952 leader=127.0.0.1:7163
+- konsensd_g16S2 sample=1 4146 wal=4157112
+- konsensd_g16S2 sample=2 4264 wal=4169472
+- konsensd_g16S2 sample=3 4118 wal=4169472
+- konsensd_g16S2 sample=4 3620 wal=4173592
+- konsensd_g16S2 sample=5 3708 wal=4173592
+- konsensd_g16S2 sample=6 3211 wal=4173592
+- konsensd_g16S2 sample=7 2571 wal=4173592
+- konsensd_g16S2 sample=8 2467 wal=4173592
+- konsensd_g16S2 sample=9 2126 wal=4173592
+- konsensd_g16S2 max_wal_bytes=4173592 leader=127.0.0.1:7163
+- konsensd_g16C1 sample=1 4621 wal=4173592
+- konsensd_g16C1 sample=2 4429 wal=4177712
+- konsensd_g16C1 sample=3 3825 wal=4177712
+- konsensd_g16C1 sample=4 4091 wal=4177712
+- konsensd_g16C1 sample=5 3696 wal=4177712
+- konsensd_g16C1 sample=6 3210 wal=4177712
+- konsensd_g16C1 sample=7 2172 wal=4177712
+- konsensd_g16C1 sample=8 1597 wal=4177712
+- konsensd_g16C1 sample=9 1250 wal=4177712
+- konsensd_g16C1 max_wal_bytes=4177712 leader=127.0.0.1:7163
+- The database file of the leader is 15 MB after nine samples. The default page cache is 2 MiB.
+- C1 slows down the same way as S2. A page cache that holds the whole database does not stop the drop.
+
+Run 3: callgrind on the leader, D1, election_ticks = 100 (vg2.sh 9df2998608046e2e, vgwrap.sh 3b77eb20dcdb4533, valgrind 3.27.1)
+- Sample 1 and sample 9 are counted; samples 2 to 8 run with the instrumentation off. Rates under callgrind: 284, 230, 197, 167, 159, 151, 127, 126, 102 writes/s.
+- Instructions per write: sample 1 343 295, sample 9 670 175.
+- Inclusive instructions per write of run_the_tasks: 59 450 in sample 1, 371 460 in sample 9. That is 312 010 of the 326 880 more.
+- Calls of write_the_result from run_the_tasks: 16 205 in sample 1 (about 4 per write), 105 074 in sample 9 (about 26 per write). run_the_tasks ran 1 606 and 4 258 times; each run that executes a task first writes again every own result above log_len into a new nested transaction (begin_the_base), 10 results per run in sample 1 and 25 in sample 9.
+- Steps per write (commit_the_step): 1.5 in sample 1, 2.9 in sample 9.
+- Instructions per call of nested_transaction::insert_or_assign: 6.3k in sample 1, 8.5k in sample 9.
+
+Result
+- The rate of one cluster falls with each sample, for D1 and for S2. The -wal file and the page cache are not the cause.
+- On the leader, the work that grows is the rebuild of the base for each new task: the results that wait above log_len are written again each time. Their number and the steps per write grow from sample 1 to sample 9. Why the queue grows is not measured.

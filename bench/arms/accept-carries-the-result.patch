@@ -1,0 +1,81 @@
+diff --git a/include/konsens/node.hpp b/include/konsens/node.hpp
+index c084649..3869593 100644
+--- a/include/konsens/node.hpp
++++ b/include/konsens/node.hpp
+@@ -1387,7 +1387,7 @@ private:
+                                       make_error_code(paxos_errc::result_differs),
+                                       "konsens: a majority refused a done record of this leader");
+         }
+-        return append_the_done_records(m->log_len);
++        return append_the_own_results(m->applied_idx, m->log_len);
+     }
+ 
+     void assign_the_tasks(const ballot n, const std::uint64_t log_len)
+@@ -1397,12 +1397,7 @@ private:
+             tasks_ballot_ = n;
+         }
+         auto next = log_len + tasks_.size() + 1;
+-        if (resend_work_) {
+-            for (const auto& [index, e] : tasks_) {
+-                send_work(index, e, std::nullopt);
+-            }
+-            resend_work_ = false;
+-        }
++        resend_work_ = false;
+         auto proposals = std::exchange(seq_paxos_.buffered_proposals_, {});
+         std::ranges::move(std::exchange(waiting_, {}), std::back_inserter(proposals));
+         for (auto& e : proposals) {
+@@ -1412,9 +1407,7 @@ private:
+             if (entry_is_a_stop_sign(e) && !decode_cluster_config(e.payload)) [[unlikely]] {
+                 continue;
+             }
+-            auto request = request_of(std::move(e));
+-            send_work(next, request, std::nullopt);
+-            tasks_.emplace(next, std::move(request));
++            tasks_.emplace(next, request_of(std::move(e)));
+             next += 1;
+         }
+     }
+@@ -1440,6 +1433,42 @@ private:
+         return open;
+     }
+ 
++    result append_the_own_results(const std::uint64_t applied_idx, const std::uint64_t log_len)
++    {
++        const auto open = open_tasks_after(log_len);
++        if (open.empty()) {
++            return {};
++        }
++        const auto log = seq_paxos_.read_the_open_log(applied_idx, log_len);
++        if (!log) [[unlikely]] {
++            return seq_paxos_.stop_voting(log.error());
++        }
++        run_the_tasks({log_len - log->entries.size(), log->entries});
++        std::vector<entry> done;
++        for (std::uint64_t k = 0; k < open.size(); ++k) {
++            const auto index = log_len + 1 + k;
++            auto e = open[k].get();
++            if (entry_is_a_request(e)) {
++                const auto o = own_.find(index);
++                if (o == own_.end()) [[unlikely]] {
++                    break;
++                }
++                e.result = o->second.bytes;
++                e.result_crc = o->second.crc;
++                selection_->count_an_appended_done_record(index);
++            }
++            done.push_back(std::move(e));
++        }
++        if (done.empty()) {
++            return {};
++        }
++        if (auto r = seq_paxos_.accept_entries_leader(done); !r) [[unlikely]] {
++            return r;
++        }
++        tasks_.erase(tasks_.begin(), tasks_.upper_bound(log_len + done.size()));
++        return check_the_done_records();
++    }
++
+     result append_the_done_records(const std::uint64_t log_len)
+     {
+         const auto open = open_tasks_after(log_len);

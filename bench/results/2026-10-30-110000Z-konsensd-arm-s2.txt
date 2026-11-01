@@ -1,0 +1,42 @@
+What was measured
+- Arm S2: with sync_by_the_caller = true, a step that ends while a sync is out keeps the write transaction open; the step after the report of the sync commits it.
+- Arms, each its own binary, g++ 16.2.0 Release (build-konsensd.sh): konsensd_g16D1 (6207a7d), option off; konsensd_g16S (7f152f1, a5df58a4b0bed494), option on; konsensd_g16S2 (3fa6039, fa81e1156f810499) and konsensd_g16S2c (the same binary copied, A/A), option on.
+- io_uring of the kernel through the seccomp profile (ccce5e3325a9449a). Same bed, settings and samples as 2026-10-30-094500Z-konsensd-arm-s.txt. arms.sh 4dc1641035e931fa, cluster.sh d9bad1b2fb550242.
+
+round=1 arm=konsensd_g16D1 conc=1 median_writes_per_s=360 min=354 max=387 median_latency_us=2614 user_us_per_write=700 sys_us_per_write=1077
+round=1 arm=konsensd_g16S conc=1 median_writes_per_s=381 min=359 max=394 median_latency_us=2490 user_us_per_write=755 sys_us_per_write=1077
+round=1 arm=konsensd_g16S2 conc=1 median_writes_per_s=423 min=392 max=440 median_latency_us=2258 user_us_per_write=688 sys_us_per_write=1122
+round=1 arm=konsensd_g16S2c conc=1 median_writes_per_s=326 min=325 max=334 median_latency_us=2873 user_us_per_write=755 sys_us_per_write=1966
+round=1 arm=konsensd_g16D1 conc=64 median_writes_per_s=4337 min=3653 max=4485 median_latency_us=13747 user_us_per_write=167 sys_us_per_write=79
+round=1 arm=konsensd_g16S conc=64 median_writes_per_s=4420 min=2656 max=6313 median_latency_us=13577 user_us_per_write=292 sys_us_per_write=142
+round=1 arm=konsensd_g16S2 conc=64 median_writes_per_s=5260 min=3086 max=5264 median_latency_us=10684 user_us_per_write=272 sys_us_per_write=113
+round=1 arm=konsensd_g16S2c conc=64 median_writes_per_s=3798 min=1878 max=6481 median_latency_us=16668 user_us_per_write=383 sys_us_per_write=135
+round=1 raw_sqlite batch=1 median_writes_per_s=1231
+round=1 raw_sqlite batch=64 median_writes_per_s=77553
+round=2 arm=konsensd_g16D1 conc=1 median_writes_per_s=416 min=393 max=422 median_latency_us=2315 user_us_per_write=644 sys_us_per_write=1122
+round=2 arm=konsensd_g16S conc=1 median_writes_per_s=439 min=380 max=451 median_latency_us=2170 user_us_per_write=677 sys_us_per_write=1144
+round=2 arm=konsensd_g16S2 conc=1 median_writes_per_s=407 min=384 max=421 median_latency_us=2316 user_us_per_write=677 sys_us_per_write=1144
+round=2 arm=konsensd_g16S2c conc=1 median_writes_per_s=398 min=358 max=400 median_latency_us=2405 user_us_per_write=655 sys_us_per_write=1200
+round=2 arm=konsensd_g16D1 conc=64 median_writes_per_s=4041 min=3907 max=4596 median_latency_us=13748 user_us_per_write=170 sys_us_per_write=84
+round=2 arm=konsensd_g16S conc=64 median_writes_per_s=4718 min=2852 max=6340 median_latency_us=12777 user_us_per_write=277 sys_us_per_write=139
+round=2 arm=konsensd_g16S2 conc=64 median_writes_per_s=4680 min=2551 max=6793 median_latency_us=12889 user_us_per_write=287 sys_us_per_write=137
+round=2 arm=konsensd_g16S2c conc=64 median_writes_per_s=3924 min=1929 max=5989 median_latency_us=15904 user_us_per_write=393 sys_us_per_write=135
+round=2 raw_sqlite batch=1 median_writes_per_s=1200
+round=2 raw_sqlite batch=64 median_writes_per_s=81015
+round=3 arm=konsensd_g16D1 conc=1 median_writes_per_s=417 min=417 max=423 median_latency_us=2265 user_us_per_write=600 sys_us_per_write=1144
+round=3 arm=konsensd_g16S conc=1 median_writes_per_s=417 min=398 max=418 median_latency_us=2289 user_us_per_write=544 sys_us_per_write=1255
+round=3 arm=konsensd_g16S2 conc=1 median_writes_per_s=428 min=406 max=430 median_latency_us=2238 user_us_per_write=588 sys_us_per_write=1222
+round=3 arm=konsensd_g16S2c conc=1 median_writes_per_s=414 min=386 max=430 median_latency_us=2309 user_us_per_write=566 sys_us_per_write=1233
+round=3 arm=konsensd_g16D1 conc=64 median_writes_per_s=3855 min=3677 max=4195 median_latency_us=13956 user_us_per_write=163 sys_us_per_write=85
+round=3 arm=konsensd_g16S conc=64 median_writes_per_s=4470 min=3070 max=6382 median_latency_us=14036 user_us_per_write=280 sys_us_per_write=130
+round=3 arm=konsensd_g16S2 conc=64 median_writes_per_s=5522 min=3160 max=6362 median_latency_us=10829 user_us_per_write=254 sys_us_per_write=128
+round=3 arm=konsensd_g16S2c conc=64 median_writes_per_s=3101 min=2176 max=5652 median_latency_us=17361 user_us_per_write=366 sys_us_per_write=142
+round=3 raw_sqlite batch=1 median_writes_per_s=1105
+round=3 raw_sqlite batch=64 median_writes_per_s=76566
+
+Medians of the three rounds (writes/s)
+- 1 in flight: D1 416, S 417, S2 423, S2 copy 398.
+- 64 in flight: D1 4 041, S 4 470, S2 5 260, S2 copy 3 798.
+- The A/A pair of S2 differs by 6 % at 1 in flight and by 39 % at 64 in flight (5 260 against 3 798). Inside one cell the samples of S and S2 spread from 1 878 to 6 793 writes/s; those of D1 spread from 3 653 to 4 596.
+- No difference between D1, S and S2 is shown above the A/A floor of S2. The +21 % of S at 1 in flight in 2026-10-30-094500Z-konsensd-arm-s.txt is not repeated here (S 417 against D1 416).
+- The leader changed as often in the cells of S and S2 as in those of D1 (2 to 3 "is leader in accept" lines over the three nodes per cell).

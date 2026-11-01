@@ -30,6 +30,8 @@ class persistent_storage {
     struct environment;
 
 public:
+    struct reading;
+
     class read_only_transaction {
     public:
         [[nodiscard]] std::expected<meta_record, std::error_code> get_meta() const;
@@ -38,8 +40,6 @@ public:
         [[nodiscard]] std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from,
                                                                                      std::uint64_t to) const;
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
-        [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
-        get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
         get_chain_hash(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
@@ -57,9 +57,25 @@ public:
     private:
         friend class persistent_storage;
 
-        explicit read_only_transaction(environment* env) noexcept;
+        explicit read_only_transaction(reading* r) noexcept;
 
-        environment* env_;
+        reading* reading_;
+    };
+
+    class reader {
+    public:
+        [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
+
+        reader(reader&&) noexcept;
+        reader& operator=(reader&&) noexcept;
+        ~reader();
+
+    private:
+        friend class persistent_storage;
+
+        explicit reader(std::unique_ptr<reading> r) noexcept;
+
+        std::unique_ptr<reading> reading_;
     };
 
     class nested_transaction {
@@ -95,8 +111,6 @@ public:
         [[nodiscard]] std::expected<std::vector<entry>, std::error_code> get_entries(std::uint64_t from,
                                                                                      std::uint64_t to) const;
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
-        [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
-        get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
         get_chain_hash(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
@@ -126,7 +140,10 @@ public:
         set_applied(std::uint64_t applied_idx, const chain_hash& applied_chain_hash);
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] bool has_writes() const;
+        [[nodiscard]] bool has_log_writes() const;
+        [[nodiscard]] std::uint64_t count_of_entry_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
+        [[nodiscard]] std::expected<void, std::error_code> commit_without_a_sync() &&;
 
         transaction(transaction&& other) noexcept;
         transaction& operator=(transaction&& other) noexcept;
@@ -145,7 +162,10 @@ public:
 
     [[nodiscard]] std::expected<transaction, std::error_code> begin();
     [[nodiscard]] std::expected<read_only_transaction, std::error_code> begin_read_only() const;
+    [[nodiscard]] std::expected<reader, std::error_code> open_a_reader() const;
     [[nodiscard]] std::expected<void, std::error_code> copy(const std::filesystem::path& directory) const;
+    [[nodiscard]] int wal_file_descriptor() const;
+    void the_sync_failed();
 
     persistent_storage(persistent_storage&&) noexcept;
     persistent_storage& operator=(persistent_storage&&) noexcept;
@@ -165,7 +185,8 @@ enum class proof_kind : std::uint8_t {
     read_back,
     refused_by_a_majority,
     listed_result_differs,
-    wrong_list
+    wrong_list,
+    chosen_result_differs
 };
 
 struct fault_proof {

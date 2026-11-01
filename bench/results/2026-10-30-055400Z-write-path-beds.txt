@@ -1,0 +1,46 @@
+What was measured
+- konsensd, three nodes on one machine, writes of 64 B through PUT /kv,
+  with 1 and 64 writes in flight. Writes per second, median latency, and
+  the user and system CPU time of the three nodes per write
+  (/proc/<pid>/stat fields 14 and 15, CLK_TCK 100).
+- Two beds, run alternately, two rounds:
+  - shared: the data directories of the three nodes on one btrfs file
+    system (one loop image, compress=zstd:1).
+  - own: each node on its own btrfs file system (three loop images on
+    the same host disk, compress=zstd:1).
+- raw SQLite on the same bed: one process, WAL, synchronous=FULL,
+  64 B values, 1 and 64 writes per commit.
+- One sample per cell. This file is a check of the bed before a plan,
+  not a decision of an arm. No A/A noise floor was measured.
+
+Context
+- commit edfb54f (branch retry-on-new-promise), clean
+- konsensd_g16: GCC (Ubuntu 16.2.0-3ubuntu1) 16.2.0, Release, sha256 02dc8a4ea7798eef
+- raw_sqlite sha256 ead5f28f461b1955; libsqlite3-0 3.53.4-2; GLIBC 2.44-1ubuntu2
+- image localhost/bench-logs ae824d95cb801848
+- kernel 6.18.44-fc-v185 (Firecracker VM), 4 processors, Intel(R) Xeon(R) Processor
+- podman --cpus=3, user 1001 (bench), not root, not pinned
+- script disks.sh sha256 97497f4845364bda, cluster.sh f8cf21bacac28e89 (outside the tree)
+
+Results
+round=1 bed=shared conc=1 writes=400 median_writes_per_s=38 median_latency_us=26256 user_us_per_write=925 sys_us_per_write=4075
+round=1 bed=shared conc=64 writes=8192 median_writes_per_s=1355 median_latency_us=42164 user_us_per_write=112 sys_us_per_write=148
+round=1 bed=shared raw_sqlite batch=1 median_writes_per_s=1006
+round=1 bed=shared raw_sqlite batch=64 median_writes_per_s=45127
+round=1 bed=own conc=1 writes=400 median_writes_per_s=99 median_latency_us=9813 user_us_per_write=1025 sys_us_per_write=3225
+round=1 bed=own conc=64 writes=8192 median_writes_per_s=3389 median_latency_us=17200 user_us_per_write=102 sys_us_per_write=120
+round=1 bed=own raw_sqlite batch=1 median_writes_per_s=929
+round=1 bed=own raw_sqlite batch=64 median_writes_per_s=76486
+round=2 bed=shared conc=1 writes=400 median_writes_per_s=57 median_latency_us=16802 user_us_per_write=1075 sys_us_per_write=2000
+round=2 bed=shared conc=64 writes=8192 median_writes_per_s=2335 median_latency_us=23154 user_us_per_write=118 sys_us_per_write=78
+round=2 bed=shared raw_sqlite batch=1 median_writes_per_s=1237
+round=2 bed=shared raw_sqlite batch=64 median_writes_per_s=50295
+round=2 bed=own conc=1 writes=400 median_writes_per_s=115 median_latency_us=8595 user_us_per_write=1225 sys_us_per_write=2625
+round=2 bed=own conc=64 writes=8192 median_writes_per_s=3451 median_latency_us=17736 user_us_per_write=107 sys_us_per_write=114
+round=2 bed=own raw_sqlite batch=1 median_writes_per_s=1224
+round=2 bed=own raw_sqlite batch=64 median_writes_per_s=79401
+
+strace of the shared bed (same commit, 50 writes, 1 in flight, -ttt -T)
+- fdatasync of the WAL, median per node: leader 7.52 ms, followers 2.53 ms and 3.64 ms; maximum 23.7 ms.
+- 400 writes at 1 in flight: 841 fdatasync and about 8060 pwrite64 per node.
+- 4096 writes at 64 in flight: 329 fdatasync per node, so about 12 writes per fdatasync.

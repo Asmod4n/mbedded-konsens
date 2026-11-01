@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <cbor/schema.hpp>
+
 #include "konsens/chain_hash.hpp"
 
 namespace konsens {
@@ -145,7 +147,6 @@ struct session_record {
     friend bool operator==(const session_record&, const session_record&) = default;
 };
 
-enum class entry_state : std::uint8_t { in_work, committed };
 
 struct index_range {
     std::uint64_t from_idx;
@@ -216,7 +217,6 @@ concept storage_read = state_read<T> && requires(const T& t, std::uint64_t from,
     { t.get_meta() } -> std::same_as<std::expected<meta_record, std::error_code>>;
     { t.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
     { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
-    { t.get_entry_state(index) } -> std::same_as<std::expected<std::optional<entry_state>, std::error_code>>;
     { t.get_chain_hash(index) } -> std::same_as<std::expected<std::optional<chain_hash>, std::error_code>>;
     { t.get_unchecked_entry(index) } -> std::same_as<std::expected<std::optional<entry>, std::error_code>>;
     { t.get_config_first_idx() } -> std::same_as<std::expected<std::optional<std::uint64_t>, std::error_code>>;
@@ -244,13 +244,20 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             { t.set_decided_index(index) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.set_config_first_idx(index) } -> std::same_as<std::expected<void, std::error_code>>;
                             { std::as_const(t).has_writes() } -> std::same_as<bool>;
+                            { std::as_const(t).has_log_writes() } -> std::same_as<bool>;
+                            { std::as_const(t).count_of_entry_writes() } -> std::same_as<std::uint64_t>;
                             { std::move(moved).commit() } -> std::same_as<std::expected<void, std::error_code>>;
+                            {
+                                std::move(moved).commit_without_a_sync()
+                            } -> std::same_as<std::expected<void, std::error_code>>;
                         };
 
 template <typename S>
 concept storage = storage_write<typename S::transaction> && storage_read<typename S::read_only_transaction> &&
                   requires(S& s, const S& cs) {
                       { s.begin() } -> std::same_as<std::expected<typename S::transaction, std::error_code>>;
+                      { cs.wal_file_descriptor() } -> std::same_as<int>;
+                      { s.the_sync_failed() } -> std::same_as<void>;
                       {
                           cs.begin_read_only()
                       } -> std::same_as<std::expected<typename S::read_only_transaction, std::error_code>>;
@@ -260,3 +267,13 @@ concept storage = storage_write<typename S::transaction> && storage_read<typenam
 
 template <>
 struct std::is_error_code_enum<konsens::storage_errc> : std::true_type {};
+
+CBOR_DEFINE_TYPE(konsens::ballot, cbor::tag{35672}, CBOR_MEMBER(konsens::ballot, config_id),
+                 CBOR_MEMBER(konsens::ballot, n), CBOR_MEMBER(konsens::ballot, priority),
+                 CBOR_MEMBER(konsens::ballot, pid));
+CBOR_DEFINE_TYPE(konsens::entry, cbor::tag{35673}, CBOR_MEMBER(konsens::entry, kind),
+                 CBOR_MEMBER(konsens::entry, payload), CBOR_MEMBER(konsens::entry, session),
+                 CBOR_MEMBER(konsens::entry, request_number), CBOR_MEMBER(konsens::entry, client_id),
+                 CBOR_MEMBER(konsens::entry, pid), CBOR_MEMBER(konsens::entry, result),
+                 CBOR_MEMBER(konsens::entry, result_crc), CBOR_MEMBER(konsens::entry, out),
+                 CBOR_MEMBER(konsens::entry, rejected));
