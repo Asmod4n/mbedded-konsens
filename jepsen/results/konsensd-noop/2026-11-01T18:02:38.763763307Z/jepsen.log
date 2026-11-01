@@ -1,0 +1,67 @@
+2026-11-01 18:02:38,809{GMT}	INFO	[jepsen test runner] jepsen.core: Command line:
+lein run test --nodes n1,n2,n3,n4,n5 --username root --ssh-private-key /root/.ssh/id_rsa --time-limit 5
+2026-11-01 18:02:38,844{GMT}	INFO	[jepsen test runner] jepsen.core: Running test:
+{:remote
+ #jepsen.control.retry.Remote{:remote #jepsen.control.scp.Remote{:cmd-remote #jepsen.control.sshj.SSHJRemote{:concurrency-limit 6,
+                                                                                                             :conn-spec nil,
+                                                                                                             :client nil,
+                                                                                                             :semaphore nil},
+                                                                 :conn-spec nil},
+                              :conn nil}
+ :ssh-private-key "/root/.ssh/id_rsa"
+ :concurrency 5
+ :db
+ #object[jepsen.db$reify__15358 "0x63d9e1a" "jepsen.db$reify__15358@63d9e1a"]
+ :leave-db-running? false
+ :name "konsensd-noop"
+ :logging-json? false
+ :start-time
+ #object[java.time.OffsetDateTime "0x6d658aa8" "2026-11-01T18:02:38.763763307Z"]
+ :net
+ #object[jepsen.net$iptables_with_dev$reify__15624
+         "0x10280879"
+         "jepsen.net$iptables_with_dev$reify__15624@10280879"]
+ :client
+ #object[jepsen.client$reify__14960
+         "0x3472f3ab"
+         "jepsen.client$reify__14960@3472f3ab"]
+ :barrier
+ #object[java.util.concurrent.CyclicBarrier
+         "0x5e557671"
+         "java.util.concurrent.CyclicBarrier@5e557671"]
+ :ssh
+ {:dummy? false,
+  :username "root",
+  :password "root",
+  :strict-host-key-checking false,
+  :private-key-path "/root/.ssh/id_rsa"}
+ :checker #jepsen.checker.UnbridledOptimism{}
+ :argv
+ ("test"
+  "--nodes"
+  "n1,n2,n3,n4,n5"
+  "--username"
+  "root"
+  "--ssh-private-key"
+  "/root/.ssh/id_rsa"
+  "--time-limit"
+  "5")
+ :nemesis #unprintable "jepsen.nemesis$reify__15747@1f2497d9"
+ :nodes ["n1" "n2" "n3" "n4" "n5"]
+ :test-count 1
+ :generator #object[jepsen.util.Forgettable "0x7962c1d5" nil]
+ :os
+ #object[jepsen.os$reify__16046 "0x74d776fb" "jepsen.os$reify__16046@74d776fb"]
+ :time-limit 5}
+
+2026-11-01 18:02:43,774{GMT}	INFO	[jepsen test runner] jepsen.db: Tearing down DB
+2026-11-01 18:02:43,799{GMT}	INFO	[jepsen test runner] jepsen.db: Setting up DB
+2026-11-01 18:02:43,814{GMT}	INFO	[jepsen test runner] jepsen.core: Relative time begins now
+2026-11-01 18:02:43,934{GMT}	INFO	[jepsen test runner] jepsen.core: Run complete, writing
+2026-11-01 18:02:43,974{GMT}	INFO	[jepsen test runner] jepsen.core: Analyzing...
+2026-11-01 18:02:43,975{GMT}	INFO	[jepsen test runner] jepsen.core: Analysis complete
+2026-11-01 18:02:43,977{GMT}	INFO	[jepsen results] jepsen.store: Wrote /jepsen/store/konsensd-noop/2026-11-01T18:02:38.763763307Z/results.edn
+2026-11-01 18:02:43,991{GMT}	INFO	[jepsen test runner] jepsen.core: {:valid? true}
+
+
+Everything looks good! ヽ(‘ー`)ノ

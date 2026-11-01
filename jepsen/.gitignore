@@ -1,0 +1,7 @@
+build/
+target/
+.lein-*
+.nrepl-port
+results/current
+results/latest
+results/*/latest

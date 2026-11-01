@@ -1,0 +1,7 @@
+FROM registry.opensuse.org/opensuse/tumbleweed:latest
+RUN zypper -n -q in --no-recommends java-21-openjdk-headless openssh-clients git-core gnuplot graphviz bash curl which \
+ && zypper -n clean -a
+COPY lein /usr/local/bin/lein
+COPY control /root/.ssh/id_rsa
+RUN chmod 700 /root/.ssh && chmod 600 /root/.ssh/id_rsa \
+ && printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > /root/.ssh/config

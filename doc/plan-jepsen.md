@@ -144,6 +144,32 @@ clock of the host, and konsensd reads only `steady_clock`
 4. The results go to `jepsen/results/<time stamp>/`, one directory per
    run, with the history, the checker output and the node logs.
 
+## 6a. Result of step 1 (2026-11-01)
+
+- `jepsen/run.sh` builds both images, starts five node containers on
+  the podman network `jepsen`, and runs the control container. The
+  control container reaches n1 to n5 over SSH, and the noop test of
+  Jepsen 0.3.15 ends with `{:valid? true}`
+  (`jepsen/results/konsensd-noop/2026-11-01T18:02:38.763763307Z/`).
+- `jepsen/fetch.sh` fetches LazyFS 0.3.0, toml11 3.7.1 and spdlog
+  1.10.0 at fixed commits, and Leiningen 2.11.2 with its SHA-256. The
+  node image builds LazyFS from these sources, because the build of
+  LazyFS fetches toml11 and spdlog itself.
+- SQLite in WAL mode on a LazyFS mount, as the user konsens: two rows
+  written with `synchronous=FULL` and one with `synchronous=OFF`, then
+  `lazyfs::clear-cache`. After the fault the database holds the two
+  synced rows, and `integrity_check` gives `ok`. So the fdatasync of
+  SQLite reaches LazyFS, and LazyFS drops what was not synced. The
+  check ran in one file outside the tree.
+- Found on the way: podman gives `/dev/fuse` the mode 0600, so the node
+  container makes it 0666 at its start; Jepsen calls `git` on the
+  control node; the build of LazyFS needs
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` with CMake 4.
+- Here the containers reach no host on the internet. `run.sh` mounts
+  `jepsen/build/m2`, so the dependencies that Leiningen fetched on the
+  host are there. On a machine with a direct connection, Leiningen in
+  the control container fetches them itself.
+
 ## 7. What this does not cover
 
 - Transactions over several keys: konsensd has none.
