@@ -35,6 +35,7 @@ constexpr std::string_view fault_proof_key = "fault_proof";
 constexpr std::string_view clean_stop_key = "clean_stop";
 constexpr std::string_view config_first_key = "config_first";
 constexpr std::uint32_t format_version = 6;
+constexpr std::uint32_t node_format_version = 1;
 constexpr int synchronous_full = 2;
 constexpr int checkpoint_frames = 1000;
 constexpr std::uint64_t largest_key = std::numeric_limits<std::int64_t>::max();
@@ -1913,7 +1914,85 @@ std::expected<node_storage, std::error_code> node_storage::open(const std::files
         }
         *target = std::move(*prepared);
     }
+    if (auto format = check_or_write_node_format(*env); !format) [[unlikely]] {
+        return std::unexpected(format.error());
+    }
     return node_storage{std::move(env)};
+}
+
+std::expected<void, std::error_code> node_storage::check_or_write_node_format(environment& env)
+{
+    sqlite3* const db = env.db.get();
+    if (const int begun = sqlite3_step(env.begin_immediate.get()); begun != SQLITE_DONE) [[unlikely]] {
+        sqlite3_reset(env.begin_immediate.get());
+        return std::unexpected(error_code_or_throw(begun, db, access::write));
+    }
+    sqlite3_reset(env.begin_immediate.get());
+    const auto end = [&env](sqlite3_stmt* const s) {
+        sqlite3_reset(env.get_record.get());
+        step_once(s);
+    };
+    sqlite3_stmt* const get = env.get_record.get();
+    sqlite3_reset(get);
+    if (const int bound = bind_text(get, 1, format_key); bound != SQLITE_OK) [[unlikely]] {
+        end(env.rollback.get());
+        return std::unexpected(error_code_or_throw(bound, db, access::read));
+    }
+    const int status = sqlite3_step(get);
+    if (status == SQLITE_ROW) {
+        const auto bytes = column_bytes(get, 0);
+        const bool sized = bytes.size() == sizeof node_format_version + crc_size;
+        const bool checked =
+            sized && from_little_endian<std::uint32_t>(bytes.last<crc_size>()) == crc_of(bytes.first<crc_size>());
+        const bool current =
+            checked && from_little_endian<std::uint32_t>(bytes.first<sizeof node_format_version>()) ==
+                           node_format_version;
+        end(env.rollback.get());
+        if (!checked) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+        }
+        if (!current) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::unsupported_format));
+        }
+        return {};
+    }
+    if (status != SQLITE_DONE) [[unlikely]] {
+        end(env.rollback.get());
+        return std::unexpected(error_code_or_throw(status, db, access::read));
+    }
+    sqlite3_reset(get);
+    const auto rows = read_integer(db, "SELECT count(*) FROM meta");
+    if (!rows || *rows != 0) [[unlikely]] {
+        step_once(env.rollback.get());
+        return std::unexpected(rows ? make_error_code(storage_errc::unsupported_format) : rows.error());
+    }
+    std::array<std::byte, sizeof node_format_version + crc_size> record{};
+    std::ranges::copy(to_little_endian(node_format_version), record.begin());
+    std::ranges::copy(to_little_endian(crc_of(std::span(record).first<sizeof node_format_version>())),
+                      std::span(record).subspan<sizeof node_format_version>().begin());
+    sqlite3_stmt* const put = env.put_record.get();
+    sqlite3_reset(put);
+    if (const int bound = bind_text(put, 1, format_key); bound != SQLITE_OK) [[unlikely]] {
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(bound, db, access::write));
+    }
+    if (const int bound = bind_bytes(put, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(bound, db, access::write));
+    }
+    if (const int put_status = sqlite3_step(put); put_status != SQLITE_DONE) [[unlikely]] {
+        sqlite3_reset(put);
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(put_status, db, access::write));
+    }
+    sqlite3_reset(put);
+    if (const int committed = sqlite3_step(env.commit.get()); committed != SQLITE_DONE) [[unlikely]] {
+        sqlite3_reset(env.commit.get());
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(committed, db, access::write));
+    }
+    sqlite3_reset(env.commit.get());
+    return {};
 }
 
 std::expected<std::optional<fault_proof>, std::error_code> node_storage::get_fault_proof() const

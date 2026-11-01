@@ -125,7 +125,7 @@ hash too.
 
 ## 3a. The form as built (2026-11-01)
 
-Built: items 3.1 to 3.4, 3.6 and 3.9, and 3.5 for konsens.db.
+Built: items 3.1 to 3.6 and 3.9. node.db holds the row `format` with the value 1 and its CRC32C (format row of 3.5).
 
 - `sha256` (include/konsens/chain_hash.hpp) holds the fetched
   `SHA2-256` and one digest context behind a pointer.
@@ -153,7 +153,7 @@ Built: items 3.1 to 3.4, 3.6 and 3.9, and 3.5 for konsens.db.
   a call with several candidates, and the text of the map keys in
   test/test_wire.cpp. These were changed by hand.
 
-Not built yet: 3.5 for node.db (the format row), 3.7 (`base_crc`),
+Not built yet: 3.7 (`base_crc`; the selection has no digest context, and where it gets one is a form for the owner),
 3.10 (the scan keeps one chain value for each entry), and the
 measurement of 4.4.
 

@@ -202,6 +202,7 @@ public:
 
 private:
     explicit node_storage(std::unique_ptr<environment> env) noexcept;
+    [[nodiscard]] static std::expected<void, std::error_code> check_or_write_node_format(environment& env);
 
     void throw_if_moved_from() const;
 

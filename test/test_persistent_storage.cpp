@@ -1210,6 +1210,55 @@ TEST_CASE("the store, its WAL and the node storage have the mode 0600")
     }
 }
 
+// node.db holds a format row since the chain hash changed the size of the
+// clean-stop mark. A node.db with records but no format row was written by
+// an older library, and a format row with another version by another
+// library. Both are refused before a record of them is read.
+TEST_CASE("a node.db without its format row, or with another version, is refused")
+{
+    const auto change_node_db = [](const std::filesystem::path& directory, const char* const sql) {
+        sqlite3* db = nullptr;
+        const auto file = (directory / "node.db").string();
+        REQUIRE(sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+        REQUIRE(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+        REQUIRE(sqlite3_close(db) == SQLITE_OK);
+    };
+    const auto unsupported = make_error_code(konsens::storage_errc::unsupported_format);
+    {
+        const temporary_directory dir;
+        REQUIRE(konsens::node_storage::open(dir.path(), non_root_user_id).has_value());
+        change_node_db(dir.path(), "DELETE FROM meta WHERE name = 'format';"
+                                   "INSERT INTO meta (name, record) VALUES ('clean_stop', x'00')");
+        const auto node = konsens::node_storage::open(dir.path(), non_root_user_id);
+        REQUIRE_FALSE(node.has_value());
+        CHECK(node.error() == unsupported);
+    }
+    {
+        const temporary_directory dir;
+        REQUIRE(konsens::node_storage::open(dir.path(), non_root_user_id).has_value());
+        // Version 2 in little-endian order, then CRC32C of those four bytes.
+        const std::array<std::byte, 4> version{std::byte{2}};
+        const auto crc = crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(version.data()), version.size());
+        std::string sql = "UPDATE meta SET record = x'02000000";
+        for (std::size_t i = 0; i < 4; ++i) {
+            constexpr std::string_view digits = "0123456789abcdef";
+            const auto b = static_cast<std::uint8_t>(crc >> (8 * i));
+            sql += digits[b >> 4];
+            sql += digits[b & 0xf];
+        }
+        sql += "' WHERE name = 'format'";
+        change_node_db(dir.path(), sql.c_str());
+        const auto node = konsens::node_storage::open(dir.path(), non_root_user_id);
+        REQUIRE_FALSE(node.has_value());
+        CHECK(node.error() == unsupported);
+    }
+    {
+        const temporary_directory dir;
+        REQUIRE(konsens::node_storage::open(dir.path(), non_root_user_id).has_value());
+        CHECK(konsens::node_storage::open(dir.path(), non_root_user_id).has_value());
+    }
+}
+
 // Plan clean-stop 2.1 and 4.1: the mark lives in node.db only. A start
 // reads it once and deletes it, so the deletion must survive a close. A
 // copy of konsens.db is a backup, and a backup never carries the mark.
