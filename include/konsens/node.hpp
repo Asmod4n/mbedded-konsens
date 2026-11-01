@@ -748,7 +748,7 @@ private:
     result check_the_applied_state()
     {
         const auto m = read_the_committed_meta();
-        return seq_paxos_.check_applied_chain_crc(m.applied_idx, m.applied_chain_crc);
+        return seq_paxos_.check_applied_chain_hash(m.applied_idx, m.applied_chain_hash);
     }
 
     static ble_config ble_config_of(const node_config& config)
@@ -785,7 +785,8 @@ private:
             const auto fault = seq_paxos_.get_hardware_fault();
             const bool known = *e == make_error_code(paxos_errc::hardware_fault) && fault;
             write_the_proof_and_throw({proof_kind::damage, index_of_the_damage(), seq_paxos_.mark_.promise,
-                                       known ? fault->crc : 0, known ? fault->other_crc : 0},
+                                       0, 0, known ? fault->chain : chain_hash{},
+                                       known ? fault->other_chain : chain_hash{}},
                                       *e, "konsens: a step found a damage of the own log");
         }
         return r;
@@ -1297,7 +1298,7 @@ private:
             }
             reply_to_the_client(e, k, &*r);
         }
-        const auto crc = seq_paxos_.read_prefix_chain_crc(m->decided_idx);
+        const auto crc = seq_paxos_.read_prefix_chain_hash(m->decided_idx);
         if (!crc) [[unlikely]] {
             return seq_paxos_.stop_voting(crc.error());
         }

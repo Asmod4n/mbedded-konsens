@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "konsens/chain_hash.hpp"
+
 namespace konsens {
 
 struct ballot {
@@ -129,9 +131,9 @@ struct meta_record {
     ballot accepted_round;
     std::uint64_t decided_idx;
     std::uint64_t log_len;
-    std::uint32_t last_chain_crc;
+    chain_hash last_chain_hash;
     std::uint64_t applied_idx{};
-    std::uint32_t applied_chain_crc{};
+    chain_hash applied_chain_hash{};
 
     friend bool operator==(const meta_record&, const meta_record&) = default;
 };
@@ -148,16 +150,17 @@ enum class entry_state : std::uint8_t { in_work, committed };
 struct last_entry {
     std::uint64_t index;
     std::uint32_t entry_crc;
-    std::uint32_t chain_crc;
+    chain_hash chain;
 
     friend bool operator==(const last_entry&, const last_entry&) = default;
 };
 
-std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t index,
-                                std::span<const std::byte> encoded_entry) noexcept;
-std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t index, const entry& e);
-std::uint32_t compute_chain_crc(std::uint32_t previous_chain_crc, std::uint64_t from_idx,
-                                std::span<const entry> entries);
+chain_hash compute_chain_hash(const sha256& h, const chain_hash& previous_chain_hash, std::uint64_t index,
+                              const entry& e);
+chain_hash compute_chain_hash(const sha256& h, const chain_hash& previous_chain_hash, std::uint64_t from_idx,
+                              std::span<const entry> entries);
+std::uint32_t compute_record_crc(std::uint64_t index, std::span<const std::byte> encoded_entry,
+                                 const chain_hash& chain) noexcept;
 
 enum class storage_errc {
     crc_mismatch = 1,
@@ -207,7 +210,7 @@ concept storage_read = state_read<T> && requires(const T& t, std::uint64_t from,
     { t.get_entries(from, to) } -> std::same_as<std::expected<std::vector<entry>, std::error_code>>;
     { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
     { t.get_entry_state(index) } -> std::same_as<std::expected<std::optional<entry_state>, std::error_code>>;
-    { t.get_chain_crc(index) } -> std::same_as<std::expected<std::optional<std::uint32_t>, std::error_code>>;
+    { t.get_chain_hash(index) } -> std::same_as<std::expected<std::optional<chain_hash>, std::error_code>>;
     { t.get_config_first_idx() } -> std::same_as<std::expected<std::optional<std::uint64_t>, std::error_code>>;
 };
 
@@ -218,11 +221,11 @@ template <typename T>
 concept storage_write = storage_read<T> && state_write<T> && state_write<nested_transaction_of<T>> &&
                         std::movable<T> &&
                         requires(T& t, T&& moved, std::span<const entry> entries, std::uint64_t index, ballot b,
-                                 std::uint32_t crc) {
+                                 const chain_hash& hash) {
                             {
                                 t.begin_nested()
                             } -> std::same_as<std::expected<nested_transaction_of<T>, std::error_code>>;
-                            { t.set_applied(index, crc) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.set_applied(index, hash) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.append_entries(entries) } -> std::same_as<std::expected<void, std::error_code>>;
                             {
                                 t.append_on_prefix(index, entries)

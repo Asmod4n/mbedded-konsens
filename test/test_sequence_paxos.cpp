@@ -181,16 +181,18 @@ persistent_storage storage_of(const ballot promise, const ballot n_accepted, con
     return s;
 }
 
-std::uint32_t chain_of(const std::vector<entry>& log, const std::uint64_t length)
+konsens::chain_hash chain_of(const std::vector<entry>& log, const std::uint64_t length)
 {
-    std::uint32_t chain = 0;
+    const auto h = konsens::sha256::fetch();
+    REQUIRE(h.has_value());
+    konsens::chain_hash chain{};
     for (std::uint64_t i = 0; i < length; ++i) {
-        chain = konsens::compute_chain_crc(chain, i, log.at(i));
+        chain = konsens::compute_chain_hash(*h, chain, i, log.at(i));
     }
     return chain;
 }
 
-std::uint32_t last_crc_of(const std::vector<entry>& log)
+konsens::chain_hash last_crc_of(const std::vector<entry>& log)
 {
     return chain_of(log, log.size());
 }
@@ -410,7 +412,7 @@ TEST_CASE("a message of a lower ballot gets not_accepted")
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 0, ballot{}, 0}}));
     committed_messages_of(sp);
-    REQUIRE(sp.handle({2, 1, konsens::decide{ballot_of(1, 2), {1, 1}, 0, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::decide{ballot_of(1, 2), {1, 1}, 0, {}}}));
     const auto out = committed_messages_of(sp);
     REQUIRE(out.size() == 1);
     CHECK(out[0].to == 2);
@@ -428,7 +430,7 @@ TEST_CASE("a majority of promises moves the leader to accept")
     REQUIRE(sp.handle_leader(ballot_of(1, 3)));
     REQUIRE(sp.append(make_entry(7)));
     committed_messages_of(sp);
-    REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, 0, 0}}));
+    REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, {}, {}}}));
     CHECK(sp.get_state() == std::pair{role::leader, phase::accept});
     const auto out = committed_messages_of(sp);
     CHECK(sp.get_accepted_idx() == 1);
@@ -457,7 +459,7 @@ TEST_CASE("accept_sync keeps the higher decided_idx")
                                             chain_of({make_entry(1), make_entry(2)}, 2)}}));
     CHECK(sp.get_decided_idx() == 2);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(2, 3), 2, ballot_of(1, 3), 2}}));
-    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(2, 3), {1, 1}, 1, {{}, 2}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(2, 3), {1, 1}, 1, {{}, 2}, {}}}));
     CHECK(sp.get_decided_idx() == 2);
     CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).decided_idx == 2);
 }
@@ -469,9 +471,9 @@ TEST_CASE("a gap in the sequence numbers starts recovery")
 {
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
     committed_messages_of(sp);
-    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 3}, 0, {make_entry(1)}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 3}, 0, {make_entry(1)}, {}}}));
     CHECK(sp.get_state() == std::pair{role::follower, phase::recover});
     CHECK(sp.get_accepted_idx() == 0);
     const auto out = committed_messages_of(sp);
@@ -485,8 +487,8 @@ TEST_CASE("a duplicate accept_decide is ignored")
 {
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
-    const paxos_message ad{3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, 0}};
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
+    const paxos_message ad{3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 0, {make_entry(1)}, {}}};
     REQUIRE(sp.handle(ad));
     REQUIRE(sp.handle(ad));
     CHECK(sp.get_accepted_idx() == 1);
@@ -538,7 +540,7 @@ TEST_CASE("a failed write inside a step throws write_error, and a later commit i
     committed_messages_of(sp);
     const std::vector large{large_entry_of(0x11), large_entry_of(0x22), large_entry_of(0x33)};
     try {
-        static_cast<void>(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {large, 0}, 0}}));
+        static_cast<void>(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {large, 0}, {}}}));
         FAIL("the handler did not throw");
     } catch (const konsens::write_error& e) {
         CHECK(e.code() == std::make_error_code(std::errc::no_space_on_device));
@@ -636,7 +638,7 @@ TEST_CASE("a recovering node drops messages, refuses proposals and resends recov
     const auto refused = sp.append(make_entry(1));
     REQUIRE(!refused);
     CHECK(refused.error() == konsens::client_errc::recovering);
-    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+    REQUIRE(sp.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     REQUIRE(sp.resend_message_timeout());
     const auto rs = messages_of<konsens::recovery>(committed_messages_of(sp));
     REQUIRE(rs.size() == 2);
@@ -703,8 +705,8 @@ TEST_CASE("the answer of a recovering node does not count in the normal recovery
                                                   false,
                                                   1,
                                                   chain_of({make_entry(2)}, 1),
-                                                  0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot{}, false, ballot{}, {}, 0, true, 0, 0, 0}}));
+                                                  {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot{}, false, ballot{}, {}, 0, true, 0, {}, {}}}));
     CHECK(sp.recovering());
     CHECK(sp.get_accepted_round() == ballot_of(3, 3));
     CHECK(decided_of(sp) == v1);
@@ -722,11 +724,11 @@ TEST_CASE("handle_recovery_response: a later answer of a peer replaces its earli
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle(
-        {2, 1, konsens::recovery_response{7, ballot_of(1, 2), true, ballot_of(1, 2), {}, 0, false, 0, 0, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+        {2, 1, konsens::recovery_response{7, ballot_of(1, 2), true, ballot_of(1, 2), {}, 0, false, 0, {}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 3), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     CHECK(sp.recovering());
     REQUIRE(sp.handle(
-        {2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {}, 0, false, 0, 0, 0}}));
+        {2, 1, konsens::recovery_response{7, ballot_of(2, 2), true, ballot_of(2, 2), {}, 0, false, 0, {}, {}}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_promise() == ballot_of(2, 2));
 }
@@ -800,7 +802,7 @@ TEST_CASE("handle_recovery_response: an old nonce is ignored and a primary is ne
     auto old = primary;
     old.nonce = 6;
     REQUIRE(sp.handle({2, 1, old}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     CHECK(sp.recovering());
     CHECK(committed_messages_of(sp).empty());
     REQUIRE(sp.handle({2, 1, primary}));
@@ -827,7 +829,7 @@ TEST_CASE("handle_recovery_response: only the primary of the highest ballot coun
                                                   1,
                                                   last_crc_of({make_entry(1)}),
                                                   last_crc_of({make_entry(1)})}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     CHECK(sp.recovering());
     REQUIRE(sp.handle({3, 1,
                        konsens::recovery_response{7,
@@ -857,7 +859,7 @@ TEST_CASE("handle_recovery_response: the node takes the state of the primary")
     });
     auto sp = make(1, std::move(s), 7);
     committed_messages_of(sp);
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     REQUIRE(sp.handle({2, 1,
                        konsens::recovery_response{7,
                                                   ballot_of(2, 2),
@@ -905,8 +907,8 @@ TEST_CASE("handle_recovery_response: the node takes a higher promise of the prim
     auto sp = make(1, storage_with_promise(ballot_of(1, 2)), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle(
-        {2, 1, konsens::recovery_response{7, ballot_of(4, 2), true, ballot_of(4, 2), {}, 0, false, 0, 0, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(4, 2), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+        {2, 1, konsens::recovery_response{7, ballot_of(4, 2), true, ballot_of(4, 2), {}, 0, false, 0, {}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(4, 2), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_promise() == ballot_of(4, 2));
     CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).promise == ballot_of(4, 2));
@@ -939,10 +941,8 @@ TEST_CASE("handle_recovery_response: the decided index does not fall")
                                                   {make_entry(1), make_entry(2), make_entry(3)},
                                                   0,
                                                   false,
-                                                  3,
-                                                  0,
-                                                  0}}));
-    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 2), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+                                                  3, {}, {}}}));
+    REQUIRE(sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 2), false, ballot{}, {}, 0, false, 0, {}, {}}}));
     CHECK(!sp.recovering());
     CHECK(sp.get_decided_idx() == 2);
     CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).decided_idx == 2);
@@ -1059,16 +1059,16 @@ TEST_CASE("a different CRC32C of one last entry stops voting with the evidence")
     const std::vector one_two{make_entry(1), make_entry(2)};
     auto empty = make(1, storage_of(ballot_of(1, 2), ballot{}, {}, 0), 7);
     REQUIRE(
-        empty.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, true, 0, 5, 0}}));
+        empty.handle({2, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, true, 0, konsens::chain_hash{std::byte{5}}, {}}}));
     REQUIRE(
-        empty.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, true, 0, 6, 0}}));
+        empty.handle({3, 1, konsens::recovery_response{7, ballot_of(1, 2), false, ballot{}, {}, 0, true, 0, konsens::chain_hash{std::byte{6}}, {}}}));
     CHECK(empty.votes());
     CHECK(!empty.recovering());
 
     auto sp = make(1, storage_of(ballot_of(2, 2), ballot_of(2, 2), one_two, 1), 7);
     committed_messages_of(sp);
     auto changed = answer_of(7, ballot_of(2, 2), ballot_of(2, 2), one_two, 1);
-    changed.last_chain_crc += 1;
+    changed.last_chain_hash.front() ^= std::byte{1};
     REQUIRE(sp.handle({2, 1, changed}));
     const auto r = sp.handle({3, 1, answer_of(7, ballot_of(2, 2), ballot_of(1, 1), {make_entry(1)}, 0)});
     REQUIRE(!r);
@@ -1080,9 +1080,9 @@ TEST_CASE("a different CRC32C of one last entry stops voting with the evidence")
     REQUIRE(fault);
     CHECK(fault->index == 2);
     CHECK(fault->pid == 2);
-    CHECK(fault->crc == changed.last_chain_crc);
+    CHECK(fault->chain == changed.last_chain_hash);
     CHECK(fault->other_pid == 1);
-    CHECK(fault->other_crc == last_crc_of(one_two));
+    CHECK(fault->other_chain == last_crc_of(one_two));
     CHECK(committed_messages_of(sp).empty());
     CHECK(!sp.handle({2, 1, konsens::recovery{8}}));
     CHECK(committed_messages_of(sp).empty());
@@ -1137,8 +1137,8 @@ TEST_CASE("new_state whose last entry has another CRC32C stops voting")
     REQUIRE(!r);
     CHECK(r.error() == konsens::paxos_errc::hardware_fault);
     REQUIRE(sp.get_hardware_fault());
-    CHECK(sp.get_hardware_fault()->crc == chain_of({source_log.at(0), make_entry(9)}, 2));
-    CHECK(sp.get_hardware_fault()->other_crc == last_crc_of(source_log));
+    CHECK(sp.get_hardware_fault()->chain == chain_of({source_log.at(0), make_entry(9)}, 2));
+    CHECK(sp.get_hardware_fault()->other_chain == last_crc_of(source_log));
     CHECK(sp.recovering());
 }
 
@@ -1159,7 +1159,7 @@ TEST_CASE("new_state with no entry is compared with the own entry at its accepte
     };
     auto differs = restart();
     CHECK(!differs.handle({1, 3, new_state_of(7, ballot_of(3, 1), ballot_of(3, 1), one_two, 2, 2)}));
-    CHECK(differs.get_hardware_fault()->crc == chain_of({make_entry(1), make_entry(5)}, 2));
+    CHECK(differs.get_hardware_fault()->chain == chain_of({make_entry(1), make_entry(5)}, 2));
 
     const std::vector one_five{make_entry(1), make_entry(5)};
     auto same = restart();
@@ -1447,7 +1447,7 @@ TEST_CASE("a key lost while the node runs is found at the next step")
     check_stops_voting(sp, make_error_code(konsens::storage_errc::missing_meta_record));
 }
 
-// Plan 2.3: the meta record holds the log length and the chain CRC of the
+// Plan 2.3: the meta record holds the log length and the chain hash of the
 // last entry. A lost last entry leaves a log that ends one entry early.
 TEST_CASE("a last entry lost while the node runs is found by the chain check")
 {
@@ -1461,7 +1461,7 @@ TEST_CASE("a last entry lost while the node runs is found by the chain check")
 // round, and no node accepts in a round above its promise. A lost promise
 // leaves a meta record with an accepted round above the promise. The meta
 // record of the damage comes from a storage with the same log, so its CRC
-// and its chain CRC are valid.
+// and its chain hash are valid.
 TEST_CASE("a promise lost while the node runs is found at the next step")
 {
     const auto lost = sqlite_storage::new_directory();
@@ -1535,12 +1535,12 @@ TEST_CASE("a resent promise carries the stored values")
 {
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, {}}}));
     committed_messages_of(sp);
     REQUIRE(sp.handle({2, 1, konsens::prepare{ballot_of(2, 2), 0, ballot{}, 0}}));
     const auto sent = messages_of<konsens::promise>(committed_messages_of(sp));
     REQUIRE(sent.size() == 1);
-    const konsens::promise stored{ballot_of(2, 2),     ballot_of(1, 3), 0, 2, konsens::log_sync{one_two, 0}, 0,
+    const konsens::promise stored{ballot_of(2, 2),     ballot_of(1, 3), 0, 2, konsens::log_sync{one_two, 0}, {},
                                   last_crc_of(one_two)};
     CHECK(sent[0] == stored);
     REQUIRE(sp.resend_message_timeout());
@@ -1576,7 +1576,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
     {
         auto sp = make(1);
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-        REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, 0}}));
+        REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {{}, 0}, {}}}));
         REQUIRE(sp.handle({3, 1, konsens::accept_decide{ballot_of(1, 3), {1, 2}, 1, one_two, chain_of(one_two, 1)}}));
         CHECK(states_of(committed_storage_of(sp)) == committed_below(1, 2));
     }
@@ -1584,7 +1584,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
     {
         auto sp = make(1);
         REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-        REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
+        REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, {}}}));
         REQUIRE(sp.commit());
         CHECK(states_of(committed_storage_of(sp)) == committed_below(0, 2));
         REQUIRE(sp.handle({3, 1, konsens::decide{ballot_of(1, 3), {1, 2}, 2, chain_of(one_two, 2)}}));
@@ -1595,7 +1595,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         auto sp = make(3);
         REQUIRE(sp.handle_leader(ballot_of(1, 3)));
         committed_messages_of(sp);
-        REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, 0, 0}}));
+        REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, {}, {}}}));
         REQUIRE(sp.append(make_entry(1)));
         REQUIRE(sp.append(make_entry(2)));
         committed_messages_of(sp);
@@ -1608,7 +1608,7 @@ TEST_CASE("each writer of the decided index sets the state of its entries")
         auto sp = make(1, std::move(s), 7);
         committed_messages_of(sp);
         REQUIRE(
-            sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, 0, 0}}));
+            sp.handle({3, 1, konsens::recovery_response{7, ballot_of(2, 3), false, ballot{}, {}, 0, false, 0, {}, {}}}));
         REQUIRE(sp.handle({2, 1,
                            konsens::recovery_response{7,
                                                       ballot_of(2, 2),
@@ -1637,7 +1637,7 @@ sp_t leader_with_two_entries()
     auto sp = make(3);
     REQUIRE(sp.handle_leader(ballot_of(1, 3)));
     committed_messages_of(sp);
-    REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, 0, 0}}));
+    REQUIRE(sp.handle({1, 3, konsens::promise{ballot_of(1, 3), ballot{}, 0, 0, std::nullopt, {}, {}}}));
     REQUIRE(sp.append(make_entry(1)));
     REQUIRE(sp.append(make_entry(2)));
     committed_messages_of(sp);
@@ -1647,9 +1647,9 @@ sp_t leader_with_two_entries()
 }
 
 // Plan lmdb-only-source 2.5 item 2: the leader counts an Accepted only when
-// its chain CRC equals the chain CRC of the own log at that index. A
+// its chain hash equals the chain hash of the own log at that index. A
 // follower whose log differs below the index does not help to decide.
-TEST_CASE("a leader does not decide on an accepted with another chain CRC")
+TEST_CASE("a leader does not decide on an accepted with another chain hash")
 {
     auto sp = leader_with_two_entries();
     const auto other = chain_of({make_entry(9), make_entry(2)}, 2);
@@ -1661,17 +1661,17 @@ TEST_CASE("a leader does not decide on an accepted with another chain CRC")
     CHECK(sp.get_decided_idx() == 2);
     const auto decides = messages_of<konsens::decide>(committed_messages_of(sp));
     REQUIRE(decides.size() == 1);
-    CHECK(decides[0].decided_chain_crc == last_crc_of(one_two));
+    CHECK(decides[0].decided_chain_hash == last_crc_of(one_two));
 }
 
 // Plan 2.5 item 3 and the decision of the owner (2026-10-24 21:27): a
-// follower whose chain CRC at the decided index of the leader differs has a
+// follower whose chain hash at the decided index of the leader differs has a
 // damage. It stops voting with the evidence, and raises nothing.
-TEST_CASE("a decide with another chain CRC stops the vote")
+TEST_CASE("a decide with another chain hash stops the vote")
 {
     auto sp = make(1);
     REQUIRE(sp.handle({3, 1, konsens::prepare{ballot_of(1, 3), 0, ballot{}, 0}}));
-    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, 0}}));
+    REQUIRE(sp.handle({3, 1, konsens::accept_sync{ballot_of(1, 3), {1, 1}, 0, {one_two, 0}, {}}}));
     REQUIRE(sp.commit());
     static_cast<void>(sp.take_outgoing_messages());
     const auto other = chain_of({make_entry(9), make_entry(2)}, 2);
@@ -1681,17 +1681,17 @@ TEST_CASE("a decide with another chain CRC stops the vote")
     CHECK(!sp.votes());
     REQUIRE(sp.get_hardware_fault());
     CHECK(sp.get_hardware_fault()->index == 2);
-    CHECK(sp.get_hardware_fault()->crc == last_crc_of(one_two));
+    CHECK(sp.get_hardware_fault()->chain == last_crc_of(one_two));
     CHECK(sp.get_hardware_fault()->other_pid == 3);
-    CHECK(sp.get_hardware_fault()->other_crc == other);
+    CHECK(sp.get_hardware_fault()->other_chain == other);
     CHECK(sqlite_storage::meta_of(committed_storage_of(sp)).decided_idx == 0);
 }
 
 // Plan 2.5 item 4: the leader takes the decided index of a promise only
-// when the promise carries the chain CRC that the synced log of the leader
+// when the promise carries the chain hash that the synced log of the leader
 // has at that index. Else it keeps its own decided index (VerifyPromise of
 // the model).
-TEST_CASE("the majority of promises does not decide on another chain CRC")
+TEST_CASE("the majority of promises does not decide on another chain hash")
 {
     auto sp = make(3);
     REQUIRE(sp.handle_leader(ballot_of(1, 3)));
@@ -1707,11 +1707,11 @@ TEST_CASE("the majority of promises does not decide on another chain CRC")
     CHECK(states_of(st) == committed_below(0, 2));
 }
 
-// Plan 2.2 item 5: recovery compares the chain CRC of the last entry. Two
+// Plan 2.2 item 5: recovery compares the chain hash of the last entry. Two
 // logs with the same last entry and another entry below it have the same
-// entry CRC at the last index and another chain CRC, so the restarting
+// entry CRC at the last index and another chain hash, so the restarting
 // node finds the difference.
-TEST_CASE("recovery compares the chain CRC, not the entry CRC")
+TEST_CASE("recovery compares the chain hash, not the entry CRC")
 {
     const std::vector nine_two{make_entry(9), make_entry(2)};
     REQUIRE(konsens::compute_entry_crc(1, one_two.back()) == konsens::compute_entry_crc(1, nine_two.back()));
@@ -1725,8 +1725,8 @@ TEST_CASE("recovery compares the chain CRC, not the entry CRC")
     };
     const auto a = answer_from(1, one_two);
     const auto b = answer_from(2, nine_two);
-    CHECK(a.last_chain_crc == last_crc_of(one_two));
-    CHECK(b.last_chain_crc == last_crc_of(nine_two));
+    CHECK(a.last_chain_hash == last_crc_of(one_two));
+    CHECK(b.last_chain_hash == last_crc_of(nine_two));
     auto sp = make(3, storage_with_promise(ballot_of(1, 1)), 7);
     committed_messages_of(sp);
     REQUIRE(sp.handle({1, 3, a}));

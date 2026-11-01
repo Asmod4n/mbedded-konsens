@@ -99,8 +99,8 @@ struct promise {
     std::uint64_t decided_idx;
     std::uint64_t accepted_idx;
     std::optional<konsens::log_sync> log_sync;
-    std::uint32_t decided_chain_crc;
-    std::uint32_t last_chain_crc;
+    chain_hash decided_chain_hash;
+    chain_hash last_chain_hash;
     friend bool operator==(const promise&, const promise&) = default;
 };
 
@@ -109,7 +109,7 @@ struct accept_sync {
     sequence_number seq_num;
     std::uint64_t decided_idx;
     konsens::log_sync log_sync;
-    std::uint32_t decided_chain_crc;
+    chain_hash decided_chain_hash;
     friend bool operator==(const accept_sync&, const accept_sync&) = default;
 };
 
@@ -118,14 +118,14 @@ struct accept_decide {
     sequence_number seq_num;
     std::uint64_t decided_idx;
     std::vector<entry> entries;
-    std::uint32_t decided_chain_crc;
+    chain_hash decided_chain_hash;
     friend bool operator==(const accept_decide&, const accept_decide&) = default;
 };
 
 struct accepted {
     ballot n;
     std::uint64_t accepted_idx;
-    std::uint32_t accepted_chain_crc;
+    chain_hash accepted_chain_hash;
     friend bool operator==(const accepted&, const accepted&) = default;
 };
 
@@ -133,7 +133,7 @@ struct decide {
     ballot n;
     sequence_number seq_num;
     std::uint64_t decided_idx;
-    std::uint32_t decided_chain_crc;
+    chain_hash decided_chain_hash;
     friend bool operator==(const decide&, const decide&) = default;
 };
 
@@ -161,8 +161,8 @@ struct recovery_response {
     std::uint64_t decided_idx;
     bool recovering;
     std::uint64_t accepted_idx;
-    std::uint32_t last_chain_crc;
-    std::uint32_t decided_chain_crc;
+    chain_hash last_chain_hash;
+    chain_hash decided_chain_hash;
     friend bool operator==(const recovery_response&, const recovery_response&) = default;
 };
 
@@ -180,10 +180,10 @@ struct new_state {
     ballot n_accepted;
     std::uint64_t accepted_idx;
     std::uint64_t decided_idx;
-    std::uint32_t last_chain_crc;
+    chain_hash last_chain_hash;
     std::uint64_t from_idx;
     std::vector<entry> entries;
-    std::uint32_t decided_chain_crc;
+    chain_hash decided_chain_hash;
     friend bool operator==(const new_state&, const new_state&) = default;
 };
 
@@ -253,9 +253,9 @@ struct build_response {
     std::uint64_t nonce;
     std::uint64_t from_idx;
     std::vector<entry> entries;
-    std::uint32_t last_chain_crc;
+    chain_hash last_chain_hash;
     std::uint64_t decided_idx;
-    std::uint32_t decided_chain_crc;
+    chain_hash decided_chain_hash;
     friend bool operator==(const build_response&, const build_response&) = default;
 };
 
