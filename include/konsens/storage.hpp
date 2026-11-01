@@ -147,6 +147,13 @@ struct session_record {
 
 enum class entry_state : std::uint8_t { in_work, committed };
 
+struct index_range {
+    std::uint64_t from_idx;
+    std::uint64_t to_idx;
+
+    friend bool operator==(const index_range&, const index_range&) = default;
+};
+
 struct last_entry {
     std::uint64_t index;
     std::uint32_t entry_crc;
@@ -211,6 +218,7 @@ concept storage_read = state_read<T> && requires(const T& t, std::uint64_t from,
     { t.get_last_entry() } -> std::same_as<std::expected<std::optional<last_entry>, std::error_code>>;
     { t.get_entry_state(index) } -> std::same_as<std::expected<std::optional<entry_state>, std::error_code>>;
     { t.get_chain_hash(index) } -> std::same_as<std::expected<std::optional<chain_hash>, std::error_code>>;
+    { t.get_unchecked_entry(index) } -> std::same_as<std::expected<std::optional<entry>, std::error_code>>;
     { t.get_config_first_idx() } -> std::same_as<std::expected<std::optional<std::uint64_t>, std::error_code>>;
 };
 
@@ -227,6 +235,7 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                             } -> std::same_as<std::expected<nested_transaction_of<T>, std::error_code>>;
                             { t.set_applied(index, hash) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.append_entries(entries) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.replace_entries(index, entries) } -> std::same_as<std::expected<void, std::error_code>>;
                             {
                                 t.append_on_prefix(index, entries)
                             } -> std::same_as<std::expected<void, std::error_code>>;

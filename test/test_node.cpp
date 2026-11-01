@@ -354,6 +354,7 @@ struct recording_storage {
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
         auto get_chain_hash(const std::uint64_t index) const { return t_.get_chain_hash(index); }
+        auto get_unchecked_entry(const std::uint64_t index) const { return t_.get_unchecked_entry(index); }
         auto get_config_first_idx() const { return t_.get_config_first_idx(); }
         auto find(const std::span<const std::byte> key) const { return t_.find(key); }
         auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
@@ -378,6 +379,10 @@ struct recording_storage {
         {
             appended_->push_back(entries.data());
             return t_.append_entries(entries);
+        }
+        auto replace_entries(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
+        {
+            return t_.replace_entries(from_idx, entries);
         }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {

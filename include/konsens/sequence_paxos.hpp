@@ -86,6 +86,11 @@ inline bool error_is_a_damage(const std::error_code e) noexcept
            e == make_error_code(storage_errc::missing_entry) || e == make_error_code(storage_errc::missing_meta_record);
 }
 
+inline bool record_is_damaged(const std::error_code e) noexcept
+{
+    return e == make_error_code(storage_errc::crc_mismatch) || e == make_error_code(storage_errc::malformed_record);
+}
+
 constexpr bool meta_values_are_consistent(const meta_record& m) noexcept
 {
     return !(m.log_len > 0 && m.accepted_round == ballot{}) && m.accepted_round <= m.promise &&
@@ -865,6 +870,99 @@ public:
         return {};
     }
 
+    std::expected<std::vector<index_range>, std::error_code> find_the_damaged_ranges() const
+    {
+        throw_if_a_step_is_open();
+        const auto t = internal_storage_.begin_read_only();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            return std::unexpected(m.error());
+        }
+        if (!meta_values_are_consistent(*m) || is_below_mark(mark_of(*m), mark_)) [[unlikely]] {
+            return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
+        }
+        std::vector<index_range> ranges;
+        std::optional<chain_hash> previous = chain_hash{};
+        for (std::uint64_t index = 0; index < m->log_len; ++index) {
+            const auto stored = t->get_chain_hash(index);
+            if (!stored && !record_is_damaged(stored.error())) [[unlikely]] {
+                return std::unexpected(stored.error());
+            }
+            if (!stored || !*stored) [[unlikely]] {
+                if (ranges.empty() || ranges.back().to_idx != index) {
+                    ranges.push_back({index, index + 1});
+                } else {
+                    ranges.back().to_idx = index + 1;
+                }
+                previous.reset();
+                continue;
+            }
+            if (previous) {
+                const auto e = t->get_entries(index, index + 1);
+                if (!e) [[unlikely]] {
+                    return std::unexpected(e.error());
+                }
+                if (compute_chain_hash(sha256_, *previous, index, e->front()) != **stored) [[unlikely]] {
+                    return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
+                }
+            }
+            previous = **stored;
+        }
+        if (previous && *previous != m->last_chain_hash) [[unlikely]] {
+            return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
+        }
+        return ranges;
+    }
+
+    std::expected<std::vector<index_range>, std::error_code> repair_locally(const std::span<const index_range> ranges)
+    {
+        throw_if_a_step_is_open();
+        throw_if_a_write_did_not_finish();
+        auto t = internal_storage_.begin();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            return std::unexpected(m.error());
+        }
+        std::vector<index_range> left;
+        for (const auto r : ranges) {
+            const auto copy = read_the_local_copy(*t, r);
+            if (!copy) [[unlikely]] {
+                return std::unexpected(copy.error());
+            }
+            if (!*copy) {
+                left.push_back(r);
+                continue;
+            }
+            const auto fits = copy_fits_the_chain(*t, *m, r, **copy);
+            if (!fits) [[unlikely]] {
+                return std::unexpected(fits.error());
+            }
+            if (!*fits) {
+                left.push_back(r);
+                continue;
+            }
+            if (auto w = t->replace_entries(r.from_idx, **copy); !w) [[unlikely]] {
+                write_unfinished_ = true;
+                throw write_error(w.error(), "konsens: the storage failed to write a repair");
+            }
+        }
+        if (!t->has_writes()) {
+            return left;
+        }
+        write_unfinished_ = true;
+        if (auto c = std::move(*t).commit(); !c) [[unlikely]] {
+            throw write_error(c.error(), "konsens: the storage failed to commit a repair");
+        }
+        write_unfinished_ = false;
+        return left;
+    }
+
     std::optional<std::error_code> get_error() const { return error_; }
     std::optional<konsens::hardware_fault> get_hardware_fault() const { return hardware_fault_; }
     std::vector<peer_step_back> take_peer_step_backs() { return std::exchange(peer_step_backs_, {}); }
@@ -1632,6 +1730,60 @@ private:
             outgoing_.push_back({pid_, m->promise.pid, std::move(*acc)});
         }
         return {};
+    }
+
+    template <typename T>
+    static std::expected<std::optional<std::vector<entry>>, std::error_code> read_the_local_copy(const T& t,
+                                                                                                 const index_range r)
+    {
+        std::vector<entry> copy;
+        for (auto index = r.from_idx; index < r.to_idx; ++index) {
+            auto e = t.get_unchecked_entry(index);
+            if (!e) [[unlikely]] {
+                return std::unexpected(e.error());
+            }
+            if (!*e) {
+                return std::nullopt;
+            }
+            copy.push_back(std::move(**e));
+        }
+        return copy;
+    }
+
+    template <typename T>
+    std::expected<bool, std::error_code> copy_fits_the_chain(const T& t, const meta_record& m, const index_range r,
+                                                             const std::span<const entry> copy) const
+    {
+        if (r.from_idx >= r.to_idx || r.to_idx > m.log_len || copy.size() != r.to_idx - r.from_idx) [[unlikely]] {
+            return false;
+        }
+        chain_hash before{};
+        if (r.from_idx > 0) {
+            const auto stored = t.get_chain_hash(r.from_idx - 1);
+            if (!stored) [[unlikely]] {
+                return std::unexpected(stored.error());
+            }
+            if (!*stored) [[unlikely]] {
+                return std::unexpected(make_error_code(storage_errc::missing_entry));
+            }
+            before = **stored;
+        }
+        const auto chain = compute_chain_hash(sha256_, before, r.from_idx, copy);
+        if (r.to_idx == m.log_len) {
+            return chain == m.last_chain_hash;
+        }
+        const auto stored = t.get_chain_hash(r.to_idx);
+        if (!stored) [[unlikely]] {
+            return std::unexpected(stored.error());
+        }
+        if (!*stored) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::missing_entry));
+        }
+        const auto next = t.get_entries(r.to_idx, r.to_idx + 1);
+        if (!next) [[unlikely]] {
+            return std::unexpected(next.error());
+        }
+        return compute_chain_hash(sha256_, chain, r.to_idx, next->front()) == **stored;
     }
 
     std::expected<std::uint64_t, std::error_code> count_the_verified_entries() const

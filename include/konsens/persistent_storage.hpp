@@ -42,6 +42,8 @@ public:
         get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
         get_chain_hash(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
+        get_unchecked_entry(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
         [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
         find(std::span<const std::byte> key) const;
@@ -97,9 +99,13 @@ public:
         get_entry_state(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
         get_chain_hash(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
+        get_unchecked_entry(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
 
         [[nodiscard]] std::expected<void, std::error_code> append_entries(std::span<const entry> entries);
+        [[nodiscard]] std::expected<void, std::error_code> replace_entries(std::uint64_t from_idx,
+                                                                           std::span<const entry> entries);
         [[nodiscard]] std::expected<void, std::error_code> append_on_prefix(std::uint64_t from_idx,
                                                                             std::span<const entry> entries);
         [[nodiscard]] std::expected<void, std::error_code> set_promise(ballot promise);

@@ -346,6 +346,7 @@ struct statements {
     statement get_last_entry;
     statement append_entry;
     statement update_entry;
+    statement replace_entry;
     statement delete_entries_between;
     statement get_value;
     statement put_value;
@@ -378,6 +379,9 @@ std::expected<statements, int> prepare_statements(sqlite3* db)
                   std::string_view{"INSERT INTO log (idx, record) SELECT ?1, ?2 "
                                    "WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)"}},
         std::pair{&s.update_entry, std::string_view{"UPDATE log SET record = ?2 WHERE idx = ?1"}},
+        std::pair{&s.replace_entry,
+                  std::string_view{"INSERT INTO log (idx, record) VALUES (?1, ?2) "
+                                   "ON CONFLICT (idx) DO UPDATE SET record = excluded.record"}},
         std::pair{&s.delete_entries_between, std::string_view{"DELETE FROM log WHERE idx >= ?1 AND idx < ?2"}},
         std::pair{&s.get_value, std::string_view{"SELECT value FROM data WHERE key = ?1"}},
         std::pair{&s.put_value,
@@ -699,6 +703,29 @@ std::expected<std::optional<chain_hash>, std::error_code> read_chain_hash(const 
     return r;
 }
 
+std::expected<std::optional<entry>, std::error_code> read_unchecked_entry(const link& l, const std::uint64_t index)
+{
+    if (!key_fits_in_an_sqlite_integer(index)) [[unlikely]] {
+        return std::nullopt;
+    }
+    sqlite3_stmt* const s = l.s->get_entry.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    const auto value = select_one(l, s);
+    if (!value) [[unlikely]] {
+        return std::unexpected(value.error());
+    }
+    if (!value->has_value() || value->value().size() < kind_size + record_tail_size) {
+        sqlite3_reset(s);
+        return std::nullopt;
+    }
+    auto decoded = decode_entry(value->value().first(value->value().size() - record_tail_size));
+    sqlite3_reset(s);
+    return decoded;
+}
+
 std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, std::vector<std::byte>& record,
                                                  const std::span<const entry> entries)
 {
@@ -799,6 +826,37 @@ std::expected<void, std::error_code> set_entry_states(const link& l, std::vector
         if (auto r = run(l, update); !r) [[unlikely]] {
             return r;
         }
+    }
+    return {};
+}
+
+std::expected<void, std::error_code> put_repaired_entries(const link& l, const meta_record& m,
+                                                          std::vector<std::byte>& record, const std::uint64_t from_idx,
+                                                          const std::span<const entry> entries)
+{
+    if (from_idx > m.log_len || entries.size() > m.log_len - from_idx) [[unlikely]] {
+        throw std::logic_error{"konsens: a repair replaces only entries below the length of the log"};
+    }
+    auto chain = chain_hash_before(l, from_idx);
+    if (!chain) [[unlikely]] {
+        return std::unexpected(chain.error());
+    }
+    sqlite3_stmt* const s = l.s->replace_entry.get();
+    for (std::uint64_t index = from_idx; const auto& e : entries) {
+        record.resize(encoded_size_of(e) + record_tail_size);
+        const auto state = index < m.decided_idx ? entry_state::committed : entry_state::in_work;
+        *chain = encode_record(*l.hash, index, e, *chain, state, record);
+        sqlite3_reset(s);
+        if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (auto r = run(l, s); !r) [[unlikely]] {
+            return r;
+        }
+        ++index;
     }
     return {};
 }
@@ -1256,6 +1314,13 @@ persistent_storage::read_only_transaction::get_chain_hash(const std::uint64_t in
     return read_chain_hash(env_->of_reader(), index);
 }
 
+std::expected<std::optional<entry>, std::error_code>
+persistent_storage::read_only_transaction::get_unchecked_entry(const std::uint64_t index) const
+{
+    throw_if_no_environment(env_);
+    return read_unchecked_entry(env_->of_reader(), index);
+}
+
 std::expected<std::optional<std::uint64_t>, std::error_code>
 persistent_storage::read_only_transaction::get_config_first_idx() const
 {
@@ -1362,6 +1427,17 @@ persistent_storage::transaction::get_chain_hash(const std::uint64_t index) const
     return read_chain_hash(env_->of_writer(), index);
 }
 
+std::expected<std::optional<entry>, std::error_code>
+persistent_storage::transaction::get_unchecked_entry(const std::uint64_t index) const
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return read_unchecked_entry(env_->of_writer(), index);
+}
+
 std::expected<std::optional<std::uint64_t>, std::error_code>
 persistent_storage::transaction::get_config_first_idx() const
 {
@@ -1392,6 +1468,24 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
         return put;
     }
     return write_meta(l, *m);
+}
+
+std::expected<void, std::error_code>
+persistent_storage::transaction::replace_entries(const std::uint64_t from_idx, const std::span<const entry> entries)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    env_->written = true;
+    throw_if_an_entry_has_a_field_of_another_kind(entries);
+    const auto l = env_->of_writer();
+    const auto m = read_meta(l);
+    if (!m) [[unlikely]] {
+        return std::unexpected(m.error());
+    }
+    return put_repaired_entries(l, *m, env_->record, from_idx, entries);
 }
 
 std::expected<void, std::error_code>
