@@ -169,6 +169,10 @@ public:
         auto ble = ballot_leader_election::with(ble_config_of(config), *promise);
         node n(config, std::move(*sp), std::move(own_storage), std::move(ble), std::move(machine), nonce);
         n.build_started_ = n.seq_paxos_.building();
+        if (const auto e = n.seq_paxos_.get_error();
+            !*proof && *kind == start_kind::clean && e && error_is_a_damage(*e)) {
+            static_cast<void>(n.start_the_repair());
+        }
         if (n.seq_paxos_.votes()) {
             if (auto r = n.check_the_applied_state();
                 !r && r.error() != make_error_code(paxos_errc::state_differs_from_log) && !error_is_a_damage(r.error()))

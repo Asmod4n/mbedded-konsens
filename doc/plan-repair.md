@@ -152,10 +152,10 @@ repair needs the chain hash.
    repair included. The limit is `automatic_repairs`, one.
 6. The wire has two new kinds, 20 and 21. The kinds of the heartbeat
    messages move to 22 and 23.
-7. Provisional: a damage that the start checks find still retires the
-   node, as plan clean-stop 2.6 decided. The repair runs for a damage
-   that a step finds. A card asks the owner whether the start repairs
-   too.
+7. Owner 2026-11-01 (card), replaces plan clean-stop 2.6: a damage that
+   the start checks find after a clean stop is repaired as a damage that
+   a step finds. A start without a clean-stop mark still retires the
+   node (form B).
 8. Not built yet: the model of section 5 and the view of item 9 for the
    management tool.
 

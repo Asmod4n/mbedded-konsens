@@ -484,11 +484,12 @@ void end_without_stop(node_t& n)
 
 }
 
-// Plan clean-stop 2.6, decided 2026-10-27: a damage that the start
-// checks find retires the node, also after a clean stop. The two other
-// nodes elect a leader among them when the damaged node led, and decide
-// without it.
-TEST_CASE("a damage that the start checks find retires the node")
+// Owner 2026-11-01 (card), replaces plan clean-stop 2.6: a damage that the
+// start checks find after a clean stop is repaired from the peers, as a
+// damage that a step finds. The lost last row is such a damage, because
+// the meta record still names its index and its chain hash. The node
+// repairs it and then decides with the two others.
+TEST_CASE("a damage that the start checks find after a clean stop is repaired")
 {
     const auto log_directory = sqlite_storage::new_directory();
     const auto own_directory = sqlite_storage::new_directory();
@@ -514,20 +515,20 @@ TEST_CASE("a damage that the start checks find retires the node")
     later.first_start = false;
     nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
                              sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
-    CHECK(nodes[2].retired());
-    CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
-    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
+    CHECK_FALSE(nodes[2].retired());
+    CHECK(nodes[2].get_sequence_paxos().repairs());
+    CHECK_FALSE(nodes[2].get_sequence_paxos().get_error().has_value());
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
+    CHECK(nodes[2].get_sequence_paxos().votes());
     const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
-    REQUIRE((leader == 1 || leader == 2));
     batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    for (const auto i : {std::size_t{0}, std::size_t{1}}) {
-        CHECK(*nodes.at(i).read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    for (const auto& n : nodes) {
+        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
 }
 
@@ -569,8 +570,8 @@ TEST_CASE("the node storage keeps the proof of a fault")
 
 // Plan execute-verify 3.6: the start reads the whole log, so an entry that
 // is missing in the middle of the log is a damage at the start, though the
-// meta record and the last entry are whole. Since plan clean-stop 2.6 the
-// damage retires the node.
+// meta record and the last entry are whole. Since the owner card of
+// 2026-11-01 the node repairs the missing row from its peers.
 TEST_CASE("the start scan finds an entry that is missing in the middle of the log")
 {
     const auto log_directory = sqlite_storage::new_directory();
@@ -601,10 +602,13 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
     later.first_start = false;
     nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
                              sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
-    CHECK(nodes[2].retired());
-    const auto e = nodes[2].get_sequence_paxos().get_error();
-    REQUIRE(e.has_value());
-    CHECK(konsens::error_is_a_damage(*e));
+    CHECK_FALSE(nodes[2].retired());
+    CHECK(nodes[2].get_sequence_paxos().repairs());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes[2].get_sequence_paxos().votes());
+    CHECK(*nodes[2].read_decided_suffix(0) == entries);
 }
 
 namespace {
