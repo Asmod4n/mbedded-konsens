@@ -393,10 +393,10 @@ TEST_CASE("a new node that ends during its build continues from the end of its l
     CHECK(c.decided_log(4) == log);
 }
 
-// Plan reconfiguration 2.7 and 4.6: a part whose chain CRC does not agree
+// Plan reconfiguration 2.7 and 4.6: a part whose chain hash does not agree
 // is not written, and the next request goes to the next node of
 // build_from.
-TEST_CASE("a part whose chain CRC fails is not written, and the next source is asked")
+TEST_CASE("a part whose chain hash fails is not written, and the next source is asked")
 {
     auto c = old_configuration();
     reconfigure(c);
@@ -405,7 +405,7 @@ TEST_CASE("a part whose chain CRC fails is not written, and the next source is a
     const auto sent = the_build_request_of(c, 4);
     const auto* request = body_of<konsens::build_request>(sent);
     CHECK(batches::to_of(sent) == 1u);
-    const konsens::build_response damaged{request->nonce, 0, log, 0, log.size(), 0};
+    const konsens::build_response damaged{request->nonce, 0, log, konsens::chain_hash{}, log.size(), konsens::chain_hash{}};
     batches::commit(c.at(4), c.at(4).handle_incoming(std::vector<message>{paxos_message{1, 4, damaged}}));
     CHECK(c.at(4).get_sequence_paxos().get_accepted_idx() == 0u);
     for (std::uint64_t i = 0; i < resend_ticks; ++i) {

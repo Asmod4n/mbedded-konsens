@@ -48,9 +48,9 @@
 // --restart-all, its member restart_all and default_restart_all,
 // restart_every_node and restarts_of_every_node.
 //
-// Provisional names of the vote with the chain CRC
-// (doc/plan-lmdb-only-source.md 2.5): the members decided_chain_crc,
-// last_chain_crc and accepted_chain_crc of the messages; get_chain_crc of
+// Provisional names of the vote with the chain hash
+// (doc/plan-lmdb-only-source.md 2.5): the members decided_chain_hash,
+// last_chain_hash and accepted_chain_hash of the messages; get_chain_hash of
 // the storage; peer_seen, peer_step_back and take_peer_step_backs of
 // sequence_paxos.
 //
@@ -250,6 +250,13 @@ std::vector<entry> five_entries()
     };
 }
 
+konsens::chain_hash chain_from(const std::uint8_t v)
+{
+    konsens::chain_hash out{};
+    out.fill(std::byte{v});
+    return out;
+}
+
 message paxos(konsens::paxos_msg m)
 {
     return konsens::paxos_message{paxos_from, paxos_to, std::move(m)};
@@ -265,12 +272,12 @@ std::vector<message> every_kind()
     return {
         paxos(konsens::prepare_req{ballot_from(10)}),
         paxos(konsens::prepare{ballot_from(10), 20, ballot_from(30), 40}),
-        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt, 0, 0}),
-        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, konsens::log_sync{five_entries(), 32}, 0, 0}),
-        paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{five_entries(), 23}, 0}),
-        paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries(), 0}),
-        paxos(konsens::accepted{ballot_from(10), 20, 0}),
-        paxos(konsens::decide{ballot_from(10), {20, 21}, 22, 0}),
+        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt, {}, {}}),
+        paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, konsens::log_sync{five_entries(), 32}, {}, {}}),
+        paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{five_entries(), 23}, {}}),
+        paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries(), {}}),
+        paxos(konsens::accepted{ballot_from(10), 20, {}}),
+        paxos(konsens::decide{ballot_from(10), {20, 21}, 22, {}}),
         paxos(konsens::not_accepted{ballot_from(10)}),
         paxos(konsens::proposal_forward{five_entries()}),
         paxos(konsens::read_index_request{10}),
@@ -292,11 +299,12 @@ std::vector<message> every_kind()
                                        .result = payload_of({0xa0}),
                                        .result_crc = 55,
                                        .out = {56, 57},
-                                       .rejected = true}},
-                                     0}),
+                                       .rejected = true}}, {}}),
         paxos(konsens::build_request{10, 20}),
-        paxos(konsens::build_response{10, 20, five_entries(), 30, 40, 50}),
+        paxos(konsens::build_response{10, 20, five_entries(), chain_from(30), 40, chain_from(50)}),
         paxos(konsens::build_refused{10}),
+        paxos(konsens::repair_request{10, 20, 30}),
+        paxos(konsens::repair_entries{10, 20, five_entries()}),
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
@@ -368,11 +376,11 @@ TEST_CASE("each kind of message has its fixed kind byte")
     const std::vector<std::pair<message, std::uint8_t>> table{
         {paxos(konsens::prepare_req{ballot_from(10)}), 0},
         {paxos(konsens::prepare{ballot_from(10), 20, ballot_from(30), 40}), 1},
-        {paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt, 0, 0}), 2},
-        {paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{{}, 23}, 0}), 3},
-        {paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, {}, 0}), 4},
-        {paxos(konsens::accepted{ballot_from(10), 20, 0}), 5},
-        {paxos(konsens::decide{ballot_from(10), {20, 21}, 22, 0}), 6},
+        {paxos(konsens::promise{ballot_from(10), ballot_from(20), 30, 31, std::nullopt, {}, {}}), 2},
+        {paxos(konsens::accept_sync{ballot_from(10), {20, 21}, 22, konsens::log_sync{{}, 23}, {}}), 3},
+        {paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, {}, {}}), 4},
+        {paxos(konsens::accepted{ballot_from(10), 20, {}}), 5},
+        {paxos(konsens::decide{ballot_from(10), {20, 21}, 22, {}}), 6},
         {paxos(konsens::not_accepted{ballot_from(10)}), 7},
         {paxos(konsens::proposal_forward{{}}), 8},
         {paxos(konsens::read_index_request{10}), 9},
@@ -384,10 +392,12 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::refused{ballot_from(10), 20, konsens::refusal_reason::crc_mismatch}), 15},
         {paxos(konsens::work{ballot_from(10), 20, entry{entry_kind::normal}, 21}), 16},
         {paxos(konsens::build_request{10, 20}), 17},
-        {paxos(konsens::build_response{10, 20, {}, 30, 40, 50}), 18},
+        {paxos(konsens::build_response{10, 20, {}, chain_from(30), 40, chain_from(50)}), 18},
         {paxos(konsens::build_refused{10}), 19},
-        {ble(konsens::heartbeat_request{10}), 20},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 21},
+        {paxos(konsens::repair_request{10, 20, 30}), 20},
+        {paxos(konsens::repair_entries{10, 20, {}}), 21},
+        {ble(konsens::heartbeat_request{10}), 22},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 23},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -407,13 +417,14 @@ TEST_CASE("an accept_decide with a payload has the bytes of RFC 8949 and RFC 874
 {
     constexpr std::uint64_t accept_decide_kind = 4;
     const auto m = paxos(konsens::accept_decide{
-        ballot_from(10), {20, 21}, 22, {entry{entry_kind::client_request, payload_of({0xaa}), 23, 24}}, 25});
+        ballot_from(10), {20, 21}, 22, {entry{entry_kind::client_request, payload_of({0xaa}), 23, 24}}, chain_from(25)});
     const auto n = ballot_from(10);
     const auto expected = header_bytes(accept_decide_kind, paxos_from, paxos_to) + head(map, 5) + text("n") +
                           ballot_bytes(n) + text("entries") + head(array, 1) +
                           entry_bytes(std::to_underlying(entry_kind::client_request), "\xaa", 23, 24, 0, 0) +
                           text("seq_num") + head(map, 2) + text("counter") + integer(21) + text("session") +
-                          integer(20) + text("decided_idx") + integer(22) + text("decided_chain_crc") + integer(25);
+                          integer(20) + text("decided_idx") + integer(22) + text("decided_chain_hash") +
+                          bytes_tagged(typed_array_uint8, std::string(konsens::chain_hash_size, '\x19'));
     CHECK(konsens::kind_of(m) == accept_decide_kind);
     CHECK(konsens::encode(m) == expected);
     CHECK(decoded_message(expected) == m);
@@ -440,7 +451,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 21;
+    constexpr std::uint64_t heartbeat_reply_kind = 23;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
@@ -455,7 +466,7 @@ TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 TEST_CASE("an empty input and each cut input give too_little_data")
 {
     CHECK(error_of("") == cbor::error::too_little_data);
-    const auto bytes = konsens::encode(paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries(), 0}));
+    const auto bytes = konsens::encode(paxos(konsens::accept_decide{ballot_from(10), {20, 21}, 22, five_entries(), {}}));
     REQUIRE(bytes.has_value());
     for (std::size_t length = 0; length < bytes->size(); ++length) {
         CAPTURE(length);
@@ -665,12 +676,42 @@ TEST_CASE("a cluster_config passes the payload of a StopSign, and a broken paylo
     CHECK_FALSE(konsens::decode_cluster_config(longer).has_value());
 }
 
+// A chain hash is SHA-256 and has 32 bytes. mbedded-cbor reads tag 64 into
+// std::array<std::byte, 32> only when the byte string has that length, so
+// a peer that sends a shorter or a longer chain is refused at decode.
+TEST_CASE("a decide whose chain hash has 31 or 33 bytes is refused")
+{
+    const auto m = paxos(konsens::decide{ballot_from(10), {20, 21}, 22, chain_from(7)});
+    const auto bytes = konsens::encode(m);
+    REQUIRE(bytes.has_value());
+    const auto chain = head(byte_string, konsens::chain_hash_size) + std::string(konsens::chain_hash_size, '\x07');
+    const auto at = bytes->find(chain);
+    REQUIRE(at != std::string::npos);
+    for (const std::size_t size : {konsens::chain_hash_size - 1, konsens::chain_hash_size + 1}) {
+        CAPTURE(size);
+        auto changed = *bytes;
+        changed.replace(at, chain.size(), head(byte_string, size) + std::string(size, '\x07'));
+        CHECK_FALSE(konsens::decode(changed).has_value());
+    }
+}
+
 // Plan reconfiguration 2.7: a build_response carries entries of another
 // node, so decode checks them as it checks the entries of accept_decide.
 TEST_CASE("a build_response with an entry of a foreign field gives entry_field_of_another_kind")
 {
     const auto m =
-        paxos(konsens::build_response{10, 20, {entry{.kind = entry_kind::normal, .session = 1}}, 30, 40, 50});
+        paxos(konsens::build_response{10, 20, {entry{.kind = entry_kind::normal, .session = 1}}, chain_from(30), 40, chain_from(50)});
+    const auto bytes = konsens::encode(m);
+    REQUIRE(bytes.has_value());
+    CHECK(error_of(*bytes) == wire_errc::entry_field_of_another_kind);
+}
+
+// A repair writes the entries of a peer into the own log. An entry with a
+// field that its kind does not carry is refused before it reaches the
+// check of the chain, as the entries of a build_response are.
+TEST_CASE("a repair_entries with an entry of a foreign field gives entry_field_of_another_kind")
+{
+    const auto m = paxos(konsens::repair_entries{10, 20, {entry{.kind = entry_kind::normal, .session = 1}}});
     const auto bytes = konsens::encode(m);
     REQUIRE(bytes.has_value());
     CHECK(error_of(*bytes) == wire_errc::entry_field_of_another_kind);

@@ -33,8 +33,10 @@ constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
 constexpr std::string_view fault_proof_key = "fault_proof";
 constexpr std::string_view clean_stop_key = "clean_stop";
+constexpr std::string_view repair_count_key = "repair_count";
 constexpr std::string_view config_first_key = "config_first";
-constexpr std::uint32_t format_version = 5;
+constexpr std::uint32_t format_version = 6;
+constexpr std::uint32_t node_format_version = 1;
 constexpr int synchronous_full = 2;
 constexpr int checkpoint_frames = 1000;
 constexpr std::uint64_t largest_key = std::numeric_limits<std::int64_t>::max();
@@ -56,8 +58,8 @@ constexpr std::size_t kind_size = sizeof(entry_kind);
 constexpr std::size_t crc_size = sizeof(std::uint32_t);
 constexpr std::size_t state_size = sizeof(entry_state);
 constexpr std::size_t entry_crc_offset = 0;
-constexpr std::size_t chain_crc_offset = entry_crc_offset + crc_size;
-constexpr std::size_t state_offset = chain_crc_offset + crc_size;
+constexpr std::size_t chain_hash_offset = entry_crc_offset + crc_size;
+constexpr std::size_t state_offset = chain_hash_offset + chain_hash_size;
 constexpr std::size_t state_crc_offset = state_offset + state_size;
 constexpr std::size_t record_tail_size = state_crc_offset + crc_size;
 
@@ -71,17 +73,19 @@ constexpr std::size_t promise_offset = 0;
 constexpr std::size_t accepted_round_offset = promise_offset + ballot_size;
 constexpr std::size_t decided_idx_offset = accepted_round_offset + ballot_size;
 constexpr std::size_t log_len_offset = decided_idx_offset + sizeof(meta_record::decided_idx);
-constexpr std::size_t last_chain_crc_offset = log_len_offset + sizeof(meta_record::log_len);
-constexpr std::size_t applied_idx_offset = last_chain_crc_offset + sizeof(meta_record::last_chain_crc);
-constexpr std::size_t applied_chain_crc_offset = applied_idx_offset + sizeof(meta_record::applied_idx);
-constexpr std::size_t meta_record_size = applied_chain_crc_offset + sizeof(meta_record::applied_chain_crc);
+constexpr std::size_t last_chain_hash_offset = log_len_offset + sizeof(meta_record::log_len);
+constexpr std::size_t applied_idx_offset = last_chain_hash_offset + sizeof(meta_record::last_chain_hash);
+constexpr std::size_t applied_chain_hash_offset = applied_idx_offset + sizeof(meta_record::applied_idx);
+constexpr std::size_t meta_record_size = applied_chain_hash_offset + sizeof(meta_record::applied_chain_hash);
 
 constexpr std::size_t proof_kind_offset = 0;
 constexpr std::size_t proof_index_offset = proof_kind_offset + sizeof(proof_kind);
 constexpr std::size_t proof_ballot_offset = proof_index_offset + sizeof(fault_proof::index);
 constexpr std::size_t proof_crc_offset = proof_ballot_offset + ballot_size;
 constexpr std::size_t proof_other_crc_offset = proof_crc_offset + sizeof(fault_proof::crc);
-constexpr std::size_t fault_proof_size = proof_other_crc_offset + sizeof(fault_proof::other_crc);
+constexpr std::size_t proof_chain_offset = proof_other_crc_offset + sizeof(fault_proof::other_crc);
+constexpr std::size_t proof_other_chain_offset = proof_chain_offset + chain_hash_size;
+constexpr std::size_t fault_proof_size = proof_other_chain_offset + chain_hash_size;
 
 constexpr std::size_t mark_pid_offset = 0;
 constexpr std::size_t mark_configuration_id_offset = mark_pid_offset + sizeof(clean_stop_mark::pid);
@@ -229,6 +233,13 @@ ballot decode_ballot(const std::span<const std::byte, ballot_size> bytes) noexce
     };
 }
 
+chain_hash chain_of(const std::span<const std::byte, chain_hash_size> bytes) noexcept
+{
+    chain_hash out{};
+    std::ranges::copy(bytes, out.begin());
+    return out;
+}
+
 std::array<std::byte, meta_record_size> encode_meta(const meta_record& m) noexcept
 {
     std::array<std::byte, meta_record_size> out{};
@@ -236,9 +247,9 @@ std::array<std::byte, meta_record_size> encode_meta(const meta_record& m) noexce
     next = std::ranges::copy(encode_ballot(m.accepted_round), next).out;
     next = std::ranges::copy(to_little_endian(m.decided_idx), next).out;
     next = std::ranges::copy(to_little_endian(m.log_len), next).out;
-    next = std::ranges::copy(to_little_endian(m.last_chain_crc), next).out;
+    next = std::ranges::copy(m.last_chain_hash, next).out;
     next = std::ranges::copy(to_little_endian(m.applied_idx), next).out;
-    std::ranges::copy(to_little_endian(m.applied_chain_crc), next);
+    std::ranges::copy(m.applied_chain_hash, next);
     return out;
 }
 
@@ -249,10 +260,9 @@ meta_record decode_meta(const std::span<const std::byte, meta_record_size> bytes
         decode_ballot(bytes.subspan<accepted_round_offset, ballot_size>()),
         from_little_endian<std::uint64_t>(bytes.subspan<decided_idx_offset, sizeof(meta_record::decided_idx)>()),
         from_little_endian<std::uint64_t>(bytes.subspan<log_len_offset, sizeof(meta_record::log_len)>()),
-        from_little_endian<std::uint32_t>(bytes.subspan<last_chain_crc_offset, sizeof(meta_record::last_chain_crc)>()),
+        chain_of(bytes.subspan<last_chain_hash_offset, chain_hash_size>()),
         from_little_endian<std::uint64_t>(bytes.subspan<applied_idx_offset, sizeof(meta_record::applied_idx)>()),
-        from_little_endian<std::uint32_t>(
-            bytes.subspan<applied_chain_crc_offset, sizeof(meta_record::applied_chain_crc)>()),
+        chain_of(bytes.subspan<applied_chain_hash_offset, chain_hash_size>()),
     };
 }
 
@@ -260,7 +270,7 @@ struct stored_record {
     std::span<const std::byte> bytes;
     std::span<const std::byte> encoded;
     std::uint32_t entry_crc;
-    std::uint32_t chain_crc;
+    chain_hash chain;
     entry_state state;
 };
 
@@ -273,11 +283,11 @@ std::expected<stored_record, read_failure> check_record(const std::uint64_t inde
     const auto encoded = value.first(value.size() - record_tail_size);
     const auto tail = value.last<record_tail_size>();
     const auto stored = from_little_endian<std::uint32_t>(tail.subspan<entry_crc_offset, crc_size>());
-    const auto computed = compute_entry_crc(index, encoded);
+    const auto chain = chain_of(tail.subspan<chain_hash_offset, chain_hash_size>());
+    const auto computed = compute_record_crc(index, encoded, chain);
     if (stored != computed) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::crc_mismatch, index, stored, computed});
     }
-    const auto chain = from_little_endian<std::uint32_t>(tail.subspan<chain_crc_offset, crc_size>());
     const auto state_byte = std::to_integer<std::uint8_t>(tail[state_offset]);
     if (state_byte > std::to_underlying(entry_state::committed)) [[unlikely]] {
         return std::unexpected(read_failure{storage_errc::malformed_record, index, 0, 0});
@@ -298,15 +308,16 @@ void write_state(const std::uint64_t index, const entry_state state, const std::
     std::ranges::copy(to_little_endian(compute_state_crc(index, state)), tail.subspan<state_crc_offset>().begin());
 }
 
-std::uint32_t encode_record(const std::uint64_t index, const entry& e, const std::uint32_t previous_chain_crc,
-                            const entry_state state, const std::span<std::byte> out) noexcept
+chain_hash encode_record(const sha256& h, const std::uint64_t index, const entry& e,
+                         const chain_hash& previous_chain_hash, const entry_state state, const std::span<std::byte> out)
 {
     const auto encoded = out.first(out.size() - record_tail_size);
     encode_entry(e, encoded);
-    const auto chain = compute_chain_crc(previous_chain_crc, index, encoded);
+    const auto chain = h.compute_chain_hash(previous_chain_hash, index, encoded);
     const auto tail = out.last<record_tail_size>();
-    std::ranges::copy(to_little_endian(compute_entry_crc(index, encoded)), tail.subspan<entry_crc_offset>().begin());
-    std::ranges::copy(to_little_endian(chain), tail.subspan<chain_crc_offset>().begin());
+    std::ranges::copy(to_little_endian(compute_record_crc(index, encoded, chain)),
+                      tail.subspan<entry_crc_offset>().begin());
+    std::ranges::copy(chain, tail.subspan<chain_hash_offset>().begin());
     write_state(index, state, out);
     return chain;
 }
@@ -336,6 +347,7 @@ struct statements {
     statement get_last_entry;
     statement append_entry;
     statement update_entry;
+    statement replace_entry;
     statement delete_entries_between;
     statement get_value;
     statement put_value;
@@ -368,6 +380,9 @@ std::expected<statements, int> prepare_statements(sqlite3* db)
                   std::string_view{"INSERT INTO log (idx, record) SELECT ?1, ?2 "
                                    "WHERE ?1 > (SELECT coalesce(max(idx), -1) FROM log)"}},
         std::pair{&s.update_entry, std::string_view{"UPDATE log SET record = ?2 WHERE idx = ?1"}},
+        std::pair{&s.replace_entry,
+                  std::string_view{"INSERT INTO log (idx, record) VALUES (?1, ?2) "
+                                   "ON CONFLICT (idx) DO UPDATE SET record = excluded.record"}},
         std::pair{&s.delete_entries_between, std::string_view{"DELETE FROM log WHERE idx >= ?1 AND idx < ?2"}},
         std::pair{&s.get_value, std::string_view{"SELECT value FROM data WHERE key = ?1"}},
         std::pair{&s.put_value,
@@ -432,6 +447,7 @@ struct link {
     sqlite3* db;
     statements* s;
     std::optional<std::error_code>* failure;
+    const sha256* hash;
 };
 
 void step_once(sqlite3_stmt* s) noexcept
@@ -643,7 +659,7 @@ std::expected<std::optional<last_entry>, std::error_code> read_last_entry(const 
     if (!record) [[unlikely]] {
         return std::unexpected(record.error().code);
     }
-    return last_entry{index, record->entry_crc, record->chain_crc};
+    return last_entry{index, record->entry_crc, record->chain};
 }
 
 std::expected<std::optional<stored_record>, std::error_code> read_record(const link& l, const std::uint64_t index)
@@ -679,13 +695,36 @@ std::expected<std::optional<entry_state>, std::error_code> read_entry_state(cons
     return r;
 }
 
-std::expected<std::optional<std::uint32_t>, std::error_code> read_chain_crc(const link& l, const std::uint64_t index)
+std::expected<std::optional<chain_hash>, std::error_code> read_chain_hash(const link& l, const std::uint64_t index)
 {
     auto r = read_record(l, index).transform([](const std::optional<stored_record>& found) {
-        return found.transform([](const stored_record& x) { return x.chain_crc; });
+        return found.transform([](const stored_record& x) { return x.chain; });
     });
     sqlite3_reset(l.s->get_entry.get());
     return r;
+}
+
+std::expected<std::optional<entry>, std::error_code> read_unchecked_entry(const link& l, const std::uint64_t index)
+{
+    if (!key_fits_in_an_sqlite_integer(index)) [[unlikely]] {
+        return std::nullopt;
+    }
+    sqlite3_stmt* const s = l.s->get_entry.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    const auto value = select_one(l, s);
+    if (!value) [[unlikely]] {
+        return std::unexpected(value.error());
+    }
+    if (!value->has_value() || value->value().size() < kind_size + record_tail_size) {
+        sqlite3_reset(s);
+        return std::nullopt;
+    }
+    auto decoded = decode_entry(value->value().first(value->value().size() - record_tail_size));
+    sqlite3_reset(s);
+    return decoded;
 }
 
 std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, std::vector<std::byte>& record,
@@ -699,7 +738,7 @@ std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, 
         }
         record.resize(encoded_size_of(e) + record_tail_size);
         const auto state = index < m.decided_idx ? entry_state::committed : entry_state::in_work;
-        const auto chain = encode_record(index, e, m.last_chain_crc, state, record);
+        const auto chain = encode_record(*l.hash, index, e, m.last_chain_hash, state, record);
         sqlite3_reset(s);
         if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
             return std::unexpected(fail(l, bound));
@@ -713,7 +752,7 @@ std::expected<void, std::error_code> put_entries(const link& l, meta_record& m, 
         if (sqlite3_changes64(l.db) != 1) [[unlikely]] {
             return std::unexpected(make_error_code(storage_errc::malformed_record));
         }
-        m.last_chain_crc = chain;
+        m.last_chain_hash = chain;
         m.log_len = index + 1;
     }
     return {};
@@ -741,12 +780,12 @@ std::expected<void, std::error_code> delete_entries(const link& l, const std::ui
     return {};
 }
 
-std::expected<std::uint32_t, std::error_code> chain_crc_before(const link& l, const std::uint64_t index)
+std::expected<chain_hash, std::error_code> chain_hash_before(const link& l, const std::uint64_t index)
 {
     if (index == 0) {
-        return 0;
+        return chain_hash{};
     }
-    const auto chain = read_chain_crc(l, index - 1);
+    const auto chain = read_chain_hash(l, index - 1);
     if (!chain) [[unlikely]] {
         return std::unexpected(chain.error());
     }
@@ -788,6 +827,37 @@ std::expected<void, std::error_code> set_entry_states(const link& l, std::vector
         if (auto r = run(l, update); !r) [[unlikely]] {
             return r;
         }
+    }
+    return {};
+}
+
+std::expected<void, std::error_code> put_repaired_entries(const link& l, const meta_record& m,
+                                                          std::vector<std::byte>& record, const std::uint64_t from_idx,
+                                                          const std::span<const entry> entries)
+{
+    if (from_idx > m.log_len || entries.size() > m.log_len - from_idx) [[unlikely]] {
+        throw std::logic_error{"konsens: a repair replaces only entries below the length of the log"};
+    }
+    auto chain = chain_hash_before(l, from_idx);
+    if (!chain) [[unlikely]] {
+        return std::unexpected(chain.error());
+    }
+    sqlite3_stmt* const s = l.s->replace_entry.get();
+    for (std::uint64_t index = from_idx; const auto& e : entries) {
+        record.resize(encoded_size_of(e) + record_tail_size);
+        const auto state = index < m.decided_idx ? entry_state::committed : entry_state::in_work;
+        *chain = encode_record(*l.hash, index, e, *chain, state, record);
+        sqlite3_reset(s);
+        if (const int bound = bind_key(s, 1, index); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+            return std::unexpected(fail(l, bound));
+        }
+        if (auto r = run(l, s); !r) [[unlikely]] {
+            return r;
+        }
+        ++index;
     }
     return {};
 }
@@ -1122,6 +1192,7 @@ struct persistent_storage::environment {
     connection reader_db;
     statements writer;
     statements reader;
+    sha256 hash;
     int frames{};
     bool writer_open{};
     bool nested_open{};
@@ -1131,8 +1202,8 @@ struct persistent_storage::environment {
     std::optional<std::error_code> failure;
     std::vector<std::byte> record{};
 
-    link of_writer() noexcept { return {writer_db.get(), &writer, &failure}; }
-    link of_reader() noexcept { return {reader_db.get(), &reader, nullptr}; }
+    link of_writer() noexcept { return {writer_db.get(), &writer, &failure, &hash}; }
+    link of_reader() noexcept { return {reader_db.get(), &reader, nullptr, &hash}; }
 
     void end_the_reader() noexcept
     {
@@ -1237,11 +1308,18 @@ persistent_storage::read_only_transaction::get_entry_state(const std::uint64_t i
     return read_entry_state(env_->of_reader(), index);
 }
 
-std::expected<std::optional<std::uint32_t>, std::error_code>
-persistent_storage::read_only_transaction::get_chain_crc(const std::uint64_t index) const
+std::expected<std::optional<chain_hash>, std::error_code>
+persistent_storage::read_only_transaction::get_chain_hash(const std::uint64_t index) const
 {
     throw_if_no_environment(env_);
-    return read_chain_crc(env_->of_reader(), index);
+    return read_chain_hash(env_->of_reader(), index);
+}
+
+std::expected<std::optional<entry>, std::error_code>
+persistent_storage::read_only_transaction::get_unchecked_entry(const std::uint64_t index) const
+{
+    throw_if_no_environment(env_);
+    return read_unchecked_entry(env_->of_reader(), index);
 }
 
 std::expected<std::optional<std::uint64_t>, std::error_code>
@@ -1339,15 +1417,26 @@ persistent_storage::transaction::get_entry_state(const std::uint64_t index) cons
     return read_entry_state(env_->of_writer(), index);
 }
 
-std::expected<std::optional<std::uint32_t>, std::error_code>
-persistent_storage::transaction::get_chain_crc(const std::uint64_t index) const
+std::expected<std::optional<chain_hash>, std::error_code>
+persistent_storage::transaction::get_chain_hash(const std::uint64_t index) const
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested_open);
     if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
         return std::unexpected(f.error());
     }
-    return read_chain_crc(env_->of_writer(), index);
+    return read_chain_hash(env_->of_writer(), index);
+}
+
+std::expected<std::optional<entry>, std::error_code>
+persistent_storage::transaction::get_unchecked_entry(const std::uint64_t index) const
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return std::unexpected(f.error());
+    }
+    return read_unchecked_entry(env_->of_writer(), index);
 }
 
 std::expected<std::optional<std::uint64_t>, std::error_code>
@@ -1383,6 +1472,24 @@ persistent_storage::transaction::append_entries(const std::span<const entry> ent
 }
 
 std::expected<void, std::error_code>
+persistent_storage::transaction::replace_entries(const std::uint64_t from_idx, const std::span<const entry> entries)
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    env_->written = true;
+    throw_if_an_entry_has_a_field_of_another_kind(entries);
+    const auto l = env_->of_writer();
+    const auto m = read_meta(l);
+    if (!m) [[unlikely]] {
+        return std::unexpected(m.error());
+    }
+    return put_repaired_entries(l, *m, env_->record, from_idx, entries);
+}
+
+std::expected<void, std::error_code>
 persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, const std::span<const entry> entries)
 {
     throw_if_no_environment(env_);
@@ -1402,12 +1509,12 @@ persistent_storage::transaction::append_on_prefix(const std::uint64_t from_idx, 
         if (auto deleted = delete_entries(l, prefix_len, m->log_len); !deleted) [[unlikely]] {
             return deleted;
         }
-        const auto chain = chain_crc_before(l, prefix_len);
+        const auto chain = chain_hash_before(l, prefix_len);
         if (!chain) [[unlikely]] {
             return std::unexpected(chain.error());
         }
         m->log_len = prefix_len;
-        m->last_chain_crc = *chain;
+        m->last_chain_hash = *chain;
     }
     if (auto put = put_entries(l, *m, env_->record, entries); !put) [[unlikely]] {
         return put;
@@ -1558,7 +1665,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::erase_sess
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_applied(const std::uint64_t applied_idx,
-                                                                                  const std::uint32_t applied_chain_crc)
+                                                                                  const chain_hash& applied_chain_hash)
 {
     throw_if_no_environment(env_);
     throw_if_nested_is_open(env_->nested_open);
@@ -1572,7 +1679,7 @@ std::expected<void, std::error_code> persistent_storage::transaction::set_applie
         return std::unexpected(m.error());
     }
     m->applied_idx = applied_idx;
-    m->applied_chain_crc = applied_chain_crc;
+    m->applied_chain_hash = applied_chain_hash;
     return write_meta(l, *m);
 }
 
@@ -1763,8 +1870,12 @@ std::expected<persistent_storage, std::error_code> persistent_storage::open(cons
     if (!reader) [[unlikely]] {
         return std::unexpected(make_error_code(storage_errc::unsupported_format));
     }
+    auto hash = sha256::fetch();
+    if (!hash) [[unlikely]] {
+        return std::unexpected(hash.error());
+    }
     auto env = std::make_unique<environment>(std::move(*writer_db), std::move(*reader_db), std::move(*writer),
-                                             std::move(*reader));
+                                             std::move(*reader), std::move(*hash));
     sqlite3_wal_hook(env->writer_db.get(), count_frames, &env->frames);
     if (auto format = check_or_write_format(env->of_writer()); !format) [[unlikely]] {
         env->roll_back_the_writer();
@@ -1898,7 +2009,85 @@ std::expected<node_storage, std::error_code> node_storage::open(const std::files
         }
         *target = std::move(*prepared);
     }
+    if (auto format = check_or_write_node_format(*env); !format) [[unlikely]] {
+        return std::unexpected(format.error());
+    }
     return node_storage{std::move(env)};
+}
+
+std::expected<void, std::error_code> node_storage::check_or_write_node_format(environment& env)
+{
+    sqlite3* const db = env.db.get();
+    if (const int begun = sqlite3_step(env.begin_immediate.get()); begun != SQLITE_DONE) [[unlikely]] {
+        sqlite3_reset(env.begin_immediate.get());
+        return std::unexpected(error_code_or_throw(begun, db, access::write));
+    }
+    sqlite3_reset(env.begin_immediate.get());
+    const auto end = [&env](sqlite3_stmt* const s) {
+        sqlite3_reset(env.get_record.get());
+        step_once(s);
+    };
+    sqlite3_stmt* const get = env.get_record.get();
+    sqlite3_reset(get);
+    if (const int bound = bind_text(get, 1, format_key); bound != SQLITE_OK) [[unlikely]] {
+        end(env.rollback.get());
+        return std::unexpected(error_code_or_throw(bound, db, access::read));
+    }
+    const int status = sqlite3_step(get);
+    if (status == SQLITE_ROW) {
+        const auto bytes = column_bytes(get, 0);
+        const bool sized = bytes.size() == sizeof node_format_version + crc_size;
+        const bool checked =
+            sized && from_little_endian<std::uint32_t>(bytes.last<crc_size>()) == crc_of(bytes.first<crc_size>());
+        const bool current =
+            checked && from_little_endian<std::uint32_t>(bytes.first<sizeof node_format_version>()) ==
+                           node_format_version;
+        end(env.rollback.get());
+        if (!checked) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+        }
+        if (!current) [[unlikely]] {
+            return std::unexpected(make_error_code(storage_errc::unsupported_format));
+        }
+        return {};
+    }
+    if (status != SQLITE_DONE) [[unlikely]] {
+        end(env.rollback.get());
+        return std::unexpected(error_code_or_throw(status, db, access::read));
+    }
+    sqlite3_reset(get);
+    const auto rows = read_integer(db, "SELECT count(*) FROM meta");
+    if (!rows || *rows != 0) [[unlikely]] {
+        step_once(env.rollback.get());
+        return std::unexpected(rows ? make_error_code(storage_errc::unsupported_format) : rows.error());
+    }
+    std::array<std::byte, sizeof node_format_version + crc_size> record{};
+    std::ranges::copy(to_little_endian(node_format_version), record.begin());
+    std::ranges::copy(to_little_endian(crc_of(std::span(record).first<sizeof node_format_version>())),
+                      std::span(record).subspan<sizeof node_format_version>().begin());
+    sqlite3_stmt* const put = env.put_record.get();
+    sqlite3_reset(put);
+    if (const int bound = bind_text(put, 1, format_key); bound != SQLITE_OK) [[unlikely]] {
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(bound, db, access::write));
+    }
+    if (const int bound = bind_bytes(put, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(bound, db, access::write));
+    }
+    if (const int put_status = sqlite3_step(put); put_status != SQLITE_DONE) [[unlikely]] {
+        sqlite3_reset(put);
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(put_status, db, access::write));
+    }
+    sqlite3_reset(put);
+    if (const int committed = sqlite3_step(env.commit.get()); committed != SQLITE_DONE) [[unlikely]] {
+        sqlite3_reset(env.commit.get());
+        step_once(env.rollback.get());
+        return std::unexpected(error_code_or_throw(committed, db, access::write));
+    }
+    sqlite3_reset(env.commit.get());
+    return {};
 }
 
 std::expected<std::optional<fault_proof>, std::error_code> node_storage::get_fault_proof() const
@@ -1939,6 +2128,8 @@ std::expected<std::optional<fault_proof>, std::error_code> node_storage::get_fau
         decode_ballot(body.subspan<proof_ballot_offset, ballot_size>()),
         from_little_endian<std::uint32_t>(body.subspan<proof_crc_offset, sizeof(fault_proof::crc)>()),
         from_little_endian<std::uint32_t>(body.subspan<proof_other_crc_offset, sizeof(fault_proof::other_crc)>()),
+        chain_of(body.subspan<proof_chain_offset, chain_hash_size>()),
+        chain_of(body.subspan<proof_other_chain_offset, chain_hash_size>()),
     };
     sqlite3_reset(s);
     return proof;
@@ -1953,6 +2144,8 @@ std::expected<void, std::error_code> node_storage::write_the_proof(const fault_p
     std::ranges::copy(encode_ballot(proof.n), std::span(record).subspan<proof_ballot_offset>().begin());
     std::ranges::copy(to_little_endian(proof.crc), std::span(record).subspan<proof_crc_offset>().begin());
     std::ranges::copy(to_little_endian(proof.other_crc), std::span(record).subspan<proof_other_crc_offset>().begin());
+    std::ranges::copy(proof.chain, std::span(record).subspan<proof_chain_offset>().begin());
+    std::ranges::copy(proof.other_chain, std::span(record).subspan<proof_other_chain_offset>().begin());
     std::ranges::copy(to_little_endian(crc_of(std::span(record).first<fault_proof_size>())),
                       std::span(record).subspan<fault_proof_size>().begin());
     sqlite3_stmt* const s = env_->put_record.get();
@@ -1974,6 +2167,61 @@ std::expected<void, std::error_code> node_storage::write_the_proof(const fault_p
 }
 
 namespace konsens {
+
+std::expected<std::uint64_t, std::error_code> node_storage::get_repair_count() const
+{
+    throw_if_moved_from();
+    sqlite3_stmt* const s = env_->get_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, repair_count_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::read));
+    }
+    const int status = sqlite3_step(s);
+    if (status == SQLITE_DONE) {
+        sqlite3_reset(s);
+        return 0;
+    }
+    if (status != SQLITE_ROW) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::read));
+    }
+    const auto bytes = column_bytes(s, 0);
+    if (bytes.size() != sizeof(std::uint64_t) + crc_size) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto body = bytes.first<sizeof(std::uint64_t)>();
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    const auto count = from_little_endian<std::uint64_t>(body);
+    sqlite3_reset(s);
+    return count;
+}
+
+std::expected<void, std::error_code> node_storage::write_the_repair_count(const std::uint64_t count)
+{
+    throw_if_moved_from();
+    std::array<std::byte, sizeof(std::uint64_t) + crc_size> record{};
+    std::ranges::copy(to_little_endian(count), record.begin());
+    std::ranges::copy(to_little_endian(crc_of(std::span(record).first<sizeof(std::uint64_t)>())),
+                      std::span(record).subspan<sizeof(std::uint64_t)>().begin());
+    sqlite3_stmt* const s = env_->put_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, repair_count_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::write));
+    }
+    return {};
+}
 
 std::expected<std::optional<clean_stop_mark>, std::error_code> node_storage::get_clean_stop_mark() const
 {

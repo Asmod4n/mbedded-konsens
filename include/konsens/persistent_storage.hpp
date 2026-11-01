@@ -40,8 +40,10 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
         get_entry_state(std::uint64_t index) const;
-        [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
-        get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
+        get_chain_hash(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
+        get_unchecked_entry(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
         [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
         find(std::span<const std::byte> key) const;
@@ -95,11 +97,15 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
         get_entry_state(std::uint64_t index) const;
-        [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
-        get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
+        get_chain_hash(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
+        get_unchecked_entry(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
 
         [[nodiscard]] std::expected<void, std::error_code> append_entries(std::span<const entry> entries);
+        [[nodiscard]] std::expected<void, std::error_code> replace_entries(std::uint64_t from_idx,
+                                                                           std::span<const entry> entries);
         [[nodiscard]] std::expected<void, std::error_code> append_on_prefix(std::uint64_t from_idx,
                                                                             std::span<const entry> entries);
         [[nodiscard]] std::expected<void, std::error_code> set_promise(ballot promise);
@@ -117,7 +123,7 @@ public:
                                                                                     const session_record& record);
         [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
         [[nodiscard]] std::expected<void, std::error_code>
-        set_applied(std::uint64_t applied_idx, std::uint32_t applied_chain_crc);
+        set_applied(std::uint64_t applied_idx, const chain_hash& applied_chain_hash);
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] bool has_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
@@ -168,6 +174,8 @@ struct fault_proof {
     ballot n;
     std::uint32_t crc;
     std::uint32_t other_crc;
+    chain_hash chain{};
+    chain_hash other_chain{};
 
     friend bool operator==(const fault_proof&, const fault_proof&) = default;
 };
@@ -193,6 +201,8 @@ public:
     [[nodiscard]] std::expected<std::optional<clean_stop_mark>, std::error_code> get_clean_stop_mark() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_clean_stop_mark(const clean_stop_mark& mark);
     [[nodiscard]] std::expected<void, std::error_code> delete_the_clean_stop_mark();
+    [[nodiscard]] std::expected<std::uint64_t, std::error_code> get_repair_count() const;
+    [[nodiscard]] std::expected<void, std::error_code> write_the_repair_count(std::uint64_t count);
 
     node_storage(node_storage&&) noexcept;
     node_storage& operator=(node_storage&&) noexcept;
@@ -200,6 +210,7 @@ public:
 
 private:
     explicit node_storage(std::unique_ptr<environment> env) noexcept;
+    [[nodiscard]] static std::expected<void, std::error_code> check_or_write_node_format(environment& env);
 
     void throw_if_moved_from() const;
 

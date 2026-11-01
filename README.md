@@ -88,13 +88,20 @@ are CBOR (RFC 8949). The checksum of each stored entry is CRC32C
   Two results agree when each float agrees to `float_digits`
   significant digits or to one step of the denominator, and every other
   item agrees byte for byte.
+- **A damaged record is repaired from the peers.** When a step or a
+  start after a clean stop finds a record of its own log that fails its
+  CRC, or a missing row, the node stops voting and answers each call
+  with `client_errc::repairing`. It takes a copy from a peer only when
+  the SHA-256 chain of the copy gives the chain of the next record. Then
+  it votes again. One repair runs by itself; each further repair waits
+  until the operator calls `allow_one_more_repair()`.
 - **A fault of the own node ends the node.** When a node finds a damage
-  of its own log, a chosen result that fails its CRC on the node, a
-  value that reads back different, or its own result outside the
+  that no record shows, a chosen result that fails its CRC on the node,
+  a value that reads back different, or its own result outside the
   majority when the leader listed it, it writes a proof into the node
   storage and throws `konsens::node_fault`. The next start retires the
-  node. A damage that the start finds retires the node too. A leader
-  whose `results` entry a majority refused throws in the same way.
+  node. A leader whose `results` entry a majority refused throws in the
+  same way.
 - **Runs on your thread.** Each call runs on the thread of the caller.
   `commit()` returns when its writes reach the file. The program makes
   the sync.
@@ -159,6 +166,7 @@ The cost of the checksum against a MAC:
 | Compiler | g++ 15 or later |
 | System | Linux |
 | SQLite | the package of the distribution, `libsqlite3-dev` |
+| OpenSSL | 3.0 or later, the package of the distribution, `libssl-dev` |
 | Boost | the headers |
 | mbedded-cbor | fetched by CMake at the commit in `cmake/dependencies.cmake` |
 | crc32c | the submodule `deps/crc32c`, Google crc32c, BSD-3-Clause license |
@@ -171,11 +179,11 @@ The library runs as a user that is not root.
 Ubuntu 26.04:
 
 ```sh
-sudo apt install g++-15 cmake doctest-dev libboost-dev libsqlite3-dev git
+sudo apt install g++-15 cmake doctest-dev libboost-dev libsqlite3-dev libssl-dev git
 ```
 
 On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel` and
-SQLite from `sqlite3-devel`.
+SQLite from `sqlite3-devel` and OpenSSL from `libopenssl-devel`.
 
 ```sh
 git clone https://github.com/Asmod4n/mbedded-konsens

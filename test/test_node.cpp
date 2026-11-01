@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <iterator>
 #include <span>
 #include <stdexcept>
@@ -116,10 +117,10 @@ TEST_CASE("a tick timeout of 0 is a wrong use")
 // reads the message and not the number.
 TEST_CASE("each client error has its own message")
 {
-    const std::array codes{konsens::client_errc::building,      konsens::client_errc::session_expired,
-                           konsens::client_errc::stale_request, konsens::client_errc::retry,
-                           konsens::client_errc::rejected,      konsens::client_errc::reconfiguring,
-                           konsens::client_errc::retired,       konsens::client_errc::stopped};
+    const std::array codes{
+        konsens::client_errc::building, konsens::client_errc::session_expired, konsens::client_errc::stale_request,
+        konsens::client_errc::retry,    konsens::client_errc::rejected,        konsens::client_errc::reconfiguring,
+        konsens::client_errc::retired,  konsens::client_errc::stopped,         konsens::client_errc::repairing};
     std::vector<std::string> messages;
     for (const auto c : codes) {
         const std::error_code e = c;
@@ -353,7 +354,8 @@ struct recording_storage {
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
-        auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
+        auto get_chain_hash(const std::uint64_t index) const { return t_.get_chain_hash(index); }
+        auto get_unchecked_entry(const std::uint64_t index) const { return t_.get_unchecked_entry(index); }
         auto get_config_first_idx() const { return t_.get_config_first_idx(); }
         auto find(const std::span<const std::byte> key) const { return t_.find(key); }
         auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
@@ -367,7 +369,7 @@ struct recording_storage {
             return t_.insert_or_assign_session(session, record);
         }
         auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
-        auto set_applied(const std::uint64_t index, const std::uint32_t crc)
+        auto set_applied(const std::uint64_t index, const konsens::chain_hash& crc)
         {
             return t_.set_applied(index, crc);
         }
@@ -378,6 +380,10 @@ struct recording_storage {
         {
             appended_->push_back(entries.data());
             return t_.append_entries(entries);
+        }
+        auto replace_entries(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
+        {
+            return t_.replace_entries(from_idx, entries);
         }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
@@ -478,11 +484,12 @@ void end_without_stop(node_t& n)
 
 }
 
-// Plan clean-stop 2.6, decided 2026-10-27: a damage that the start
-// checks find retires the node, also after a clean stop. The two other
-// nodes elect a leader among them when the damaged node led, and decide
-// without it.
-TEST_CASE("a damage that the start checks find retires the node")
+// Owner 2026-11-01 (card), replaces plan clean-stop 2.6: a damage that the
+// start checks find after a clean stop is repaired from the peers, as a
+// damage that a step finds. The lost last row is such a damage, because
+// the meta record still names its index and its chain hash. The node
+// repairs it and then decides with the two others.
+TEST_CASE("a damage that the start checks find after a clean stop is repaired")
 {
     const auto log_directory = sqlite_storage::new_directory();
     const auto own_directory = sqlite_storage::new_directory();
@@ -508,20 +515,20 @@ TEST_CASE("a damage that the start checks find retires the node")
     later.first_start = false;
     nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
                              sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
-    CHECK(nodes[2].retired());
-    CHECK_FALSE(nodes[2].get_sequence_paxos().votes());
-    CHECK(nodes[2].get_sequence_paxos().get_error() == make_error_code(konsens::storage_errc::missing_entry));
+    CHECK_FALSE(nodes[2].retired());
+    CHECK(nodes[2].get_sequence_paxos().repairs());
+    CHECK_FALSE(nodes[2].get_sequence_paxos().get_error().has_value());
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
+    CHECK(nodes[2].get_sequence_paxos().votes());
     const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
-    REQUIRE((leader == 1 || leader == 2));
     batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(2)));
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
-    for (const auto i : {std::size_t{0}, std::size_t{1}}) {
-        CHECK(*nodes.at(i).read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    for (const auto& n : nodes) {
+        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
     }
 }
 
@@ -563,8 +570,8 @@ TEST_CASE("the node storage keeps the proof of a fault")
 
 // Plan execute-verify 3.6: the start reads the whole log, so an entry that
 // is missing in the middle of the log is a damage at the start, though the
-// meta record and the last entry are whole. Since plan clean-stop 2.6 the
-// damage retires the node.
+// meta record and the last entry are whole. Since the owner card of
+// 2026-11-01 the node repairs the missing row from its peers.
 TEST_CASE("the start scan finds an entry that is missing in the middle of the log")
 {
     const auto log_directory = sqlite_storage::new_directory();
@@ -595,8 +602,202 @@ TEST_CASE("the start scan finds an entry that is missing in the middle of the lo
     later.first_start = false;
     nodes[2] = *node_t::with(later, sqlite_storage::open_in(log_directory),
                              sqlite_storage::open_node_storage_in(own_directory), echo{}, 10);
-    CHECK(nodes[2].retired());
-    const auto e = nodes[2].get_sequence_paxos().get_error();
-    REQUIRE(e.has_value());
-    CHECK(konsens::error_is_a_damage(*e));
+    CHECK_FALSE(nodes[2].retired());
+    CHECK(nodes[2].get_sequence_paxos().repairs());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes[2].get_sequence_paxos().votes());
+    CHECK(*nodes[2].read_decided_suffix(0) == entries);
+}
+
+namespace {
+
+std::vector<std::vector<std::byte>> records_in(const std::filesystem::path& directory, const std::uint64_t count)
+{
+    std::vector<std::vector<std::byte>> records;
+    sqlite_damage::change_with_sqlite(directory, [&records, count](sqlite3* db) {
+        for (std::uint64_t i = 0; i < count; ++i) {
+            records.push_back(sqlite_damage::entry_record_of(db, i));
+        }
+    });
+    return records;
+}
+
+// The first byte of a record is the kind of its entry. A kind that is not a
+// value of entry_kind gives a record that fails its CRC and an entry that
+// does not decode, so no local copy fits.
+void flip_the_kind_of_the_last_record(const std::filesystem::path& directory)
+{
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) {
+        const auto index =
+            static_cast<std::uint64_t>(sqlite_damage::integer_of(db, "SELECT max(idx) FROM log", [](sqlite3_stmt*) {}));
+        auto changed = sqlite_damage::entry_record_of(db, index);
+        changed.at(0) ^= std::byte{0x40};
+        sqlite_damage::put_entry_record(db, index, changed);
+    });
+}
+
+bool is_a_repair_answer(const konsens::message& m)
+{
+    const auto* p = std::get_if<konsens::paxos_message>(&m);
+    return p != nullptr && std::holds_alternative<konsens::repair_entries>(p->msg);
+}
+
+}
+
+// Plan of the repair, items 1, 6 and 7. A leader whose last record is
+// damaged finds the damage when its next step reads the last entry. It
+// does not throw: it stops being leader, refuses each call with
+// repairing and answers no heartbeat, so the other two nodes elect a leader
+// among them. The test holds back the answers to the repair until that
+// election is over. Then the node writes the copy, votes again, and the
+// entry that the new leader decides reaches all three nodes.
+TEST_CASE("a leader that finds a damage in a step repairs it from its peers and votes again")
+{
+    std::vector<std::filesystem::path> directories;
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        directories.push_back(sqlite_storage::new_directory());
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_in(directories.back()),
+                                      sqlite_storage::open_new_node_storage(), echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    for (const auto v : {1, 2}) {
+        batches::commit(nodes[0], nodes[0].append(make_entry(static_cast<std::uint8_t>(v))));
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+    }
+    const auto old_leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+    REQUIRE(old_leader != 0);
+    auto& damaged = nodes.at(old_leader - 1);
+    const auto log_len = damaged.get_sequence_paxos().get_decided_idx().value();
+    const auto before = records_in(directories.at(old_leader - 1), log_len);
+    const auto verified = damaged.get_sequence_paxos().get_verified_idx();
+    flip_the_kind_of_the_last_record(directories.at(old_leader - 1));
+    batches::commit(damaged, damaged.handle_incoming(std::vector<konsens::message>{}));
+    REQUIRE(damaged.get_sequence_paxos().repairs());
+    bool replied_to_a_heartbeat = false;
+    for (int i = 0; i < rounds; ++i) {
+        batches::deliver(nodes, [&](const konsens::message& m) -> std::size_t {
+            if (i > 0 && batches::from_of(m) == old_leader && std::holds_alternative<konsens::ble_message>(m)) {
+                replied_to_a_heartbeat = true;
+            }
+            return is_a_repair_answer(m) ? 0 : 1;
+        });
+        for (auto& n : nodes) {
+            batches::tick_and_commit(n);
+        }
+    }
+    CHECK(damaged.get_sequence_paxos().repairs());
+    CHECK_FALSE(replied_to_a_heartbeat);
+    CHECK(damaged.register_client(1) == std::unexpected(make_error_code(konsens::client_errc::repairing)));
+    const auto new_leader = nodes.at(old_leader == 1 ? 1 : 0).get_sequence_paxos().get_promise()->pid;
+    CHECK(new_leader != old_leader);
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(damaged.get_sequence_paxos().votes());
+    CHECK(damaged.get_sequence_paxos().get_verified_idx() >= verified);
+    CHECK(records_in(directories.at(old_leader - 1), log_len) == before);
+    const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+    batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(3)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    for (const auto& n : nodes) {
+        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2), make_entry(3)});
+    }
+}
+
+// Plan of the repair, item 8: stop writes a clean-stop mark, and a start
+// with that mark keeps the identity. A node in repair has a damaged log,
+// so a stop during the repair is a wrong use.
+TEST_CASE("a stop during a repair is a wrong use")
+{
+    std::vector<std::filesystem::path> directories;
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        directories.push_back(sqlite_storage::new_directory());
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_in(directories.back()),
+                                      sqlite_storage::open_new_node_storage(), echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    batches::commit(nodes[0], nodes[0].append(make_entry(1)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    flip_the_kind_of_the_last_record(directories.front());
+    batches::commit(nodes.front(), nodes.front().handle_incoming(std::vector<konsens::message>{}));
+    REQUIRE(nodes.front().get_sequence_paxos().repairs());
+    CHECK_THROWS_AS(nodes.front().stop(), std::logic_error);
+}
+
+// Plan of the repair, item 8, owner 2026-10-24: one repair runs by itself.
+// A second damage leaves the node silent until the operator allows one
+// more repair, so that a disk that fails again and again is seen.
+TEST_CASE("the second damage waits for the operator, and allow_one_more_repair allows one more")
+{
+    std::vector<std::filesystem::path> directories;
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        directories.push_back(sqlite_storage::new_directory());
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_in(directories.back()),
+                                      sqlite_storage::open_new_node_storage(), echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    const auto decide = [&nodes, &all](const std::uint8_t v) {
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+        const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+        batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(v)));
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+    };
+    decide(1);
+    auto& n = nodes.front();
+    const auto damage_and_step = [&directories, &n]() {
+        flip_the_kind_of_the_last_record(directories.front());
+        batches::commit(n, n.handle_incoming(std::vector<konsens::message>{}));
+        REQUIRE(n.get_sequence_paxos().repairs());
+    };
+    damage_and_step();
+    CHECK_FALSE(n.waits_for_the_operator());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    REQUIRE(n.get_sequence_paxos().votes());
+    decide(2);
+    damage_and_step();
+    CHECK(n.waits_for_the_operator());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(n.get_sequence_paxos().repairs());
+    CHECK(n.waits_for_the_operator());
+    REQUIRE(n.allow_one_more_repair());
+    CHECK_FALSE(n.waits_for_the_operator());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(n.get_sequence_paxos().votes());
+    CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+}
+
+// allow_one_more_repair answers a node that waits in a repair. A call on a
+// node that votes is a wrong use.
+TEST_CASE("allow_one_more_repair on a node that votes is a wrong use")
+{
+    auto n =
+        *node_t::with(config_of(1), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(), echo{}, 0);
+    CHECK_THROWS_AS(static_cast<void>(n.allow_one_more_repair()), std::logic_error);
 }

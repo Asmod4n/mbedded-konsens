@@ -92,7 +92,7 @@ bool failed_with(const std::expected<T, std::error_code>& r, const konsens::clie
 
 konsens::promise empty_promise(const ballot n)
 {
-    return {n, ballot{}, 0, 0, std::nullopt, 0, 0};
+    return {n, ballot{}, 0, 0, std::nullopt, {}, {}};
 }
 
 // Node 3 leads ballot (1, 3) in phase Accept with one accepted and not yet
@@ -324,7 +324,7 @@ TEST_CASE("a leader in prepare starts its read round only in accept")
     REQUIRE(sp.handle({1, 3, konsens::heartbeat_ack{ballot_of(2, 3), 1}}));
     CHECK(sp.take_indexed_reads().empty());
     REQUIRE(sp.handle(
-        {1, 3, konsens::promise{ballot_of(2, 3), ballot_of(1, 1), 1, 1, konsens::log_sync{{make_entry(1)}, 0}, 0, 0}}));
+        {1, 3, konsens::promise{ballot_of(2, 3), ballot_of(1, 1), 1, 1, konsens::log_sync{{make_entry(1)}, 0}, {}, {}}}));
     REQUIRE(sp.get_state() == std::pair{role::leader, phase::accept});
     CHECK(messages_of<konsens::heartbeat>(committed_messages_of(sp)).size() == 2);
     const auto rd = sp.get_read_round();

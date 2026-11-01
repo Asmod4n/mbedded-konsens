@@ -72,7 +72,7 @@ constexpr std::uint32_t first_ballot_number = 1;
 constexpr konsens::ballot wire_ballot{configuration_id, first_ballot_number, 0, leader_pid};
 constexpr konsens::sequence_number wire_sequence_number{1, 1};
 constexpr std::uint64_t wire_decided_idx = 1;
-constexpr std::uint32_t wire_decided_chain_crc = 0;
+constexpr konsens::chain_hash wire_decided_chain_hash{};
 constexpr std::size_t sqlite_page_bytes = 4096;
 constexpr std::size_t sqlite_record_overhead_bytes = 64;
 constexpr std::size_t sqlite_copies_of_each_page = 2;
@@ -348,7 +348,8 @@ struct counted_storage {
         auto get_entries(const std::uint64_t from, const std::uint64_t to) const { return t_.get_entries(from, to); }
         auto get_last_entry() const { return t_.get_last_entry(); }
         auto get_entry_state(const std::uint64_t index) const { return t_.get_entry_state(index); }
-        auto get_chain_crc(const std::uint64_t index) const { return t_.get_chain_crc(index); }
+        auto get_chain_hash(const std::uint64_t index) const { return t_.get_chain_hash(index); }
+        auto get_unchecked_entry(const std::uint64_t index) const { return t_.get_unchecked_entry(index); }
         auto get_config_first_idx() const { return t_.get_config_first_idx(); }
         auto find(const std::span<const std::byte> key) const { return t_.find(key); }
         auto find_session(const std::uint64_t session) const { return t_.find_session(session); }
@@ -362,13 +363,17 @@ struct counted_storage {
             return t_.insert_or_assign_session(session, record);
         }
         auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
-        auto set_applied(const std::uint64_t index, const std::uint32_t crc)
+        auto set_applied(const std::uint64_t index, const konsens::chain_hash& crc)
         {
             return t_.set_applied(index, crc);
         }
         auto begin_nested() { return t_.begin_nested(); }
         bool has_writes() const { return t_.has_writes(); }
         auto append_entries(const std::span<const konsens::entry> entries) { return t_.append_entries(entries); }
+        auto replace_entries(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
+        {
+            return t_.replace_entries(from_idx, entries);
+        }
         auto append_on_prefix(const std::uint64_t from_idx, const std::span<const konsens::entry> entries)
         {
             return t_.append_on_prefix(from_idx, entries);
@@ -783,7 +788,7 @@ case_outcome measure_decode(const run_settings& s, const T& body)
 konsens::accept_decide wire_accept_decide()
 {
     return {wire_ballot, wire_sequence_number, wire_decided_idx,
-            entries_of(entries_per_accept_decide, accept_decide_entry_bytes), wire_decided_chain_crc};
+            entries_of(entries_per_accept_decide, accept_decide_entry_bytes), wire_decided_chain_hash};
 }
 
 case_outcome measure_encode_accept_decide(const run_settings& s)
@@ -798,12 +803,12 @@ case_outcome measure_decode_accept_decide(const run_settings& s)
 
 case_outcome measure_encode_decide(const run_settings& s)
 {
-    return measure_encode(s, konsens::decide{wire_ballot, wire_sequence_number, wire_decided_idx, wire_decided_chain_crc});
+    return measure_encode(s, konsens::decide{wire_ballot, wire_sequence_number, wire_decided_idx, wire_decided_chain_hash});
 }
 
 case_outcome measure_decode_decide(const run_settings& s)
 {
-    return measure_decode(s, konsens::decide{wire_ballot, wire_sequence_number, wire_decided_idx, wire_decided_chain_crc});
+    return measure_decode(s, konsens::decide{wire_ballot, wire_sequence_number, wire_decided_idx, wire_decided_chain_hash});
 }
 
 std::expected<konsens::persistent_storage, failure> open_log(const std::filesystem::path& directory,

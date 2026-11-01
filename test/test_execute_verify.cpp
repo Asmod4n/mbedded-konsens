@@ -672,7 +672,7 @@ namespace {
 
 // batches::deliver with a change of each message on its way, as a fault of
 // the network or of the sender would make it. The node that got a changed
-// entry finds later that its chain CRC differs from the leader. It throws
+// entry finds later that its chain hash differs from the leader. It throws
 // node_fault (plan 3.2), and the delivery leaves it out from then on, as a
 // process that ended. The result is the set of nodes that threw.
 template <typename Change>
@@ -961,7 +961,7 @@ TEST_CASE("a leader whose done record a majority refused throws")
 }
 
 // Plan 3.1 and 3.2: a damage that a step finds is no returned value any
-// more. The follower that got a changed entry finds that its chain CRC
+// more. The follower that got a changed entry finds that its chain hash
 // differs from the leader, keeps the proof and throws.
 TEST_CASE("a damage that a step finds throws after its proof is durable")
 {

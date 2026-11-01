@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-image=localhost/cxx-matrix-sqlite
-compiler=g++-16
-c_compiler=gcc-16
+image=${KONSENS_BENCH_IMAGE:-localhost/cxx-matrix-sqlite}
+compiler=${KONSENS_BENCH_CXX:-g++-16}
+c_compiler=${KONSENS_BENCH_CC:-gcc-16}
 build_jobs=2
 bench_user=bench
 bench_uid=1001
@@ -47,7 +47,7 @@ host() {
     podman --version > "$work/podman-version-$stamp.txt"
     podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
     podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/lmdb:/lmdb" -v "$ccache:/ccache" \
-        -e CCACHE_DIR=/ccache "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
+        -e CCACHE_DIR=/ccache -e KONSENS_BENCH_CXX="$compiler" -e KONSENS_BENCH_CC="$c_compiler" "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
         "$prefixes" "${arms[@]}"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
     echo "$results/$stamp.txt"

@@ -521,23 +521,25 @@ TEST_CASE("a start runs only the entries after the applied index of the state st
     }
 }
 
-// Plan state-in-lmdb 1.4: the storage keeps the chain CRC of the
+// Plan state-in-lmdb 1.4: the storage keeps the chain hash of the
 // log at its applied index. A start whose state belongs to another log,
 // or to a longer log, stops the vote and keeps both CRCs as the proof.
-TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
+TEST_CASE("a start whose applied chain hash differs from the log stops the vote")
 {
     auto c = elected();
     const auto decided = decided_log_of_two_entries(c);
-    const auto own = c.at(1).get_sequence_paxos().get_prefix_chain_crc(2);
+    const auto own = c.at(1).get_sequence_paxos().get_prefix_chain_hash(2);
     REQUIRE(own.has_value());
     const auto log_len = c.at(1).get_sequence_paxos().get_accepted_idx();
     REQUIRE(log_len.has_value());
     const auto differs = make_error_code(konsens::paxos_errc::state_differs_from_log);
     struct applied_point {
         std::uint64_t index;
-        std::uint32_t crc;
+        konsens::chain_hash chain;
     };
-    for (const auto applied : {applied_point{2, *own + 1}, applied_point{*log_len + 1, *own}}) {
+    auto other = *own;
+    other.front() ^= std::byte{1};
+    for (const auto& applied : {applied_point{2, other}, applied_point{*log_len + 1, *own}}) {
         const auto log_directory = sqlite_storage::new_directory();
         {
             auto storage = sqlite_storage::open_in(decided);
@@ -547,7 +549,7 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
             auto storage = sqlite_storage::open_in(log_directory);
             auto w = storage.begin();
             REQUIRE(w.has_value());
-            REQUIRE(w->set_applied(applied.index, applied.crc));
+            REQUIRE(w->set_applied(applied.index, applied.chain));
             REQUIRE(std::move(*w).commit());
         }
         auto storage = sqlite_storage::open_in(log_directory);
@@ -560,8 +562,8 @@ TEST_CASE("a start whose applied chain CRC differs from the log stops the vote")
             const auto fault = n.get_sequence_paxos().get_hardware_fault();
             REQUIRE(fault.has_value());
             CHECK(fault->index == 2);
-            CHECK(fault->crc == *own);
-            CHECK(fault->other_crc == *own + 1);
+            CHECK(fault->chain == *own);
+            CHECK(fault->other_chain == other);
         }
     }
 }

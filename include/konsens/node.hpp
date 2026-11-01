@@ -114,6 +114,8 @@ private:
     std::uint64_t number_;
 };
 
+inline constexpr std::uint64_t automatic_repairs = 1;
+
 template <storage S, state_machine M>
 class node {
 public:
@@ -167,6 +169,10 @@ public:
         auto ble = ballot_leader_election::with(ble_config_of(config), *promise);
         node n(config, std::move(*sp), std::move(own_storage), std::move(ble), std::move(machine), nonce);
         n.build_started_ = n.seq_paxos_.building();
+        if (const auto e = n.seq_paxos_.get_error();
+            !*proof && *kind == start_kind::clean && e && error_is_a_damage(*e)) {
+            static_cast<void>(n.start_the_repair());
+        }
         if (n.seq_paxos_.votes()) {
             if (auto r = n.check_the_applied_state();
                 !r && r.error() != make_error_code(paxos_errc::state_differs_from_log) && !error_is_a_damage(r.error()))
@@ -192,11 +198,12 @@ public:
         throw_if_stopped();
         seq_paxos_.throw_if_a_write_did_not_finish();
         seq_paxos_.throw_if_a_step_is_open();
-        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired()) [[unlikely]] {
-            throw std::logic_error("konsens: stop on a node after a fault, after an error of its storage, or in retirement");
+        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired() || seq_paxos_.repairs()) [[unlikely]] {
+            throw std::logic_error(
+                "konsens: stop on a node after a fault, after an error of its storage, in retirement or in a repair");
         }
         drop_held_messages_and_replies();
-        reply_stopped_to_the_waiting_calls();
+        reply_to_the_waiting_calls(make_error_code(client_errc::stopped));
         const clean_stop_mark mark{seq_paxos_.get_pid(), ble_config_.configuration_id, read_the_committed_meta(),
                                    seq_paxos_.get_verified_idx()};
         if (auto w = own_storage_.write_the_clean_stop_mark(mark); !w) [[unlikely]] {
@@ -223,8 +230,14 @@ public:
                 }
             }
             if (resend_message_clock_.tick_and_check_timeout()) {
+                if (seq_paxos_.repairs() && waits_for_the_operator_) {
+                    return current_transaction();
+                }
                 if (auto r = seq_paxos_.resend_message_timeout(); !r) [[unlikely]] {
                     return std::unexpected(r.error());
+                }
+                if (seq_paxos_.repairs()) {
+                    return current_transaction();
                 }
                 seq_paxos_.resend_heartbeats();
                 resend_read_index_requests();
@@ -274,10 +287,17 @@ private:
                     return r;
                 }
             }
+            const bool repaired = seq_paxos_.repairs();
             const auto w = seq_paxos_.commit();
             if (!w) [[unlikely]] {
                 drop_held_messages_and_replies();
                 return w;
+            }
+            if (repaired && seq_paxos_.votes()) {
+                if (auto r = vote_again_after_the_repair(); !r) [[unlikely]] {
+                    drop_held_messages_and_replies();
+                    return r;
+                }
             }
             return finish_the_step();
         });
@@ -333,6 +353,9 @@ private:
             if (auto r = seq_paxos_.refuse_if_retired(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
+            if (auto r = seq_paxos_.refuse_if_repairing(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -361,6 +384,9 @@ public:
             if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
+            if (auto r = seq_paxos_.refuse_if_repairing(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -384,6 +410,9 @@ public:
                 return std::unexpected(r.error());
             }
             if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = seq_paxos_.refuse_if_repairing(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
@@ -412,6 +441,9 @@ public:
             if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
+            if (auto r = seq_paxos_.refuse_if_repairing(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
@@ -438,6 +470,9 @@ public:
                 return std::unexpected(r.error());
             }
             if (auto r = seq_paxos_.refuse_if_building(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = seq_paxos_.refuse_if_repairing(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
@@ -480,6 +515,23 @@ public:
 
     const sequence_paxos<S>& get_sequence_paxos() const { return seq_paxos_; }
     bool waits_for_the_operator() const { return waits_for_the_operator_; }
+
+    result allow_one_more_repair()
+    {
+        throw_if_stopped();
+        if (!seq_paxos_.repairs() || !waits_for_the_operator_) [[unlikely]] {
+            throw std::logic_error(
+                "konsens: allow_one_more_repair needs a node that waits for the operator in a repair");
+        }
+        if (auto w = own_storage_.write_the_repair_count(0); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
+        }
+        waits_for_the_operator_ = false;
+        if (!start_the_repair()) [[unlikely]] {
+            return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
+        }
+        return {};
+    }
     std::expected<std::optional<fault_proof>, std::error_code> get_fault_proof() const
     {
         return own_storage_.get_fault_proof();
@@ -594,20 +646,20 @@ private:
         return kind_of_the_start(config, mark, *m, *first);
     }
 
-    void reply_stopped_to_the_waiting_calls()
+    void reply_to_the_waiting_calls(const std::error_code e)
     {
-        const auto stopped = std::unexpected(make_error_code(client_errc::stopped));
+        const auto reply = std::unexpected(e);
         for (const auto client_id : std::exchange(registrations_, {})) {
-            released_replies_.push_back({client_id, 0, stopped});
+            released_replies_.push_back({client_id, 0, reply});
         }
         for (const auto& [request, client_id] : std::exchange(requests_, {})) {
-            released_replies_.push_back({client_id, request.first, stopped});
+            released_replies_.push_back({client_id, request.first, reply});
         }
         for (const auto& [session, client_id] : std::exchange(expirations_, {})) {
-            released_replies_.push_back({client_id, session, stopped});
+            released_replies_.push_back({client_id, session, reply});
         }
         for (const auto& [read, r] : std::exchange(reads_, {})) {
-            released_replies_.push_back({r.client_id, 0, stopped});
+            released_replies_.push_back({r.client_id, 0, reply});
         }
     }
 
@@ -678,7 +730,7 @@ private:
         if constexpr (std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
                       std::is_same_v<T, work>) {
             if (to != seq_paxos_.get_pid() || !std::ranges::contains(seq_paxos_.peers_, from) ||
-                seq_paxos_.building() || seq_paxos_.retired()) [[unlikely]] {
+                seq_paxos_.building() || seq_paxos_.retired() || seq_paxos_.repairs()) [[unlikely]] {
                 return {};
             }
             if constexpr (std::is_same_v<T, answer>) {
@@ -694,7 +746,7 @@ private:
         } else if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
             return seq_paxos_.handle(from, to, msg);
         } else {
-            if (seq_paxos_.building() || seq_paxos_.retired()) {
+            if (seq_paxos_.building() || seq_paxos_.retired() || seq_paxos_.repairs()) {
                 return {};
             }
             ble_.handle(ble_message{from, to, heartbeat_msg{std::in_place_type<T>, msg}});
@@ -748,7 +800,7 @@ private:
     result check_the_applied_state()
     {
         const auto m = read_the_committed_meta();
-        return seq_paxos_.check_applied_chain_crc(m.applied_idx, m.applied_chain_crc);
+        return seq_paxos_.check_applied_chain_hash(m.applied_idx, m.applied_chain_hash);
     }
 
     static ble_config ble_config_of(const node_config& config)
@@ -782,13 +834,87 @@ private:
         auto r = step();
         const auto e = seq_paxos_.get_error();
         if (e && error_is_a_damage(*e) && !waits_for_the_operator_ && !seq_paxos_.retired()) [[unlikely]] {
+            if (start_the_repair()) {
+                if constexpr (std::is_same_v<decltype(step()), result>) {
+                    return result{};
+                } else {
+                    return current_transaction();
+                }
+            }
             const auto fault = seq_paxos_.get_hardware_fault();
             const bool known = *e == make_error_code(paxos_errc::hardware_fault) && fault;
             write_the_proof_and_throw({proof_kind::damage, index_of_the_damage(), seq_paxos_.mark_.promise,
-                                       known ? fault->crc : 0, known ? fault->other_crc : 0},
+                                       0, 0, known ? fault->chain : chain_hash{},
+                                       known ? fault->other_chain : chain_hash{}},
                                       *e, "konsens: a step found a damage of the own log");
         }
         return r;
+    }
+
+    bool start_the_repair()
+    {
+        const auto ranges = seq_paxos_.find_the_damaged_ranges();
+        if (!ranges || ranges->empty()) {
+            return false;
+        }
+        const auto count = own_storage_.get_repair_count();
+        if (!count) [[unlikely]] {
+            return false;
+        }
+        drop_held_messages_and_replies();
+        drop_the_client_rounds();
+        reply_to_the_waiting_calls(make_error_code(client_errc::repairing));
+        if (*count >= automatic_repairs) {
+            seq_paxos_.wait_for_the_repair(*ranges);
+            static_cast<void>(seq_paxos_.take_outgoing_messages());
+            waits_for_the_operator_ = true;
+            return true;
+        }
+        if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
+        }
+        const auto left = seq_paxos_.repair_locally(*ranges);
+        if (!left) [[unlikely]] {
+            return false;
+        }
+        if (!left->empty()) {
+            seq_paxos_.wait_for_the_repair(*left);
+            release_the_output();
+            return true;
+        }
+        if (auto r = seq_paxos_.vote_again(); !r) [[unlikely]] {
+            return false;
+        }
+        return vote_again_after_the_repair().has_value();
+    }
+
+    void drop_the_client_rounds()
+    {
+        selection_.reset();
+        answers_in_.clear();
+        try_agains_in_.clear();
+        refusals_in_.clear();
+        works_in_.clear();
+        tasks_ballot_.reset();
+        resend_work_ = false;
+        refusal_.reset();
+        execute_verify_outgoing_.clear();
+        waiting_.clear();
+        resend_answer_ = false;
+    }
+
+    result vote_again_after_the_repair()
+    {
+        const auto promise = seq_paxos_.get_promise();
+        if (!promise) [[unlikely]] {
+            return std::unexpected(promise.error());
+        }
+        ble_ = ballot_leader_election::with(ble_config_, *promise);
+        if (auto r = check_the_applied_state(); !r && r.error() != make_error_code(paxos_errc::state_differs_from_log))
+            [[unlikely]] {
+            return r;
+        }
+        return apply_at_the_start();
     }
 
     [[noreturn]] void write_the_proof_and_throw(const fault_proof& proof, const std::error_code e,
@@ -1297,7 +1423,7 @@ private:
             }
             reply_to_the_client(e, k, &*r);
         }
-        const auto crc = seq_paxos_.read_prefix_chain_crc(m->decided_idx);
+        const auto crc = seq_paxos_.read_prefix_chain_hash(m->decided_idx);
         if (!crc) [[unlikely]] {
             return seq_paxos_.stop_voting(crc.error());
         }

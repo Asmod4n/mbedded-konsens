@@ -1,0 +1,400 @@
+# Bench: konsens_bench
+
+What: konsens_bench, built from bench/konsens_bench.cpp at the commit in
+the context below, and one binary for each arm commit. Each process runs
+one case with one argument (a payload in bytes or a parameter). It takes
+one warm-up sample and then 31 samples. A sample is a fixed number of
+operations (ops_per_sample in each raw line). The time of one operation is
+the time of the sample divided by that number. Each process prints the
+median, the minimum and the maximum of its samples.
+
+Cases of 06a52bf, with the same names, inputs and operations:
+- crc32c: crc32c::Crc32c over one payload, taken in turn from 16 buffers.
+- encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
+  entries of 1024 B. encode_decide, decode_decide: one Decide.
+- commit_lmdb: one write transaction of the log with one append of one
+  entry and its commit, on a fresh store for each sample (06a52bf: one
+  write_atomically of one append_entries). This is the commit of a step.
+- write_lmdb: three nodes in one process, messages through encode and
+  decode, the network a queue. One client_request at a follower, timed
+  from the call to its reply.
+- read_lmdb: one client_query at a follower after one write, timed from
+  the call to its reply. This is a read after a step.
+- write_batch_lmdb: 64 client_request calls at a follower before the
+  first round, timed until the last reply, divided by 64.
+- write_batch_size_lmdb (new; the arm 06a52bf has it through
+  bench/arms/06a52bf.patch): as write_batch_lmdb with a payload of 1024 B,
+  at the batch size of the argument (1, 16 or 256).
+- get_entries_lmdb: get_entries(0, 1) of one entry in a read transaction.
+A case whose name holds lmdb runs on the store of its binary: SQLite from
+the commit sqlite-storage on, LMDB in an arm before it. The names stay
+until the two stores are compared.
+- write_lmdb_threads, read_lmdb_threads, write_batch_lmdb_threads: the
+  same operations with each node on its own thread, no tick.
+Removed at the branch: handle_accept_decide and handle_decide. They ran
+on a store that keeps no entry, and each step of the branch reads its
+entries back.
+
+New cases:
+- pipeline_<work>_<delay>_<rate>: one leader and two followers, each node
+  on its own thread, each message delayed by the delay (0 or 20 ms). A
+  thread puts a tick call into each inbox every tick_ms (1 ms at 0 ms
+  delay, 20 ms at 20 ms delay). Requests arrive at the leader in an open
+  loop at the rate (10000/s, the rate of
+  bench/results/2026-10-24-231534Z, or 20000/s), with an empty payload.
+  The argument is max_in_flight. Work put: one get and one put of a
+  counter. Work loop: the same and 63 more puts. ns per op: from the
+  planned arrival of the first request of a sample to the last reply of
+  that sample, divided by the requests of the sample. Latency: from the
+  planned arrival to the release of the reply, of each request after the
+  warm-up. processor_ns_per_op: getrusage of the process (all threads)
+  over the requests after the warm-up. runs_per_request: the calls of
+  apply at all nodes over all requests, warm-up included;
+  runs_again_per_1000: the calls above one per node and request, per
+  1000 requests.
+- execute_verify_int, execute_verify_float: the pipeline harness at 0 ms
+  delay and 10000 requests/s, argument max_in_flight. int: the counter.
+  float: each node returns (n + 1/3) * (1 + e) as a CBOR double, with e
+  0, 1e-14 and -1e-14 at nodes 1, 2 and 3, and float_digits 12 where the
+  commit has Execute-Verify.
+- read_back: a copy of the reads of node::written_values_read_back, done
+  in one open write transaction of a state_storage after one put of a
+  value of the payload size. Before the samples, the case compares the
+  copy with the state of each node after a step of the cluster.
+- scan_the_whole_log: sequence_paxos::scan_the_whole_log over a log of
+  the argument in entries of 64 B.
+
+Checks: as at 06a52bf for its cases. The cluster cases compare each
+reply with its request number. A process whose check fails exits with 1;
+its raw line shows the exit status.
+
+Run: 5 rounds. Each round runs every case in every binary that
+lists it (konsens_bench --list). The order of the cases and of the
+binaries turns around each second round. konsens_bench_aa is the source
+of the branch built a second time; the difference between
+konsens_bench and konsens_bench_aa is the A/A difference.
+
+User and priority: each process runs as the user bench (uid 1001, not
+root), started by setpriv. Not pinned. Each raw line gives nice,
+other_processes_of_user (the processes of the user bench before the
+start), procs_running of /proc/stat before the start, and the steal ticks
+of /proc/stat during the process.
+
+## Context
+
+# commit 620e916f3e02b86d8c98b241f519df8f30c45d76 clean
+# arm 7015b75 7015b7518ba283eb34bedf5a1c1225e984c16b6a its own bench/konsens_bench.cpp
+# podman podman version 4.9.3
+# container podman, image localhost/bench-ssl a1b93562ee4d07eeb9065ef2d82cbf2374cd41a1671e5ad52c2a2d2b39141f8b created 2026-11-01 03:09:38.892476386 +0000 UTC
+# os Ubuntu Stonking Stingray (development branch)
+# compiler Ubuntu clang version 22.1.8 (1ubuntu1)
+# build type Release, CMAKE_CXX_FLAGS_RELEASE -O2 -DNDEBUG
+# build type Release, CMAKE_C_FLAGS_RELEASE -O2 -DNDEBUG
+# compile command ccache /usr/bin/clang++-22  -I/src/src -I/src/include -I/src/deps/mbedded-cbor/include -I/src/deps/crc32c/include -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -MF CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o.d -o CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -c /src/bench/konsens_bench.cpp
+# compile command ccache /usr/bin/clang++-22 -D_GLIBCXX_ASSERTIONS -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -I/src/include -I/src/deps/crc32c/src -I/work/build/deps/crc32c/include -I/src/deps/mbedded-cbor/include -I/src/deps/crc32c/include -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens.dir/src/persistent_storage.cpp.o -MF CMakeFiles/konsens.dir/src/persistent_storage.cpp.o.d -o CMakeFiles/konsens.dir/src/persistent_storage.cpp.o -c /src/src/persistent_storage.cpp
+# instruction set 
+# instruction set macros __MMX__ __SSE2__ __SSE__ 
+# binary konsens_bench sha256 50eed8c5cfc5dece needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.9 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.14 GLIBC_2.32 GLIBC_2.34 
+# binary konsens_bench comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary konsens_bench_aa sha256 50eed8c5cfc5dece needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.9 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.14 GLIBC_2.32 GLIBC_2.34 
+# binary konsens_bench_aa comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary konsens_bench_7015b75 sha256 bee5a71a22334a9f needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.9 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.14 GLIBC_2.32 GLIBC_2.34 
+# binary konsens_bench_7015b75 comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# libraries linux-vdso.so.1 ; libsqlite3.so.0 /usr/lib/x86_64-linux-gnu/libsqlite3.so.0; libcrypto.so.4 /usr/lib/x86_64-linux-gnu/libcrypto.so.4; libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6; libm.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6; libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1; libc.so.6 /usr/lib/x86_64-linux-gnu/libc.so.6; libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1; libzstd.so.1 /usr/lib/x86_64-linux-gnu/libzstd.so.1; /lib64/ld-linux-x86-64.so.2 ; 
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1; 
+# sqlite libsqlite3-0 3.53.4-2 of the distribution
+# kernel 6.18.44-fc-v185 #1 SMP PREEMPT_DYNAMIC @0
+# scheduler no /sys/kernel/sched_ext
+# virtual machine hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor nproc 4
+# cpu flags sha256 733bd6f8a6de28df
+# user bench uid 1001 through setpriv, nice 0, threads 1 in a serial case; 4 in a case whose name ends in _threads (the main thread and three node threads); 5 in a pipeline or execute_verify case (the main thread, three node threads and a thread that ticks)
+# lmdb mount /dev/loop0 /lmdb btrfs rw,relatime,compress=zstd:1,discard=async,space_cache=v2,subvolid=5,subvol=/ 0 0
+# loadavg at start 1.62 1.55 1.71 1/154 591
+# cases chosen by the prefixes 'commit_lmdb,write_batch_size_lmdb,get_entries_lmdb,encode_decide,decode_decide,scan': 14
+# loadavg at end 1.32 1.39 1.60 1/151 2854
+
+## A/A difference of each case
+
+ns per operation: the median of the process medians of each binary.
+
+| case | argument | konsens_bench | konsens_bench_aa | A/A |
+|---|---|---|---|---|
+| encode_decide | 0 | 70.71 | 70.82 | +0.2 % |
+| decode_decide | 0 | 296.56 | 298.44 | +0.6 % |
+| commit_lmdb | 64 | 821141.27 | 909573.13 | +10.8 % |
+| commit_lmdb | 1024 | 872926.21 | 823342.17 | -5.7 % |
+| commit_lmdb | 65536 | 1174127.19 | 1186233.75 | +1.0 % |
+| write_batch_size_lmdb | 1 | 6421238.25 | 6013008.00 | -6.4 % |
+| write_batch_size_lmdb | 16 | 532267.56 | 524743.41 | -1.4 % |
+| write_batch_size_lmdb | 256 | 135041.27 | 137623.56 | +1.9 % |
+| get_entries_lmdb | 64 | 1420.20 | 1425.43 | +0.4 % |
+| get_entries_lmdb | 1024 | 1480.29 | 1483.03 | +0.2 % |
+| get_entries_lmdb | 65536 | 7627.14 | 7646.24 | +0.3 % |
+| scan_the_whole_log | 1000 | 722635.65 | 722069.15 | -0.1 % |
+| scan_the_whole_log | 10000 | 7297409.00 | 7323132.50 | +0.4 % |
+| scan_the_whole_log | 100000 | 83897612.00 | 83119548.00 | -0.9 % |
+
+Largest A/A difference: 10.8 %. This is the noise floor of the run.
+
+## Result of each binary
+
+ns per operation: the median of the process medians. Spread: the lowest and the highest process median.
+Each other arm: the branch binary konsens_bench against that arm, (branch - arm) / arm.
+
+| case | argument | konsens_bench | spread | konsens_bench_7015b75 | spread | branch vs arm |
+|---|---|---|---|---|---|---|
+| encode_decide | 0 | 70.71 | 70.41-71.17 | 61.28 | 61.01-62.28 | +15.4 % |
+| decode_decide | 0 | 296.56 | 294.86-297.65 | 258.23 | 257.83-259.10 | +14.8 % |
+| commit_lmdb | 64 | 821141.27 | 724687.27-1014557.50 | 881196.30 | 785366.73-893577.93 | -6.8 % |
+| commit_lmdb | 1024 | 872926.21 | 773540.08-917518.54 | 809895.46 | 745783.92-899349.42 | +7.8 % |
+| commit_lmdb | 65536 | 1174127.19 | 1051295.56-1208335.25 | 1276474.12 | 1135273.19-1463682.19 | -8.0 % |
+| write_batch_size_lmdb | 1 | 6421238.25 | 5312798.25-7518339.50 | 5978447.00 | 5548684.25-7240905.50 | +7.4 % |
+| write_batch_size_lmdb | 16 | 532267.56 | 428099.28-559925.50 | 501212.00 | 491965.84-598011.88 | +6.2 % |
+| write_batch_size_lmdb | 256 | 135041.27 | 128818.21-159715.31 | 134688.82 | 127380.21-141253.02 | +0.3 % |
+| get_entries_lmdb | 64 | 1420.20 | 1410.52-1441.49 | 1411.10 | 1403.33-1438.56 | +0.6 % |
+| get_entries_lmdb | 1024 | 1480.29 | 1469.38-1485.51 | 1460.31 | 1449.57-1469.55 | +1.4 % |
+| get_entries_lmdb | 65536 | 7627.14 | 7585.56-7958.25 | 7713.24 | 7676.30-7737.69 | -1.1 % |
+| scan_the_whole_log | 1000 | 722635.65 | 719264.75-728220.40 | 629740.60 | 627354.40-667210.45 | +14.8 % |
+| scan_the_whole_log | 10000 | 7297409.00 | 7269494.50-7406145.00 | 6292348.50 | 6282897.50-7032312.00 | +16.0 % |
+| scan_the_whole_log | 100000 | 83897612.00 | 82654298.00-84040889.00 | 72355255.00 | 72266365.00-72751479.00 | +16.0 % |
+
+## Details of each binary
+
+The median over the processes of each field of the raw lines.
+
+| case | argument | binary | field | median | spread |
+|---|---|---|---|---|---|
+| write_batch_size_lmdb | 1 | konsens_bench | commits_per_op | 6.000 | 6.000-6.000 |
+| write_batch_size_lmdb | 1 | konsens_bench_aa | commits_per_op | 6.000 | 6.000-6.000 |
+| write_batch_size_lmdb | 1 | konsens_bench_7015b75 | commits_per_op | 6.000 | 6.000-6.000 |
+| write_batch_size_lmdb | 1 | konsens_bench | messages_per_op | 16.000 | 16.000-16.000 |
+| write_batch_size_lmdb | 1 | konsens_bench_aa | messages_per_op | 16.000 | 16.000-16.000 |
+| write_batch_size_lmdb | 1 | konsens_bench_7015b75 | messages_per_op | 16.000 | 16.000-16.000 |
+| write_batch_size_lmdb | 16 | konsens_bench | commits_per_op | 0.380 | 0.380-0.380 |
+| write_batch_size_lmdb | 16 | konsens_bench_aa | commits_per_op | 0.380 | 0.380-0.380 |
+| write_batch_size_lmdb | 16 | konsens_bench_7015b75 | commits_per_op | 0.380 | 0.380-0.380 |
+| write_batch_size_lmdb | 16 | konsens_bench | messages_per_op | 3.820 | 3.820-3.820 |
+| write_batch_size_lmdb | 16 | konsens_bench_aa | messages_per_op | 3.820 | 3.820-3.820 |
+| write_batch_size_lmdb | 16 | konsens_bench_7015b75 | messages_per_op | 3.820 | 3.820-3.820 |
+| write_batch_size_lmdb | 256 | konsens_bench | commits_per_op | 0.020 | 0.020-0.020 |
+| write_batch_size_lmdb | 256 | konsens_bench_aa | commits_per_op | 0.020 | 0.020-0.020 |
+| write_batch_size_lmdb | 256 | konsens_bench_7015b75 | commits_per_op | 0.020 | 0.020-0.020 |
+| write_batch_size_lmdb | 256 | konsens_bench | messages_per_op | 3.050 | 3.050-3.050 |
+| write_batch_size_lmdb | 256 | konsens_bench_aa | messages_per_op | 3.050 | 3.050-3.050 |
+| write_batch_size_lmdb | 256 | konsens_bench_7015b75 | messages_per_op | 3.050 | 3.050-3.050 |
+
+Processes that failed: 0.
+
+## Raw lines
+
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.41 min=69.80 max=136.40 encoded_bytes=153
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.49 min=69.91 max=120.51 encoded_bytes=153
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=61.28 min=60.44 max=102.86 encoded_bytes=117
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=294.86 min=285.76 max=376.42 encoded_bytes=153
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=295.84 min=285.08 max=382.83 encoded_bytes=153
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=257.83 min=244.69 max=333.77 encoded_bytes=117
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=856396.03 min=716881.73 max=1109591.40
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=924299.73 min=795610.17 max=1453042.07
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=881196.30 min=807028.50 max=1274741.90
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=917518.54 min=860016.42 max=1107823.38
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=1020590.08 min=863921.46 max=1193498.25
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=797317.29 min=676332.96 max=1119041.46
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1187656.25 min=1058490.38 max=1454850.06
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1491373.50 min=1230437.81 max=2064829.94
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1344394.00 min=1091722.19 max=2073047.88
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=7518339.50 min=5580143.25 max=10565070.75 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2655683 follower_ns_per_op=2468524 log_len_first=1 log_len_last=129
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=6777086.50 min=5814353.00 max=9358238.75 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2349183 follower_ns_per_op=2298231 log_len_first=1 log_len_last=129
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=7240905.50 min=5545380.75 max=10222753.50 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2403317 follower_ns_per_op=2321754 log_len_first=1 log_len_last=129
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=559925.50 min=454873.28 max=955413.62 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=206473 follower_ns_per_op=182538 log_len_first=1 log_len_last=1025
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=524743.41 min=425852.47 max=1033527.56 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=182363 follower_ns_per_op=164673 log_len_first=1 log_len_last=1025
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=541201.66 min=445618.31 max=1071077.38 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=182539 follower_ns_per_op=171621 log_len_first=1 log_len_last=1025
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=137570.62 min=125714.27 max=236963.66 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=66118 follower_ns_per_op=32440 log_len_first=1 log_len_last=8193
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=136274.64 min=125688.61 max=238322.92 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=65949 follower_ns_per_op=33114 log_len_first=1 log_len_last=8193
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=3 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=141253.02 min=121347.11 max=233727.14 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=68562 follower_ns_per_op=32796 log_len_first=1 log_len_last=8193
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1441.49 min=1427.80 max=1692.39
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1436.25 min=1414.81 max=1482.98
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1403.33 min=1397.88 max=1991.54
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1480.29 min=1468.74 max=1523.54
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1486.21 min=1475.88 max=1515.57
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1449.57 min=1441.29 max=1489.58
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7604.16 min=7564.24 max=7758.81
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7630.56 min=7569.72 max=11996.92
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7737.69 min=7703.63 max=8501.21
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=721970.85 min=716590.05 max=739303.10 log_len=1000 entry_bytes=64
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=723758.35 min=716162.40 max=732093.70 log_len=1000 entry_bytes=64
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=629740.60 min=624330.45 max=647626.95 log_len=1000 entry_bytes=64
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7297409.00 min=7247407.00 max=8192333.00 log_len=10000 entry_bytes=64
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7382242.00 min=7231952.00 max=7969297.50 log_len=10000 entry_bytes=64
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7032312.00 min=6267701.50 max=10639431.50 log_len=10000 entry_bytes=64
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=83897612.00 min=83118111.00 max=89512976.00 log_len=100000 entry_bytes=64
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=83119548.00 min=82523258.00 max=84525053.00 log_len=100000 entry_bytes=64
+round=1 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=72322499.00 min=71791382.00 max=76182400.00 log_len=100000 entry_bytes=64
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=72355255.00 min=71846461.00 max=80946238.00 log_len=100000 entry_bytes=64
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=82947877.00 min=82277057.00 max=96356565.00 log_len=100000 entry_bytes=64
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=83679433.00 min=83348605.00 max=84364376.00 log_len=100000 entry_bytes=64
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=6292348.50 min=6225203.50 max=6531958.50 log_len=10000 entry_bytes=64
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7306467.00 min=7254882.00 max=7394416.50 log_len=10000 entry_bytes=64
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7269494.50 min=7223456.50 max=7342196.00 log_len=10000 entry_bytes=64
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=627354.40 min=624267.85 max=632667.00 log_len=1000 entry_bytes=64
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=721464.75 min=717133.20 max=732621.90 log_len=1000 entry_bytes=64
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=719264.75 min=713194.90 max=735998.50 log_len=1000 entry_bytes=64
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7713.24 min=7683.97 max=7799.98
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7640.90 min=7561.41 max=8251.92
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7585.56 min=7549.82 max=7750.16
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1451.25 min=1441.71 max=1496.29
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1483.32 min=1454.86 max=2189.41
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1482.25 min=1468.67 max=1516.74
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1403.58 min=1397.03 max=1438.52
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1424.41 min=1413.44 max=1438.80
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1414.01 min=1410.44 max=1444.14
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=127380.21 min=114774.55 max=216694.54 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=63802 follower_ns_per_op=30585 log_len_first=1 log_len_last=8193
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=137623.56 min=122898.37 max=237698.71 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=66748 follower_ns_per_op=32563 log_len_first=1 log_len_last=8193
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=128818.21 min=121518.08 max=231285.60 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=64413 follower_ns_per_op=30364 log_len_first=1 log_len_last=8193
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=491965.84 min=407546.28 max=998722.97 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=174286 follower_ns_per_op=155041 log_len_first=1 log_len_last=1025
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=608336.38 min=511522.78 max=1158201.81 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=214187 follower_ns_per_op=196473 log_len_first=1 log_len_last=1025
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=542283.56 min=450283.50 max=991287.91 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=187662 follower_ns_per_op=169942 log_len_first=1 log_len_last=1025
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=6137138.75 min=5343430.25 max=7911113.50 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2024844 follower_ns_per_op=1998655 log_len_first=1 log_len_last=129
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5435438.75 min=4942458.50 max=7298565.25 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1825258 follower_ns_per_op=1768839 log_len_first=1 log_len_last=129
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=6421238.25 min=5519466.25 max=8358694.50 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2128448 follower_ns_per_op=2089400 log_len_first=1 log_len_last=129
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1221234.81 min=1021076.38 max=1490588.00
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1186233.75 min=1085060.12 max=1422946.88
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1167547.81 min=1038010.75 max=1329742.88
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=831151.92 min=721145.96 max=1036438.92
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=823342.17 min=733871.88 max=1022097.00
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=872926.21 min=730053.58 max=1038208.33
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=893577.93 min=825559.43 max=1219792.10
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=962918.10 min=848047.97 max=1525086.77
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=1014557.50 min=850171.07 max=1365604.67
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=259.10 min=250.00 max=338.70 encoded_bytes=117
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=299.16 min=286.87 max=372.88 encoded_bytes=153
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=297.65 min=288.99 max=377.32 encoded_bytes=153
+round=2 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=61.01 min=60.61 max=128.70 encoded_bytes=117
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.69 min=69.96 max=131.36 encoded_bytes=153
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.57 min=69.70 max=131.68 encoded_bytes=153
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.93 min=70.29 max=130.91 encoded_bytes=153
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.82 min=70.24 max=129.27 encoded_bytes=153
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=61.23 min=60.78 max=112.50 encoded_bytes=117
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=295.71 min=286.16 max=379.13 encoded_bytes=153
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=301.57 min=291.42 max=438.63 encoded_bytes=153
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=258.11 min=248.61 max=338.15 encoded_bytes=117
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=724687.27 min=673488.30 max=849200.13
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=794335.53 min=733212.37 max=988968.20
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=785366.73 min=731579.27 max=1245388.13
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=789086.17 min=729887.00 max=995612.96
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=797494.92 min=697152.04 max=929189.62
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=745783.92 min=615482.00 max=875292.54
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1051295.56 min=900427.56 max=1272511.81
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1145481.81 min=1023884.00 max=1430330.00
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1135273.19 min=971380.88 max=1285007.75
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5312798.25 min=4881896.25 max=7215347.25 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1819048 follower_ns_per_op=1802258 log_len_first=1 log_len_last=129
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5489178.00 min=4987470.50 max=7101362.25 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1915988 follower_ns_per_op=1859115 log_len_first=1 log_len_last=129
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5548684.25 min=4869596.00 max=7237827.00 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1898602 follower_ns_per_op=1811000 log_len_first=1 log_len_last=129
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=461996.19 min=399961.69 max=914577.91 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=162435 follower_ns_per_op=145024 log_len_first=1 log_len_last=1025
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=507063.97 min=431703.38 max=1094498.59 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=174975 follower_ns_per_op=161353 log_len_first=1 log_len_last=1025
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=495944.44 min=424520.72 max=947082.78 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=169175 follower_ns_per_op=155886 log_len_first=1 log_len_last=1025
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=159715.31 min=124526.06 max=238536.72 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=72907 follower_ns_per_op=34194 log_len_first=1 log_len_last=8193
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=139459.23 min=122112.06 max=246827.27 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=69362 follower_ns_per_op=32871 log_len_first=1 log_len_last=8193
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=134688.82 min=123057.77 max=238777.07 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=65880 follower_ns_per_op=32072 log_len_first=1 log_len_last=8193
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1421.30 min=1413.27 max=2096.53
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1420.19 min=1415.26 max=1439.85
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1438.56 min=1436.78 max=1444.25
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1474.99 min=1466.35 max=2041.72
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1483.03 min=1476.55 max=1500.43
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1467.39 min=1455.17 max=2087.79
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7697.84 min=7590.75 max=9255.45
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7688.43 min=7617.67 max=7748.51
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7705.58 min=7622.39 max=7791.73
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=725608.30 min=717770.90 max=746786.10 log_len=1000 entry_bytes=64
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=722069.15 min=715448.50 max=730079.50 log_len=1000 entry_bytes=64
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=629946.50 min=624550.90 max=668963.35 log_len=1000 entry_bytes=64
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7293224.50 min=7216322.50 max=8277374.50 log_len=10000 entry_bytes=64
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7302366.00 min=7238513.50 max=7462690.50 log_len=10000 entry_bytes=64
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=6377324.50 min=6301221.50 max=6609716.00 log_len=10000 entry_bytes=64
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=82654298.00 min=82293759.00 max=90007537.00 log_len=100000 entry_bytes=64
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=83798271.00 min=82848666.00 max=94421745.00 log_len=100000 entry_bytes=64
+round=3 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=2 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=72266365.00 min=71710524.00 max=81760792.00 log_len=100000 entry_bytes=64
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=72751479.00 min=71779894.00 max=77115424.00 log_len=100000 entry_bytes=64
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=83032870.00 min=82708927.00 max=84916396.00 log_len=100000 entry_bytes=64
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=84040889.00 min=83179957.00 max=121020105.00 log_len=100000 entry_bytes=64
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=6289046.00 min=6214032.50 max=6448229.50 log_len=10000 entry_bytes=64
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7323132.50 min=7258077.50 max=11067384.00 log_len=10000 entry_bytes=64
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7335532.00 min=7275266.50 max=7553059.50 log_len=10000 entry_bytes=64
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=628140.50 min=623198.75 max=989915.85 log_len=1000 entry_bytes=64
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=721922.95 min=716995.65 max=750438.80 log_len=1000 entry_bytes=64
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=722635.65 min=715198.75 max=974264.00 log_len=1000 entry_bytes=64
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7733.26 min=7685.56 max=8730.02
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7646.24 min=7560.98 max=8071.64
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7958.25 min=7661.94 max=10741.74
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1469.55 min=1456.77 max=1811.51
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1473.63 min=1467.48 max=1508.23
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1485.51 min=1473.54 max=1901.89
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1411.10 min=1406.25 max=1422.50
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1425.43 min=1417.36 max=2387.57
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1420.20 min=1410.60 max=1451.59
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=138626.23 min=116708.74 max=229365.18 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=64732 follower_ns_per_op=31663 log_len_first=1 log_len_last=8193
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=140950.54 min=118663.96 max=221097.86 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=65214 follower_ns_per_op=32254 log_len_first=1 log_len_last=8193
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=135041.27 min=123760.63 max=251361.81 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=68003 follower_ns_per_op=33007 log_len_first=1 log_len_last=8193
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=501212.00 min=394387.28 max=1013869.47 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=178463 follower_ns_per_op=168382 log_len_first=1 log_len_last=1025
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=541010.91 min=404257.06 max=1091879.34 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=193226 follower_ns_per_op=169537 log_len_first=1 log_len_last=1025
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=532267.56 min=429456.31 max=991334.91 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=183429 follower_ns_per_op=170560 log_len_first=1 log_len_last=1025
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5846997.00 min=5098935.50 max=7329204.00 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1983064 follower_ns_per_op=1905623 log_len_first=1 log_len_last=129
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=6013008.00 min=5474992.00 max=8663908.00 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1996207 follower_ns_per_op=2025773 log_len_first=1 log_len_last=129
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5706761.00 min=4943628.50 max=8332472.50 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1996542 follower_ns_per_op=1932177 log_len_first=1 log_len_last=129
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1463682.19 min=1079561.38 max=2093605.31
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1212427.81 min=1067608.12 max=1776977.69
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1174127.19 min=1046361.62 max=1786364.56
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=809895.46 min=667707.38 max=990394.04
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=791055.75 min=731710.29 max=922438.88
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=773540.08 min=703666.42 max=1003244.42
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=833727.30 min=663198.27 max=993832.00
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=784987.40 min=670379.37 max=1171874.03
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=821141.27 min=724448.73 max=1212155.47
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=258.58 min=247.87 max=336.48 encoded_bytes=117
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=298.44 min=286.11 max=374.81 encoded_bytes=153
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=297.37 min=289.49 max=378.26 encoded_bytes=153
+round=4 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=62.28 min=61.23 max=114.65 encoded_bytes=117
+round=4 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.85 min=70.10 max=133.84 encoded_bytes=153
+round=4 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=71.17 min=70.05 max=131.32 encoded_bytes=153
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=70.71 min=69.85 max=133.56 encoded_bytes=153
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=71.02 min=70.31 max=121.80 encoded_bytes=153
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=encode_decide payload_bytes=0 ops_per_sample=150000 samples=31 ns_per_op_median=61.84 min=60.55 max=114.97 encoded_bytes=117
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=296.56 min=286.80 max=371.46 encoded_bytes=153
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=297.98 min=290.05 max=376.51 encoded_bytes=153
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=decode_decide payload_bytes=0 ops_per_sample=40000 samples=31 ns_per_op_median=258.23 min=251.49 max=341.39 encoded_bytes=117
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=815685.10 min=724624.90 max=1366188.70
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=909573.13 min=731847.57 max=1325773.77
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=64 ops_per_sample=30 samples=31 ns_per_op_median=888739.03 min=728494.70 max=1415664.07
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=882195.29 min=739394.29 max=1438027.62
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=834715.33 min=737058.50 max=1162561.67
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=1024 ops_per_sample=24 samples=31 ns_per_op_median=899349.42 min=762618.92 max=1104832.50
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1208335.25 min=1050239.44 max=1717788.88
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1176693.38 min=1079420.00 max=1561674.44
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=commit_lmdb payload_bytes=65536 ops_per_sample=16 samples=31 ns_per_op_median=1276474.12 min=1102669.75 max=1471499.88
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=6908937.75 min=5677942.25 max=9444516.75 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2249574 follower_ns_per_op=2162630 log_len_first=1 log_len_last=129
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=6144365.50 min=5545997.25 max=8498225.75 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=1885526 follower_ns_per_op=2100479 log_len_first=1 log_len_last=129
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=write_batch_size_lmdb parameter=1 ops_per_sample=4 samples=31 ns_per_op_median=5978447.00 min=5310634.00 max=8192644.25 messages_per_op=16.00 commits_per_op=6.00 commits_per_node_per_op=2.00/2.00/2.00 leader_ns_per_op=2045238 follower_ns_per_op=1991554 log_len_first=1 log_len_last=129
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=428099.28 min=363331.38 max=847076.28 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=148755 follower_ns_per_op=135838 log_len_first=1 log_len_last=1025
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=416938.50 min=357908.50 max=900503.69 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=148062 follower_ns_per_op=135246 log_len_first=1 log_len_last=1025
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=16 ops_per_sample=32 samples=31 ns_per_op_median=598011.88 min=397088.75 max=1216347.09 messages_per_op=3.82 commits_per_op=0.38 commits_per_node_per_op=0.12/0.12/0.12 leader_ns_per_op=202280 follower_ns_per_op=197476 log_len_first=1 log_len_last=1025
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=133531.39 min=121739.84 max=230815.25 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=64583 follower_ns_per_op=31623 log_len_first=1 log_len_last=8193
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=1 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=137290.60 min=119252.61 max=220326.80 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=66452 follower_ns_per_op=31584 log_len_first=1 log_len_last=8193
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=write_batch_size_lmdb parameter=256 ops_per_sample=256 samples=31 ns_per_op_median=129408.83 min=115611.61 max=227515.09 messages_per_op=3.05 commits_per_op=0.02 commits_per_node_per_op=0.01/0.01/0.01 leader_ns_per_op=63307 follower_ns_per_op=30097 log_len_first=1 log_len_last=8193
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1410.52 min=1406.94 max=1528.39
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1428.24 min=1418.05 max=1714.90
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=64 ops_per_sample=75000 samples=31 ns_per_op_median=1411.34 min=1404.47 max=1937.36
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1469.38 min=1463.66 max=1552.45
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1477.81 min=1470.14 max=1519.15
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=1024 ops_per_sample=55000 samples=31 ns_per_op_median=1460.31 min=1452.65 max=1865.97
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7627.14 min=7556.78 max=7720.01
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7683.80 min=7592.19 max=7950.25
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=get_entries_lmdb payload_bytes=65536 ops_per_sample=2000 samples=31 ns_per_op_median=7676.30 min=7632.00 max=7843.17
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=728220.40 min=718585.00 max=807647.45 log_len=1000 entry_bytes=64
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=728213.20 min=716607.40 max=805305.45 log_len=1000 entry_bytes=64
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=1000 ops_per_sample=20 samples=31 ns_per_op_median=667210.45 min=661950.20 max=732430.20 log_len=1000 entry_bytes=64
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7406145.00 min=7214722.00 max=8183368.00 log_len=10000 entry_bytes=64
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=7417850.50 min=7255212.50 max=11183866.00 log_len=10000 entry_bytes=64
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=scan_the_whole_log parameter=10000 ops_per_sample=2 samples=31 ns_per_op_median=6282897.50 min=6237556.50 max=6556930.50 log_len=10000 entry_bytes=64
+round=5 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=84008287.00 min=83338740.00 max=86475351.00 log_len=100000 entry_bytes=64
+round=5 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=89865649.00 min=82926557.00 max=93977577.00 log_len=100000 entry_bytes=64
+round=5 binary=konsens_bench_7015b75 nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=scan_the_whole_log parameter=100000 ops_per_sample=1 samples=31 ns_per_op_median=72600417.00 min=72131623.00 max=79100104.00 log_len=100000 entry_bytes=64
