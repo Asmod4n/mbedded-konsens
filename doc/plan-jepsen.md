@@ -287,6 +287,40 @@ Each run keeps `results.edn.xz` and the log of konsensd of each node in
 run stays outside the tree, in `jepsen/store/`. A run with a binary
 `konsensd-<name>` carries `<name>` at the end of its test name.
 
+## 6e. The engine under konsensd (2026-11-01)
+
+The default seccomp profile of podman 4.9.3 allows no `io_uring_setup`.
+So konsensd in every run of 6a to 6d ran on the engine of slipstreamIO,
+not on io_uring of the kernel. `JEPSEN_ENGINE` now picks the engine:
+`kernel` (the default) gives the nodes the default profile of podman
+plus `io_uring_setup`, `io_uring_enter` and `io_uring_register`;
+`emulation` keeps the default profile. The db checks the engine after
+the setup through the io_uring descriptors of konsensd, and the test
+name ends with the engine. The runs of 6a to 6d carry `emulation`.
+
+The slow clean stop of 6c, read with gdb in the node when the stop
+took longer than 60 s, in all five cases:
+
+- the main thread waits in `thrd_join` in `slipstream_engine_close`;
+- the worker of the engine waits in a blocking `connect` to a peer
+  behind the partition, in `slip_posix_run_blocking`.
+
+So the end of konsensd waits for the timeout of the SYN. The kernel does
+not: measured in a node container with a DROP rule, a pending io_uring
+connect gives `io_uring_queue_exit` back in under 1 ms. The engine of
+slipstreamIO hands a connect to its worker, where the kernel issues it
+non-blocking and waits on the poll of the socket. That is a fault of
+slipstreamIO, and its fix is a change there.
+
+| Engine | Faults | Workload | Time | Result |
+|---|---|---|---|---|
+| emulation | partition, pause, restart | register | 300 s | valid; 5 of the restarts took more than 60 s |
+| kernel | partition, pause, restart | register | 300 s | valid; 32 restarts, no SIGKILL |
+
+When a stop takes more than 60 s, the db writes the threads of konsensd
+with gdb and the sockets with `ss` to `konsensd-threads.log`; the node
+containers carry gdb and `SYS_PTRACE` for it.
+
 ## 7. What this does not cover
 
 - Transactions over several keys: konsensd has none.

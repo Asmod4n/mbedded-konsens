@@ -73,6 +73,16 @@
   (await-the-end-of-konsensd seconds-for-a-clean-stop)
   :killed)
 
+(def threads-file (str home "/konsensd-threads.log"))
+
+(defn record-the-threads-of-konsensd!
+  []
+  (c/su (c/exec :sh :-c (str "{ date -u; for t in /proc/$(pgrep -x konsensd)/task/*; do "
+                             "echo \"== $t $(cat $t/comm) $(cat $t/wchan)\"; grep State $t/status; "
+                             "echo \"syscall $(cat $t/syscall)\"; done; "
+                             "gdb -p $(pgrep -x konsensd) -batch -ex 'thread apply all bt'; "
+                             "ss -tnpi; } >> " threads-file " 2>&1"))))
+
 (defn stop-konsensd!
   []
   (signal-konsensd! "CONT")
@@ -81,7 +91,8 @@
        :stopped
        (catch clojure.lang.ExceptionInfo e
          (if (= :timeout (:type (ex-data e)))
-           (kill-konsensd!)
+           (do (record-the-threads-of-konsensd!)
+               (kill-konsensd!))
            (throw e)))))
 
 (defn starts-in-the-log
@@ -167,6 +178,19 @@
                   :retry-interval 200
                   :log-message    "Waiting for konsensd to start"}))
 
+(defn io-uring-descriptors
+  []
+  (parse-long (str/trim (c/su (c/exec :sh :-c (str "ls -l /proc/$(cat " pid-file ")/fd | grep -c io_uring || true"))))))
+
+(defn check-the-engine!
+  [engine]
+  (let [rings (util/await-fn (fn []
+                               (when-not (konsensd-runs?) (throw (ex-info "konsensd does not run" {})))
+                               (io-uring-descriptors))
+                             {:timeout 10000 :retry-interval 200 :log-message "Waiting for konsensd"})]
+    (when (not= (= :kernel engine) (pos? rings))
+      (throw (ex-info "konsensd does not use the engine of the test" {:engine engine :io-uring-descriptors rings})))))
+
 (defrecord DB [lazyfs-map]
   db/DB
   (setup! [_ test node]
@@ -174,12 +198,13 @@
           (c/exec :chmod 755 binary))
     (lazyfs/mount! lazyfs-map)
     (c/sudo user (cu/write-file! (config-of test node) config-file))
-    (start-konsensd! true))
+    (start-konsensd! true)
+    (check-the-engine! (:engine test)))
 
   (teardown! [_ test node]
     (signal-konsensd! "KILL")
     (lazyfs/umount! lazyfs-map)
-    (c/su (c/exec :rm :-rf data-directory config-file pid-file log-file)))
+    (c/su (c/exec :rm :-rf data-directory config-file pid-file log-file threads-file)))
 
   db/Kill
   (kill! [_ test node]
@@ -196,6 +221,7 @@
   db/LogFiles
   (log-files [_ test node]
     {log-file "konsensd.log"
+     threads-file "konsensd-threads.log"
      (:log-file lazyfs-map) "lazyfs.log"}))
 
 (defn konsensd-db

@@ -49,7 +49,8 @@
            opts
            {:name      (str/join "-" (concat ["konsensd" (name (:workload opts))]
                                          (map name (sort (:faults opts)))
-                                         (binary-suffix (:konsensd opts))))
+                                         (binary-suffix (:konsensd opts))
+                                         [(name (:engine opts))]))
             :os        os/noop
             :db        db
             :client    (:client workload)
@@ -90,6 +91,10 @@
    [nil "--nemesis-interval SECONDS" "Seconds between faults"
     :default  10
     :parse-fn parse-double]
+   [nil "--engine NAME" "kernel: konsensd uses io_uring of the kernel; emulation: the engine of slipstreamIO"
+    :default  :kernel
+    :parse-fn keyword
+    :validate [#{:kernel :emulation} "kernel or emulation"]]
    [nil "--konsensd PATH" "The konsensd binary on the control node"
     :default "/jepsen/build/konsensd"]])
 
