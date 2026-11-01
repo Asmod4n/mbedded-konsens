@@ -1,7 +1,7 @@
 FROM docker.io/library/ubuntu:26.10 AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends g++-16 gcc-16 cmake ninja-build make doctest-dev libboost-dev \
-    libsqlite3-dev sqlite3 libtomlplusplus-dev libada-url-dev \
+    libsqlite3-dev sqlite3 libssl-dev libtomlplusplus-dev libada-url-dev \
  && rm -rf /var/lib/apt/lists/*
 COPY . /src
 RUN cmake -S /src -B /build -G Ninja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
@@ -10,7 +10,7 @@ RUN cmake -S /src -B /build -G Ninja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
 
 FROM docker.io/library/ubuntu:26.10 AS run
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libsqlite3-0 libada-url0-3 libstdc++6 \
+ && apt-get install -y --no-install-recommends libsqlite3-0 libssl4 libada-url0-3 libstdc++6 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --home-dir /var/lib/konsensd --create-home konsensd
 COPY --from=build /build/konsensd /usr/bin/konsensd

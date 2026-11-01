@@ -158,6 +158,7 @@ The cost of the checksum against a MAC:
 | Compiler | g++ 15 or later |
 | System | Linux |
 | SQLite | the package of the distribution, `libsqlite3-dev` |
+| OpenSSL | 3.0 or later, the package of the distribution, `libssl-dev` |
 | Boost | the headers |
 | mbedded-cbor | the submodule `deps/mbedded-cbor` |
 | crc32c | the submodule `deps/crc32c`, Google crc32c, BSD-3-Clause license |
@@ -170,11 +171,11 @@ The library runs as a user that is not root.
 Ubuntu 26.04:
 
 ```sh
-sudo apt install g++-15 cmake doctest-dev libboost-dev libsqlite3-dev git
+sudo apt install g++-15 cmake doctest-dev libboost-dev libsqlite3-dev libssl-dev git
 ```
 
 On openSUSE Tumbleweed, Boost comes from `libboost_headers-devel` and
-SQLite from `sqlite3-devel`.
+SQLite from `sqlite3-devel` and OpenSSL from `libopenssl-devel`.
 
 ```sh
 git clone https://github.com/Asmod4n/mbedded-konsens
