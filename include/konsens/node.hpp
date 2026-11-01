@@ -193,7 +193,7 @@ public:
         }
         auto sp = sequence_paxos<S>::with(
             {config.configuration_id, config.pid, config.peers, config.build_from, *kind,
-             *kind == start_kind::clean ? (*mark)->verified_idx : 0, config.sync_by_the_caller},
+             *kind == start_kind::clean && *mark ? (*mark)->verified_idx : 0, config.sync_by_the_caller},
             std::move(internal_storage),
             nonce);
         if (!sp) [[unlikely]] {
