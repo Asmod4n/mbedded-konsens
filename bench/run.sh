@@ -91,7 +91,7 @@ build() {
     local stamp=$1 arm
     shift
     configure /src /work/build "/work/cmake-$stamp.log"
-    cmake --build /work/build --target $main_binary $aa_binary -j $build_jobs \
+    cmake --build /work/build --target $main_binary $aa_binary konsens_hash_bench -j $build_jobs \
         > "/work/build-$stamp.log" 2>&1 || { tail -n 40 "/work/build-$stamp.log" >&2; exit 1; }
     for arm in "$@"; do
         configure "/work/arms/$arm/src" "/work/arms/$arm/build" "/work/cmake-$arm-$stamp.log"
@@ -400,6 +400,7 @@ inside() {
     context "$commit" "$dirty" "$stamp" > "/work/context-$stamp.txt"
     echo "# cases chosen by the prefixes '$prefixes': ${#cases[@]}" >> "/work/context-$stamp.txt"
     rounds "$samples" "$rounds" > "/work/raw-$stamp.txt"
+    setpriv --reuid="$bench_user" --regid="$bench_user" --clear-groups "/work/build/konsens_hash_bench" > "/work/hash-$stamp.txt"
     echo "# loadavg at end $(cat /proc/loadavg)" >> "/work/context-$stamp.txt"
     {
         header "$samples" "$rounds"
@@ -408,6 +409,10 @@ inside() {
         cat "/work/context-$stamp.txt"
         echo ""
         summary "${arms[@]}" < "/work/raw-$stamp.txt"
+        echo ""
+        echo "## Incremental SHA-256 vs CRC32C"
+        echo ""
+        cat "/work/hash-$stamp.txt"
         echo ""
         echo "## Raw lines"
         echo ""
