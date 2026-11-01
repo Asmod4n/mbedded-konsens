@@ -175,6 +175,11 @@ These are not part of this plan. Each needs its own change.
    fuzzing as the exception. Proposal: a Jepsen run is a second
    exception and runs before a release, as fuzzing does.
 
+Answers of the owner, 2026-11-01 16:17 ("passt"): yes to the three
+proposals. Added: Jepsen runs each night in a session of the owner's
+account when code changed that day; a change of documents only does not
+start it.
+
 ## 10. Data this plan leaves on the disk
 
 - `jepsen/results/<time stamp>/`: kept, one per run, in the tree.
