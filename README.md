@@ -330,11 +330,21 @@ on which nothing accepts. A socket file on which a process accepts, or a
 file that is not a socket, stops the start. A clean stop removes the
 socket file.
 
+The default seccomp profile of podman refuses io_uring, and konsensd
+then runs on the engine of slipstreamIO. Write a profile that adds the
+three io_uring system calls to the default of podman, on each machine:
+
+```sh
+sudo python3 containers/konsensd/seccomp-with-io-uring.py \
+    /usr/share/containers/seccomp.json /etc/konsensd/seccomp-io-uring.json
+```
+
 Start each node once with `--first-start`, on all three machines. Stop
 it with Ctrl-C when the three nodes have elected a leader:
 
 ```sh
 podman run --rm -it --network host -v konsensd-data:/var/lib/konsensd \
+    --security-opt seccomp=/etc/konsensd/seccomp-io-uring.json \
     -v /etc/konsensd/konsensd.toml:/etc/konsensd/konsensd.toml:ro \
     localhost/konsensd --config /etc/konsensd/konsensd.toml --first-start
 ```
