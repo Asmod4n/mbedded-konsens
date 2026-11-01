@@ -128,6 +128,37 @@ repair needs the chain hash.
    shows each range and the answer of each peer (same, different, none).
    The operator can retire the node.
 
+## 4a. The form as built
+
+1. The record CRC covers the entry and the chain field together
+   (plan of the chain hash, 3a). So a mismatch does not say which part
+   changed. The local repair reads the entry without the record CRC
+   (`get_unchecked_entry`) and keeps it only when the chain of the next
+   record follows from it, or the chain of the meta record at the end of
+   the log. The scan checks each link between two records that hold, so
+   this check of each range gives the same result as the fold of item 3
+   over the whole log.
+2. `find_the_damaged_ranges` gives each range of records that fail their
+   CRC or whose rows are missing. A break of the chain between two
+   records that hold is `paxos_errc::inconsistent_storage` and takes the
+   path of fact 1.
+3. A peer that finds a damage while it reads a requested range sends no
+   answer and starts its own repair. A peer in repair answers the part
+   of the range before its own first damaged range.
+4. A range longer than `max_build_entries` is asked from each peer in
+   parts. The node checks the copy of one peer when that copy covers the
+   whole range.
+5. The count in node.db rises at the start of each repair, the local
+   repair included. The limit is `automatic_repairs`, one.
+6. The wire has two new kinds, 20 and 21. The kinds of the heartbeat
+   messages move to 22 and 23.
+7. Provisional: a damage that the start checks find still retires the
+   node, as plan clean-stop 2.6 decided. The repair runs for a damage
+   that a step finds. A card asks the owner whether the start repairs
+   too.
+8. Not built yet: the model of section 5 and the view of item 9 for the
+   management tool.
+
 ## 5. The model
 
 The repair changes no durable value. In the model it is a pause of the
