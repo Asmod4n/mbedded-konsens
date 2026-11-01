@@ -88,16 +88,6 @@ std::error_code check_entries_of(const proposal_forward& p) noexcept
     return check_entries(p.entries);
 }
 
-std::error_code check_entries_of(const recovery_response& r) noexcept
-{
-    return check_entries(r.log);
-}
-
-std::error_code check_entries_of(const new_state& n) noexcept
-{
-    return check_entries(n.entries);
-}
-
 std::error_code check_entries_of(const build_response& b) noexcept
 {
     return check_entries(b.entries);

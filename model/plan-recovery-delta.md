@@ -4,6 +4,10 @@ Branch recovery-delta, from main 473d975. Owner card 2026-10-29: the
 model and the proofs come first; the recovery delta is one item of
 them.
 
+Note, 2026-10-29: the code has no recovery since branch remove-recovery
+(doc/plan-remove-recovery.md). The facts about the code in section 1
+describe the code before that change. The model keeps the recovery.
+
 ## 1. Facts checked in this session
 
 - The model takes the whole log of the source when a recovery ends
