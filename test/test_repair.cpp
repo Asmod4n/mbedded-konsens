@@ -447,6 +447,24 @@ TEST_CASE("a node in repair answers no other message and asks again at the resen
     CHECK(n.take_outgoing_messages() == requests);
 }
 
+// A node in repair takes no part in the protocol, so a peer that connects
+// again gets no PrepareReq. The reconnect also must open no step: an open
+// step made the end of the repair a wrong use, and konsensd ended at its
+// first repair when a peer connected during it.
+TEST_CASE("a reconnect during a repair sends nothing, and the repair still ends with a vote")
+{
+    auto c = cluster_with_damage_at_node_1([](const std::filesystem::path& d) { flip_a_byte(d, 2, tail_size + 1); });
+    const auto requests = start_the_repair(c.nodes.front());
+    auto& n = c.nodes.front();
+    REQUIRE(n.reconnected(2));
+    REQUIRE(n.commit());
+    CHECK(n.take_outgoing_messages().empty());
+    CHECK(n.repairs());
+    deliver(c, deliver(c, requests));
+    CHECK(n.votes());
+    CHECK_FALSE(n.repairs());
+}
+
 // A peer answers the entries that it holds, decided or not, and at most
 // up to its own log length. A peer that repairs answers only the part of
 // the range before its own damage.

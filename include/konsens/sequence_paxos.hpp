@@ -1237,7 +1237,7 @@ public:
         if (pid != pid_) {
             peers_seen_.at(node_index_of(pid)) = {};
         }
-        if (pid == pid_ || retired_) {
+        if (pid == pid_ || retired_ || repair_) {
             return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
