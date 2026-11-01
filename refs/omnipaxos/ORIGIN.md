@@ -1,8 +1,10 @@
 # Origin
 
-The models follow the Omni-Paxos source at one commit. The source is not
-copied into this repository. Each citation in the models and the results
-names a file and a line at this commit.
+The models follow the Omni-Paxos source at one commit. The directory
+omnipaxos/src of that commit stands here verbatim, under
+refs/omnipaxos/omnipaxos/src, with the license of the upstream source in
+refs/omnipaxos/LICENSE. Nothing in it is changed. Each citation in the
+models and the results names a file and a line at this commit.
 
 - Upstream repository: https://github.com/haraldng/omnipaxos
 - Commit: 532ff79a586a60c1f9fa1cf58df1c829e5a6882f
