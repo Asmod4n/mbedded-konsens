@@ -891,11 +891,11 @@ public:
 
     result scan_the_whole_log()
     {
-        const auto chains = read_verified_chain_hashes();
-        if (!chains) [[unlikely]] {
-            return std::unexpected(chains.error());
+        const auto verified = count_the_verified_entries();
+        if (!verified) [[unlikely]] {
+            return std::unexpected(verified.error());
         }
-        if (chains->size() < mark_.log_len) [[unlikely]] {
+        if (*verified < mark_.log_len) [[unlikely]] {
             return stop_voting(make_error_code(storage_errc::crc_mismatch));
         }
         return {};
@@ -1914,27 +1914,26 @@ private:
         return {};
     }
 
-    std::expected<std::vector<chain_hash>, std::error_code> read_verified_chain_hashes() const
+    std::expected<std::uint64_t, std::error_code> count_the_verified_entries() const
     {
         const auto t = internal_storage_.begin_read_only();
         if (!t) [[unlikely]] {
             return std::unexpected(t.error());
         }
-        std::vector<chain_hash> chains;
+        chain_hash previous{};
         for (std::uint64_t index = 0;; ++index) {
             const auto stored = t->get_chain_hash(index);
             if (!stored || !*stored) {
-                return chains;
+                return index;
             }
             const auto e = t->get_entries(index, index + 1);
             if (!e || e->size() != 1) {
-                return chains;
+                return index;
             }
-            const auto previous = chains.empty() ? chain_hash{} : chains.back();
             if (compute_chain_hash(sha256_, previous, index, e->front()) != **stored) {
-                return chains;
+                return index;
             }
-            chains.push_back(**stored);
+            previous = **stored;
         }
     }
 
