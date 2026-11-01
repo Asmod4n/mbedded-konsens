@@ -651,10 +651,10 @@ a. The client read path loses its check. `finish_the_step` reads the
    its check (sequence_paxos.hpp:461-463). The last check can then
    lie many calls back.
 
-b. Arm P reverses an earlier decision. plan-lmdb-only-source.md:150-153
+b. Arm P reverses an earlier decision. plan-storage-only-source.md:150-153
    (2.1 item 3) says that a getter between two steps runs the step
    check, "so no value leaves the node without the check". Review
-   finding 5 (review-plan-lmdb-only-source-1.md:17-21) asked for it.
+   finding 5 (review-plan-storage-only-source-1.md:17-21) asked for it.
    The test at test_sequence_paxos.cpp:668-689 checks it: after a
    damage, `get_promise` and `get_decided_idx` must return
    `inconsistent_storage`. With arm P both return the committed value,
@@ -741,8 +741,8 @@ P1. The failed commit. Use the form of P3. Or, if the kept record
     the step before.
 
 P2. Name the reversed decision. Section 19 cites
-    plan-lmdb-only-source.md:150-153 and
-    review-plan-lmdb-only-source-1.md:17-21, and says why the new form
+    plan-storage-only-source.md:150-153 and
+    review-plan-storage-only-source-1.md:17-21, and says why the new form
     keeps their goal: the value in memory is the last checked value,
     and every vote runs after a check of its step. The test at
     test_sequence_paxos.cpp:668-689 changes: after the damage,

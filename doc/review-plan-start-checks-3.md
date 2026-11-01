@@ -5,7 +5,7 @@ Review of plan and model at 6690506 by a second agent, 2026-10-24.
 ## Findings
 
 1. **Blocking: a key lost at run time at the end of a read range is found by no check.**
-   - Item 2.2 (plan:94) checks only the keys that the cursor finds below `to`. The loop stops at the first key at or above `to`, and it stops at MDB_NOTFOUND, with no check (persistent_storage.cpp:466-475).
+   - Item 2.2 (plan:94) checks only the keys that the cursor finds below `to`. The loop stops at the first key at or above `to`, and it stops at the end of the keys, with no check (persistent_storage.cpp:466-475).
    - So a read of [from, to) whose key to−1 is missing returns one entry less, with no error. This holds when a later key exists, and also when the missing key is the last key of the log.
    - Every log read in sequence_paxos ends at `accepted_idx_`: `create_log_sync` (:612), `handle_recovery` (:891), `handle_get_state` (:983), `log_or_buffered_proposals_contain`. `read_decided_suffix` (:501) ends at the decided index.
    - Example that breaks S2 with one fault:

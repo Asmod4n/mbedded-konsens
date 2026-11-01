@@ -559,7 +559,7 @@ The review is in doc/review-plan-write-path.md ("Review of arm P").
   and no unfinished write, the getters return the values of `mark_`.
   Inside a write transaction they return `txn_->get_meta()`. Else they
   make the checked read. No new member. This fixes P1.
-- P2: P3 reverses item 3 of 2.1 of plan-lmdb-only-source.md (each
+- P2: P3 reverses item 3 of 2.1 of plan-storage-only-source.md (each
   getter makes the checked read). The test at
   test_sequence_paxos.cpp:668-689 changes as the review says. P3 is
   built as an arm, marked provisional, and is kept only after the owner

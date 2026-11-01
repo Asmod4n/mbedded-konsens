@@ -7,9 +7,9 @@ build.
 
 ## 1. Facts checked in this session
 
-- bench/results/2026-10-21-144527Z.txt: a write on LMDB costs 2.0 ms,
-  64 writes sent at once cost 2.0 ms per write, one LMDB commit of one
-  entry costs 349 us (1 KiB, g++ 16 Release).
+- bench/results/2026-10-21-144527Z.txt, on the store before SQLite: a
+  write costs 2.0 ms, 64 writes sent at once cost 2.0 ms per write, one
+  commit of one entry costs 349 us (1 KiB, g++ 16 Release).
 - `sequence_paxos.hpp` commits once in each handler that writes:
   `accept_entries_leader` (595), `handle_acceptdecide` (757),
   `handle_decide` (778), `handle_accepted` (799), and the rare paths
@@ -19,7 +19,7 @@ build.
 - `storage.hpp:83-99`: `append_entries` and `append_on_prefix` hold a
   span of entries. The span is valid only while the message that owns
   the entries is alive (plan doc/plan-no-copy-handle.md).
-- `persistent_storage.cpp:390-408`: `write_atomically` opens one LMDB
+- `persistent_storage.cpp:390-408`: `write_atomically` opens one
   write transaction, applies the ops in order, and commits. A failed
   commit ends the process.
 - The hot path (`accept_entries_leader`, `handle_acceptdecide`,
@@ -55,7 +55,7 @@ crash before the messages of the batch arrived.
 5. A handler that reads storage (section 1) while ops are pending:
    provisional form P1: the batch writes the pending ops with
    `write_atomically` before that handler runs, and keeps the held
-   messages held. Form P2, for the review: one LMDB write transaction
+   messages held. Form P2, for the review: one write transaction
    stays open over the batch, and the reads go through it.
 6. A dropped `pending_commit` does not compile: `[[nodiscard]]` and
    every warning is an error. A second `handle_incoming` while a
@@ -66,7 +66,7 @@ crash before the messages of the batch arrived.
 ## 4. Names
 
 `handle_incoming`: Omni-Paxos `omni_paxos.rs:353`. `commit`: ISO SQL
-COMMIT, `mdb_txn_commit`. `pending_commit` has no source; provisional,
+COMMIT. `pending_commit` has no source; provisional,
 the owner decides.
 
 ## 5. Tests
@@ -80,13 +80,13 @@ the owner decides.
   entries are applied after the commit.
 - A rare-path message in a batch with pending ops (P1).
 - Seeds 1 to 300 of counter_stress with every fault, with and without
-  `--cbor`; test_simulation on memory and LMDB, with batches of random
+  `--cbor`; test_simulation on memory and on `persistent_storage`, with batches of random
   size.
 - g++ 16 Debug with ASan and UBSan, and Release.
 
 ## 6. Measurement
 
-bench: write_lmdb and write_batch_lmdb, old arm and new arm, each in
+bench: write and write_batch, old arm and new arm, each in
 its own binary, A/A first, 31 samples, 7 rounds. The number comes
 after the run.
 
@@ -130,7 +130,7 @@ The review (approve with changes, 11 findings) is applied as follows.
   voting and drops the held messages and replies. A batch has one named
   limit of messages. The owner decides the error path.
 - R7: a test compares the store after one batch with the store after
-  the same ops one by one, on memory and on LMDB.
+  the same ops one by one, on memory and on `persistent_storage`.
 - R8: the leader counts its own entry before the commit; this is safe
   only because every message is held, the resend of Decide and the read
   rounds included. A mutation that sends before the write must fail the

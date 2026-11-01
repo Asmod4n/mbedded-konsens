@@ -81,7 +81,7 @@ measurement of the library over a network.
 
 ## 7. Not in this plan
 
-No network, no LMDB, no change to the library.
+No network, no persistent storage, no change to the library.
 
 ## 8. Changes after the review
 

@@ -19,7 +19,7 @@ value. This plan gets one review before the build.
   `std::vector<entry>`. The ops live only during `write_atomically`.
 - `memory_storage.hpp:43-49`: `apply` takes the op by `const&` and
   copies the entries into its log. `persistent_storage.cpp:346-351`
-  encodes them into LMDB. Neither needs to own the vector of the op.
+  encodes them into the store. Neither needs to own the vector of the op.
 - `sequence_paxos.hpp:541`: `accept_entries_leader` copies `entries`
   into the op.
 - `leader_state::set_promise` (`sequence_paxos.hpp:86-101`) keeps the

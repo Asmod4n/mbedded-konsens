@@ -1,6 +1,6 @@
 ---------------------------- MODULE OneEnvironment ----------------------------
 (***************************************************************************)
-(* The form of doc/plan-one-environment.md: log and state in one LMDB      *)
+(* The form of doc/plan-one-environment.md: log and state in one storage   *)
 (* environment; the work runs before it is durable; one sync for each task *)
 (* and node, at the done record; the client reply after a majority acked   *)
 (* "synced".                                                               *)

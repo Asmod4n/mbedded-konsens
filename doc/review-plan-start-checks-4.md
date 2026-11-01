@@ -11,7 +11,7 @@ Plan and model at 7e513b2, code at 4c57d44. Reviewer: a second agent, 2026-10-24
 ## Findings
 
 1. **Blocking: item 2.7 does not name `get_last_entry_crc`.**
-   - The node calls it at sequence_paxos.hpp:884, :929 and :981. It reads the key at MDB_LAST and does not compare it with `accepted_idx_ - 1` (persistent_storage.cpp:535-566).
+   - The node calls it at sequence_paxos.hpp:884, :929 and :981. It reads the last key and does not compare it with `accepted_idx_ - 1` (persistent_storage.cpp:535-566).
    - Case: the last key is lost at run time. The node then sends `accepted_idx_` = n with the CRC of entry n-2 (:897-899, :993-995). A recovery answer from a node that is not the primary reads no log (:890), so no item-2.7 read happens before the send. Plan 3.2 (plan:216-217) says that "a recovery answer reads before it sends". That is true only for the primary.
    - Effect: a healthy recovering node compares this CRC in `find_hardware_fault` (:962-976) with a healthy peer at the same (round, index). It then stops voting with `hardware_fault`, which names the wrong node. Safety holds, but the error does not go to whoever can repair it.
    - Proposal: add it to item 2.7. Either the storage concept (storage.hpp:128) returns the index with the CRC, and the node compares that index with `accepted_idx_ - 1` (no entry when `accepted_idx_` is 0). Or the node reads `get_entries(accepted_idx_-1, accepted_idx_)` and computes the CRC. The owner picks one, because the first form changes the concept and every storage.
@@ -29,7 +29,7 @@ Plan and model at 7e513b2, code at 4c57d44. Reviewer: a second agent, 2026-10-24
 
 4. **Should fix: the rule for the key where the cursor stops (plan:155-156) rejects reads that are complete.**
    - The plan says "that key must equal `from + entries.size()`". Case: a read [from, to) is complete, but the next key after it is missing, so the cursor stops at a key above `to`. The read then fails, and the index it reports lies outside the range.
-   - Reads that end below the count meet this case: `read_decided_suffix`, :1033, and the bench case get_entries_lmdb.
+   - Reads that end below the count meet this case: `read_decided_suffix`, :1033, and the bench case get_entries.
    - Proposal: "When the cursor stops at a key at or above `to`, `from + entries.size()` must equal `to`."
 
 5. **Should fix: item 2.8 does not say what happens to the short answer.**
@@ -46,7 +46,7 @@ Plan and model at 7e513b2, code at 4c57d44. Reviewer: a second agent, 2026-10-24
    - Section 7 says that `missing_entry` is a value. Item 2.5 now throws it as `write_error`, which derives from `std::system_error` (storage.hpp:110). That agrees with the rule "An error goes to whoever can repair it".
    - Item 2.7 stops the vote at a read. That agrees with the rule too, because sequence_paxos finds that fault, not the file system.
    - Proposal: section 7 states both forms and this reason.
-   - Open question for the owner, which does not reopen 14:06: do the read errors that LMDB reports (`stop_voting` at :713, :719, :886, :893 and others) stay values?
+   - Open question for the owner, which does not reopen 14:06: do the read errors that the storage reports (`stop_voting` at :713, :719, :886, :893 and others) stay values?
 
 8. **Should fix: the code that this plan builds is not the model at HEAD.**
    - Item 2.6 says "until the full copy exists, the recovery copies the log as it does now" (plan:144-146). That is model 6276400 (runs-7). Model 80d8829 has only the full copy, and no constant runs the form without the copy.
@@ -63,7 +63,7 @@ Plan and model at 7e513b2, code at 4c57d44. Reviewer: a second agent, 2026-10-24
      - I also ran MC_s with MaxStorageFault = 2, seed 3, for 10 min: about 4.5 M states, no violation.
    - **In the code, yes:**
      - A source with a lost last key keeps voting until its next read or append.
-     - `persistent_storage::copy` (persistent_storage.cpp:569-575, `mdb_env_copy2`) would copy a store that has n-1 entries at round r.
+     - `persistent_storage::copy` (persistent_storage.cpp:569-575) would copy a store that has n-1 entries at round r.
      - The receiver passes the start checks when its decided index is below n-1. Then only its recovery protects it.
    - Proposal: the design of the full copy reads the log of the source through a read that item 2.7 covers. The receiver checks the length as item 2.8 does. 3.6 states that a damaged source is two faults and is not in the model.
    - Not checked: whether a copy of the store would also copy the hidden identity. The hidden identity does not exist at 4c57d44 (a grep in include and src found nothing).

@@ -300,7 +300,7 @@ TEST_CASE("get_entries returns the stored part of the range")
     CHECK_THROWS_AS((void)t->read_entries(1, 0), std::logic_error);
 }
 
-// Plan lmdb-only-source 2.1 item 2: every read of a step goes through its
+// Plan storage-only-source 2.1 item 2: every read of a step goes through its
 // write transaction, so a read sees the writes of the same step before the
 // commit, and a read-only transaction does not see them.
 TEST_CASE("a read in a transaction sees the writes of the same transaction")
@@ -362,7 +362,7 @@ TEST_CASE("a second open transaction and a use after the commit are wrong uses")
     CHECK(storage.begin_read_only().has_value());
 }
 
-// Plan lmdb-only-source 2.1 item 3: the read-only transaction is kept and
+// Plan storage-only-source 2.1 item 3: the read-only transaction is kept and
 // reused, and it stands in the same thread as a write transaction. A reuse
 // after a commit reads the new state.
 TEST_CASE("a kept read-only transaction reads the state of the last commit at each use")
@@ -537,7 +537,7 @@ TEST_CASE("a missing key in the middle of a range is missing_entry")
     CHECK((*last)->index == 3u);
 }
 
-// Plan lmdb-only-source 2.3 item 2: the meta record exists from the open on.
+// Plan storage-only-source 2.3 item 2: the meta record exists from the open on.
 // A storage that lost it is damaged, and the read says so.
 TEST_CASE("a storage that lost its meta record gives missing_meta_record")
 {
@@ -559,7 +559,7 @@ TEST_CASE("a storage that lost its meta record gives missing_meta_record")
     CHECK(t->set_promise({1, 1, 0, 1}) == std::unexpected(make_error_code(konsens::storage_errc::missing_meta_record)));
 }
 
-// Plan lmdb-only-source 2.9: the format of the files changed, and no store
+// Plan storage-only-source 2.9: the format of the files changed, and no store
 // of an older format exists outside the tests. The open refuses a format
 // that it does not know, and a store with data and no format.
 TEST_CASE("open refuses another format and a store with data and no format")
@@ -665,7 +665,7 @@ TEST_CASE("the record CRC and the chain hash of each kind follow the record form
     }
 }
 
-// Plan lmdb-only-source 2.3 item 1: after a cut, the chain continues from
+// Plan storage-only-source 2.3 item 1: after a cut, the chain continues from
 // the entry before the cut, so two logs with the same entries have the same
 // chain hash whatever was cut before.
 TEST_CASE("the chain hash after a cut is the chain hash of the same log written at once")
@@ -1085,7 +1085,7 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     CHECK(r->find_session(7).value() == session);
 }
 
-// Plan state-in-lmdb 1.2: an erase removes a key and a session, and an
+// Plan state-in-storage 1.2: an erase removes a key and a session, and an
 // erase of an absent key is no error, as for std::map.
 TEST_CASE("the storage erases a key and a session")
 {
