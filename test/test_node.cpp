@@ -735,3 +735,65 @@ TEST_CASE("a stop during a repair is a wrong use")
     REQUIRE(nodes.front().get_sequence_paxos().repairs());
     CHECK_THROWS_AS(nodes.front().stop(), std::logic_error);
 }
+
+// Plan of the repair, item 8, owner 2026-10-24: one repair runs by itself.
+// A second damage leaves the node silent until the operator allows one
+// more repair, so that a disk that fails again and again is seen.
+TEST_CASE("the second damage waits for the operator, and allow_one_more_repair allows one more")
+{
+    std::vector<std::filesystem::path> directories;
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        directories.push_back(sqlite_storage::new_directory());
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_in(directories.back()),
+                                      sqlite_storage::open_new_node_storage(), echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    const auto decide = [&nodes, &all](const std::uint8_t v) {
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+        const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+        batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(v)));
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+    };
+    decide(1);
+    auto& n = nodes.front();
+    const auto damage_and_step = [&directories, &n]() {
+        flip_the_kind_of_the_last_record(directories.front());
+        batches::commit(n, n.handle_incoming(std::vector<konsens::message>{}));
+        REQUIRE(n.get_sequence_paxos().repairs());
+    };
+    damage_and_step();
+    CHECK_FALSE(n.waits_for_the_operator());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    REQUIRE(n.get_sequence_paxos().votes());
+    decide(2);
+    damage_and_step();
+    CHECK(n.waits_for_the_operator());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(n.get_sequence_paxos().repairs());
+    CHECK(n.waits_for_the_operator());
+    REQUIRE(n.allow_one_more_repair());
+    CHECK_FALSE(n.waits_for_the_operator());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(n.get_sequence_paxos().votes());
+    CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+}
+
+// allow_one_more_repair answers a node that waits in a repair. A call on a
+// node that votes is a wrong use.
+TEST_CASE("allow_one_more_repair on a node that votes is a wrong use")
+{
+    auto n =
+        *node_t::with(config_of(1), sqlite_storage::open_new(), sqlite_storage::open_new_node_storage(), echo{}, 0);
+    CHECK_THROWS_AS(static_cast<void>(n.allow_one_more_repair()), std::logic_error);
+}

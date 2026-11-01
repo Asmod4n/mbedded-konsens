@@ -33,6 +33,7 @@ constexpr std::string_view meta_key = "meta";
 constexpr std::string_view format_key = "format";
 constexpr std::string_view fault_proof_key = "fault_proof";
 constexpr std::string_view clean_stop_key = "clean_stop";
+constexpr std::string_view repair_count_key = "repair_count";
 constexpr std::string_view config_first_key = "config_first";
 constexpr std::uint32_t format_version = 6;
 constexpr std::uint32_t node_format_version = 1;
@@ -2166,6 +2167,61 @@ std::expected<void, std::error_code> node_storage::write_the_proof(const fault_p
 }
 
 namespace konsens {
+
+std::expected<std::uint64_t, std::error_code> node_storage::get_repair_count() const
+{
+    throw_if_moved_from();
+    sqlite3_stmt* const s = env_->get_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, repair_count_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::read));
+    }
+    const int status = sqlite3_step(s);
+    if (status == SQLITE_DONE) {
+        sqlite3_reset(s);
+        return 0;
+    }
+    if (status != SQLITE_ROW) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::read));
+    }
+    const auto bytes = column_bytes(s, 0);
+    if (bytes.size() != sizeof(std::uint64_t) + crc_size) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto body = bytes.first<sizeof(std::uint64_t)>();
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    const auto count = from_little_endian<std::uint64_t>(body);
+    sqlite3_reset(s);
+    return count;
+}
+
+std::expected<void, std::error_code> node_storage::write_the_repair_count(const std::uint64_t count)
+{
+    throw_if_moved_from();
+    std::array<std::byte, sizeof(std::uint64_t) + crc_size> record{};
+    std::ranges::copy(to_little_endian(count), record.begin());
+    std::ranges::copy(to_little_endian(crc_of(std::span(record).first<sizeof(std::uint64_t)>())),
+                      std::span(record).subspan<sizeof(std::uint64_t)>().begin());
+    sqlite3_stmt* const s = env_->put_record.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_text(s, 1, repair_count_key); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(bound, env_->db.get(), access::write));
+    }
+    const int status = sqlite3_step(s);
+    sqlite3_reset(s);
+    if (status != SQLITE_DONE) [[unlikely]] {
+        return std::unexpected(error_code_or_throw(status, env_->db.get(), access::write));
+    }
+    return {};
+}
 
 std::expected<std::optional<clean_stop_mark>, std::error_code> node_storage::get_clean_stop_mark() const
 {

@@ -475,3 +475,30 @@ TEST_CASE("a peer answers the entries it holds, and a peer in repair stops befor
     REQUIRE(part.size() == 1);
     CHECK(part.front().msg == konsens::paxos_msg{konsens::repair_entries{9, 1, {all.begin() + 1, all.begin() + 3}}});
 }
+
+// Plan of the repair, item 8: the count of automatic repairs survives a
+// close of the node storage, and a changed byte of its row is a CRC
+// mismatch and not another count.
+TEST_CASE("the count of repairs survives a close, and a changed byte of it is crc_mismatch")
+{
+    const auto directory = sqlite_storage::new_directory();
+    {
+        auto own = sqlite_storage::open_node_storage_in(directory);
+        CHECK(own.get_repair_count().value() == 0);
+        REQUIRE(own.write_the_repair_count(3));
+    }
+    {
+        const auto own = sqlite_storage::open_node_storage_in(directory);
+        CHECK(own.get_repair_count().value() == 3);
+    }
+    sqlite3* db = nullptr;
+    const auto file = (directory / "node.db").string();
+    REQUIRE(sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    auto changed =
+        sqlite_damage::select_bytes(db, "SELECT record FROM meta WHERE name = 'repair_count'", [](sqlite3_stmt*) {});
+    changed.at(0) ^= std::byte{0x01};
+    sqlite_damage::put_record(db, "repair_count", changed);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+    const auto own = sqlite_storage::open_node_storage_in(directory);
+    CHECK(own.get_repair_count() == std::unexpected(make_error_code(konsens::storage_errc::crc_mismatch)));
+}

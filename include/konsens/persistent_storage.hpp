@@ -201,6 +201,8 @@ public:
     [[nodiscard]] std::expected<std::optional<clean_stop_mark>, std::error_code> get_clean_stop_mark() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_clean_stop_mark(const clean_stop_mark& mark);
     [[nodiscard]] std::expected<void, std::error_code> delete_the_clean_stop_mark();
+    [[nodiscard]] std::expected<std::uint64_t, std::error_code> get_repair_count() const;
+    [[nodiscard]] std::expected<void, std::error_code> write_the_repair_count(std::uint64_t count);
 
     node_storage(node_storage&&) noexcept;
     node_storage& operator=(node_storage&&) noexcept;

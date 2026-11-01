@@ -114,6 +114,8 @@ private:
     std::uint64_t number_;
 };
 
+inline constexpr std::uint64_t automatic_repairs = 1;
+
 template <storage S, state_machine M>
 class node {
 public:
@@ -224,6 +226,9 @@ public:
                 }
             }
             if (resend_message_clock_.tick_and_check_timeout()) {
+                if (seq_paxos_.repairs() && waits_for_the_operator_) {
+                    return current_transaction();
+                }
                 if (auto r = seq_paxos_.resend_message_timeout(); !r) [[unlikely]] {
                     return std::unexpected(r.error());
                 }
@@ -506,6 +511,23 @@ public:
 
     const sequence_paxos<S>& get_sequence_paxos() const { return seq_paxos_; }
     bool waits_for_the_operator() const { return waits_for_the_operator_; }
+
+    result allow_one_more_repair()
+    {
+        throw_if_stopped();
+        if (!seq_paxos_.repairs() || !waits_for_the_operator_) [[unlikely]] {
+            throw std::logic_error(
+                "konsens: allow_one_more_repair needs a node that waits for the operator in a repair");
+        }
+        if (auto w = own_storage_.write_the_repair_count(0); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
+        }
+        waits_for_the_operator_ = false;
+        if (!start_the_repair()) [[unlikely]] {
+            return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
+        }
+        return {};
+    }
     std::expected<std::optional<fault_proof>, std::error_code> get_fault_proof() const
     {
         return own_storage_.get_fault_proof();
@@ -831,13 +853,26 @@ private:
         if (!ranges || ranges->empty()) {
             return false;
         }
-        const auto left = seq_paxos_.repair_locally(*ranges);
-        if (!left) [[unlikely]] {
+        const auto count = own_storage_.get_repair_count();
+        if (!count) [[unlikely]] {
             return false;
         }
         drop_held_messages_and_replies();
         drop_the_client_rounds();
         reply_to_the_waiting_calls(make_error_code(client_errc::repairing));
+        if (*count >= automatic_repairs) {
+            seq_paxos_.wait_for_the_repair(*ranges);
+            static_cast<void>(seq_paxos_.take_outgoing_messages());
+            waits_for_the_operator_ = true;
+            return true;
+        }
+        if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
+        }
+        const auto left = seq_paxos_.repair_locally(*ranges);
+        if (!left) [[unlikely]] {
+            return false;
+        }
         if (!left->empty()) {
             seq_paxos_.wait_for_the_repair(*left);
             release_the_output();
