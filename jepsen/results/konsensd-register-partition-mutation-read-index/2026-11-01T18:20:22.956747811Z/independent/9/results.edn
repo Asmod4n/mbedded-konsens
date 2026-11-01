@@ -1,0 +1,91 @@
+{:linearizable
+ {:valid? true,
+  :configs
+  ({:model {:value 1},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2011,
+     :time 49420490763},
+    :pending
+    [{:process 45,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 1857,
+      :time 45416011519}
+     {:process 47,
+      :type :invoke,
+      :f :write,
+      :value 1,
+      :index 1861,
+      :time 45471845321}]}
+   {:model {:value 1},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2011,
+     :time 49420490763},
+    :pending
+    [{:process 47,
+      :type :invoke,
+      :f :write,
+      :value 1,
+      :index 1861,
+      :time 45471845321}]}
+   {:model {:value 2},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2011,
+     :time 49420490763},
+    :pending
+    [{:process 47,
+      :type :invoke,
+      :f :write,
+      :value 1,
+      :index 1861,
+      :time 45471845321}]}
+   {:model {:value 1},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2011,
+     :time 49420490763},
+    :pending []}
+   {:model {:value 2},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2011,
+     :time 49420490763},
+    :pending []}
+   {:model {:value 1},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2011,
+     :time 49420490763},
+    :pending
+    [{:process 45,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 1857,
+      :time 45416011519}]}),
+  :analyzer :linear,
+  :final-paths ()},
+ :timeline {:valid? true},
+ :valid? true}

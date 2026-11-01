@@ -1,0 +1,115 @@
+{:linearizable
+ {:valid? true,
+  :configs
+  ({:model {:value 4},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending
+    [{:process 65,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 2273,
+      :time 55494023122}]}
+   {:model {:value 0},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending []}
+   {:model {:value 0},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending
+    [{:process 28,
+      :type :invoke,
+      :f :write,
+      :value 4,
+      :index 2391,
+      :time 58533687270}
+     {:process 65,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 2273,
+      :time 55494023122}]}
+   {:model {:value 0},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending
+    [{:process 65,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 2273,
+      :time 55494023122}]}
+   {:model {:value 4},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending []}
+   {:model {:value 0},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending
+    [{:process 28,
+      :type :invoke,
+      :f :write,
+      :value 4,
+      :index 2391,
+      :time 58533687270}]}
+   {:model {:value 2},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending
+    [{:process 28,
+      :type :invoke,
+      :f :write,
+      :value 4,
+      :index 2391,
+      :time 58533687270}]}
+   {:model {:value 2},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value nil,
+     :index 2415,
+     :time 58984340543},
+    :pending []}),
+  :analyzer :linear,
+  :final-paths ()},
+ :timeline {:valid? true},
+ :valid? true}

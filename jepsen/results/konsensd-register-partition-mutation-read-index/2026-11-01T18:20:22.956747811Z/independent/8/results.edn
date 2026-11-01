@@ -1,0 +1,104 @@
+{:linearizable
+ {:valid? false,
+  :configs
+  ({:model {:value 3},
+    :last-op
+    {:process 26,
+     :type :ok,
+     :f :write,
+     :value 3,
+     :index 1657,
+     :time 40814962317},
+    :pending
+    [{:process 0,
+      :type :invoke,
+      :f :read,
+      :value 4,
+      :index 1658,
+      :time 40822215178}
+     {:process 37,
+      :type :invoke,
+      :f :write,
+      :value 0,
+      :index 1641,
+      :time 40292574719}]}
+   {:model {:value 3},
+    :last-op
+    {:process 26,
+     :type :ok,
+     :f :write,
+     :value 3,
+     :index 1657,
+     :time 40814962317},
+    :pending
+    [{:process 0,
+      :type :invoke,
+      :f :read,
+      :value 4,
+      :index 1658,
+      :time 40822215178}]}),
+  :final-paths
+  ([{:op
+     {:process 26,
+      :type :ok,
+      :f :write,
+      :value 3,
+      :index 1657,
+      :time 40814962317},
+     :model {:value 3}}
+    {:op
+     {:process 0,
+      :type :ok,
+      :f :read,
+      :value 4,
+      :index 1659,
+      :time 40824528186},
+     :model {:msg "3≠4"}}]
+   [{:op
+     {:process 26,
+      :type :ok,
+      :f :write,
+      :value 3,
+      :index 1657,
+      :time 40814962317},
+     :model {:value 3}}
+    {:op
+     {:process 37,
+      :type :invoke,
+      :f :write,
+      :value 0,
+      :index 1641,
+      :time 40292574719},
+     :model {:value 0}}
+    {:op
+     {:process 0,
+      :type :ok,
+      :f :read,
+      :value 4,
+      :index 1659,
+      :time 40824528186},
+     :model {:msg "0≠4"}}]),
+  :previous-ok
+  {:process 26,
+   :type :ok,
+   :f :write,
+   :value 3,
+   :index 1657,
+   :time 40814962317},
+  :last-op
+  {:process 26,
+   :type :ok,
+   :f :write,
+   :value 3,
+   :index 1657,
+   :time 40814962317},
+  :op
+  {:process 0,
+   :type :ok,
+   :f :read,
+   :value 4,
+   :index 1659,
+   :time 40824528186},
+  :analyzer :linear},
+ :timeline {:valid? true},
+ :valid? false}

@@ -1,0 +1,32 @@
+[2026-11-01 18:28:50.876] [global] [info] [lazyfs.config]: loading config...
+[2026-11-01 18:28:50.876] [global] [info] [lazyfs.args]: config path is '/home/konsens/data.lazyfs/config'
+[2026-11-01 18:28:50.876] [global] [info] [lazyfs]: trying to create fifo '/home/konsens/data.lazyfs/fifo'
+[2026-11-01 18:28:50.876] [global] [info] [lazyfs.fifo]: fifo /home/konsens/data.lazyfs/fifo created
+[2026-11-01 18:28:50.876] [global] [warning] [lazyfs.engine] pre-allocating 536870912 bytes...
+[2026-11-01 18:28:52.882] [global] [warning] [engine] Pre-allocation finished
+[2026-11-01 18:28:52.883] [global] [info] [config] using a custom config
+[2026-11-01 18:28:52.883] [global] [info] [config] log all operations = false, logfile = '/home/konsens/data.lazyfs/log'
+[2026-11-01 18:28:52.883] [global] [info] [config] no. of pages   = 131072
+[2026-11-01 18:28:52.883] [global] [info] [config] page size      = 4096
+[2026-11-01 18:28:52.883] [global] [info] [config] block size     = 4096
+[2026-11-01 18:28:52.883] [global] [info] [config] blocks / page  = 1
+[2026-11-01 18:28:52.883] [global] [info] [config] apply eviction = false
+[2026-11-01 18:28:52.883] [global] [info] [config] total          = 524288 KiB, 512 MiB, 0.5 GiB
+[2026-11-01 18:28:52.883] [global] [info] [lazyfs.fifo]: running LazyFS...
+[2026-11-01 18:28:52.924] [global] [info] [lazyfs.faults.worker]: waiting for fault commands...
+[2026-11-01 18:28:53.422] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.422] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.423] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.423] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.423] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.423] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.423] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.423] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.459] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.459] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.459] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.459] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.460] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.460] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.460] [global] [info] [lazyfs.ops]: Calling a sparse write.
+[2026-11-01 18:28:53.460] [global] [info] [lazyfs.ops]: Calling a sparse write.

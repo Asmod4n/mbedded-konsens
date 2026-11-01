@@ -1,0 +1,67 @@
+{:linearizable
+ {:valid? true,
+  :configs
+  ({:model {:value 3},
+    :last-op
+    {:process 2,
+     :type :ok,
+     :f :read,
+     :value 3,
+     :index 3017,
+     :time 74391580240},
+    :pending
+    [{:process 95,
+      :type :invoke,
+      :f :write,
+      :value 0,
+      :index 2903,
+      :time 71192103127}]}
+   {:model {:value 3},
+    :last-op
+    {:process 2,
+     :type :ok,
+     :f :read,
+     :value 3,
+     :index 3017,
+     :time 74391580240},
+    :pending []}
+   {:model {:value 3},
+    :last-op
+    {:process 2,
+     :type :ok,
+     :f :read,
+     :value 3,
+     :index 3017,
+     :time 74391580240},
+    :pending
+    [{:process 48,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 2875,
+      :time 70528779044}]}
+   {:model {:value 3},
+    :last-op
+    {:process 2,
+     :type :ok,
+     :f :read,
+     :value 3,
+     :index 3017,
+     :time 74391580240},
+    :pending
+    [{:process 48,
+      :type :invoke,
+      :f :write,
+      :value 2,
+      :index 2875,
+      :time 70528779044}
+     {:process 95,
+      :type :invoke,
+      :f :write,
+      :value 0,
+      :index 2903,
+      :time 71192103127}]}),
+  :analyzer :linear,
+  :final-paths ()},
+ :timeline {:valid? true},
+ :valid? true}

@@ -1,0 +1,31 @@
+{:linearizable
+ {:valid? true,
+  :configs
+  ({:model {:value 3},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value 3,
+     :index 4015,
+     :time 102270197976},
+    :pending []}
+   {:model {:value 3},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value 3,
+     :index 4015,
+     :time 102270197976},
+    :pending
+    [{:process 29,
+      :type :invoke,
+      :f :write,
+      :value 3,
+      :index 3955,
+      :time 100474877486}]}),
+  :analyzer :linear,
+  :final-paths ()},
+ :timeline {:valid? true},
+ :valid? true}

@@ -4,7 +4,7 @@
             [jepsen [control :as c]
                     [db :as db]
                     [lazyfs :as lazyfs]
-                    [util :refer [meh]]]
+                    [util :as util :refer [meh]]]
             [jepsen.control.util :as cu])
   (:import (java.net InetAddress)))
 
@@ -57,6 +57,21 @@
   []
   (try (c/exec :pgrep :-x :konsensd) true
        (catch Exception _ false)))
+
+(def seconds-for-a-clean-stop 60)
+
+(defn stop-konsensd!
+  []
+  (signal-konsensd! "TERM")
+  (try (util/await-fn (fn [] (when (konsensd-runs?) (throw (ex-info "konsensd runs" {}))))
+                      {:timeout        (* 1000 seconds-for-a-clean-stop)
+                       :retry-interval 200
+                       :log-message    "Waiting for konsensd to stop"})
+       :stopped
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :timeout (:type (ex-data e)))
+           (do (signal-konsensd! "KILL") :killed)
+           (throw e)))))
 
 (defrecord DB [lazyfs-map]
   db/DB

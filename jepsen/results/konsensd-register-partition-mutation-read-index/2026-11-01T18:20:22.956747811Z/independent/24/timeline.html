@@ -1,0 +1,368 @@
+<html><head><style>.ops        { position: absolute; }
+.op         { position: absolute; padding: 2px; border-radius: 2px; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); transition: all 0.3s cubic-bezier(.25,.8,.25,1); overflow: hidden; }
+.op.invoke  { background: #eeeeee; }
+.op.ok      { background: #6DB6FE; }
+.op.info    { background: #FFAA26; }
+.op.fail    { background: #FEB5DA; }
+.op:target  { box-shadow: 0 14px 28px rgba(0,0,0,0.25), 0 10px 10px rgba(0,0,0,0.22); }
+</style></head><body><div><a href="/">jepsen</a> / <a href="/files/konsensd-register-partition">konsensd-register-partition</a> / <a href="/files/konsensd-register-partition/20261101T182022.956747811Z">20261101T182022.956747811Z</a> / <a href="/files/konsensd-register-partition/20261101T182022.956747811Z/">independent</a> / <a href="/files/konsensd-register-partition/20261101T182022.956747811Z/independent/24">24</a></div><h1>konsensd-register-partition key 24</h1><div class="ops"><a href="#i0"><div class="op info" id="i0" style="width:100;left:0;top:0;height:16" title="Msg: :one
+Err: nil
+Wall-clock Time: 18:20:23.166722501Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 0
+ :value :one}">:nemesis start-partition <br /></div></a><a href="#i1"><div class="op info" id="i1" style="width:100;left:0;top:16;height:16" title="Msg: [:isolated {&quot;n3&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n1&quot; &quot;n4&quot;}, &quot;n2&quot; #{&quot;n3&quot;}, &quot;n5&quot; #{&quot;n3&quot;}, &quot;n1&quot; #{&quot;n3&quot;}, &quot;n4&quot; #{&quot;n3&quot;}}]
+Err: nil
+Wall-clock Time: 18:20:23.227278987Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 1
+ :value [:isolated {&quot;n3&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n1&quot; &quot;n4&quot;}, &quot;n2&quot; #{&quot;n3&quot;}, &quot;n5&quot; #{&quot;n3&quot;}, &quot;n1&quot; #{&quot;n3&quot;}, &quot;n4&quot; #{&quot;n3&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i343"><div class="op info" id="i343" style="width:100;left:0;top:32;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:20:31.100698498Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 343
+ :value }">:nemesis stop-partition </div></a><a href="#i344"><div class="op info" id="i344" style="width:100;left:0;top:48;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:20:31.153572477Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 344
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i557"><div class="op info" id="i557" style="width:100;left:0;top:64;height:16" title="Msg: :majority
+Err: nil
+Wall-clock Time: 18:20:36.163103548Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 557
+ :value :majority}">:nemesis start-partition <br /></div></a><a href="#i558"><div class="op info" id="i558" style="width:100;left:0;top:80;height:16" title="Msg: [:isolated {&quot;n2&quot; #{&quot;n5&quot; &quot;n4&quot; &quot;n3&quot;}, &quot;n1&quot; #{&quot;n5&quot; &quot;n4&quot; &quot;n3&quot;}, &quot;n5&quot; #{&quot;n2&quot; &quot;n1&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n1&quot;}, &quot;n3&quot; #{&quot;n2&quot; &quot;n1&quot;}}]
+Err: nil
+Wall-clock Time: 18:20:36.196883719Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 558
+ :value [:isolated {&quot;n2&quot; #{&quot;n5&quot; &quot;n4&quot; &quot;n3&quot;}, &quot;n1&quot; #{&quot;n5&quot; &quot;n4&quot; &quot;n3&quot;}, &quot;n5&quot; #{&quot;n2&quot; &quot;n1&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n1&quot;}, &quot;n3&quot; #{&quot;n2&quot; &quot;n1&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i746"><div class="op info" id="i746" style="width:100;left:0;top:96;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:20:41.42358781Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 746
+ :value }">:nemesis stop-partition </div></a><a href="#i752"><div class="op info" id="i752" style="width:100;left:0;top:112;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:20:41.472314927Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 752
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i1148"><div class="op info" id="i1148" style="width:100;left:0;top:128;height:16" title="Msg: :majorities-ring
+Err: nil
+Wall-clock Time: 18:20:51.016056625Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 1148
+ :value :majorities-ring}">:nemesis start-partition <br /></div></a><a href="#i1149"><div class="op info" id="i1149" style="width:100;left:0;top:144;height:16" title="Msg: [:isolated {&quot;n5&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n2&quot; #{&quot;n4&quot; &quot;n3&quot;}, &quot;n1&quot; #{&quot;n5&quot; &quot;n3&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n5&quot;}, &quot;n3&quot; #{&quot;n2&quot; &quot;n1&quot;}}]
+Err: nil
+Wall-clock Time: 18:20:51.056513339Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 1149
+ :value [:isolated {&quot;n5&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n2&quot; #{&quot;n4&quot; &quot;n3&quot;}, &quot;n1&quot; #{&quot;n5&quot; &quot;n3&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n5&quot;}, &quot;n3&quot; #{&quot;n2&quot; &quot;n1&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i1292"><div class="op info" id="i1292" style="width:100;left:0;top:160;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:20:54.741277322Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 1292
+ :value }">:nemesis stop-partition </div></a><a href="#i1293"><div class="op info" id="i1293" style="width:100;left:0;top:176;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:20:54.792091161Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 1293
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i1634"><div class="op info" id="i1634" style="width:100;left:0;top:192;height:16" title="Msg: :majority
+Err: nil
+Wall-clock Time: 18:21:03.174021636Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 1634
+ :value :majority}">:nemesis start-partition <br /></div></a><a href="#i1638"><div class="op info" id="i1638" style="width:100;left:0;top:208;height:16" title="Msg: [:isolated {&quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n4&quot;}, &quot;n3&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n4&quot;}, &quot;n2&quot; #{&quot;n1&quot; &quot;n3&quot;}, &quot;n5&quot; #{&quot;n1&quot; &quot;n3&quot;}, &quot;n4&quot; #{&quot;n1&quot; &quot;n3&quot;}}]
+Err: nil
+Wall-clock Time: 18:21:03.202346944Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 1638
+ :value [:isolated {&quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n4&quot;}, &quot;n3&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n4&quot;}, &quot;n2&quot; #{&quot;n1&quot; &quot;n3&quot;}, &quot;n5&quot; #{&quot;n1&quot; &quot;n3&quot;}, &quot;n4&quot; #{&quot;n1&quot; &quot;n3&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i2038"><div class="op info" id="i2038" style="width:100;left:0;top:224;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:21:13.044037001Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 2038
+ :value }">:nemesis stop-partition </div></a><a href="#i2039"><div class="op info" id="i2039" style="width:100;left:0;top:240;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:21:13.083446333Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 2039
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i2174"><div class="op info" id="i2174" style="width:100;left:0;top:256;height:16" title="Msg: :majority
+Err: nil
+Wall-clock Time: 18:21:16.2047024Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 2174
+ :value :majority}">:nemesis start-partition <br /></div></a><a href="#i2175"><div class="op info" id="i2175" style="width:100;left:0;top:272;height:16" title="Msg: [:isolated {&quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n3&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n5&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n3&quot; #{&quot;n1&quot; &quot;n4&quot;}}]
+Err: nil
+Wall-clock Time: 18:21:16.229607602Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 2175
+ :value [:isolated {&quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n3&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n5&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n3&quot; #{&quot;n1&quot; &quot;n4&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i2828"><div class="op info" id="i2828" style="width:100;left:0;top:288;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:21:32.313920271Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 2828
+ :value }">:nemesis stop-partition </div></a><a href="#i2829"><div class="op info" id="i2829" style="width:100;left:0;top:304;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:21:32.372041111Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 2829
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i3327"><div class="op info" id="i3327" style="width:100;left:0;top:320;height:16" title="Msg: :one
+Err: nil
+Wall-clock Time: 18:21:44.335894266Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 3327
+ :value :one}">:nemesis start-partition <br /></div></a><a href="#i3328"><div class="op info" id="i3328" style="width:100;left:0;top:336;height:16" title="Msg: [:isolated {&quot;n4&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n1&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n4&quot;}, &quot;n5&quot; #{&quot;n4&quot;}, &quot;n1&quot; #{&quot;n4&quot;}, &quot;n3&quot; #{&quot;n4&quot;}}]
+Err: nil
+Wall-clock Time: 18:21:44.368231733Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 3328
+ :value [:isolated {&quot;n4&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n1&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n4&quot;}, &quot;n5&quot; #{&quot;n4&quot;}, &quot;n1&quot; #{&quot;n4&quot;}, &quot;n3&quot; #{&quot;n4&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i3502"><div class="op info" id="i3502" style="width:100;left:0;top:352;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:21:48.720974579Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 3502
+ :value }">:nemesis stop-partition </div></a><a href="#i3503"><div class="op info" id="i3503" style="width:100;left:0;top:368;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:21:48.773670523Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 3503
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i4166"><div class="op info" id="i4166" style="width:100;left:0;top:384;height:16" title="Msg: :majorities-ring
+Err: nil
+Wall-clock Time: 18:22:04.74136581Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 4166
+ :value :majorities-ring}">:nemesis start-partition <br /></div></a><a href="#i4169"><div class="op info" id="i4169" style="width:100;left:0;top:400;height:16" title="Msg: [:isolated {&quot;n5&quot; #{&quot;n1&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n3&quot; #{&quot;n5&quot; &quot;n4&quot;}, &quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n3&quot;}}]
+Err: nil
+Wall-clock Time: 18:22:04.774710763Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 4169
+ :value [:isolated {&quot;n5&quot; #{&quot;n1&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n1&quot; &quot;n4&quot;}, &quot;n3&quot; #{&quot;n5&quot; &quot;n4&quot;}, &quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot;}, &quot;n4&quot; #{&quot;n2&quot; &quot;n3&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i4432"><div class="op info" id="i4432" style="width:100;left:0;top:416;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:22:12.488155903Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 4432
+ :value }">:nemesis stop-partition </div></a><a href="#i4435"><div class="op info" id="i4435" style="width:100;left:0;top:432;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:22:12.548544872Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 4435
+ :value :network-healed}">:nemesis stop-partition <br /></div></a><a href="#i4594"><div class="op info" id="i4594" style="width:100;left:0;top:448;height:16" title="Msg: :one
+Err: nil
+Wall-clock Time: 18:22:17.003325476Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 4594
+ :value :one}">:nemesis start-partition <br /></div></a><a href="#i4597"><div class="op info" id="i4597" style="width:100;left:0;top:464;height:16" title="Msg: [:isolated {&quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n4&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n1&quot;}, &quot;n5&quot; #{&quot;n1&quot;}, &quot;n4&quot; #{&quot;n1&quot;}, &quot;n3&quot; #{&quot;n1&quot;}}]
+Err: nil
+Wall-clock Time: 18:22:17.039686929Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :start-partition
+ :index 4597
+ :value [:isolated {&quot;n1&quot; #{&quot;n2&quot; &quot;n5&quot; &quot;n4&quot; &quot;n3&quot;}, &quot;n2&quot; #{&quot;n1&quot;}, &quot;n5&quot; #{&quot;n1&quot;}, &quot;n4&quot; #{&quot;n1&quot;}, &quot;n3&quot; #{&quot;n1&quot;}}]}">:nemesis start-partition <br /></div></a><a href="#i4830"><div class="op ok" id="i4830" style="width:100;left:530;top:480;height:16" title="Dur: 5 ms
+Err: nil
+Wall-clock Time: 18:22:22.814394051Z
+
+Op:
+{:process 26
+ :type :ok
+ :f :write
+ :index 4830
+ :value 3}">26 write 3</div></a><a href="#i4833"><div class="op ok" id="i4833" style="width:100;left:636;top:528;height:16" title="Dur: 4 ms
+Err: nil
+Wall-clock Time: 18:22:22.909768801Z
+
+Op:
+{:process 68
+ :type :ok
+ :f :write
+ :index 4833
+ :value 2}">68 write 2</div></a><a href="#i4835"><div class="op ok" id="i4835" style="width:100;left:424;top:560;height:16" title="Dur: 5 ms
+Err: nil
+Wall-clock Time: 18:22:22.9153136Z
+
+Op:
+{:process 9
+ :type :ok
+ :f :write
+ :index 4835
+ :value 4}">9 write 4</div></a><a href="#i4836"><div class="op ok" id="i4836" style="width:100;left:742;top:512;height:80" title="Dur: 10 ms
+Err: nil
+Wall-clock Time: 18:22:22.915439021Z
+
+Op:
+{:process 77
+ :type :ok
+ :f :write
+ :index 4836
+ :value 4}">77 write 4</div></a><a href="#i4838"><div class="op ok" id="i4838" style="width:100;left:106;top:608;height:16" title="Dur: 3 ms
+Err: nil
+Wall-clock Time: 18:22:23.005333473Z
+
+Op:
+{:process 0
+ :type :ok
+ :f :read
+ :index 4838
+ :value }">0 read </div></a><a href="#i4840"><div class="op ok" id="i4840" style="width:100;left:106;top:640;height:16" title="Dur: 2 ms
+Err: nil
+Wall-clock Time: 18:22:23.056603157Z
+
+Op:
+{:process 0
+ :type :ok
+ :f :read
+ :index 4840
+ :value }">0 read </div></a><a href="#i4842"><div class="op ok" id="i4842" style="width:100;left:212;top:672;height:16" title="Dur: 4 ms
+Err: nil
+Wall-clock Time: 18:22:23.07018597Z
+
+Op:
+{:process 1
+ :type :ok
+ :f :read
+ :index 4842
+ :value 4}">1 read <br />4</div></a><a href="#i4844"><div class="op ok" id="i4844" style="width:100;left:318;top:704;height:16" title="Dur: 4 ms
+Err: nil
+Wall-clock Time: 18:22:23.158087956Z
+
+Op:
+{:process 2
+ :type :ok
+ :f :read
+ :index 4844
+ :value 4}">2 read <br />4</div></a><a href="#i4846"><div class="op info" id="i4846" style="width:100;left:0;top:736;height:16" title="Msg: nil
+Err: nil
+Wall-clock Time: 18:22:25.483399397Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 4846
+ :value }">:nemesis stop-partition </div></a><a href="#i4847"><div class="op info" id="i4847" style="width:100;left:0;top:752;height:16" title="Msg: :network-healed
+Err: nil
+Wall-clock Time: 18:22:25.528561823Z
+
+Op:
+{:process :nemesis
+ :type :info
+ :f :stop-partition
+ :index 4847
+ :value :network-healed}">:nemesis stop-partition <br /></div></a></div></body></html>

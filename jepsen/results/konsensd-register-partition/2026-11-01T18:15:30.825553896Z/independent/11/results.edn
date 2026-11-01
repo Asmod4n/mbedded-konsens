@@ -1,0 +1,16 @@
+{:linearizable
+ {:valid? true,
+  :configs
+  ({:model {:value 0},
+    :last-op
+    {:process 0,
+     :type :ok,
+     :f :read,
+     :value 0,
+     :index 2412,
+     :time 63331143415},
+    :pending []}),
+  :analyzer :linear,
+  :final-paths ()},
+ :timeline {:valid? true},
+ :valid? true}

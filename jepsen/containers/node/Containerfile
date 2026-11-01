@@ -15,7 +15,7 @@ RUN cd /opt/jepsen/lazyfs/libs/libpcache/build \
 FROM docker.io/library/ubuntu:26.10
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server sudo bash tar gzip curl procps psmisc iproute2 \
-    nftables fuse3 sqlite3 util-linux iputils-ping ca-certificates libada-url0-3 libsqlite3-0 libssl4 libstdc++6 \
+    nftables iptables fuse3 sqlite3 util-linux iputils-ping ca-certificates libada-url0-3 libsqlite3-0 libssl4 libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=lazyfs /opt/jepsen/lazyfs /opt/jepsen/lazyfs
 RUN echo /opt/jepsen/lazyfs/libs/libpcache/build > /etc/ld.so.conf.d/lazyfs.conf && ldconfig \

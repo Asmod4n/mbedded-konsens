@@ -1,0 +1,31 @@
+{:linearizable
+ {:valid? true,
+  :configs
+  ({:model {:value 1},
+    :last-op
+    {:process 5,
+     :type :ok,
+     :f :write,
+     :value 1,
+     :index 200,
+     :time 4786270527},
+    :pending []}
+   {:model {:value 1},
+    :last-op
+    {:process 5,
+     :type :ok,
+     :f :write,
+     :value 1,
+     :index 200,
+     :time 4786270527},
+    :pending
+    [{:process 7,
+      :type :invoke,
+      :f :write,
+      :value 1,
+      :index 13,
+      :time 570093633}]}),
+  :analyzer :linear,
+  :final-paths ()},
+ :timeline {:valid? true},
+ :valid? true}
