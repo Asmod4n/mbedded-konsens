@@ -316,6 +316,8 @@ slipstreamIO, and its fix is a change there.
 |---|---|---|---|---|
 | emulation | partition, pause, restart | register | 300 s | valid; 5 of the restarts took more than 60 s |
 | kernel | partition, pause, restart | register | 300 s | valid; 32 restarts, no SIGKILL |
+| kernel | all six and damage-log | register | 300 s | valid; ok 2793, fail 1600; two nodes retire, two repairs, no SIGKILL |
+| kernel | all six and damage-log | rw-register | 300 s | valid; ok 2562, fail 1616; two nodes retire, four repairs, no SIGKILL |
 
 When a stop takes more than 60 s, the db writes the threads of konsensd
 with gdb and the sockets with `ss` to `konsensd-threads.log`; the node
