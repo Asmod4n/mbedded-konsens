@@ -4,7 +4,7 @@ FetchContent_Declare(mbedded-cbor
     SYSTEM)
 FetchContent_Declare(slipstreamio
     GIT_REPOSITORY https://github.com/Asmod4n/slipstreamIO
-    GIT_TAG 50fea675302c1029f6036743a9c9c6a6d9cbc659
+    GIT_TAG 2bd6027cf59b0c6631b2a3fee62dfea1fddeeeaa
     SOURCE_SUBDIR none)
 FetchContent_Declare(mruby-webmachine
     GIT_REPOSITORY https://github.com/Asmod4n/mruby-webmachine
