@@ -69,7 +69,7 @@ constexpr std::uint64_t request_call = 2;
 constexpr std::uint64_t query_call = 3;
 constexpr std::uint64_t first_request_number = 1;
 
-konsens::node_config config_of(const konsens::node_id pid)
+konsens::node_config config_of(const konsens::node_id pid, const bool first_start)
 {
     std::vector<konsens::node_id> peers;
     for (konsens::node_id p = 1; p <= node_count; ++p) {
@@ -77,7 +77,7 @@ konsens::node_config config_of(const konsens::node_id pid)
             peers.push_back(p);
         }
     }
-    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, true};
+    return {1, pid, peers, 0, election_ticks, resend_ticks, {}, first_start};
 }
 
 std::vector<std::byte> bytes_of(const std::string_view text)
@@ -131,6 +131,7 @@ struct cluster {
     std::vector<konsens::message> network;
     std::uint64_t nonce{};
     std::vector<konsens::client_reply> replies{};
+    std::array<bool, node_count> started{};
 
     std::expected<void, std::error_code> start(const std::size_t i)
     {
@@ -149,16 +150,21 @@ struct cluster {
             return std::unexpected(own.error());
         }
         nonce += 1;
-        auto n = node_t::with(config_of(i + 1), std::move(*storage), std::move(*own),
+        auto n = node_t::with(config_of(i + 1, !started.at(i)), std::move(*storage), std::move(*own),
                               concatenation{}, nonce);
         if (!n) [[unlikely]] {
             return std::unexpected(n.error());
         }
         nodes.at(i).emplace(std::move(*n));
+        started.at(i) = true;
         return {};
     }
 
-    void stop(const std::size_t i) { nodes.at(i).reset(); }
+    void stop(const std::size_t i)
+    {
+        nodes.at(i)->stop();
+        nodes.at(i).reset();
+    }
 
     void collect()
     {

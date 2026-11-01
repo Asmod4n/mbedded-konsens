@@ -60,16 +60,11 @@ same case after a lost first sync.
   first start. Only a check against the peers (rule R, the hidden
   identity) finds that. The operator rule stays: a seed that gets a new
   disk loses the seed field first.
-- A build start (configuration_id above 1 and no config_first_idx)
-  ignores `first_start` and the record. A built node that loses its
-  store builds again with an empty promise. This is the same loss on
-  the build path, and it stays open.
+- The build path: section 8.1.
 - A crash after the record and before the first promise: the next start
   with `first_start` set is refused. The node has sent nothing; the
   operator deletes the directory and starts again. This refusal is safe.
-- examples/three_nodes.cpp starts a stopped node again with
-  `first_start` set and without `node::stop()` (`:80`, `:161`, `:474`).
-  That throws today already; ctest runs only `three_nodes --help`.
+- examples/three_nodes.cpp: section 8.2.
 
 ## 4. Tests
 
@@ -115,3 +110,77 @@ section 3 (item 12); the tests of item 13 that apply to this form.
 Not taken: a sync of the directory after node.db is made (item 6,
 not checked); node.db already exists before the first start writes the
 record, because `node_storage::open` made it.
+
+## 8. Follow-up: the build path and three_nodes.cpp
+
+Source: the owner, 2026-11-01 15:25 ("ja, und die andern fünde auch
+angucken"), on the two open items of section 3.
+
+### 8.1 The build path
+
+The configurations are disjoint, and each node of a configuration above
+1 starts in its own directory with an empty store
+(doc/plan-reconfiguration.md 2.7, review item 12). Such a node takes
+part only after the build wrote `config_first_idx` and synced
+(plan-reconfiguration 2.7). A start with `configuration_id > 1` and no
+`config_first_idx` is a build (`node.hpp:74-75`). So a built node that
+loses its store builds again, with the default ballot of the next
+configuration as its promise, although it may have sent a promise of a
+higher ballot. That is the loss that the mutation `StartAsNewNode`
+shows.
+
+Change:
+
+1. When the build ends (`finish_the_step`, `build_started_` and not
+   `building()`, `node.hpp:494`), the node writes the first start record
+   before it starts its election. A failed write raises `sync_error`,
+   as a failed write of the proof does (`node.hpp:1219-1221`).
+2. In `kind_of_the_start`, a start that would be a build and finds a
+   record of its own pid retires.
+3. A store lost during the build, before the record, builds again. The
+   node has sent no promise then, so that start is safe.
+4. `sequence_paxos::with` takes a retired start on a store of a later
+   configuration with no `config_first_idx`: it marks the node retired
+   before the checks of a build start and of the configuration, which
+   would throw otherwise (review 2, item 2).
+5. A build start with `first_start` set and a record retires; a first
+   start of configuration 1 with a record throws. The build branch
+   comes first, and a build node never states a first start that it
+   needs (review 2, item 6).
+6. The record is written only when the node votes at the end of the
+   build, as the election starts. A build that ends while the node has
+   an error writes no record (review 2, item 5); that edge stays.
+7. With `sync_by_the_caller`, the record can be durable before the
+   commit or the sync of the build. A crash then leaves a record and no
+   `config_first_idx`, and the node retires. That loses the node and
+   not a decided entry.
+
+Test (test_reconfiguration): a node of the next configuration ends its
+build and writes the record; then it ends, gets a new empty store, and
+retires at the next start, with and without `first_start`. A node that
+ends during its build and starts again continues the build (the
+existing test of plan-reconfiguration 4.4 stays green).
+
+### 8.2 examples/three_nodes.cpp
+
+The example ends a node with `nodes.at(i).reset()` (`:161`) and starts
+it again with `first_start` set (`:80`, `:474`). Since the clean stop
+(form B) that start throws, and since this change it would also find
+the record. The example says "reopen the stopped node" and expects the
+node to decide again, so the stop is a clean stop: `stop` calls
+`node::stop()` before the reset, and `first_start` is set only at the
+first start of a directory. ctest gets `three_nodes_run`
+(`three_nodes --allow-root-for-test`, three new temporary directories),
+so the run is checked and not only `--help`.
+
+### 8.3 Review 2 and checks
+
+A second agent reviewed 8.1 and 8.2. Two findings blocked and are in
+the text above: the retired start in `sequence_paxos::with` (item 2)
+and the name of the ctest, which `three_nodes` already holds with
+konsensd (item 9). Not taken: a test with `sync_by_the_caller` for the
+build (item 4); the node directories of three_nodes.cpp stay in TMPDIR
+after the run, as those of counter_stress do (item 11).
+
+Against the code without the check of 8.1, the new test of
+test_reconfiguration fails at both starts (checked).

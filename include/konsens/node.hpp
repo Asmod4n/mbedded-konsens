@@ -72,6 +72,9 @@ inline start_kind kind_of_the_start(const node_config& config, const std::option
         return start_kind::retired;
     }
     if (!config_first_idx && config.configuration_id > 1) {
+        if (record) [[unlikely]] {
+            return start_kind::retired;
+        }
         return start_kind::build;
     }
     if (mark && mark->pid == config.pid && mark->configuration_id == config.configuration_id && mark->meta == m) {
@@ -492,6 +495,9 @@ private:
     {
         return throw_on_a_damage([&]() -> result {
             if (build_started_ && !seq_paxos_.building() && seq_paxos_.votes()) {
+                if (auto w = own_storage_.write_the_first_start_record({seq_paxos_.get_pid()}); !w) [[unlikely]] {
+                    throw sync_error(w.error(), "konsens: the node storage failed to keep the first start record");
+                }
                 start_the_election_after_the_build();
             }
             if (!seq_paxos_.votes()) {

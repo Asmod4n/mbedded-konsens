@@ -393,6 +393,33 @@ TEST_CASE("a new node that ends during its build continues from the end of its l
     CHECK(c.decided_log(4) == log);
 }
 
+// Plan first-start-record 8.1: a node of the next configuration that ended
+// its build may have sent a promise of a higher ballot. A start that would
+// build again on a new store gives it the default ballot of the
+// configuration and loses that promise, as the mutation StartAsNewNode of
+// the model does. The record that the end of the build writes retires it.
+TEST_CASE("a new node that loses its store after its build retires")
+{
+    auto c = old_configuration();
+    append_entries(c, 2);
+    reconfigure(c);
+    c.start(4);
+    hop(c, 4, 1);
+    hop(c, 1, 4);
+    REQUIRE_FALSE(c.at(4).get_sequence_paxos().building());
+    const auto record = sqlite_storage::open_node_storage_in(c.owns.at(3)).get_first_start_record();
+    REQUIRE(record.has_value());
+    CHECK(*record == konsens::first_start_record{4});
+    c.crash(4);
+    c.logs.at(3) = sqlite_storage::new_directory();
+    c.start(4);
+    CHECK(c.at(4).retired());
+    c.crash(4);
+    c.started.at(3) = false;
+    c.start(4);
+    CHECK(c.at(4).retired());
+}
+
 // Plan reconfiguration 2.7 and 4.6: a part whose chain hash does not agree
 // is not written, and the next request goes to the next node of
 // build_from.

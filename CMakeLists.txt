@@ -127,6 +127,7 @@ target_link_libraries(test_repair PRIVATE SQLite::SQLite3)
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50 --allow-root-for-test)
 add_test(NAME counter_help COMMAND counter --help)
 add_test(NAME three_nodes_help COMMAND three_nodes --help)
+add_test(NAME three_nodes_run COMMAND three_nodes --allow-root-for-test)
 add_test(NAME counter_stress_help COMMAND counter_stress --help)
 add_test(NAME counter_stress_cbor COMMAND counter_stress --clients 2 --increments 50 --cbor --allow-root-for-test)
 

@@ -392,6 +392,10 @@ public:
         if (!first) [[unlikely]] {
             return std::unexpected(first.error());
         }
+        if (!*first && config.configuration_id > 1 && config.start == start_kind::retired) [[unlikely]] {
+            sp.retired_ = true;
+            return sp;
+        }
         if ((!*first && config.configuration_id > 1) != (config.start == start_kind::build)) [[unlikely]] {
             throw std::logic_error("konsens: a build start needs a store of a later configuration without its first index");
         }
