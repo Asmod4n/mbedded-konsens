@@ -3,7 +3,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <memory>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -13,6 +17,8 @@
 #include "konsens/sequence_paxos.hpp"
 #include "node_cluster.hpp"
 #include "sqlite_storage.hpp"
+
+#include <sqlite3.h>
 
 using namespace node_cluster;
 using konsens::client_errc;
@@ -25,6 +31,23 @@ bool decides(cluster& c, const std::size_t at, const std::uint8_t v)
     batches::commit(c.nodes.at(at), c.nodes.at(at).append(make_entry(v)));
     c.run(rounds);
     return value_of(c.nodes.at(at).get_sequence_paxos().get_decided_idx()) > before;
+}
+
+void change_the_node_storage(const std::filesystem::path& directory, const char* const sql)
+{
+    sqlite3* db = nullptr;
+    const auto file = (directory / "node.db").string();
+    REQUIRE(sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite3_close(db) == SQLITE_OK);
+}
+
+std::expected<node_t, std::error_code> start_as_first(cluster& c, const std::size_t i, std::shared_ptr<disk> d)
+{
+    auto config = config_of(pid_of(i));
+    config.first_start = true;
+    return node_t::with(config, disk_storage{std::move(d)}, sqlite_storage::open_node_storage_in(c.states.at(i)),
+                        counter{}, 1000 + i);
 }
 
 }
@@ -167,4 +190,80 @@ TEST_CASE("a whole cluster that stops cleanly starts again and decides")
     }
     c.run(rounds);
     CHECK(decides(c, c.leader(), 9));
+}
+
+// Jepsen, ParticleDB 1.1.4, issue 112: a node that lost its data started
+// fresh and served an empty database. Here a store that is deleted or new
+// holds no promise, so the promise alone cannot tell it from a true first
+// start. The first start record in the node storage can: a node that
+// started once never starts as the first again, and votes with no empty
+// log that the model forbids (SequencePaxos.tla, only Init starts a seed,
+// mutation StartAsNewNode).
+TEST_CASE("a first start on a node storage that started before is refused, also with a new store")
+{
+    auto c = elected();
+    const auto f = first_follower(c.leader());
+    {
+        const auto ended = std::move(c.nodes.at(f));
+    }
+    CHECK_THROWS_AS(static_cast<void>(start_as_first(c, f, new_disk())), std::logic_error);
+    CHECK_THROWS_AS(static_cast<void>(start_as_first(c, f, c.disks.at(f))), std::logic_error);
+    c.nodes.at(f) = c.start(f);
+    CHECK(c.nodes.at(f).retired());
+    CHECK(decides(c, c.leader(), 6));
+}
+
+// Plan first-start-record 2.3: the record is written at the first start and
+// at a clean start that finds none, so a node storage of an older version
+// gets it too.
+TEST_CASE("a first start writes the first start record, and a clean start writes it when it is missing")
+{
+    auto c = elected();
+    for (std::size_t i = 0; i < node_count; ++i) {
+        const auto record = sqlite_storage::open_node_storage_in(c.states.at(i)).get_first_start_record();
+        REQUIRE(record.has_value());
+        CHECK(*record == konsens::first_start_record{pid_of(i)});
+    }
+    const auto f = first_follower(c.leader());
+    c.nodes.at(f).stop();
+    change_the_node_storage(c.states.at(f), "DELETE FROM meta WHERE name = 'first_start'");
+    c.restart(f);
+    CHECK(!c.nodes.at(f).retired());
+    const auto record = sqlite_storage::open_node_storage_in(c.states.at(f)).get_first_start_record();
+    REQUIRE(record.has_value());
+    CHECK(*record == konsens::first_start_record{pid_of(f)});
+}
+
+// Plan first-start-record 2.2: a node storage that holds the first start of
+// another pid belongs to another node, as a mark of another node does.
+TEST_CASE("a node storage with the first start record of another pid retires the node")
+{
+    auto c = elected();
+    const auto f = first_follower(c.leader());
+    c.nodes.at(f).stop();
+    const auto other = pid_of((f + 1) % node_count);
+    {
+        auto own = sqlite_storage::open_node_storage_in(c.states.at(f));
+        REQUIRE(own.write_the_first_start_record({other}).has_value());
+    }
+    c.restart(f);
+    CHECK(c.nodes.at(f).retired());
+}
+
+// Plan first-start-record 2.1: a damaged record is never read as a missing
+// one, or a damage would make a used node storage look new.
+TEST_CASE("a damaged first start record stops the start")
+{
+    auto c = elected();
+    const auto f = first_follower(c.leader());
+    c.nodes.at(f).stop();
+    change_the_node_storage(c.states.at(f),
+                            "UPDATE meta SET record = x'0100000000000000ffffffff' WHERE name = 'first_start'");
+    const auto damaged = start_as_first(c, f, c.disks.at(f));
+    REQUIRE(!damaged);
+    CHECK(damaged.error() == make_error_code(konsens::storage_errc::crc_mismatch));
+    change_the_node_storage(c.states.at(f), "UPDATE meta SET record = x'01' WHERE name = 'first_start'");
+    const auto short_record = start_as_first(c, f, c.disks.at(f));
+    REQUIRE(!short_record);
+    CHECK(short_record.error() == make_error_code(konsens::storage_errc::malformed_record));
 }

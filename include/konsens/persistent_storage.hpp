@@ -210,6 +210,12 @@ struct clean_stop_mark {
     friend bool operator==(const clean_stop_mark&, const clean_stop_mark&) = default;
 };
 
+struct first_start_record {
+    node_id pid;
+
+    friend bool operator==(const first_start_record&, const first_start_record&) = default;
+};
+
 class node_storage {
     struct environment;
 
@@ -222,6 +228,8 @@ public:
     [[nodiscard]] std::expected<std::optional<clean_stop_mark>, std::error_code> get_clean_stop_mark() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_clean_stop_mark(const clean_stop_mark& mark);
     [[nodiscard]] std::expected<void, std::error_code> delete_the_clean_stop_mark();
+    [[nodiscard]] std::expected<std::optional<first_start_record>, std::error_code> get_first_start_record() const;
+    [[nodiscard]] std::expected<void, std::error_code> write_the_first_start_record(const first_start_record& record);
     [[nodiscard]] std::expected<std::uint64_t, std::error_code> get_repair_count() const;
     [[nodiscard]] std::expected<void, std::error_code> write_the_repair_count(std::uint64_t count);
 

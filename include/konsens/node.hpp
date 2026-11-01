@@ -65,8 +65,12 @@ struct sync_request {
 };
 
 inline start_kind kind_of_the_start(const node_config& config, const std::optional<clean_stop_mark>& mark,
-                                    const meta_record& m, const std::optional<std::uint64_t>& config_first_idx)
+                                    const std::optional<first_start_record>& record, const meta_record& m,
+                                    const std::optional<std::uint64_t>& config_first_idx)
 {
+    if (record && record->pid != config.pid) [[unlikely]] {
+        return start_kind::retired;
+    }
     if (!config_first_idx && config.configuration_id > 1) {
         return start_kind::build;
     }
@@ -74,8 +78,9 @@ inline start_kind kind_of_the_start(const node_config& config, const std::option
         return start_kind::clean;
     }
     if (config.first_start) {
-        if (m.promise != ballot{}) [[unlikely]] {
-            throw std::logic_error("konsens: a first start needs a store without a promise and without a clean-stop mark");
+        if (record || m.promise != ballot{}) [[unlikely]] {
+            throw std::logic_error(
+                "konsens: a first start needs a node storage with no first start record and a store with no promise");
         }
         return start_kind::first;
     }
@@ -175,7 +180,11 @@ public:
                 return std::unexpected(d.error());
             }
         }
-        const auto kind = read_the_kind_of_the_start(config, *mark, internal_storage);
+        const auto record = own_storage.get_first_start_record();
+        if (!record) [[unlikely]] {
+            return std::unexpected(record.error());
+        }
+        const auto kind = read_the_kind_of_the_start(config, *mark, *record, internal_storage);
         if (!kind) [[unlikely]] {
             return std::unexpected(kind.error());
         }
@@ -235,6 +244,11 @@ public:
         if (n.seq_paxos_.votes()) {
             if (auto r = n.apply_at_the_start(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
+            }
+        }
+        if (!*record && (*kind == start_kind::first || *kind == start_kind::clean)) {
+            if (auto w = n.own_storage_.write_the_first_start_record({config.pid}); !w) [[unlikely]] {
+                return std::unexpected(w.error());
             }
         }
         n.release_the_output();
@@ -823,7 +837,8 @@ private:
     }
 
     static std::expected<start_kind, std::error_code> read_the_kind_of_the_start(
-        const node_config& config, const std::optional<clean_stop_mark>& mark, const S& internal_storage)
+        const node_config& config, const std::optional<clean_stop_mark>& mark,
+        const std::optional<first_start_record>& record, const S& internal_storage)
     {
         const auto t = internal_storage.begin_read_only();
         if (!t) [[unlikely]] {
@@ -843,7 +858,7 @@ private:
             }
             return std::unexpected(first.error());
         }
-        return kind_of_the_start(config, mark, *m, *first);
+        return kind_of_the_start(config, mark, record, *m, *first);
     }
 
     void reply_to_the_waiting_calls(const std::error_code e)
