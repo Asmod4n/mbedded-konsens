@@ -242,10 +242,11 @@ node_id to_of(const message& m)
 std::string name_of(const message& m)
 {
     static constexpr std::array<const char*, std::variant_size_v<konsens::paxos_msg>> paxos{
-        "prepare_req", "prepare",       "promise",          "accept_sync",      "accept_decide",
-        "accepted",    "decide",        "not_accepted",     "proposal_forward", "read_index_request",
-        "heartbeat",   "heartbeat_ack", "read_index_reply", "answer",           "try_again",
-        "refused",     "work",          "build_request",    "build_response",   "build_refused"};
+        "prepare_req",    "prepare",       "promise",          "accept_sync",      "accept_decide",
+        "accepted",       "decide",        "not_accepted",     "proposal_forward", "read_index_request",
+        "heartbeat",      "heartbeat_ack", "read_index_reply", "answer",           "try_again",
+        "refused",        "work",          "build_request",    "build_response",   "build_refused",
+        "repair_request", "repair_entries"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());

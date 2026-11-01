@@ -303,6 +303,8 @@ std::vector<message> every_kind()
         paxos(konsens::build_request{10, 20}),
         paxos(konsens::build_response{10, 20, five_entries(), chain_from(30), 40, chain_from(50)}),
         paxos(konsens::build_refused{10}),
+        paxos(konsens::repair_request{10, 20, 30}),
+        paxos(konsens::repair_entries{10, 20, five_entries()}),
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
@@ -392,8 +394,10 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::build_request{10, 20}), 17},
         {paxos(konsens::build_response{10, 20, {}, chain_from(30), 40, chain_from(50)}), 18},
         {paxos(konsens::build_refused{10}), 19},
-        {ble(konsens::heartbeat_request{10}), 20},
-        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 21},
+        {paxos(konsens::repair_request{10, 20, 30}), 20},
+        {paxos(konsens::repair_entries{10, 20, {}}), 21},
+        {ble(konsens::heartbeat_request{10}), 22},
+        {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 23},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -447,7 +451,7 @@ TEST_CASE("a read_index_reply has the bytes of RFC 8949 and RFC 8746")
 // bytes of a kind of the second variant, which follows the first variant.
 TEST_CASE("a heartbeat_reply has the bytes of RFC 8949")
 {
-    constexpr std::uint64_t heartbeat_reply_kind = 21;
+    constexpr std::uint64_t heartbeat_reply_kind = 23;
     const auto m = ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true});
     const auto expected = header_bytes(heartbeat_reply_kind, ble_from, ble_to) + head(map, 4) + text("happy") +
                           boolean(true) + text("round") + integer(10) + text("ballot") + ballot_bytes(ballot_from(20)) +
@@ -697,6 +701,17 @@ TEST_CASE("a build_response with an entry of a foreign field gives entry_field_o
 {
     const auto m =
         paxos(konsens::build_response{10, 20, {entry{.kind = entry_kind::normal, .session = 1}}, chain_from(30), 40, chain_from(50)});
+    const auto bytes = konsens::encode(m);
+    REQUIRE(bytes.has_value());
+    CHECK(error_of(*bytes) == wire_errc::entry_field_of_another_kind);
+}
+
+// A repair writes the entries of a peer into the own log. An entry with a
+// field that its kind does not carry is refused before it reaches the
+// check of the chain, as the entries of a build_response are.
+TEST_CASE("a repair_entries with an entry of a foreign field gives entry_field_of_another_kind")
+{
+    const auto m = paxos(konsens::repair_entries{10, 20, {entry{.kind = entry_kind::normal, .session = 1}}});
     const auto bytes = konsens::encode(m);
     REQUIRE(bytes.has_value());
     CHECK(error_of(*bytes) == wire_errc::entry_field_of_another_kind);

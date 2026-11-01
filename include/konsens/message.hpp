@@ -224,10 +224,24 @@ struct build_refused {
     friend bool operator==(const build_refused&, const build_refused&) = default;
 };
 
+struct repair_request {
+    std::uint64_t nonce;
+    std::uint64_t from_idx;
+    std::uint64_t to_idx;
+    friend bool operator==(const repair_request&, const repair_request&) = default;
+};
+
+struct repair_entries {
+    std::uint64_t nonce;
+    std::uint64_t from_idx;
+    std::vector<entry> entries;
+    friend bool operator==(const repair_entries&, const repair_entries&) = default;
+};
+
 using paxos_msg =
     std::variant<prepare_req, prepare, promise, accept_sync, accept_decide, accepted, decide, not_accepted,
                  proposal_forward, read_index_request, heartbeat, heartbeat_ack, read_index_reply, answer, try_again,
-                 refused, work, build_request, build_response, build_refused>;
+                 refused, work, build_request, build_response, build_refused, repair_request, repair_entries>;
 
 struct paxos_message {
     node_id from;

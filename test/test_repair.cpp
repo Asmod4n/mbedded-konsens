@@ -10,6 +10,7 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "konsens/chain_hash.hpp"
@@ -274,4 +275,203 @@ TEST_CASE("a missing row or a record shorter than its tail has no unchecked entr
     CHECK(t->get_unchecked_entry(0).value() == std::optional{entry_of(0x10)});
     CHECK(t->get_unchecked_entry(1).value() == std::nullopt);
     CHECK(t->get_unchecked_entry(2).value() == std::nullopt);
+}
+
+namespace {
+
+struct cluster {
+    std::vector<std::filesystem::path> directories;
+    std::vector<sp_t> nodes;
+};
+
+sp_t node_on(const std::filesystem::path& directory, const node_id pid)
+{
+    auto sp = sp_t::with({1, pid, peers_of(pid), {}, konsens::start_kind::clean}, sqlite_storage::open_in(directory),
+                         first_nonce);
+    REQUIRE(sp.has_value());
+    static_cast<void>(sp->take_outgoing_messages());
+    return std::move(*sp);
+}
+
+// Three nodes with the same log. The test damages the log of node 1 before
+// it starts the nodes.
+template <typename Damage>
+cluster cluster_with_damage_at_node_1(const Damage& damage)
+{
+    cluster c;
+    for (node_id pid = 1; pid <= 3; ++pid) {
+        c.directories.push_back(directory_with_a_log());
+    }
+    damage(c.directories.front());
+    for (node_id pid = 1; pid <= 3; ++pid) {
+        c.nodes.push_back(node_on(c.directories.at(pid - 1), pid));
+    }
+    return c;
+}
+
+// Each message goes to its node, and each node commits the step. The
+// messages that the steps send come back for the next round.
+std::vector<konsens::paxos_message> deliver(cluster& c, const std::vector<konsens::paxos_message>& messages)
+{
+    for (const auto& m : messages) {
+        REQUIRE(c.nodes.at(m.to - 1).handle(m));
+    }
+    std::vector<konsens::paxos_message> sent;
+    for (auto& n : c.nodes) {
+        REQUIRE(n.commit());
+        for (auto& m : n.take_outgoing_messages()) {
+            sent.push_back(std::move(m));
+        }
+    }
+    return sent;
+}
+
+template <typename T>
+std::vector<konsens::paxos_message> only(const std::vector<konsens::paxos_message>& messages)
+{
+    std::vector<konsens::paxos_message> kept;
+    for (const auto& m : messages) {
+        if (std::holds_alternative<T>(m.msg)) {
+            kept.push_back(m);
+        }
+    }
+    return kept;
+}
+
+std::vector<konsens::paxos_message> start_the_repair(sp_t& sp)
+{
+    const auto ranges = sp.find_the_damaged_ranges();
+    REQUIRE(ranges.has_value());
+    const auto left = sp.repair_locally(*ranges);
+    REQUIRE(left.has_value());
+    REQUIRE_FALSE(left->empty());
+    sp.wait_for_the_repair(*left);
+    CHECK_FALSE(sp.votes());
+    CHECK(sp.repairs());
+    return sp.take_outgoing_messages();
+}
+
+}
+
+// Plan of the repair, items 3 to 7: the node asks every peer for the
+// damaged range, takes the first copy whose chain gives the chain of the
+// next record, writes it, and votes again with a PrepareReq to all peers.
+// The records after the repair equal the records before the damage.
+TEST_CASE("a node with a flipped entry repairs it from its peers and votes again")
+{
+    std::vector<std::vector<std::byte>> before;
+    auto c = cluster_with_damage_at_node_1([&before](const std::filesystem::path& d) {
+        before = records_in(d);
+        flip_a_byte(d, 2, tail_size + 1);
+    });
+    auto requests = start_the_repair(c.nodes.front());
+    CHECK(requests.size() == 2);
+    for (const auto& m : requests) {
+        CHECK(m.msg == konsens::paxos_msg{konsens::repair_request{first_nonce, 2, 3}});
+    }
+    const auto answers = deliver(c, requests);
+    CHECK(only<konsens::repair_entries>(answers).size() == 2);
+    const auto after = deliver(c, answers);
+    CHECK(c.nodes.front().votes());
+    CHECK_FALSE(c.nodes.front().repairs());
+    CHECK(only<konsens::prepare_req>(after).size() == 2);
+    CHECK(records_in(c.directories.front()) == before);
+}
+
+// A missing row in the middle and a damaged last record are two ranges. The
+// last range ends at the length of the log, so its copy is checked against
+// the chain hash of the meta record.
+TEST_CASE("a missing row and a damaged last record are repaired from the peers")
+{
+    std::vector<std::vector<std::byte>> before;
+    auto c = cluster_with_damage_at_node_1([&before](const std::filesystem::path& d) {
+        before = records_in(d);
+        delete_the_row(d, 1);
+        flip_a_byte(d, log_len - 1, tail_size + 1);
+    });
+    const auto requests = start_the_repair(c.nodes.front());
+    CHECK(requests.size() == 4);
+    deliver(c, deliver(c, requests));
+    CHECK(c.nodes.front().votes());
+    CHECK(records_in(c.directories.front()) == before);
+}
+
+// A repair never takes a copy that differs from the lost bytes. Peers with
+// another entry at the damaged index give a chain that does not give the
+// chain of the next record, so the node stays silent and writes nothing.
+TEST_CASE("a copy with another entry at the index is refused and the node stays silent")
+{
+    auto c = cluster_with_damage_at_node_1([](const std::filesystem::path& d) { flip_a_byte(d, 2, tail_size + 1); });
+    const auto damaged = records_in(c.directories.front());
+    auto requests = start_the_repair(c.nodes.front());
+    auto answers = deliver(c, requests);
+    for (auto& m : answers) {
+        auto& entries = std::get<konsens::repair_entries>(m.msg).entries;
+        REQUIRE(entries.size() == 1);
+        entries.front() = entry_of(0x77);
+    }
+    CHECK(deliver(c, answers).empty());
+    CHECK(c.nodes.front().repairs());
+    CHECK_FALSE(c.nodes.front().votes());
+    CHECK(records_in(c.directories.front()) == damaged);
+}
+
+// Plan of the repair, item 4: the node refuses an answer whose from_idx or
+// count differs from its own request. A peer with a shorter log answers
+// with fewer entries, and that answer is not a copy of the range.
+TEST_CASE("an answer with another from_idx or count is refused")
+{
+    auto c = cluster_with_damage_at_node_1([](const std::filesystem::path& d) { flip_a_byte(d, 2, tail_size + 1); });
+    const auto requests = start_the_repair(c.nodes.front());
+    const auto answers = deliver(c, requests);
+    REQUIRE(answers.size() == 2);
+    auto shifted = answers.front();
+    std::get<konsens::repair_entries>(shifted.msg).from_idx = 1;
+    auto shorter = answers.front();
+    std::get<konsens::repair_entries>(shorter.msg).entries.clear();
+    auto longer = answers.front();
+    std::get<konsens::repair_entries>(longer.msg).entries.push_back(entry_of(0x13));
+    auto other_nonce = answers.front();
+    std::get<konsens::repair_entries>(other_nonce.msg).nonce = first_nonce + 1;
+    CHECK(deliver(c, {shifted, shorter, longer, other_nonce}).empty());
+    CHECK(c.nodes.front().repairs());
+    deliver(c, {answers.back()});
+    CHECK(c.nodes.front().votes());
+}
+
+// A silent node handles only the messages of the repair. A PrepareReq of a
+// peer gets no answer, and the resend timeout sends the requests again.
+TEST_CASE("a node in repair answers no other message and asks again at the resend timeout")
+{
+    auto c = cluster_with_damage_at_node_1([](const std::filesystem::path& d) { flip_a_byte(d, 2, tail_size + 1); });
+    const auto requests = start_the_repair(c.nodes.front());
+    auto& n = c.nodes.front();
+    REQUIRE(n.handle({2, 1, konsens::prepare_req{ballot_of(2, 2)}}));
+    REQUIRE(n.commit());
+    CHECK(n.take_outgoing_messages().empty());
+    REQUIRE(n.resend_message_timeout());
+    REQUIRE(n.commit());
+    CHECK(n.take_outgoing_messages() == requests);
+}
+
+// A peer answers the entries that it holds, decided or not, and at most
+// up to its own log length. A peer that repairs answers only the part of
+// the range before its own damage.
+TEST_CASE("a peer answers the entries it holds, and a peer in repair stops before its damage")
+{
+    auto c = cluster_with_damage_at_node_1([](const std::filesystem::path& d) { flip_a_byte(d, 3, tail_size + 1); });
+    start_the_repair(c.nodes.front());
+    auto& healthy = c.nodes.at(1);
+    REQUIRE(healthy.handle({3, 2, konsens::repair_request{9, 1, log_len + 2}}));
+    REQUIRE(healthy.commit());
+    const auto whole = healthy.take_outgoing_messages();
+    REQUIRE(whole.size() == 1);
+    const auto all = written_entries();
+    CHECK(whole.front().msg == konsens::paxos_msg{konsens::repair_entries{9, 1, {all.begin() + 1, all.end()}}});
+    auto& repairing = c.nodes.front();
+    REQUIRE(repairing.handle({3, 1, konsens::repair_request{9, 1, log_len}}));
+    REQUIRE(repairing.commit());
+    const auto part = repairing.take_outgoing_messages();
+    REQUIRE(part.size() == 1);
+    CHECK(part.front().msg == konsens::paxos_msg{konsens::repair_entries{9, 1, {all.begin() + 1, all.begin() + 3}}});
 }

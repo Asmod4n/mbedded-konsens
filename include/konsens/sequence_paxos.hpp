@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -266,6 +267,12 @@ struct build_state {
     bool answered;
 };
 
+struct damaged_range {
+    index_range range;
+    std::map<node_id, std::vector<entry>> copies;
+    std::optional<std::vector<entry>> passed;
+};
+
 struct decided_update {
     std::uint64_t decided_idx;
     bool flushed;
@@ -414,6 +421,10 @@ public:
         if (step_ended_) {
             return {};
         }
+        if (repair_) {
+            step_ended_ = true;
+            return {};
+        }
         if (error_) [[unlikely]] {
             txn_.reset();
             drop_incoming_and_outgoing();
@@ -441,6 +452,9 @@ public:
         step_ended_ = false;
         if (!ended) [[unlikely]] {
             return ended;
+        }
+        if (repair_) {
+            return write_the_passed_copies();
         }
         if (error_) [[unlikely]] {
             txn_.reset();
@@ -486,6 +500,19 @@ private:
         if (error_) [[unlikely]] {
             return std::unexpected(*error_);
         }
+        if (repair_) {
+            if (to != pid_ || from == pid_ || !std::ranges::contains(peers_, from)) {
+                return {};
+            }
+            if constexpr (std::is_same_v<T, repair_entries>) {
+                if (msg.nonce == nonce_) {
+                    return handle_repair_entries(msg, from);
+                }
+            } else if constexpr (std::is_same_v<T, repair_request>) {
+                return handle_repair_request(msg, from);
+            }
+            return {};
+        }
         if constexpr (std::is_same_v<T, build_request>) {
             if (to != pid_ || from == pid_ || build_) {
                 return {};
@@ -524,7 +551,9 @@ private:
         if (auto r = begin_step(); !r) [[unlikely]] {
             return r;
         }
-        if constexpr (std::is_same_v<T, prepare_req>) {
+        if constexpr (std::is_same_v<T, repair_request>) {
+            return handle_repair_request(msg, from);
+        } else if constexpr (std::is_same_v<T, prepare_req>) {
             return handle_preparereq(msg, from);
         } else if constexpr (std::is_same_v<T, prepare>) {
             return handle_prepare(msg, from);
@@ -557,7 +586,8 @@ private:
             return handle_read_index_reply(msg);
         } else if constexpr (std::is_same_v<T, answer> || std::is_same_v<T, try_again> || std::is_same_v<T, refused> ||
                              std::is_same_v<T, work> || std::is_same_v<T, build_request> ||
-                             std::is_same_v<T, build_response> || std::is_same_v<T, build_refused>) {
+                             std::is_same_v<T, build_response> || std::is_same_v<T, build_refused> ||
+                             std::is_same_v<T, repair_entries>) {
             return {};
         } else {
             static_assert(std::is_same_v<T, proposal_forward>);
@@ -639,6 +669,10 @@ public:
         }
         if (build_) {
             return ask_again_for_the_build();
+        }
+        if (repair_) {
+            ask_again_for_the_repair();
+            return {};
         }
         if (auto r = begin_step(); !r) [[unlikely]] {
             return r;
@@ -853,7 +887,8 @@ public:
     }
     node_id get_pid() const { return pid_; }
     std::uint64_t get_verified_idx() const { return verified_idx_; }
-    bool votes() const { return !error_ && !build_ && !retired_; }
+    bool votes() const { return !error_ && !build_ && !retired_ && !repair_; }
+    bool repairs() const { return repair_.has_value(); }
     bool retired() const { return retired_; }
     bool building() const { return build_.has_value(); }
     std::uint64_t get_config_first_idx() const { return config_first_idx_; }
@@ -961,6 +996,46 @@ public:
         }
         write_unfinished_ = false;
         return left;
+    }
+
+    void wait_for_the_repair(const std::span<const index_range> ranges)
+    {
+        throw_if_a_step_is_open();
+        if (ranges.empty()) [[unlikely]] {
+            throw std::logic_error("konsens: a repair needs at least one damaged range");
+        }
+        error_.reset();
+        hardware_fault_.reset();
+        drop_incoming_and_outgoing();
+        buffered_proposals_.clear();
+        state_ = {role::follower, phase::none};
+        repair_.emplace();
+        for (const auto r : ranges) {
+            repair_->push_back({r, {}, std::nullopt});
+        }
+        ask_again_for_the_repair();
+    }
+
+    result vote_again()
+    {
+        throw_if_a_step_is_open();
+        repair_.reset();
+        error_.reset();
+        hardware_fault_.reset();
+        drop_incoming_and_outgoing();
+        buffered_proposals_.clear();
+        read_pending_.clear();
+        indexed_reads_.clear();
+        answered_prepare_.reset();
+        const auto m = read_meta_between_steps();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        mark_ = raise_mark(mark_, mark_of(*m));
+        leader_state_ = leader_state::with(m->promise, nodes_);
+        state_ = {role::follower, phase::recover};
+        send_preparereq_to_all_peers(m->promise);
+        return {};
     }
 
     std::optional<std::error_code> get_error() const { return error_; }
@@ -1786,6 +1861,134 @@ private:
         return compute_chain_hash(sha256_, chain, r.to_idx, next->front()) == **stored;
     }
 
+    void send_the_next_repair_request(const damaged_range& d, const node_id peer)
+    {
+        const auto held = d.copies.contains(peer) ? d.copies.at(peer).size() : 0;
+        const auto from_idx = d.range.from_idx + held;
+        const auto to_idx = std::min(d.range.to_idx, from_idx + max_build_entries);
+        outgoing_.push_back({pid_, peer, repair_request{nonce_, from_idx, to_idx}});
+    }
+
+    void ask_again_for_the_repair()
+    {
+        for (auto& d : *repair_) {
+            if (d.passed) {
+                continue;
+            }
+            d.copies.clear();
+            for (const auto peer : peers_) {
+                send_the_next_repair_request(d, peer);
+            }
+        }
+    }
+
+    result handle_repair_request(const repair_request& req, const node_id from)
+    {
+        const auto t = internal_storage_.begin_read_only();
+        if (!t) [[unlikely]] {
+            return stop_voting(t.error());
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            return stop_voting(m.error());
+        }
+        auto to = std::min({req.to_idx, m->log_len, req.from_idx + max_build_entries});
+        if (repair_) {
+            for (const auto& d : *repair_) {
+                if (!d.passed && d.range.to_idx > req.from_idx) {
+                    to = std::min(to, std::max(d.range.from_idx, req.from_idx));
+                }
+            }
+        }
+        std::vector<entry> entries;
+        if (req.from_idx < to) {
+            auto read = t->get_entries(req.from_idx, to);
+            if (!read) [[unlikely]] {
+                return stop_voting(read.error());
+            }
+            entries = std::move(*read);
+        }
+        outgoing_.push_back({pid_, from, repair_entries{req.nonce, req.from_idx, std::move(entries)}});
+        return {};
+    }
+
+    result handle_repair_entries(const repair_entries& msg, const node_id from)
+    {
+        const auto d = std::ranges::find_if(*repair_, [&msg](const damaged_range& x) {
+            return x.range.from_idx <= msg.from_idx && msg.from_idx < x.range.to_idx;
+        });
+        if (d == repair_->end() || d->passed) {
+            return {};
+        }
+        auto& copy = d->copies[from];
+        const auto count = std::min(d->range.to_idx - msg.from_idx, std::uint64_t{max_build_entries});
+        if (msg.from_idx != d->range.from_idx + copy.size() || msg.entries.size() != count) {
+            return {};
+        }
+        copy.insert(copy.end(), msg.entries.begin(), msg.entries.end());
+        if (copy.size() < d->range.to_idx - d->range.from_idx) {
+            send_the_next_repair_request(*d, from);
+            return {};
+        }
+        const auto t = internal_storage_.begin_read_only();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        const auto m = t->get_meta();
+        if (!m) [[unlikely]] {
+            return std::unexpected(m.error());
+        }
+        const auto fits = copy_fits_the_chain(*t, *m, d->range, copy);
+        if (!fits) [[unlikely]] {
+            return std::unexpected(fits.error());
+        }
+        if (*fits) {
+            d->passed = std::move(copy);
+        }
+        d->copies.erase(from);
+        return {};
+    }
+
+    result write_the_passed_copies()
+    {
+        incoming_.clear();
+        if (std::ranges::none_of(*repair_, [](const damaged_range& d) { return d.passed.has_value(); })) {
+            return {};
+        }
+        auto t = internal_storage_.begin();
+        if (!t) [[unlikely]] {
+            return std::unexpected(t.error());
+        }
+        for (const auto& d : *repair_) {
+            if (!d.passed) {
+                continue;
+            }
+            if (auto w = t->replace_entries(d.range.from_idx, *d.passed); !w) [[unlikely]] {
+                write_unfinished_ = true;
+                throw write_error(w.error(), "konsens: the storage failed to write a repair");
+            }
+        }
+        write_unfinished_ = true;
+        if (auto c = std::move(*t).commit(); !c) [[unlikely]] {
+            throw write_error(c.error(), "konsens: the storage failed to commit a repair");
+        }
+        write_unfinished_ = false;
+        std::erase_if(*repair_, [](const damaged_range& d) { return d.passed.has_value(); });
+        if (!repair_->empty()) {
+            return {};
+        }
+        const auto left = find_the_damaged_ranges();
+        if (!left) [[unlikely]] {
+            repair_.reset();
+            return stop_voting(left.error());
+        }
+        if (!left->empty()) [[unlikely]] {
+            wait_for_the_repair(*left);
+            return {};
+        }
+        return vote_again();
+    }
+
     std::expected<std::uint64_t, std::error_code> count_the_verified_entries() const
     {
         const auto t = internal_storage_.begin_read_only();
@@ -2043,6 +2246,7 @@ private:
     std::uint32_t configuration_id_;
     std::uint64_t config_first_idx_{};
     std::optional<build_state> build_;
+    std::optional<std::vector<damaged_range>> repair_;
     node_id pid_;
     std::vector<node_id> peers_;
     std::vector<node_id> nodes_;
