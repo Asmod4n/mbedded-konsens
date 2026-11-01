@@ -39,6 +39,8 @@ struct problem {
     std::uint16_t status;
     std::string_view detail;
     bool retry_after;
+    std::string_view type{};
+    std::string_view title{};
 
     friend bool operator==(const problem&, const problem&) = default;
 };

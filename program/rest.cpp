@@ -24,6 +24,21 @@ constexpr std::uint16_t status_not_implemented = 501;
 constexpr std::uint16_t status_service_unavailable = 503;
 constexpr std::uint16_t status_http_version_not_supported = 505;
 
+constexpr std::string_view problem_type_retry =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#retry";
+constexpr std::string_view problem_type_building =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#building";
+constexpr std::string_view problem_type_reconfiguring =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#reconfiguring";
+constexpr std::string_view problem_type_retired =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#retired";
+constexpr std::string_view problem_type_repairing =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#repairing";
+constexpr std::string_view problem_type_rejected =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#rejected";
+constexpr std::string_view problem_type_stopped =
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#stopped";
+
 constexpr std::string_view http_1_1 = "HTTP/1.1";
 constexpr std::string_view http_1_0 = "HTTP/1.0";
 
@@ -118,15 +133,34 @@ std::expected<std::optional<rest_request>, problem> take_request(const std::stri
 problem problem_of(const std::error_code& e)
 {
     using konsens::client_errc;
-    if (e == client_errc::retry || e == client_errc::building || e == client_errc::reconfiguring ||
-        e == client_errc::retired || e == client_errc::repairing) {
-        return {status_service_unavailable, "the node cannot take the call now", true};
+    if (e.category() != konsens::client_category()) {
+        return {status_internal_server_error, "", false};
     }
-    if (e == client_errc::rejected) {
-        return {status_conflict, "the cluster rejected the write", false};
-    }
-    if (e == client_errc::stopped) {
-        return {status_service_unavailable, "the node stopped; the outcome of the write is unknown", false};
+    switch (static_cast<client_errc>(e.value())) {
+    case client_errc::retry:
+        return {status_service_unavailable, "the node knows no leader, or its promise changed", true,
+                problem_type_retry, "The node cannot take the call now"};
+    case client_errc::building:
+        return {status_service_unavailable, "the node builds its store from a peer", true, problem_type_building,
+                "The node builds"};
+    case client_errc::reconfiguring:
+        return {status_service_unavailable, "the configuration of the node ends with a StopSign", true,
+                problem_type_reconfiguring, "The configuration ends"};
+    case client_errc::retired:
+        return {status_service_unavailable, "the node started without a clean stop and took no part in the call", true,
+                problem_type_retired, "The node is retired"};
+    case client_errc::repairing:
+        return {status_service_unavailable, "the node repairs a damage of its log", true, problem_type_repairing,
+                "The node repairs its store"};
+    case client_errc::rejected:
+        return {status_conflict, "the cluster rejected the write", false, problem_type_rejected,
+                "The cluster rejected the write"};
+    case client_errc::stopped:
+        return {status_service_unavailable, "the node stopped; the outcome of the write is unknown", false,
+                problem_type_stopped, "The node stopped"};
+    case client_errc::session_expired:
+    case client_errc::stale_request:
+        break;
     }
     return {status_internal_server_error, "", false};
 }
@@ -134,8 +168,8 @@ problem problem_of(const std::error_code& e)
 std::string response_of(const std::uint16_t status, const std::string_view content_type,
                         const std::span<const std::byte> body, const bool closes)
 {
-    std::string out = std::format("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n", status, http::reason_phrase(status),
-                                  body.size());
+    std::string out =
+        std::format("HTTP/1.1 {} {}\r\nContent-Length: {}\r\n", status, http::reason_phrase(status), body.size());
     if (!content_type.empty()) {
         out += std::format("Content-Type: {}\r\n", content_type);
     }
@@ -150,8 +184,9 @@ std::string response_of(const std::uint16_t status, const std::string_view conte
 
 std::string problem_response_of(const problem& p, const bool closes)
 {
-    std::string body = std::format(R"({{"type":"about:blank","title":"{}","status":{})", http::reason_phrase(p.status),
-                                   p.status);
+    std::string body = std::format(R"({{"type":"{}","title":"{}","status":{})",
+                                   p.type.empty() ? std::string_view{"about:blank"} : p.type,
+                                   p.title.empty() ? http::reason_phrase(p.status) : p.title, p.status);
     if (!p.detail.empty()) {
         body += std::format(R"(,"detail":"{}")", p.detail);
     }

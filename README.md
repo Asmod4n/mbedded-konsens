@@ -411,11 +411,13 @@ The key is percent-encoded in the path. A value is bytes.
 | 409 | The cluster rejected the write. |
 | 411 | A PUT without Content-Length. |
 | 413 | The value is larger than `max_body_bytes`. |
-| 503 with Retry-After | The node knows no leader, builds, changes its configuration or is retired. Send the call again. |
+| 503 with Retry-After | The node knows no leader, builds, changes its configuration, repairs its store or is retired. Send the call again. |
 | 503 without Retry-After | The node stopped. The write may still be decided. |
 
 An error comes as problem details of RFC 9457
-(`application/problem+json`). Each connection is one client session:
+(`application/problem+json`). Its `type` names the case;
+[doc/problems.md](doc/problems.md) defines each type and says whether
+the call changed nothing. Each connection is one client session:
 a write waits until it is decided before the next request of the same
 connection is read.
 
