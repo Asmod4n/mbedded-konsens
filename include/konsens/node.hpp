@@ -874,7 +874,7 @@ private:
             released_replies_.push_back({client_id, 0, reply});
         }
         for (const auto& [request, w] : std::exchange(requests_, {})) {
-            released_replies_.push_back({w.client_id, request.first, reply});
+            released_replies_.push_back({w.client_id, request.first, reply, request.second});
         }
         for (const auto& [session, client_id] : std::exchange(expirations_, {})) {
             released_replies_.push_back({client_id, session, reply});
@@ -2121,7 +2121,7 @@ private:
             break;
         case entry_kind::client_request:
             if (const auto it = requests_.find({e.session, e.request_number}); it != requests_.end()) {
-                replies.push_back({it->second.client_id, e.session, response()});
+                replies.push_back({it->second.client_id, e.session, response(), e.request_number});
                 requests_.erase(it);
             }
             break;
@@ -2535,8 +2535,8 @@ private:
             if (r.second.ballot == promise) {
                 return false;
             }
-            client_replies_.push_back(
-                {r.second.client_id, r.first.first, std::unexpected(make_error_code(client_errc::retry))});
+            client_replies_.push_back({r.second.client_id, r.first.first,
+                                       std::unexpected(make_error_code(client_errc::retry)), r.first.second});
             return true;
         });
     }

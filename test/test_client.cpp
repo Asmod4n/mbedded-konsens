@@ -650,3 +650,66 @@ TEST_CASE("a start whose applied chain hash differs from the log stops the vote"
         }
     }
 }
+
+// Jepsen, Redis-Raft "crossed wires", and VR Revisited's client table: a
+// session may have several requests in work, so the reply names its
+// request number, and a caller who uses one client_id for both requests
+// still finds the reply of each. Both requests go to the leader, so they
+// enter the log in their order; through a follower the second could come
+// first, and the first would get stale_request.
+TEST_CASE("two requests of one session in work get replies with their request numbers")
+{
+    auto c = elected();
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 2, bytes_of("b")));
+    c.deliver(once);
+    const auto replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 2);
+    CHECK(std::ranges::count(replies, std::uint64_t{1}, &konsens::client_reply::request_number) == 1);
+    CHECK(std::ranges::count(replies, std::uint64_t{2}, &konsens::client_reply::request_number) == 1);
+    for (const auto& r : replies) {
+        CHECK(r.client_id == client_a);
+        CHECK(r.session == s);
+        CHECK(r.response);
+    }
+}
+
+// Plan reply-carries-the-request-number 2.3: 0 names no request, so a reply
+// to a registration, a query or an expiry carries 0.
+TEST_CASE("a reply that answers no request carries request number 0")
+{
+    auto c = elected();
+    batches::commit(c.at(3), c.at(3).register_client(client_a));
+    c.deliver(once);
+    auto replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].request_number == 0);
+    const auto s = replies[0].session;
+    batches::commit(c.at(3), c.at(3).client_query(client_b, {}));
+    c.deliver(once);
+    replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].request_number == 0);
+    batches::commit(c.at(3), c.at(3).expire_session(client_a, s));
+    c.deliver(once);
+    replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].request_number == 0);
+}
+
+// Plan reply-carries-the-request-number 2.2: a request in work when the
+// node stops gets the error with its number, so the caller knows which
+// request did not end.
+TEST_CASE("a request in work at the stop gets stopped with its request number")
+{
+    auto c = elected();
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 7, bytes_of("a")));
+    c.at(3).stop();
+    const auto replies = c.at(3).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(failed_with(replies[0].response, client_errc::stopped));
+    CHECK(replies[0].session == s);
+    CHECK(replies[0].request_number == 7);
+}

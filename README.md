@@ -255,6 +255,13 @@ for (const auto& r : node.take_client_replies())
 
 Any node takes a call. A follower forwards it to the leader.
 
+The node gives `client_id` back unchanged in each reply and reads
+nothing else from it. A reply of a request carries the session and the
+request number, so the replies of several requests of one session in
+work stay apart. A reply of a registration, a query or an expiry carries
+request number 0. A reply of a query carries no number of its own, so a
+caller with several queries in work gives each a different `client_id`.
+
 ### Read
 
 ```cpp

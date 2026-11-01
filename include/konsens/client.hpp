@@ -67,6 +67,7 @@ struct client_reply {
     std::uint64_t client_id;
     std::uint64_t session;
     std::expected<std::vector<std::byte>, std::error_code> response;
+    std::uint64_t request_number{};
 };
 
 }

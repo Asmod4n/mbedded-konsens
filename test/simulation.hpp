@@ -674,6 +674,10 @@ struct world {
                 fail_client("the reply to request call " + std::to_string(id) + " names another session");
                 return;
             }
+            if (r.request_number != k.request_number) {
+                fail_client("the reply to request call " + std::to_string(id) + " names another request number");
+                return;
+            }
             if (r.response) {
                 if (*r.response != bytes_of(request_value(k.session, k.request_number))) {
                     fail_client("the reply to request call " + std::to_string(id) + " is not the reply of its request");
