@@ -123,6 +123,40 @@ hash too.
 10. The scan at start keeps only the count and the last chain value.
 11. The model does not change: its chain is abstract.
 
+## 3a. The form as built (2026-11-01)
+
+Built: items 3.1 to 3.4, 3.6 and 3.9, and 3.5 for konsens.db.
+
+- `sha256` (include/konsens/chain_hash.hpp) holds the fetched
+  `SHA2-256` and one digest context behind a pointer.
+  `compute_chain_hash` is a const method: it initialises the context
+  again at each call, so its result depends on its arguments only. One
+  object must not be used by two threads at the same time (provisional
+  form).
+- The persistent storage and Sequence Paxos each hold one `sha256`.
+  `sequence_paxos::with` and `persistent_storage::open` return
+  `std::errc::function_not_supported` when libcrypto has no SHA-256
+  (provisional error value). A failed step calls `std::terminate`
+  (provisional error path).
+- The free functions `compute_chain_hash` over an entry and over a
+  range take a `const sha256&`.
+- `compute_record_crc` is CRC32C over the index, the encoded entry and
+  the chain hash. `last_entry::entry_crc` holds the record CRC.
+- The member of `last_entry` is `chain`, because a member named
+  `chain_hash` hides the type.
+- `hardware_fault` holds `chain` and `other_chain`. `fault_proof` keeps
+  `crc` and `other_crc` for a result and adds `chain` and `other_chain`
+  for a chain difference; the unused pair is zero (provisional form of
+  3.8).
+- The language server renamed 50 symbols. It could not rename the
+  members that a template reads from a dependent type, the overloads at
+  a call with several candidates, and the text of the map keys in
+  test/test_wire.cpp. These were changed by hand.
+
+Not built yet: 3.5 for node.db (the format row), 3.7 (`base_crc`),
+3.10 (the scan keeps one chain value for each entry), and the
+measurement of 4.4.
+
 ## 4. Measurement, before the build
 
 Done for 4.1 to 4.3 with the arms CRC32C, hydro_hash, SHA-256,

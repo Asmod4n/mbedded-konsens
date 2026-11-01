@@ -42,7 +42,7 @@ std::expected<sha256, std::error_code> sha256::fetch()
 }
 
 chain_hash sha256::compute_chain_hash(const chain_hash& previous, const std::uint64_t index,
-                                      const std::span<const std::byte> encoded_entry)
+                                      const std::span<const std::byte> encoded_entry) const
 {
     if (!context_) [[unlikely]] {
         throw std::logic_error("konsens: a sha256 was moved from");

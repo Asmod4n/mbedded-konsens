@@ -22,7 +22,7 @@ public:
     [[nodiscard]] static std::expected<sha256, std::error_code> fetch();
 
     [[nodiscard]] chain_hash compute_chain_hash(const chain_hash& previous, std::uint64_t index,
-                                                std::span<const std::byte> encoded_entry);
+                                                std::span<const std::byte> encoded_entry) const;
 
     sha256(sha256&&) noexcept;
     sha256& operator=(sha256&&) noexcept;

@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
+#include <openssl/evp.h>
 #include <sqlite3.h>
 
 #include "konsens/persistent_storage.hpp"
@@ -395,6 +396,34 @@ TEST_CASE("a changed value is a CRC mismatch at its index")
     CHECK(t->get_entries(0, 1) == std::vector<konsens::entry>{normal_entry("zero")});
 }
 
+// The record CRC covers the chain hash. A changed byte of the chain field
+// must be found when the record is read, and not only when the chain of
+// the next entry is computed from it. The tail of a record is the record
+// CRC in 4 bytes, the chain hash in 32 bytes, the state in 1 byte and the
+// state CRC in 4 bytes.
+TEST_CASE("a flipped byte in the chain field is a CRC mismatch at its index")
+{
+    constexpr std::size_t chain_field_from_the_end = konsens::chain_hash_size + 1 + 4;
+    const temporary_directory dir;
+    {
+        auto storage = open_storage(dir.path());
+        const std::vector written{normal_entry("zero"), normal_entry("one"), normal_entry("two")};
+        write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
+    }
+    change_with_sqlite(dir.path(), [](sqlite3* db) {
+        auto changed = sqlite_damage::entry_record_of(db, 1);
+        changed.at(changed.size() - chain_field_from_the_end) ^= std::byte{0x01};
+        sqlite_damage::put_entry_record(db, 1, changed);
+    });
+    const auto storage = open_storage(dir.path());
+    const auto t = storage.begin_read_only();
+    REQUIRE(t.has_value());
+    const auto read = t->read_entries(0, 3);
+    REQUIRE_FALSE(read.has_value());
+    CHECK(read.error().code == konsens::storage_errc::crc_mismatch);
+    CHECK(read.error().index == 1u);
+}
+
 // The start-checks plan, item 2.2: a key that is missing in the middle of a
 // range is not a shorter log. The read names the missing index as an error.
 // The read of the last entry does not see the hole. The start scan finds
@@ -483,13 +512,14 @@ TEST_CASE("open refuses another format and a store with data and no format")
 // carries its result between its fields and its payload: one byte that is 1
 // for a rejected task, the result CRC in 4 bytes, the count of the nodes out
 // and each of their ids in 8 bytes, the size of the result in 8 bytes and the
-// result. A request in work has an empty result. The chain CRC of an
-// entry is the CRC32C over the chain CRC of the entry before it in 4 bytes
-// little endian (0 for the first entry), the index in 8 bytes little
-// endian, and the same encoded entry. Each kind is tried, and the expected
+// result. A request in work has an empty result. The chain hash of an
+// entry is SHA-256 over the chain hash of the entry before it in 32 bytes
+// (32 zero bytes for the first entry), the index in 8 bytes little endian,
+// and the same encoded entry. The record CRC is the CRC32C over the index,
+// the encoded entry and the chain hash. Each kind is tried, and the expected
 // values are computed from records written by hand from that format, not
 // from the encoder under test.
-TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format")
+TEST_CASE("the record CRC and the chain hash of each kind follow the record format")
 {
     const temporary_directory dir;
     auto storage = open_storage(dir.path());
@@ -516,19 +546,27 @@ TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format
          {3, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 4, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 'r', 'x'}},
         {{.kind = konsens::entry_kind::expire_session, .session = 1, .result = bytes_of("a"), .rejected = true},
          {4, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 'a'}}};
-    std::uint32_t chain = 0;
+    konsens::chain_hash chain{};
     for (std::uint64_t index = 0; const auto& [e, encoded] : each_kind) {
         const std::vector<konsens::entry> one{e};
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(one)); });
         std::vector<unsigned char> entry_record{static_cast<unsigned char>(index), 0, 0, 0, 0, 0, 0, 0};
         entry_record.insert(entry_record.end(), encoded.begin(), encoded.end());
         std::vector<unsigned char> chain_record;
-        for (std::size_t i = 0; i < 4; ++i) {
-            chain_record.push_back(static_cast<unsigned char>(chain >> (8 * i)));
+        for (const auto b : chain) {
+            chain_record.push_back(std::to_integer<unsigned char>(b));
         }
         chain_record.insert(chain_record.end(), entry_record.begin(), entry_record.end());
-        const auto entry_crc = crc32c::Crc32c(entry_record.data(), entry_record.size());
-        chain = crc32c::Crc32c(chain_record.data(), chain_record.size());
+        const auto entry_only_crc = crc32c::Crc32c(entry_record.data(), entry_record.size());
+        unsigned int size = 0;
+        REQUIRE(EVP_Digest(chain_record.data(), chain_record.size(), reinterpret_cast<unsigned char*>(chain.data()),
+                           &size, EVP_sha256(), nullptr) == 1);
+        REQUIRE(size == chain.size());
+        std::vector<unsigned char> crc_record = entry_record;
+        for (const auto b : chain) {
+            crc_record.push_back(std::to_integer<unsigned char>(b));
+        }
+        const auto entry_crc = crc32c::Crc32c(crc_record.data(), crc_record.size());
         const auto t = storage.begin_read_only();
         REQUIRE(t.has_value());
         const auto last = t->get_last_entry();
@@ -536,17 +574,17 @@ TEST_CASE("the entry CRC and the chain CRC of each kind follow the record format
         REQUIRE(last->has_value());
         CHECK(last->value().index == index);
         CHECK(last->value().entry_crc == entry_crc);
-        CHECK(last->value().chain_crc == chain);
-        CHECK(t->get_meta()->last_chain_crc == chain);
-        CHECK(konsens::compute_entry_crc(index, e) == entry_crc);
+        CHECK(last->value().chain == chain);
+        CHECK(t->get_meta()->last_chain_hash == chain);
+        CHECK(konsens::compute_entry_crc(index, e) == entry_only_crc);
         ++index;
     }
 }
 
 // Plan lmdb-only-source 2.3 item 1: after a cut, the chain continues from
 // the entry before the cut, so two logs with the same entries have the same
-// chain CRC whatever was cut before.
-TEST_CASE("the chain CRC after a cut is the chain CRC of the same log written at once")
+// chain hash whatever was cut before.
+TEST_CASE("the chain hash after a cut is the chain hash of the same log written at once")
 {
     const temporary_directory cut_dir;
     const temporary_directory once_dir;
@@ -937,14 +975,14 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     const std::array value{std::byte{3}};
     const konsens::session_record session{4, {std::byte{5}, std::byte{6}}};
     const auto applied_of = [](const konsens::meta_record& m) {
-        return std::tuple{m.applied_idx, m.applied_chain_crc};
+        return std::tuple{m.applied_idx, m.applied_chain_hash};
     };
     {
         const auto r = storage.begin_read_only();
         REQUIRE(r.has_value());
         const auto m = r->get_meta();
         REQUIRE(m.has_value());
-        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}});
+        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, konsens::chain_hash{}});
         CHECK(finds_no_value(r->find(key)));
         CHECK(r->find_session(7).value() == std::nullopt);
     }
@@ -952,13 +990,14 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     REQUIRE(w.has_value());
     REQUIRE(w->insert_or_assign(key, value));
     REQUIRE(w->insert_or_assign_session(7, session));
-    REQUIRE(w->set_applied(9, 10));
+    const konsens::chain_hash ten{std::byte{10}};
+    REQUIRE(w->set_applied(9, ten));
     {
         const auto r = storage.begin_read_only();
         REQUIRE(r.has_value());
         const auto m = r->get_meta();
         REQUIRE(m.has_value());
-        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, std::uint32_t{0}});
+        CHECK(applied_of(*m) == std::tuple{std::uint64_t{0}, konsens::chain_hash{}});
         CHECK(finds_no_value(r->find(key)));
     }
     REQUIRE(std::move(*w).commit());
@@ -966,7 +1005,7 @@ TEST_CASE("the storage gives back the state that a committed write wrote")
     REQUIRE(r.has_value());
     const auto m = r->get_meta();
     REQUIRE(m.has_value());
-    CHECK(applied_of(*m) == std::tuple{std::uint64_t{9}, std::uint32_t{10}});
+    CHECK(applied_of(*m) == std::tuple{std::uint64_t{9}, ten});
     const auto found = r->find(key);
     REQUIRE(found.has_value());
     REQUIRE(found->has_value());
@@ -1179,7 +1218,8 @@ TEST_CASE("the clean-stop mark survives a close, its deletion too, and a copy ha
     const temporary_directory dir;
     const temporary_directory copied;
     const konsens::clean_stop_mark mark{
-        3, 2, konsens::meta_record{konsens::ballot{2, 7, 0, 3}, konsens::ballot{2, 7, 0, 3}, 4, 5, 0xabcdef01, 4, 0x1234},
+        3, 2, konsens::meta_record{konsens::ballot{2, 7, 0, 3}, konsens::ballot{2, 7, 0, 3}, 4, 5,
+                             konsens::chain_hash{std::byte{0xab}, std::byte{0xcd}}, 4, konsens::chain_hash{std::byte{0x12}}},
         5,
     };
     {

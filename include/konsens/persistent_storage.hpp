@@ -40,8 +40,8 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
         get_entry_state(std::uint64_t index) const;
-        [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
-        get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
+        get_chain_hash(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
         [[nodiscard]] std::expected<std::optional<std::span<const std::byte>>, std::error_code>
         find(std::span<const std::byte> key) const;
@@ -95,8 +95,8 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<entry_state>, std::error_code>
         get_entry_state(std::uint64_t index) const;
-        [[nodiscard]] std::expected<std::optional<std::uint32_t>, std::error_code>
-        get_chain_crc(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
+        get_chain_hash(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;
 
         [[nodiscard]] std::expected<void, std::error_code> append_entries(std::span<const entry> entries);
@@ -117,7 +117,7 @@ public:
                                                                                     const session_record& record);
         [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
         [[nodiscard]] std::expected<void, std::error_code>
-        set_applied(std::uint64_t applied_idx, std::uint32_t applied_chain_crc);
+        set_applied(std::uint64_t applied_idx, const chain_hash& applied_chain_hash);
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();
         [[nodiscard]] bool has_writes() const;
         [[nodiscard]] std::expected<void, std::error_code> commit() &&;
@@ -168,6 +168,8 @@ struct fault_proof {
     ballot n;
     std::uint32_t crc;
     std::uint32_t other_crc;
+    chain_hash chain{};
+    chain_hash other_chain{};
 
     friend bool operator==(const fault_proof&, const fault_proof&) = default;
 };
