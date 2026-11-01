@@ -383,6 +383,12 @@ cleanly and keeps its vote. A node that ends without a clean stop
 (SIGKILL, a crash, a loss of power) starts retired: it answers 503 and
 takes no part in the cluster. The other two nodes serve the clients.
 
+A node that repairs its store answers 503 during the repair. A SIGTERM
+during the repair waits for its end, and the node then stops cleanly.
+The repair ends when a peer answers. A SIGKILL before that ends the
+node without a clean stop. A repair that waits for the operator does
+not hold the stop: the node ends at once, without a clean stop.
+
 ### Clients
 
 Any node takes any call. A follower sends a write to the leader.

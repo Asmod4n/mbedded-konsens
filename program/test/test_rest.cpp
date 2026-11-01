@@ -137,6 +137,7 @@ TEST_CASE("problem_of gives the status of each client error")
     CHECK(of(client_errc::building) == problem{503, "the node cannot take the call now", true});
     CHECK(of(client_errc::reconfiguring) == problem{503, "the node cannot take the call now", true});
     CHECK(of(client_errc::retired) == problem{503, "the node cannot take the call now", true});
+    CHECK(of(client_errc::repairing) == problem{503, "the node cannot take the call now", true});
     CHECK(of(client_errc::rejected) == problem{409, "the cluster rejected the write", false});
     CHECK(of(client_errc::stopped) == problem{503, "the node stopped; the outcome of the write is unknown", false});
     CHECK(of(client_errc::session_expired).status == 500);

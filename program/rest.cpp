@@ -119,7 +119,7 @@ problem problem_of(const std::error_code& e)
 {
     using konsens::client_errc;
     if (e == client_errc::retry || e == client_errc::building || e == client_errc::reconfiguring ||
-        e == client_errc::retired) {
+        e == client_errc::retired || e == client_errc::repairing) {
         return {status_service_unavailable, "the node cannot take the call now", true};
     }
     if (e == client_errc::rejected) {

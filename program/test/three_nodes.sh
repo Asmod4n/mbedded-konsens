@@ -70,9 +70,19 @@ released() {
     return 1
 }
 
+# A node that does not end within its bound gets SIGKILL, so a hung node
+# fails the test and does not hang it.
+ends_within() {
+    local pid=$1 seconds=$2
+    timeout "$seconds" tail --pid="$pid" -f /dev/null && return 0
+    kill -KILL "$pid"
+    return 1
+}
+
 stop() {
     local p=$1 status
     kill -TERM "${pids[$p]}"
+    ends_within "${pids[$p]}" 30
     wait "${pids[$p]}"
     status=$?
     unset "pids[$p]"
@@ -156,6 +166,9 @@ end() {
     local p
     for p in "${!pids[@]}"; do
         kill -TERM "${pids[$p]}"
+    done
+    for p in "${!pids[@]}"; do
+        ends_within "${pids[$p]}" 30 || failed=1
     done
     wait
     if [ "$failed" != 0 ]; then
@@ -260,6 +273,49 @@ check "the data is there after a stop of all" holds_soon 3 a one
 check "node 3 stops cleanly" stop 3
 start 3 --first-start
 check "--first-start after a clean stop serves a write" put_until_stored 3 after-flag yes
+
+# A SIGTERM during a repair waits for the end of the repair, and the node
+# then stops cleanly. Without that wait the stop ends the node as a crash,
+# and the next start retires it. The changed byte is the first byte of the
+# encoded entry, so the CRC of the record fails; a changed byte in the
+# tail is repaired at the start and opens no repair. Node 2 starts alone,
+# so no peer answers its repair until nodes 1 and 3 start.
+for p in 1 2 3; do
+    check "node $p stops cleanly" stop "$p"
+done
+sqlite3 "$dir/data2/log/konsens.db" "UPDATE log SET record = unhex(
+    CASE substr(hex(record), 1, 2) WHEN 'FF' THEN 'FE' ELSE 'FF' END || substr(hex(record), 3))
+    WHERE idx = (SELECT min(idx) FROM log)"
+check "the changed record is a BLOB" test "$(sqlite3 -readonly "$dir/data2/log/konsens.db" \
+    "SELECT typeof(record) FROM log WHERE idx = (SELECT min(idx) FROM log)")" = blob
+start 2
+grep_soon() {
+    local i
+    for i in $(seq 50); do
+        grep -q "$1" "$2" && return 0
+        sleep 0.2
+    done
+    return 1
+}
+check "node 2 repairs its store" grep_soon "node 2 repairs its store" "$dir/log2"
+check "node 2 did not start retired" test -z "$(grep "started.*retired" "$dir/log2")"
+check "a read at node 2 during the repair answers 503" test "$(get 2 a)" = 503
+kill -TERM "${pids[2]}"
+sleep 1
+check "node 2 still runs one second after SIGTERM" alive 2
+check "node 2 says that it stops after its repair" grep -q "node 2 stops cleanly after its repair" "$dir/log2"
+start 1
+start 3
+check "node 2 ends within 30 s after its peers start" ends_within "${pids[2]}" 30
+wait "${pids[2]}"
+check "node 2 exits with 0" test $? = 0
+unset "pids[2]"
+check "node 2 ended its repair" grep -q "node 2 ended its repair" "$dir/log2"
+check "node 2 stopped cleanly" test "$(tail -1 "$dir/log2")" = "konsensd: node 2 stopped cleanly"
+check "the addresses of node 2 are released" released 2
+start 2
+check "node 2 serves a write after its repair" put_until_stored 2 after-repair yes
+check "node 1 reads it" holds_soon 1 after-repair yes
 
 # SIGKILL retires a node. --first-start on its store ends with an error,
 # because the store holds a promise. Without the flag the node starts

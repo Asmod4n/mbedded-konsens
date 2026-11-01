@@ -141,6 +141,8 @@ struct loop {
     buffer_ring peer_buffers;
     buffer_ring client_buffers;
     std::vector<std::uint64_t> waiting_for_buffers;
+    bool last_repairs{};
+    bool stop_waits_for_the_repair{};
 };
 
 std::uint64_t user_data_of(const op o, const std::uint64_t id)
@@ -582,6 +584,23 @@ void log_a_change_of_state(loop& l)
         std::println(std::cerr, "konsensd: node {} is {} in {}", l.c.pid, name_of(now.first), name_of(now.second));
         l.last_state = now;
     }
+    const bool repairs = l.node.get_sequence_paxos().repairs();
+    if (repairs != l.last_repairs) {
+        std::println(std::cerr, "konsensd: node {} {}", l.c.pid, repairs ? "repairs its store" : "ended its repair");
+        l.last_repairs = repairs;
+    }
+}
+
+bool the_repair_holds_the_stop(loop& l)
+{
+    if (!l.node.get_sequence_paxos().repairs() || l.node.waits_for_the_operator()) {
+        return false;
+    }
+    if (!l.stop_waits_for_the_repair) {
+        std::println(std::cerr, "konsensd: node {} stops cleanly after its repair", l.c.pid);
+        l.stop_waits_for_the_repair = true;
+    }
+    return true;
 }
 
 void arm_the_sends(loop& l);
@@ -858,6 +877,11 @@ int stopped(loop& l)
         std::println(std::cerr, "konsensd: node {} has an error of its store and ends without a clean stop", l.c.pid);
         return exit_failed;
     }
+    if (l.node.get_sequence_paxos().repairs()) [[unlikely]] {
+        std::println(std::cerr, "konsensd: node {} waits for the operator to repair it and ends without a clean stop",
+                     l.c.pid);
+        return exit_failed;
+    }
     l.node.stop();
     static_cast<void>(l.node.take_client_replies());
     std::println(std::cerr, "konsensd: node {} stopped cleanly", l.c.pid);
@@ -934,7 +958,7 @@ int serve(const config& c, const start_options options)
     arm_signal(l);
     const auto tick = std::chrono::milliseconds{c.tick_milliseconds};
     auto next_tick = clock::now();
-    while (!l.stop_requested) {
+    while (!l.stop_requested || the_repair_holds_the_stop(l)) {
         const auto wait = l.step ? clock::duration::zero() : std::max(clock::duration::zero(), next_tick - clock::now());
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count();
         __kernel_timespec ts{ns / 1'000'000'000, ns % 1'000'000'000};
