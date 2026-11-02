@@ -2,6 +2,7 @@
 #include <system_error>
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "listener.hpp"
@@ -25,6 +26,8 @@ std::string_view reason_of(const listener_errc e)
         return "the path names a file that is not a socket";
     case listener_errc::no_listener:
         return "the bind or the listen fails";
+    case listener_errc::not_private:
+        return "the path is no directory of this user with the mode 0700";
     }
     return "unknown";
 }
@@ -53,6 +56,24 @@ std::expected<void, listener_errc> remove_a_stale_socket_file(const std::filesys
     }
     if (!std::filesystem::remove(file, e)) [[unlikely]] {
         return std::unexpected(listener_errc::no_listener);
+    }
+    return {};
+}
+
+std::expected<void, listener_errc> make_a_private_directory(const std::filesystem::path& directory)
+{
+    std::error_code e;
+    if (std::filesystem::create_directory(directory, e)) {
+        std::filesystem::permissions(directory, std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace, e);
+    }
+    if (e) [[unlikely]] {
+        return std::unexpected(listener_errc::not_private);
+    }
+    struct stat s{};
+    if (::lstat(directory.c_str(), &s) != 0 || !S_ISDIR(s.st_mode) || s.st_uid != ::geteuid() ||
+        (s.st_mode & ALLPERMS) != S_IRWXU) [[unlikely]] {
+        return std::unexpected(listener_errc::not_private);
     }
     return {};
 }

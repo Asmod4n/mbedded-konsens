@@ -75,3 +75,26 @@ No result of the write has a majority. The write changed nothing.
 
 The node stopped before the write was decided. The write may still be
 decided.
+
+## not-waiting-for-the-operator
+
+- Type: `https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#not-waiting-for-the-operator`
+- Title: The node does not wait for the operator
+- Status: 409
+
+The answer of `POST /repair/allow-one-more` on the control socket. The
+node does not wait for the operator in a repair, so the call changed
+nothing. A node that votes, a node that repairs already and a node
+without its meta record give this answer.
+
+## repair-does-not-start
+
+- Type: `https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#repair-does-not-start`
+- Title: The repair does not start
+- Status: 500
+
+The answer of `POST /repair/allow-one-more` on the control socket. The
+operator allowed the repair, but the store of the node is not
+consistent, and the repair does not start. The node takes no part in
+the cluster. A stop ends it without a clean stop, so it is retired at
+its next start. Replace the node.

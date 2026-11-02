@@ -19,12 +19,15 @@ enum class listener_errc : std::uint8_t {
     in_use,
     not_a_socket,
     no_listener,
+    not_private,
 };
 
 [[nodiscard]] std::string_view reason_of(listener_errc e);
 
 [[nodiscard]] std::expected<void, listener_errc> remove_a_stale_socket_file(const std::filesystem::path& file,
                                                                             const socket_address& address);
+
+[[nodiscard]] std::expected<void, listener_errc> make_a_private_directory(const std::filesystem::path& directory);
 
 [[nodiscard]] std::expected<listener, listener_errc> listener_on(std::string_view address);
 

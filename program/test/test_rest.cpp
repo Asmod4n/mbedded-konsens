@@ -12,7 +12,9 @@
 namespace {
 
 using konsensd::problem;
+using konsensd::control_request;
 using konsensd::rest_method;
+using konsensd::take_control_request;
 using konsensd::take_request;
 
 constexpr std::uint64_t max_body = 16;
@@ -28,6 +30,13 @@ std::uint16_t status_of(const std::string_view request)
     const auto r = take_request(request, max_body);
     REQUIRE(!r);
     return r.error().status;
+}
+
+problem control_problem_of(const std::string_view request)
+{
+    const auto r = take_control_request(request);
+    REQUIRE(!r);
+    return r.error();
 }
 
 }
@@ -180,7 +189,67 @@ TEST_CASE("response_of and problem_response_of write HTTP/1.1")
     CHECK(konsensd::problem_response_of({503, "d", true}, false) ==
           "HTTP/1.1 503 Service Unavailable\r\nContent-Length: " + std::to_string(body.size()) +
               "\r\nContent-Type: application/problem+json\r\nRetry-After: 1\r\n\r\n" + body);
-    CHECK(konsensd::problem_response_of({405, "", false}, true).contains("Allow: GET, PUT, DELETE\r\n"));
+    CHECK(status_of("POST /kv/a HTTP/1.1\r\n\r\n") == 405);
+    CHECK(konsensd::problem_response_of(take_request("POST /kv/a HTTP/1.1\r\n\r\n", max_body).error(), true)
+              .contains("Allow: GET, PUT, DELETE\r\n"));
+    CHECK(!konsensd::problem_response_of({503, "d", true}, false).contains("Allow:"));
     CHECK(konsensd::problem_response_of({503, "d", true, "https://example.org/t", "T"}, false)
               .ends_with(R"({"type":"https://example.org/t","title":"T","status":503,"detail":"d"})"));
+}
+
+// The operator allows one more repair with this request, as curl sends
+// it (plan of the control socket, 3.3).
+TEST_CASE("take_control_request reads POST /repair/allow-one-more")
+{
+    const std::string_view request = "POST /repair/allow-one-more HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n";
+    const auto r = take_control_request(request);
+    REQUIRE(r);
+    REQUIRE(*r);
+    CHECK(**r == control_request{request.size(), false});
+    const std::string_view closing = "POST /repair/allow-one-more HTTP/1.1\r\nConnection: close\r\n\r\n";
+    CHECK(take_control_request(closing)->value().closes);
+    const std::string_view empty_body = "POST /repair/allow-one-more HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
+    CHECK(take_control_request(empty_body)->value().bytes == empty_body.size());
+}
+
+// A request that is not whole waits for more bytes, and a second request
+// on the connection stays for the next call.
+TEST_CASE("take_control_request waits for the whole request and takes only its bytes")
+{
+    const std::string first = "POST /repair/allow-one-more HTTP/1.1\r\n\r\n";
+    const auto part = take_control_request(std::string_view{first}.substr(0, first.size() - 1));
+    REQUIRE(part);
+    CHECK(!*part);
+    const auto r = take_control_request(first + first);
+    REQUIRE(r);
+    REQUIRE(*r);
+    CHECK((*r)->bytes == first.size());
+}
+
+// The control socket knows one target and one method. RFC 9110 15.5.6:
+// a 405 carries the methods that the target takes.
+TEST_CASE("take_control_request refuses another target, another method and a body")
+{
+    CHECK(control_problem_of("POST /repair HTTP/1.1\r\n\r\n").status == 404);
+    CHECK(control_problem_of("POST /kv/a HTTP/1.1\r\n\r\n").status == 404);
+    CHECK(control_problem_of("POST /repair/allow-one-more?x=1 HTTP/1.1\r\n\r\n").status == 404);
+    const auto get = control_problem_of("GET /repair/allow-one-more HTTP/1.1\r\n\r\n");
+    CHECK(get.status == 405);
+    CHECK(konsensd::problem_response_of(get, true).contains("Allow: POST\r\n"));
+    CHECK(control_problem_of("PUT /repair/allow-one-more HTTP/1.1\r\nContent-Length: 0\r\n\r\n").status == 405);
+    CHECK(control_problem_of("POST /repair/allow-one-more HTTP/1.1\r\nContent-Length: 1\r\n\r\nx").status == 413);
+    CHECK(control_problem_of("POST /repair/allow-one-more HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").status ==
+          501);
+    CHECK(control_problem_of("POST /repair/allow-one-more HTTP/2.0\r\n\r\n").status == 505);
+}
+
+// The two problems of the control socket have their types in
+// doc/problems.md.
+TEST_CASE("the problems of the control socket have their types")
+{
+    const std::string base = "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#";
+    CHECK(konsensd::not_waiting_for_the_operator.status == 409);
+    CHECK(konsensd::not_waiting_for_the_operator.type == base + "not-waiting-for-the-operator");
+    CHECK(konsensd::repair_does_not_start.status == 500);
+    CHECK(konsensd::repair_does_not_start.type == base + "repair-does-not-start");
 }

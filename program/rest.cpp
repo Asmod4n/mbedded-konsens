@@ -15,11 +15,9 @@ namespace {
 
 constexpr std::uint16_t status_bad_request = 400;
 constexpr std::uint16_t status_method_not_allowed = 405;
-constexpr std::uint16_t status_conflict = 409;
 constexpr std::uint16_t status_length_required = 411;
 constexpr std::uint16_t status_content_too_large = 413;
 constexpr std::uint16_t status_request_header_fields_too_large = 431;
-constexpr std::uint16_t status_internal_server_error = 500;
 constexpr std::uint16_t status_not_implemented = 501;
 constexpr std::uint16_t status_service_unavailable = 503;
 constexpr std::uint16_t status_http_version_not_supported = 505;
@@ -42,9 +40,17 @@ constexpr std::string_view problem_type_stopped =
 constexpr std::string_view http_1_1 = "HTTP/1.1";
 constexpr std::string_view http_1_0 = "HTTP/1.0";
 
+constexpr std::string_view allow_of_a_key = "GET, PUT, DELETE";
+constexpr std::string_view allow_of_the_repair = "POST";
+
 std::unexpected<problem> refused(const std::uint16_t status, const std::string_view detail)
 {
     return std::unexpected(problem{status, detail, false});
+}
+
+std::unexpected<problem> refused_method(const std::string_view detail, const std::string_view allow)
+{
+    return std::unexpected(problem{status_method_not_allowed, detail, false, {}, {}, allow});
 }
 
 std::optional<rest_method> rest_method_of(const http::Method m)
@@ -75,10 +81,13 @@ bool asks_to_close(const http1::Request& r)
     return http::equal_ignoring_case(http1::field_value_of(r, "Connection"), "close");
 }
 
-}
+struct request_head {
+    http1::Request request;
+    std::optional<std::uint64_t> content_length;
+};
 
-std::expected<std::optional<rest_request>, problem> take_request(const std::string_view bytes,
-                                                                 const std::uint64_t max_body_bytes)
+std::expected<std::optional<request_head>, problem> head_of(const std::string_view bytes,
+                                                           const std::uint64_t max_body_bytes)
 {
     const auto r = http1::parse_request(bytes);
     if (!r) [[unlikely]] {
@@ -97,37 +106,74 @@ std::expected<std::optional<rest_request>, problem> take_request(const std::stri
     if (!http1::field_value_of(*r, "Transfer-Encoding").empty()) [[unlikely]] {
         return refused(status_not_implemented, "a body comes with Content-Length only");
     }
-    const auto method = rest_method_of(line.method);
-    if (!method) [[unlikely]] {
-        return refused(status_method_not_allowed, "a key takes GET, PUT and DELETE");
-    }
-    const std::string_view target = line.request_target;
-    if (!target.starts_with(key_value_path) || target.size() == key_value_path.size() ||
-        target.find_first_of("/?#", key_value_path.size()) != std::string_view::npos) [[unlikely]] {
-        return refused(status_not_found, "the path is /kv/ and one percent-encoded key");
-    }
-    const auto key = http::percent_decode(target.substr(key_value_path.size()));
-    if (!key) [[unlikely]] {
-        return refused(status_bad_request, "the key is not percent-encoded");
-    }
-    std::uint64_t length = 0;
+    std::optional<std::uint64_t> length;
     if (const auto field = http1::field_value_of(*r, "Content-Length"); !field.empty()) {
         const auto parsed = http::parse_content_length(field);
         if (!parsed) [[unlikely]] {
             return refused(status_bad_request, "the Content-Length does not parse");
         }
         length = *parsed;
-    } else if (*method == rest_method::put) [[unlikely]] {
-        return refused(status_length_required, "a PUT needs Content-Length");
     }
-    if (length > max_body_bytes) [[unlikely]] {
+    if (length.value_or(0) > max_body_bytes) [[unlikely]] {
         return refused(status_content_too_large, "the body is too large");
     }
-    if (bytes.size() - r->bytes < length) {
+    if (bytes.size() - r->bytes < length.value_or(0)) {
         return std::nullopt;
     }
-    return rest_request{*method, bytes_of(*key), bytes_of(bytes.substr(r->bytes, length)), r->bytes + length,
-                        asks_to_close(*r)};
+    return request_head{*r, length};
+}
+
+}
+
+std::expected<std::optional<rest_request>, problem> take_request(const std::string_view bytes,
+                                                                 const std::uint64_t max_body_bytes)
+{
+    const auto h = head_of(bytes, max_body_bytes);
+    if (!h) [[unlikely]] {
+        return std::unexpected(h.error());
+    }
+    if (!*h) {
+        return std::nullopt;
+    }
+    const auto& r = (*h)->request;
+    const std::string_view target = r.request_line.request_target;
+    if (!target.starts_with(key_value_path) || target.size() == key_value_path.size() ||
+        target.find_first_of("/?#", key_value_path.size()) != std::string_view::npos) [[unlikely]] {
+        return refused(status_not_found, "the path is /kv/ and one percent-encoded key");
+    }
+    const auto method = rest_method_of(r.request_line.method);
+    if (!method) [[unlikely]] {
+        return refused_method("a key takes GET, PUT and DELETE", allow_of_a_key);
+    }
+    const auto key = http::percent_decode(target.substr(key_value_path.size()));
+    if (!key) [[unlikely]] {
+        return refused(status_bad_request, "the key is not percent-encoded");
+    }
+    if (*method == rest_method::put && !(*h)->content_length) [[unlikely]] {
+        return refused(status_length_required, "a PUT needs Content-Length");
+    }
+    const auto length = (*h)->content_length.value_or(0);
+    return rest_request{*method, bytes_of(*key), bytes_of(bytes.substr(r.bytes, length)), r.bytes + length,
+                        asks_to_close(r)};
+}
+
+std::expected<std::optional<control_request>, problem> take_control_request(const std::string_view bytes)
+{
+    const auto h = head_of(bytes, max_control_body_bytes);
+    if (!h) [[unlikely]] {
+        return std::unexpected(h.error());
+    }
+    if (!*h) {
+        return std::nullopt;
+    }
+    const auto& r = (*h)->request;
+    if (r.request_line.request_target != allow_one_more_repair_path) [[unlikely]] {
+        return refused(status_not_found, "the control socket serves /repair/allow-one-more");
+    }
+    if (r.request_line.method != http::Method::kPost) [[unlikely]] {
+        return refused_method("/repair/allow-one-more takes POST", allow_of_the_repair);
+    }
+    return control_request{r.bytes, asks_to_close(r)};
 }
 
 problem problem_of(const std::error_code& e)
@@ -196,8 +242,8 @@ std::string problem_response_of(const problem& p, const bool closes)
     if (p.retry_after) {
         out += std::format("Retry-After: {}\r\n", retry_after_seconds);
     }
-    if (p.status == status_method_not_allowed) {
-        out += "Allow: GET, PUT, DELETE\r\n";
+    if (!p.allow.empty()) {
+        out += std::format("Allow: {}\r\n", p.allow);
     }
     if (closes) {
         out += "Connection: close\r\n";

@@ -6,6 +6,7 @@
 #include <string>
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "address.hpp"
@@ -117,7 +118,75 @@ TEST_CASE("a listener on an address that does not resolve")
 TEST_CASE("each error of a listener has a reason")
 {
     for (const auto e : {listener_errc::does_not_resolve, listener_errc::in_use, listener_errc::not_a_socket,
-                         listener_errc::no_listener}) {
+                         listener_errc::no_listener, listener_errc::not_private}) {
         CHECK(konsensd::reason_of(e) != "unknown");
     }
+}
+
+namespace {
+
+mode_t mode_of(const std::filesystem::path& p)
+{
+    struct stat s{};
+    ::lstat(p.c_str(), &s);
+    return s.st_mode & ALLPERMS;
+}
+
+}
+
+// The control socket lies in this directory. Only the user of konsensd
+// may open it, whatever the umask is.
+TEST_CASE("make_a_private_directory makes a directory with the mode 0700")
+{
+    make_the_test_directory();
+    const auto old = ::umask(0);
+    const auto r = konsensd::make_a_private_directory(test_directory / "control");
+    ::umask(old);
+    REQUIRE(r);
+    CHECK(std::filesystem::is_directory(test_directory / "control"));
+    CHECK(mode_of(test_directory / "control") == S_IRWXU);
+}
+
+// A restart finds the directory of the last run, and keeps it.
+TEST_CASE("make_a_private_directory takes a directory that has the mode 0700")
+{
+    make_the_test_directory();
+    REQUIRE(konsensd::make_a_private_directory(test_directory / "control"));
+    CHECK(konsensd::make_a_private_directory(test_directory / "control"));
+}
+
+// konsensd does not change the permissions that the operator set. A
+// directory that other users can open stops the start.
+TEST_CASE("make_a_private_directory refuses a directory with the mode 0755")
+{
+    make_the_test_directory();
+    std::filesystem::create_directory(test_directory / "control");
+    std::filesystem::permissions(test_directory / "control", std::filesystem::perms{0755});
+    const auto r = konsensd::make_a_private_directory(test_directory / "control");
+    REQUIRE(!r);
+    CHECK(r.error() == listener_errc::not_private);
+    CHECK(mode_of(test_directory / "control") == 0755);
+}
+
+// A symbolic link can point at a directory that another user controls,
+// even when its target has the mode 0700.
+TEST_CASE("make_a_private_directory refuses a symbolic link to a directory with the mode 0700")
+{
+    make_the_test_directory();
+    std::filesystem::create_directory(test_directory / "target");
+    std::filesystem::permissions(test_directory / "target", std::filesystem::perms::owner_all);
+    std::filesystem::create_directory_symlink("target", test_directory / "control");
+    const auto r = konsensd::make_a_private_directory(test_directory / "control");
+    REQUIRE(!r);
+    CHECK(r.error() == listener_errc::not_private);
+}
+
+// A regular file in the place of the directory stops the start.
+TEST_CASE("make_a_private_directory refuses a regular file")
+{
+    make_the_test_directory();
+    std::ofstream{test_directory / "control"} << "data";
+    const auto r = konsensd::make_a_private_directory(test_directory / "control");
+    REQUIRE(!r);
+    CHECK(r.error() == listener_errc::not_private);
 }

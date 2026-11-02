@@ -4,12 +4,15 @@
 # the frames, HTTP and the sessions work together. The third argument
 # names the form of the addresses: tcp (the default) or unix. The unix
 # form also shows that a restart after a clean stop and after SIGKILL
-# binds the socket file again.
+# binds the socket file again. The fourth argument sync sets
+# sync_by_the_caller, so that the test also runs the path on which the
+# node holds its messages until the sync of the caller.
 set -u
 
 konsensd=$1
 base=${2:-17150}
 form=${3:-tcp}
+sync=${4:-}
 dir=$(mktemp -d)
 failed=0
 declare -A pids
@@ -33,6 +36,7 @@ write_config() {
         printf 'pid = %s\ndata_directory = "%s/data%s"\n' "$p" "$dir" "$p"
         printf 'peer_address = "%s"\n' "$(peer_address "$p")"
         printf 'client_address = "%s"\n' "$(client_address "$p")"
+        [ "$sync" = sync ] && printf 'sync_by_the_caller = true\n'
         for q in 1 2 3; do
             [ "$q" = "$p" ] && continue
             printf '\n[[peers]]\npid = %s\naddress = "%s"\n' "$q" "$(peer_address "$q")"
@@ -317,6 +321,53 @@ start 2
 check "node 2 serves a write after its repair" put_until_stored 2 after-repair yes
 check "node 1 reads it" holds_soon 1 after-repair yes
 
+# The operator allows one more repair on the control socket of a node
+# (plan of the control socket). A node that votes does not wait for the
+# operator, so the call changes nothing there and the node lives.
+control() {
+    status_of --unix-socket "$dir/data$1/control/control.sock" -X POST http://localhost/repair/allow-one-more
+}
+count_soon() {
+    local i
+    for i in $(seq 50); do
+        [ "$(grep -c "$2" "$3")" = "$1" ] && return 0
+        sleep 0.2
+    done
+    return 1
+}
+check "the control directory has the mode 0700" test "$(stat -c %a "$dir/data1/control")" = 700
+check "a POST at node 1, which votes, answers 409" test "$(control 1)" = 409
+check "the 409 names its problem type" grep -q "not-waiting-for-the-operator" "$dir/body"
+check "node 1 lives after the POST" alive 1
+
+# The first repair used the one repair that runs by itself, so a second
+# damage of node 2 waits for the operator. Without the POST, node 2
+# waits for ever, and a stop retires it.
+check "node 2 stops cleanly before the second damage" stop 2
+sqlite3 "$dir/data2/log/konsens.db" "UPDATE log SET record = unhex(
+    CASE substr(hex(record), 1, 2) WHEN 'FF' THEN 'FE' ELSE 'FF' END || substr(hex(record), 3))
+    WHERE idx = (SELECT min(idx) FROM log)"
+start 2
+check "node 2 waits for the operator" grep_soon "node 2 waits for the operator;" "$dir/log2"
+check "a read at node 2 that waits answers 503" test "$(get 2 a)" = 503
+check "a POST at node 2 answers 204" test "$(control 2)" = 204
+check "a second POST at node 2 answers 409" test "$(control 2)" = 409
+check "node 2 ends its second repair" count_soon 2 "node 2 ended its repair" "$dir/log2"
+check "node 2 says once that it waits for the operator" test "$(grep -c "waits for the operator;" "$dir/log2")" = 1
+check "node 2 serves a write after its second repair" put_until_stored 2 after-second-repair yes
+check "node 1 reads the write after the second repair" holds_soon 1 after-second-repair yes
+
+# Other users must not open the control socket. konsensd does not change
+# the mode that the operator set; it refuses to start.
+check "node 2 stops cleanly before the change of the mode" stop 2
+chmod 0755 "$dir/data2/control"
+"$konsensd" --config "$dir/node2.toml" 2>> "$dir/log2"
+check "a control directory with the mode 0755 stops the start" test $? != 0
+check "the log names the control directory" grep -q "no control directory" "$dir/log2"
+chmod 0700 "$dir/data2/control"
+start 2
+check "node 2 serves a write after the mode is 0700 again" put_until_stored 2 after-mode yes
+
 # SIGKILL retires a node. --first-start on its store ends with an error,
 # because the store holds a promise. Without the flag the node starts
 # retired: it answers 503, and the other two serve.
@@ -332,6 +383,18 @@ check "the retired node answers 503" test "$(get 3 a)" = 503
 check "the other two serve a write" put_until_stored 1 after-kill yes
 check "the other two serve a read" holds_soon 2 after-kill yes
 check "the retired node exits with 0" stop 3
+
+# A store without its meta record makes the node wait for the operator
+# with no repair. A POST there is no call that allow_one_more_repair
+# takes, so konsensd answers 409 and lives.
+sqlite3 "$dir/data3/log/konsens.db" "DELETE FROM meta WHERE name = 'meta'"
+start 3
+check "a POST at a node without its meta record answers 409" test "$(control 3)" = 409
+check "the node without its meta record lives" alive 3
+kill -TERM "${pids[3]}"
+check "the node without its meta record ends after SIGTERM" ends_within "${pids[3]}" 30
+wait "${pids[3]}"
+unset "pids[3]"
 
 # A build with AddressSanitizer writes its report to the log of the node.
 check "no log holds a report of AddressSanitizer" test -z "$(grep -l AddressSanitizer "$dir"/log*)"

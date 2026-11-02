@@ -330,6 +330,33 @@ on which nothing accepts. A socket file on which a process accepts, or a
 file that is not a socket, stops the start. A clean stop removes the
 socket file.
 
+### The control socket
+
+The node accepts the commands of the operator on the Unix socket
+`<data_directory>/control/control.sock`. The node makes the directory
+`control` with the mode 0700. A directory `control` of another user,
+with another mode, or a symbolic link stops the start. The data
+directory belongs to the user of konsensd, and no other user writes to
+it. The path of the socket has at most 107 bytes.
+
+The node repairs a damage of its log once by itself. At a further
+damage, it stops voting and writes to its log:
+
+```
+konsensd: node 2 waits for the operator; POST /repair/allow-one-more on /var/lib/konsensd/control/control.sock allows one more repair
+```
+
+The operator allows one more repair:
+
+```sh
+curl --unix-socket /var/lib/konsensd/control/control.sock -X POST http://localhost/repair/allow-one-more
+```
+
+The answer is 204 when the repair starts, and 409 when the node does
+not wait for the operator. [doc/problems.md](doc/problems.md) states
+each answer. A stop of a node that waits for the operator retires the
+node.
+
 The default seccomp profile of podman refuses io_uring, and konsensd
 then runs on the engine of slipstreamIO. Write a profile that adds the
 three io_uring system calls to the default of podman, on each machine:

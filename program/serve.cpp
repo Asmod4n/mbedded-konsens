@@ -5,6 +5,7 @@
 #include <csignal>
 #include <deque>
 #include <filesystem>
+#include <format>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -60,6 +61,8 @@ enum class op : std::uint8_t {
     send,
     signal,
     sync,
+    accept_control,
+    receive_control,
 };
 
 struct buffer_ring_shape {
@@ -83,6 +86,7 @@ enum class link : std::uint8_t {
     outgoing_peer,
     incoming_peer,
     client,
+    control,
 };
 
 enum class awaited : std::uint8_t {
@@ -115,6 +119,7 @@ struct connection {
     std::optional<std::uint64_t> session;
     std::uint64_t request_number;
     bool closes_after_the_send;
+    std::optional<control_request> control;
 };
 
 struct loop {
@@ -143,6 +148,11 @@ struct loop {
     std::vector<std::uint64_t> waiting_for_buffers;
     bool last_repairs{};
     bool stop_waits_for_the_repair{};
+    int control_listener{-1};
+    std::filesystem::path control_socket{};
+    std::vector<std::uint64_t> control_calls{};
+    bool last_waits_in_a_repair{};
+    bool the_repair_failed{};
 };
 
 std::uint64_t user_data_of(const op o, const std::uint64_t id)
@@ -190,20 +200,34 @@ void arm_accept(loop& l, const int listener, const op o)
     io_uring_sqe_set_data64(s, user_data_of(o, 0));
 }
 
+op receive_op_of(const link kind)
+{
+    switch (kind) {
+    case link::client:
+        return op::receive_client;
+    case link::control:
+        return op::receive_control;
+    case link::outgoing_peer:
+    case link::incoming_peer:
+        break;
+    }
+    return op::receive_peer;
+}
+
 void arm_receive(loop& l, const std::uint64_t id, connection& c)
 {
     io_uring_sqe* s = sqe_of(l);
-    const bool client = c.kind == link::client;
+    const op o = receive_op_of(c.kind);
     io_uring_prep_recv_multishot(s, c.fd, nullptr, 0, 0);
     io_uring_sqe_set_flags(s, IOSQE_BUFFER_SELECT);
-    io_uring_sqe_set_buf_group(s, client ? client_buffer_shape.group : peer_buffer_shape.group);
-    io_uring_sqe_set_data64(s, user_data_of(client ? op::receive_client : op::receive_peer, id));
+    io_uring_sqe_set_buf_group(s, o == op::receive_peer ? peer_buffer_shape.group : client_buffer_shape.group);
+    io_uring_sqe_set_data64(s, user_data_of(o, id));
     c.pending += 1;
 }
 
 buffer_ring& buffers_of(loop& l, const op o)
 {
-    if (o == op::receive_client) {
+    if (o == op::receive_client || o == op::receive_control) {
         return l.client_buffers;
     }
     if (o != op::receive_peer) [[unlikely]] {
@@ -359,6 +383,7 @@ void answer(loop& l, const std::uint64_t id, connection& c, std::string response
 {
     queue_on(c, std::move(response));
     c.call.reset();
+    c.control.reset();
     c.waits_for = awaited::nothing;
     if (closes) {
         c.closes_after_the_send = true;
@@ -411,9 +436,29 @@ void start_the_call(loop& l, const std::uint64_t id, connection& c)
     c.waits_for = awaited::registration;
 }
 
+void take_the_control_request_of(loop& l, const std::uint64_t id, connection& c)
+{
+    auto r = take_control_request(c.http_in);
+    if (!r) [[unlikely]] {
+        c.http_in.clear();
+        answer(l, id, c, problem_response_of(r.error(), true), true);
+        return;
+    }
+    if (!*r) {
+        return;
+    }
+    c.http_in.erase(0, (*r)->bytes);
+    c.control = **r;
+    l.control_calls.push_back(id);
+}
+
 void take_the_requests_of(loop& l, const std::uint64_t id, connection& c)
 {
-    if (c.call || c.closes_after_the_send || c.closing) {
+    if (c.call || c.control || c.closes_after_the_send || c.closing) {
+        return;
+    }
+    if (c.kind == link::control) {
+        take_the_control_request_of(l, id, c);
         return;
     }
     auto r = take_request(c.http_in, l.c.max_body_bytes);
@@ -577,6 +622,11 @@ void release_the_output_before_the_sync(loop& l, std::vector<konsens::client_rep
     }
 }
 
+bool waits_in_a_repair(loop& l)
+{
+    return l.node.get_sequence_paxos().repairs() && l.node.waits_for_the_operator();
+}
+
 void log_a_change_of_state(loop& l)
 {
     const auto now = l.node.get_sequence_paxos().get_state();
@@ -589,11 +639,19 @@ void log_a_change_of_state(loop& l)
         std::println(std::cerr, "konsensd: node {} {}", l.c.pid, repairs ? "repairs its store" : "ended its repair");
         l.last_repairs = repairs;
     }
+    const bool waits = waits_in_a_repair(l);
+    if (waits != l.last_waits_in_a_repair) {
+        if (waits) {
+            std::println(std::cerr, "konsensd: node {} waits for the operator; POST {} on {} allows one more repair",
+                         l.c.pid, allow_one_more_repair_path, l.control_socket.string());
+        }
+        l.last_waits_in_a_repair = waits;
+    }
 }
 
 bool the_repair_holds_the_stop(loop& l)
 {
-    if (!l.node.get_sequence_paxos().repairs() || l.node.waits_for_the_operator()) {
+    if (!l.node.get_sequence_paxos().repairs() || l.node.waits_for_the_operator() || l.the_repair_failed) {
         return false;
     }
     if (!l.stop_waits_for_the_repair) {
@@ -632,6 +690,42 @@ void commit_the_step(loop& l)
             if (const auto it = l.connections.find(id); it != l.connections.end() && !it->second->closes_after_the_send) {
                 take_the_requests_of(l, id, *it->second);
             }
+        }
+    }
+    release_the_output(l);
+    log_a_change_of_state(l);
+}
+
+std::string response_to_the_control_call(loop& l, const bool closes)
+{
+    if (!waits_in_a_repair(l)) {
+        return problem_response_of(not_waiting_for_the_operator, closes);
+    }
+    if (const auto r = l.node.allow_one_more_repair(); !r) [[unlikely]] {
+        std::println(std::cerr, "konsensd: node {} does not start the repair that the operator allowed: {}; a stop "
+                                "ends it without a clean stop",
+                     l.c.pid, r.error().message());
+        l.the_repair_failed = true;
+        return problem_response_of(repair_does_not_start, closes);
+    }
+    std::println(std::cerr, "konsensd: node {} starts the repair that the operator allowed", l.c.pid);
+    return response_of(status_no_content, {}, {}, closes);
+}
+
+void answer_the_control_calls(loop& l)
+{
+    if (l.control_calls.empty()) {
+        return;
+    }
+    while (!l.control_calls.empty()) {
+        for (const auto id : std::exchange(l.control_calls, {})) {
+            const auto it = l.connections.find(id);
+            if (it == l.connections.end() || it->second->closing) {
+                continue;
+            }
+            connection& c = *it->second;
+            const bool closes = c.control->closes;
+            answer(l, id, c, response_to_the_control_call(l, closes), closes);
         }
     }
     release_the_output(l);
@@ -702,9 +796,10 @@ void take_the_frames_of(loop& l, const std::uint64_t id, connection& c)
     }
 }
 
-std::uint64_t most_client_bytes(const config& c)
+std::uint64_t most_bytes_of(const config& c, const link kind)
 {
-    return std::uint64_t{most_request_head_bytes} + c.max_body_bytes;
+    return std::uint64_t{most_request_head_bytes} +
+           (kind == link::control ? max_control_body_bytes : c.max_body_bytes);
 }
 
 void handle_a_receive(loop& l, const std::uint64_t id, connection& c, const io_uring_cqe& cqe)
@@ -725,7 +820,7 @@ void handle_a_receive(loop& l, const std::uint64_t id, connection& c, const io_u
         take_the_frames_of(l, id, c);
     } else {
         c.http_in.append(in.begin(), in.end());
-        if (c.http_in.size() > most_client_bytes(l.c)) [[unlikely]] {
+        if (c.http_in.size() > most_bytes_of(l.c, c.kind)) [[unlikely]] {
             begin_the_close(l, id, c);
             return;
         }
@@ -801,15 +896,17 @@ void handle_a_completion(loop& l, const io_uring_cqe& cqe)
         }
         return;
     }
-    if (o == op::accept_peer || o == op::accept_client) {
-        const bool peer = o == op::accept_peer;
+    if (o == op::accept_peer || o == op::accept_client || o == op::accept_control) {
+        const auto [kind, listener] = o == op::accept_peer     ? std::pair{link::incoming_peer, l.peer_listener}
+                                      : o == op::accept_client ? std::pair{link::client, l.client_listener}
+                                                               : std::pair{link::control, l.control_listener};
         const auto outcome = accept_outcome_of(cqe.res, cqe.flags);
         if (outcome != accept_outcome::error) {
-            const std::uint64_t added = added_connection(l, cqe.res, peer ? link::incoming_peer : link::client, 0);
+            const std::uint64_t added = added_connection(l, cqe.res, kind, 0);
             arm_receive(l, added, *l.connections.at(added));
         }
         if (outcome != accept_outcome::descriptor_and_armed) {
-            arm_accept(l, peer ? l.peer_listener : l.client_listener, o);
+            arm_accept(l, listener, o);
         }
         return;
     }
@@ -835,6 +932,7 @@ void handle_a_completion(loop& l, const io_uring_cqe& cqe)
         return;
     case op::receive_peer:
     case op::receive_client:
+    case op::receive_control:
         handle_a_receive(l, id, c, cqe);
         return;
     case op::send:
@@ -910,21 +1008,14 @@ int serve(const config& c, const start_options options)
         std::println(std::cerr, "konsensd: sync_by_the_caller needs io_uring of the kernel, and this process has none");
         return exit_failed;
     }
-    auto n = started_node(c, options);
-    if (!n) [[unlikely]] {
-        std::println(std::cerr, "konsensd: {}", n.error());
-        return exit_failed;
-    }
-    std::println(std::cerr, "konsensd: node {} started{}", c.pid, n->retired() ? " retired" : "");
-    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}, 0, {}, {},
-           {}, {}};
+    std::unordered_map<konsens::node_id, socket_address> peer_addresses;
     for (const auto& p : c.peers) {
         const auto a = resolve(p.address);
         if (!a) [[unlikely]] {
             std::println(std::cerr, "konsensd: the address {} of node {} does not resolve", p.address, p.pid);
             return exit_failed;
         }
-        l.peer_addresses.emplace(p.pid, *a);
+        peer_addresses.emplace(p.pid, *a);
     }
     const auto peers = listener_on(c.peer_address);
     if (!peers) [[unlikely]] {
@@ -936,8 +1027,32 @@ int serve(const config& c, const start_options options)
         std::println(std::cerr, "konsensd: no listener on {}: {}", c.client_address, reason_of(clients.error()));
         return exit_failed;
     }
+    std::filesystem::create_directories(c.data_directory);
+    const auto control_directory = c.data_directory / "control";
+    if (const auto d = make_a_private_directory(control_directory); !d) [[unlikely]] {
+        std::println(std::cerr, "konsensd: no control directory {}: {}", control_directory.string(),
+                     reason_of(d.error()));
+        return exit_failed;
+    }
+    const auto control_address = std::format("{}{}", unix_prefix, (control_directory / "control.sock").string());
+    const auto control = listener_on(control_address);
+    if (!control) [[unlikely]] {
+        std::println(std::cerr, "konsensd: no listener on {}: {}", control_address, reason_of(control.error()));
+        return exit_failed;
+    }
+    auto n = started_node(c, options);
+    if (!n) [[unlikely]] {
+        std::println(std::cerr, "konsensd: {}", n.error());
+        return exit_failed;
+    }
+    std::println(std::cerr, "konsensd: node {} started{}", c.pid, n->retired() ? " retired" : "");
+    loop l{c, {}, std::move(*n), {}, 1, {}, {}, {}, -1, -1, signal_fd, {}, {}, false, {}, {}, {}, {}, 0, {}, {},
+           {}, {}};
+    l.peer_addresses = std::move(peer_addresses);
     l.peer_listener = peers->fd;
     l.client_listener = clients->fd;
+    l.control_listener = control->fd;
+    l.control_socket = control->socket_file;
     if (const int r = io_uring_queue_init(ring_entries, &l.ring, 0); r < 0) [[unlikely]] {
         std::println(std::cerr, "konsensd: the ring does not start: {}", r);
         return exit_failed;
@@ -955,6 +1070,7 @@ int serve(const config& c, const start_options options)
     l.last_state = l.node.get_sequence_paxos().get_state();
     arm_accept(l, l.peer_listener, op::accept_peer);
     arm_accept(l, l.client_listener, op::accept_client);
+    arm_accept(l, l.control_listener, op::accept_control);
     arm_signal(l);
     const auto tick = std::chrono::milliseconds{c.tick_milliseconds};
     auto next_tick = clock::now();
@@ -994,6 +1110,7 @@ int serve(const config& c, const start_options options)
             }
         }
         commit_the_step(l);
+        answer_the_control_calls(l);
         submit_the_sync(l);
         arm_the_sends(l);
     }
@@ -1001,7 +1118,7 @@ int serve(const config& c, const start_options options)
     io_uring_free_buf_ring(&l.ring, l.peer_buffers.ring, l.peer_buffers.shape.count, l.peer_buffers.shape.group);
     io_uring_free_buf_ring(&l.ring, l.client_buffers.ring, l.client_buffers.shape.count, l.client_buffers.shape.group);
     io_uring_queue_exit(&l.ring);
-    for (const auto* file : {&peers->socket_file, &clients->socket_file}) {
+    for (const auto* file : {&peers->socket_file, &clients->socket_file, &control->socket_file}) {
         std::error_code e;
         if (!file->empty() && !std::filesystem::remove(*file, e)) [[unlikely]] {
             std::println(std::cerr, "konsensd: the socket file {} stays: {}", file->string(), e.message());

@@ -87,7 +87,13 @@ management tool uses the same socket later.
    waits for the operator; POST /repair/allow-one-more on <socket path>
    allows one more repair`. The field that remembers the last value
    starts at false, so a node that waits at its start writes the line.
-7. doc/problems.md gets the two types. README.md names the control
+7. konsensd resolves the peers, makes the three listeners and the
+   control directory before it opens the store. A start that the
+   control directory refuses thus ends before the store opens, and
+   does not retire the node. The first test run showed this fault:
+   the refused start opened the store, ended without a clean stop, and
+   the next start was retired.
+8. doc/problems.md gets the two types. README.md names the control
    socket, says that the data directory belongs to the user of
    konsensd, and that the path of the socket has at most 107 bytes.
 
