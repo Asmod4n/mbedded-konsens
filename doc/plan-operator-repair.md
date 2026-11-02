@@ -36,68 +36,93 @@ management tool uses the same socket later.
 
 ## 3. The change
 
-1. konsensd makes the directory `control` in its data directory with
-   the permissions `owner_all` and nothing else, and refuses to start
-   when the directory exists with other permissions or another owner.
-   The directory exists before the bind, so no other user can open the
-   socket between the bind and a change of its permissions.
+1. konsensd makes the directory `control` in its data directory and
+   sets the permissions `owner_all`. One function,
+   `make_a_private_directory`, then reads the directory with `lstat`
+   (C++ gives no owner) and refuses the start when the path is a
+   symbolic link, no directory, has another owner than the effective
+   user, or has other permissions than 0700. The directory exists
+   before the bind, so no other user can open the socket.
 2. konsensd listens on `unix:<data_directory>/control/control.sock`. No
-   configuration key exists for it. A path longer than `sun_path` makes
-   the start fail with the message of `listener_on`, as for the other
-   two listeners.
-3. The control listener takes HTTP/1.1 as the client listener does, with
-   its own parse: `take_control_request` in `program/rest.cpp`. It
-   knows one target and one method:
-   - `POST /repair/allow-one-more` calls
-     `node::allow_one_more_repair()` when
-     `node.waits_for_the_operator()` is true, and answers 204.
-   - When the node does not wait for the operator, the answer is 409
-     with the problem type `not-waiting-for-the-operator` in
-     doc/problems.md.
-   - Another target is 404, another method on the target is 405, as on
-     the client listener.
-   A control connection takes no client call. A client connection takes
-   no control request.
-4. The result of `allow_one_more_repair` is a `result`. An error goes to
-   the client of the operator as the problem of `problem_of`, and the
-   loop goes on, as for a client call. The repair writes its count in
-   node.db before it returns; a write that fails throws `sync_error`,
-   which ends konsensd as today.
-5. The repair requests that `allow_one_more_repair` sends leave in the
-   same pass of the loop, through the path that sends the output of a
-   tick.
-6. When the node starts to wait for the operator, konsensd writes once
-   to stderr: `konsensd: node <pid> waits for the operator; POST
-   /repair/allow-one-more on <socket path> allows one more repair`.
-7. doc/problems.md gets the new type. README.md names the control
-   socket in the part on konsensd.
+   configuration key exists for it. The socket file is removed at the
+   end, as the other socket files are.
+3. The control listener takes HTTP/1.1 as the client listener does.
+   `take_control_request` in `program/rest.cpp` knows one target and
+   one method: `POST /repair/allow-one-more`. Another target is 404.
+   Another method is 405 with `Allow: POST`. A body is refused with
+   413: `max_control_body_bytes` is 0.
+   The head checks (parse, version, Transfer-Encoding, Content-Length,
+   the body limit, a request that is not whole) are one function that
+   `take_request` and `take_control_request` both call. Both check the
+   target before the method, because RFC 9110 15.5.6 defines 405 for a
+   method that the target resource does not support. `problem` carries
+   its `Allow` value; the client 405 carries `GET, PUT, DELETE`.
+4. The loop gets a third link kind `control`, the operations
+   `accept_control` and `receive_control`, and a third multishot
+   accept. A control receive takes its buffers from the ring of the
+   clients. A control connection takes no client call, and a client
+   connection takes no control request.
+5. The receive only takes the request and marks the connection. After
+   `commit_the_step`, when no step is open, the loop answers each
+   marked connection:
+   - The node waits in a repair when `repairs()` and
+     `waits_for_the_operator()` both hold. A store without its meta
+     record sets `waits_for_the_operator()` with no repair, and
+     `allow_one_more_repair` throws `std::logic_error` there.
+   - It waits in a repair: konsensd calls `allow_one_more_repair()`,
+     sends the output of the node with `release_the_output`, and
+     answers 204. The repair requests leave in the same pass through
+     `arm_the_sends`.
+   - It does not wait in a repair: 409 with the problem type
+     `not-waiting-for-the-operator`.
+   - `allow_one_more_repair` gives an error: 500 with the problem type
+     `repair-does-not-start` and the message of the error, and one
+     line on stderr. The node then repairs without a repair that
+     runs, so the stop does not wait for the repair any more, and a
+     stop ends the node without a clean stop.
+   - A write of the count that fails throws `sync_error`, which ends
+     konsensd as today.
+6. At each change from "does not wait in a repair" to "waits in a
+   repair", konsensd writes one line to stderr: `konsensd: node <pid>
+   waits for the operator; POST /repair/allow-one-more on <socket path>
+   allows one more repair`. The field that remembers the last value
+   starts at false, so a node that waits at its start writes the line.
+7. doc/problems.md gets the two types. README.md names the control
+   socket, says that the data directory belongs to the user of
+   konsensd, and that the path of the socket has at most 107 bytes.
 
 ## 4. What does not change
 
 - The library, the wire format and the model. The change calls a member
   that test_node already tests ("the second damage waits for the
   operator, and allow_one_more_repair allows one more").
-- The client listener and its routes.
+- The routes of the client listener.
 
 ## 5. Tests
 
-1. program/test/test_rest.cpp: `take_control_request` for the one route,
-   for another target (404), another method (405), a body on the POST
-   (the body is read and dropped), and a request that is not whole yet.
+1. program/test/test_rest.cpp: `take_control_request` for the one
+   route, another target (404), another method (405 with `Allow:
+   POST`), a body (413), a request that is not whole yet, and
+   `Connection: close`. The 405 of the client listener carries its own
+   `Allow`.
 2. program/test/three_nodes.sh, after the repair that it has now:
-   - damage one record of node 2 again in the same way, while node 2
-     is stopped, and start node 2;
-   - check that the log of node 2 says that it waits for the operator;
-   - check that a read at node 2 answers 503;
-   - check that a POST on the control socket answers 204, and that a
-     second POST answers 409;
-   - check that node 2 ends its repair and serves a write that node 1
-     reads.
-3. A test that the start refuses a control directory with the
-   permissions 0755.
-4. Each change fails its test without the change.
-5. Release with g++ 16 in the Ubuntu 26.10 container that the Jepsen
-   thread uses for konsensd; the tests of the library are not touched.
+   - a POST at node 1, which votes, answers 409;
+   - stop node 2, damage one record again in the same way, start it;
+   - the log of node 2 says once that it waits for the operator;
+   - a read at node 2 answers 503;
+   - a POST on the control socket answers 204, a second POST 409;
+   - node 2 ends its repair and serves a write that node 1 reads.
+3. three_nodes.sh: the start refuses a control directory with 0755,
+   and a symbolic link named `control`. An owner check needs a
+   directory of another user and is not tested.
+4. three_nodes.sh: a store without its meta record at node 3: the POST
+   answers 409, and konsensd lives.
+5. three_nodes.sh takes a fourth argument `sync` that sets
+   `sync_by_the_caller`. Both forms run.
+6. Each check is run once against the code without its change, and
+   the failing check is named in the report.
+7. Release with g++ 16 in the Ubuntu 26.10 container that the Jepsen
+   thread uses for konsensd.
 
 ## 6. Data
 
