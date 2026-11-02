@@ -1,0 +1,29 @@
+FROM docker.io/library/ubuntu:26.10 AS lazyfs
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++ cmake make libfuse3-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+COPY lazyfs /opt/jepsen/lazyfs
+COPY toml11 /toml11
+COPY spdlog /opt/jepsen/lazyfs/libs/libpcache/build/_deps/spdlog-src
+RUN cd /opt/jepsen/lazyfs/libs/libpcache/build \
+ && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DFETCHCONTENT_SOURCE_DIR_TOML=/toml11 \
+    -DFETCHCONTENT_SOURCE_DIR_SPDLOG=/opt/jepsen/lazyfs/libs/libpcache/build/_deps/spdlog-src .. \
+ && cmake --build . -j"$(nproc)" \
+ && mkdir -p /opt/jepsen/lazyfs/lazyfs/build && cd /opt/jepsen/lazyfs/lazyfs/build \
+ && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLAZYFS_BUILD_TESTS=OFF .. && cmake --build . -j"$(nproc)"
+
+FROM docker.io/library/ubuntu:26.10
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server sudo bash tar gzip curl procps psmisc iproute2 \
+    nftables iptables fuse3 sqlite3 gdb util-linux iputils-ping ca-certificates libada-url0-3 libsqlite3-0 libssl4 libstdc++6 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=lazyfs /opt/jepsen/lazyfs /opt/jepsen/lazyfs
+RUN echo /opt/jepsen/lazyfs/libs/libpcache/build > /etc/ld.so.conf.d/lazyfs.conf && ldconfig \
+ && ln -s /usr/bin/fusermount3 /usr/local/bin/fusermount \
+ && mkdir -p /run/sshd && ssh-keygen -A \
+ && printf 'PermitRootLogin prohibit-password\nPasswordAuthentication no\n' > /etc/ssh/sshd_config.d/jepsen.conf \
+ && echo user_allow_other >> /etc/fuse.conf \
+ && useradd --create-home konsens
+COPY control.pub /root/.ssh/authorized_keys
+RUN chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
+CMD ["/bin/sh", "-c", "chmod 666 /dev/fuse && exec /usr/sbin/sshd -D -e"]
