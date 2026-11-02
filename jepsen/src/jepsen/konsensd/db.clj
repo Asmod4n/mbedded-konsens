@@ -184,12 +184,13 @@
 
 (defn check-the-engine!
   [engine]
-  (let [rings (util/await-fn (fn []
-                               (when-not (konsensd-runs?) (throw (ex-info "konsensd does not run" {})))
-                               (io-uring-descriptors))
-                             {:timeout 10000 :retry-interval 200 :log-message "Waiting for konsensd"})]
-    (when (not= (= :kernel engine) (pos? rings))
-      (throw (ex-info "konsensd does not use the engine of the test" {:engine engine :io-uring-descriptors rings})))))
+  (util/await-fn (fn []
+                   (when-not (konsensd-runs?) (throw (ex-info "konsensd does not run" {})))
+                   (let [rings (io-uring-descriptors)]
+                     (when (not= (= :kernel engine) (pos? rings))
+                       (throw (ex-info "konsensd does not use the engine of the test"
+                                       {:engine engine :io-uring-descriptors rings})))))
+                 {:timeout 10000 :retry-interval 200 :log-message "Waiting for the engine of konsensd"}))
 
 (defrecord DB [lazyfs-map]
   db/DB

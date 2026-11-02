@@ -20,7 +20,7 @@ podman network exists jepsen || podman network create jepsen
 remove_the_nodes() {
     local n
     for n in "${nodes[@]}"; do
-        podman rm -f -t 2 "jepsen-$n" > /dev/null 2>&1 || true
+        podman rm -f --ignore -t 2 "jepsen-$n" > /dev/null
     done
 }
 
@@ -52,7 +52,7 @@ mkdir -p "$build/m2" "$build/lein-home" "$here/store" "$here/results"
 status=0
 podman run --rm --network jepsen \
     -v "$here:/jepsen:Z" -v "$here/store:/jepsen/store:Z" \
-    -v "$build/m2:/root/.m2:Z" -v "$build/lein-home:/root/.lein:Z" \
+    -v "$build/m2:/root/.m2/repository:Z" -v "$build/lein-home:/root/.lein:Z" \
     -w /jepsen localhost/jepsen-control \
     lein run test --nodes "$(IFS=,; echo "${nodes[*]}")" --username root --ssh-private-key /root/.ssh/id_rsa --engine "$engine" "$@" ||
     status=$?
