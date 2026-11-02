@@ -10,6 +10,7 @@ Network=host
 Volume=konsensd-data:/var/lib/konsensd
 Volume=/etc/konsensd/konsensd.toml:/etc/konsensd/konsensd.toml:ro
 StopTimeout=300
+SeccompProfile=/etc/konsensd/seccomp-io-uring.json
 
 [Service]
 Restart=on-failure
