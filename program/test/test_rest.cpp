@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -129,19 +130,42 @@ TEST_CASE("take_request reads whether the client closes")
 }
 
 // Plan 3.7: every value of client_errc, and an error of another category.
-TEST_CASE("problem_of gives the status of each client error")
+// doc/problems.md defines one problem type of RFC 9457 section 4 for each
+// client error: a client tells a retired node, which took no part in the
+// call, from a node that may have proposed it.
+TEST_CASE("problem_of gives the status and the problem type of each client error")
 {
     using konsens::client_errc;
     const auto of = [](const client_errc e) { return konsensd::problem_of(make_error_code(e)); };
-    CHECK(of(client_errc::retry) == problem{503, "the node cannot take the call now", true});
-    CHECK(of(client_errc::building) == problem{503, "the node cannot take the call now", true});
-    CHECK(of(client_errc::reconfiguring) == problem{503, "the node cannot take the call now", true});
-    CHECK(of(client_errc::retired) == problem{503, "the node cannot take the call now", true});
-    CHECK(of(client_errc::repairing) == problem{503, "the node cannot take the call now", true});
-    CHECK(of(client_errc::rejected) == problem{409, "the cluster rejected the write", false});
-    CHECK(of(client_errc::stopped) == problem{503, "the node stopped; the outcome of the write is unknown", false});
+    const std::string base = "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#";
+    struct expected_problem {
+        client_errc e;
+        std::uint16_t status;
+        bool retry_after;
+        std::string fragment;
+        std::string_view title;
+    };
+    const std::array cases{
+        expected_problem{client_errc::retry, 503, true, "retry", "The node cannot take the call now"},
+        expected_problem{client_errc::building, 503, true, "building", "The node builds"},
+        expected_problem{client_errc::reconfiguring, 503, true, "reconfiguring", "The configuration ends"},
+        expected_problem{client_errc::retired, 503, true, "retired", "The node is retired"},
+        expected_problem{client_errc::repairing, 503, true, "repairing", "The node repairs its store"},
+        expected_problem{client_errc::rejected, 409, false, "rejected", "The cluster rejected the write"},
+        expected_problem{client_errc::stopped, 503, false, "stopped", "The node stopped"},
+    };
+    for (const auto& c : cases) {
+        CAPTURE(c.fragment);
+        const auto p = of(c.e);
+        CHECK(p.status == c.status);
+        CHECK(p.retry_after == c.retry_after);
+        CHECK(p.type == base + c.fragment);
+        CHECK(p.title == c.title);
+        CHECK(!p.detail.empty());
+    }
     CHECK(of(client_errc::session_expired).status == 500);
     CHECK(of(client_errc::stale_request).status == 500);
+    CHECK(of(client_errc::session_expired).type.empty());
     CHECK(konsensd::problem_of(std::make_error_code(std::errc::io_error)).status == 500);
 }
 
@@ -150,10 +174,13 @@ TEST_CASE("response_of and problem_response_of write HTTP/1.1")
 {
     CHECK(konsensd::response_of(204, {}, {}, false) == "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
     CHECK(konsensd::response_of(200, "application/octet-stream", bytes_of("ab"), true) ==
-          "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\nab");
+          "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/octet-stream\r\nConnection: "
+          "close\r\n\r\nab");
     const std::string body = R"({"type":"about:blank","title":"Service Unavailable","status":503,"detail":"d"})";
     CHECK(konsensd::problem_response_of({503, "d", true}, false) ==
           "HTTP/1.1 503 Service Unavailable\r\nContent-Length: " + std::to_string(body.size()) +
               "\r\nContent-Type: application/problem+json\r\nRetry-After: 1\r\n\r\n" + body);
     CHECK(konsensd::problem_response_of({405, "", false}, true).contains("Allow: GET, PUT, DELETE\r\n"));
+    CHECK(konsensd::problem_response_of({503, "d", true, "https://example.org/t", "T"}, false)
+              .ends_with(R"({"type":"https://example.org/t","title":"T","status":503,"detail":"d"})"));
 }
