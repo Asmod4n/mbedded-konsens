@@ -815,6 +815,24 @@ TEST_CASE("open refuses the root user")
     CHECK(opened.error() == std::errc::operation_not_permitted);
 }
 
+// konsensd calls refuse_root before it makes any file, so that a start as
+// root leaves nothing that the right user cannot open. The two open
+// functions call the same check.
+TEST_CASE("refuse_root refuses the root user only")
+{
+    CHECK(konsens::refuse_root(root_user_id) == std::unexpected(std::make_error_code(std::errc::operation_not_permitted)));
+    CHECK(konsens::refuse_root(non_root_user_id).has_value());
+}
+
+// The node storage holds the same rule as the store.
+TEST_CASE("node_storage open refuses the root user")
+{
+    const temporary_directory dir;
+    const auto opened = konsens::node_storage::open(dir.path(), root_user_id);
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error() == std::errc::operation_not_permitted);
+}
+
 // A user gives a directory that does not exist. The error is a value that
 // says so, and not a crash.
 TEST_CASE("open of a missing directory gives no_such_file_or_directory")

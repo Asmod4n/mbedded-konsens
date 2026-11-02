@@ -17,6 +17,8 @@
 
 namespace konsens {
 
+[[nodiscard]] std::expected<void, std::error_code> refuse_root(uid_t effective_user_id);
+
 struct read_failure {
     std::error_code code;
     std::uint64_t index;

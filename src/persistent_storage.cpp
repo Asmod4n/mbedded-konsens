@@ -1896,12 +1896,20 @@ void persistent_storage::throw_if_moved_from() const
     }
 }
 
+std::expected<void, std::error_code> refuse_root(const uid_t effective_user_id)
+{
+    if (effective_user_id == root_user_id) [[unlikely]] {
+        return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
+    }
+    return {};
+}
+
 std::expected<persistent_storage, std::error_code> persistent_storage::open(const std::filesystem::path& directory,
                                                                             const std::size_t max_size,
                                                                             const uid_t effective_user_id)
 {
-    if (effective_user_id == root_user_id) [[unlikely]] {
-        return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
+    if (auto refused = refuse_root(effective_user_id); !refused) [[unlikely]] {
+        return std::unexpected(refused.error());
     }
     const auto file = directory / store_file_name;
     if (auto created = create_with_file_mode(file); !created) [[unlikely]] {
@@ -2080,8 +2088,8 @@ void node_storage::throw_if_moved_from() const
 std::expected<node_storage, std::error_code> node_storage::open(const std::filesystem::path& directory,
                                                                 const uid_t effective_user_id)
 {
-    if (effective_user_id == root_user_id) [[unlikely]] {
-        return std::unexpected(std::make_error_code(std::errc::operation_not_permitted));
+    if (auto refused = refuse_root(effective_user_id); !refused) [[unlikely]] {
+        return std::unexpected(refused.error());
     }
     const auto file = directory / node_file_name;
     if (auto created = create_with_file_mode(file); !created) [[unlikely]] {

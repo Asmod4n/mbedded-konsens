@@ -1008,6 +1008,10 @@ int serve(const config& c, const start_options options)
         std::println(std::cerr, "konsensd: sync_by_the_caller needs io_uring of the kernel, and this process has none");
         return exit_failed;
     }
+    if (const auto r = konsens::refuse_root(::geteuid()); !r) [[unlikely]] {
+        std::println(std::cerr, "konsensd: konsensd does not run as root: {}", r.error().message());
+        return exit_failed;
+    }
     std::unordered_map<konsens::node_id, socket_address> peer_addresses;
     for (const auto& p : c.peers) {
         const auto a = resolve(p.address);

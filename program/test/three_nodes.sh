@@ -327,6 +327,17 @@ check "node 1 reads it" holds_soon 1 after-repair yes
 control() {
     status_of --unix-socket "$dir/data$1/control/control.sock" -X POST http://localhost/repair/allow-one-more
 }
+# The control socket exists before the store opens, so a start answers on
+# it only after its loop runs. curl gives 000 until then.
+control_soon() {
+    local i status
+    for i in $(seq 50); do
+        status=$(control "$1")
+        [ "$status" != 000 ] && { [ "$status" = "$2" ]; return; }
+        sleep 0.2
+    done
+    return 1
+}
 count_soon() {
     local i
     for i in $(seq 50); do
@@ -389,7 +400,7 @@ check "the retired node exits with 0" stop 3
 # takes, so konsensd answers 409 and lives.
 sqlite3 "$dir/data3/log/konsens.db" "DELETE FROM meta WHERE name = 'meta'"
 start 3
-check "a POST at a node without its meta record answers 409" test "$(control 3)" = 409
+check "a POST at a node without its meta record answers 409" control_soon 3 409
 check "the node without its meta record lives" alive 3
 kill -TERM "${pids[3]}"
 check "the node without its meta record ends after SIGTERM" ends_within "${pids[3]}" 30
