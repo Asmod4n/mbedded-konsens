@@ -185,8 +185,22 @@ end() {
     exit "$failed"
 }
 
+# sync_by_the_caller needs io_uring of the kernel. A container with the
+# default seccomp profile of podman has none, and konsensd refuses to
+# start there. CTest counts the exit code 77 as a skipped test.
 for p in 1 2 3; do
     write_config "$p"
+done
+if [ "$sync" = sync ]; then
+    timeout 2 "$konsensd" --config "$dir/node1.toml" --first-start 2> "$dir/probe"
+    if grep -q "sync_by_the_caller needs io_uring of the kernel" "$dir/probe"; then
+        echo "skipped: this process has no io_uring of the kernel"
+        rm -r "$dir"
+        exit 77
+    fi
+    rm -r "$dir/data1"
+fi
+for p in 1 2 3; do
     start "$p" --first-start
 done
 

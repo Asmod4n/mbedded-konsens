@@ -202,4 +202,7 @@ if(KONSENS_PROGRAM)
     add_test(NAME three_nodes COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd>)
     add_test(NAME three_nodes_unix
              COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd> 17150 unix)
+    add_test(NAME three_nodes_sync
+             COMMAND bash ${PROJECT_SOURCE_DIR}/program/test/three_nodes.sh $<TARGET_FILE:konsensd> 17250 tcp sync)
+    set_tests_properties(three_nodes_sync PROPERTIES SKIP_RETURN_CODE 77)
 endif()

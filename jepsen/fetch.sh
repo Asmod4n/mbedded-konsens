@@ -17,6 +17,23 @@ fetch() {
     git -C "$build/$name" checkout -q FETCH_HEAD
 }
 
+attempts=3
+wait_seconds=30
+
+lein_deps() {
+    (cd "$build/deps" && LEIN_HOME="$build/lein-home" "$build/lein" update-in : assoc :local-repo "\"$build/m2\"" -- deps)
+}
+
+retried() {
+    local attempt
+    for attempt in $(seq "$attempts"); do
+        "$@" && return 0
+        [ "$attempt" = "$attempts" ] && return 1
+        echo "fetch.sh: $1 failed, attempt $attempt of $attempts; next attempt in $((wait_seconds * attempt)) s" >&2
+        sleep "$((wait_seconds * attempt))"
+    done
+}
+
 mkdir -p "$build"
 fetch lazyfs https://github.com/dsrhaslab/lazyfs.git 9c5685e828da8b5d113d2f9134f6671e481d7162
 fetch toml11 https://github.com/ToruNiina/toml11.git dcfe39a783a94e8d52c885e5883a6fbb21529019
@@ -35,4 +52,4 @@ fi
 
 mkdir -p "$build/deps" "$build/m2" "$build/lein-home"
 cp "$here/project.clj" "$build/deps/project.clj"
-(cd "$build/deps" && LEIN_HOME="$build/lein-home" "$build/lein" update-in : assoc :local-repo "\"$build/m2\"" -- deps)
+retried lein_deps
