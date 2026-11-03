@@ -311,6 +311,7 @@ shows node 1 of three. Each node has its own `pid` and `peer_address`;
 | `cluster.configuration_id` | The number of the configuration. | |
 | `node.pid` | The number of this node. | |
 | `node.data_directory` | The directory of the store. | |
+| `node.runtime_directory` | The directory of the control socket. | `node.data_directory` |
 | `node.peer_address` | The address where the other nodes connect. | |
 | `node.client_address` | The address where the clients connect. | |
 | `node.leader_priority` | Of two ballots in the same round, the node with the higher value wins. | 0 |
@@ -333,11 +334,12 @@ socket file.
 ### The control socket
 
 The node accepts the commands of the operator on the Unix socket
-`<data_directory>/control/control.sock`. The node makes the directory
+`<runtime_directory>/control/control.sock`. The node makes the directory
 `control` with the mode 0700. A directory `control` of another user,
-with another mode, or a symbolic link stops the start. The data
+with another mode, or a symbolic link stops the start. The runtime
 directory belongs to the user of konsensd, and no other user writes to
-it. The path of the socket has at most 107 bytes.
+it. The path of the socket has at most 107 bytes. The file system of
+the runtime directory must hold a Unix socket. LazyFS holds none.
 
 The node repairs a damage of its log once by itself. At a further
 damage, it stops voting and writes to its log:

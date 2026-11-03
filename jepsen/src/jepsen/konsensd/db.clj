@@ -12,6 +12,7 @@
 (def binary "/usr/local/bin/konsensd")
 (def home (str "/home/" user))
 (def data-directory (str home "/data"))
+(def runtime-directory (str home "/run"))
 (def config-file (str home "/konsensd.toml"))
 (def log-file (str home "/konsensd.log"))
 (def pid-file (str home "/konsensd.pid"))
@@ -32,6 +33,7 @@
        "[node]\n"
        "pid = " (pid-of test node) "\n"
        "data_directory = \"" data-directory "\"\n"
+       "runtime_directory = \"" runtime-directory "\"\n"
        "peer_address = \"0.0.0.0:" peer-port "\"\n"
        "client_address = \"0.0.0.0:" client-port "\"\n"
        (str/join (for [peer (:nodes test)
@@ -205,7 +207,7 @@
   (teardown! [_ test node]
     (signal-konsensd! "KILL")
     (lazyfs/umount! lazyfs-map)
-    (c/su (c/exec :rm :-rf data-directory config-file pid-file log-file threads-file)))
+    (c/su (c/exec :rm :-rf data-directory runtime-directory config-file pid-file log-file threads-file)))
 
   db/Kill
   (kill! [_ test node]

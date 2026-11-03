@@ -30,6 +30,7 @@ struct config {
     std::uint32_t configuration_id;
     konsens::node_id pid;
     std::filesystem::path data_directory;
+    std::filesystem::path runtime_directory;
     std::string peer_address;
     std::string client_address;
     std::uint32_t leader_priority;

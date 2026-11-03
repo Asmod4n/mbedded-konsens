@@ -18,6 +18,7 @@ namespace {
 constexpr std::array cluster_keys{std::string_view{"name"}, std::string_view{"configuration_id"}};
 constexpr std::array node_keys{std::string_view{"pid"},
                                std::string_view{"data_directory"},
+                               std::string_view{"runtime_directory"},
                                std::string_view{"peer_address"},
                                std::string_view{"client_address"},
                                std::string_view{"leader_priority"},
@@ -212,6 +213,10 @@ std::expected<config, config_error> parse_config(const std::string_view text)
     if (!data_directory) [[unlikely]] {
         return std::unexpected(data_directory.error());
     }
+    auto runtime_directory = n.contains("runtime_directory") ? text_in(n, "runtime_directory") : data_directory;
+    if (!runtime_directory) [[unlikely]] {
+        return std::unexpected(runtime_directory.error());
+    }
     auto peer_address = text_in(n, "peer_address");
     if (!peer_address) [[unlikely]] {
         return std::unexpected(peer_address.error());
@@ -271,6 +276,7 @@ std::expected<config, config_error> parse_config(const std::string_view text)
                   *configuration_id,
                   *pid,
                   std::move(*data_directory),
+                  std::move(*runtime_directory),
                   std::move(*peer_address),
                   std::move(*client_address),
                   *leader_priority,

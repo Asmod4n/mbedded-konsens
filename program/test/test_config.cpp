@@ -18,6 +18,7 @@ configuration_id = 2
 [node]
 pid = 1
 data_directory = "/var/lib/konsens"
+runtime_directory = "/run/konsens"
 peer_address = "[::]:7151"
 client_address = "[::]:7152"
 leader_priority = 4
@@ -83,6 +84,7 @@ TEST_CASE("each field of a whole config is read")
     CHECK(c->configuration_id == 2);
     CHECK(c->pid == 1);
     CHECK(c->data_directory == "/var/lib/konsens");
+    CHECK(c->runtime_directory == "/run/konsens");
     CHECK(c->peer_address == "[::]:7151");
     CHECK(c->client_address == "[::]:7152");
     CHECK(c->leader_priority == 4);
@@ -113,6 +115,7 @@ TEST_CASE("the optional fields take their defaults")
 {
     const auto c = konsensd::parse_config(smallest);
     REQUIRE(c);
+    CHECK(c->runtime_directory == "/d");
     CHECK(c->leader_priority == 0);
     CHECK(c->election_ticks == konsensd::default_election_ticks);
     CHECK(c->resend_ticks == konsensd::default_resend_ticks);
@@ -173,6 +176,10 @@ TEST_CASE("a wrong type names its line")
           config_errc::wrong_type);
     CHECK(error_of(replaced(smallest, "client_address = \"[::]:7152\"", "client_address = \"[::]:7152\"\nsync_by_the_caller = 1")) ==
           config_errc::wrong_type);
+    CHECK(error_of(replaced(smallest, "data_directory = \"/d\"", "data_directory = \"/d\"\nruntime_directory = 1")) ==
+          config_errc::wrong_type);
+    CHECK(error_of(replaced(smallest, "data_directory = \"/d\"", "data_directory = \"/d\"\nruntime_directory = \"\"")) ==
+          config_errc::out_of_range);
     CHECK(error_of("peers = 3\n" + replaced(smallest, "[[peers]]\npid = 2\naddress = \"192.0.2.2:7151\"", "")) ==
           config_errc::wrong_type);
 }

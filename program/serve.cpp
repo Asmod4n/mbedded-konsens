@@ -1032,7 +1032,8 @@ int serve(const config& c, const start_options options)
         return exit_failed;
     }
     std::filesystem::create_directories(c.data_directory);
-    const auto control_directory = c.data_directory / "control";
+    std::filesystem::create_directories(c.runtime_directory);
+    const auto control_directory = c.runtime_directory / "control";
     if (const auto d = make_a_private_directory(control_directory); !d) [[unlikely]] {
         std::println(std::cerr, "konsensd: no control directory {}: {}", control_directory.string(),
                      reason_of(d.error()));
