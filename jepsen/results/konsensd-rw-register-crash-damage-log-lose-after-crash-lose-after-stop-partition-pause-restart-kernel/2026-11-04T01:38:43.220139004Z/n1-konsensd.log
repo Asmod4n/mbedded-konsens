@@ -1,0 +1,258 @@
+2026-11-04 01:38:48 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml --first-start
+konsensd: node 1 started
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 5 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 5 closed
+konsensd: the connection to node 4 closed
+konsensd: node 1 is follower in prepare
+konsensd: the connection to node 5 opened
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:39:16 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: the connection to node 3 closed
+konsensd: the connection to node 2 closed
+konsensd: the connection to node 5 closed
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in recover
+konsensd: the connection to node 4 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:39:47 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: node 1 stopped cleanly
+2026-11-04 01:39:47 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: node 1 stopped cleanly
+2026-11-04 01:39:54 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:40:05 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 4 closed
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 3 closed
+konsensd: the connection to node 3 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:40:23 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:40:57 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 5 closed
+konsensd: the connection to node 5 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:41:01 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:41:05 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:41:42 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 5 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:41:57 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 2 closed
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 4 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:42:14 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:42:14 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 4 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:42:19 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:42:20 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is follower in recover
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: the connection to node 2 closed
+konsensd: node 1 stopped cleanly
+2026-11-04 01:42:28 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: the connection to node 4 closed
+konsensd: the connection to node 2 closed
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:42:41 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 3 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: the connection to node 2 closed
+konsensd: the connection to node 2 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:43:03 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:43:13 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 5 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:43:19 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: the connection to node 4 closed
+konsensd: the connection to node 4 opened
+konsensd: node 1 is leader in prepare
+konsensd: node 1 is leader in accept
+konsensd: node 1 stopped cleanly
+2026-11-04 01:43:24 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: node 1 stopped cleanly
+2026-11-04 01:43:26 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 stopped cleanly
+2026-11-04 01:43:42 Jepsen starting  /usr/local/bin/konsensd --config /home/konsens/konsensd.toml 
+konsensd: node 1 started
+konsensd: the connection to node 4 opened
+konsensd: the connection to node 3 opened
+konsensd: the connection to node 5 opened
+konsensd: the connection to node 2 opened
+konsensd: node 1 is follower in prepare
+konsensd: node 1 is follower in accept
