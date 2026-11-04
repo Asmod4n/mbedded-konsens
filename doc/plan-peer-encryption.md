@@ -1,10 +1,12 @@
-# Plan: the peers of konsensd talk through a key exchange and AES-256-GCM
+# Plan: the peers of konsensd talk through a key exchange and AES-128-GCM
 
 Branch peer-encryption, from main ebd9f42. Owner 2026-10-29 21:30:
 "Zum Client werden wir TLS sprechen ... Intern will ich keine
 Zertifikate haben ... alles was wir von Zertifikaten brauchen, ist eine
 Revoke-Liste ... intern ein Key-Exchange-Verfahren ... und wir machen
-nur AES."
+nur AES." Owner 2026-11-04 10:54: "Hydro macht nur key exchange,
+danach aes 128 gcm". libhydrogen does the key exchange and nothing
+else; the records use AES-128-GCM.
 
 Marks: "provisional" marks a form or a name that waits on the owner.
 Review: doc/review-plan-peer-encryption.md (first version rejected, 3
@@ -57,7 +59,8 @@ blocking findings); all its findings are folded in here.
    g++ 16 and clang 22: to seal one message, AES-256-GCM of OpenSSL
    takes 77 ns to 80 ns at 64 B and 3.9 µs at 64 KiB; hydro_secretbox
    takes 2.0 µs to 9.9 µs at 64 B and 0.6 ms to 3.0 ms at 64 KiB.
-   libhydrogen was built for baseline x86-64.
+   libhydrogen was built for baseline x86-64. AES-128-GCM was not
+   measured; section 7 measures it.
 7. konsensd does not link libcrypto (CMakeLists.txt). The Ubuntu
    package libssl-dev 4.0.3 gives OpenSSL 4.0; `EVP_CIPHER_fetch` exists
    from OpenSSL 3.0.
@@ -135,7 +138,14 @@ blocking findings); all its findings are folded in here.
    the live connection, and the encrypted `hello` binds the cluster
    name, the pid and the version to the keys.
 5. Each side keeps only the key of its direction: the outgoing side
-   `tx`, the incoming side `rx`. The other key is erased at once.
+   `tx`, the incoming side `rx`. The other key is erased at once. The
+   session key of libhydrogen has 32 bytes (`hydro_kx_SESSIONKEYBYTES`,
+   hydrogen.h:177). The key of AES-128-GCM, 16 bytes, comes from it
+   through `hydro_kdf_derive_from_key` (hydrogen.h:130,
+   `hydro_kdf_BYTES_MIN` is 16), as TLS 1.3 derives each key of the
+   length of its cipher (RFC 8446 7.3, HKDF-Expand-Label). The context
+   and the subkey id are provisional names. The session key is erased
+   after the derivation.
 6. Each state has its own receive limit. The incoming side in
    `connected` takes one frame of at most `max_hello_bytes`, the encoded
    size of a `hello` with a cluster name of 255 bytes and `kx`
@@ -173,7 +183,7 @@ blocking findings); all its findings are folded in here.
    key; the key bytes are erased with `hydro_memzero` after that, the
    one erase function of this plan.
    Whether `EVP_CIPHER_CTX_free` erases the key schedule is checked in
-   the OpenSSL source before the build. AES-256-GCM is fetched once at
+   the OpenSSL source before the build. AES-128-GCM is fetched once at
    start with `EVP_CIPHER_fetch`.
 6. No other cipher and no negotiation. A change of the cipher is a new
    `version`.
@@ -201,7 +211,7 @@ blocking findings); all its findings are folded in here.
 | public key not 32 bytes | `config_errc::out_of_range` |
 | two peers with one key | new `config_errc::duplicate_public_key` |
 | a peer with a revoked key | new `config_errc::revoked_public_key` |
-| no AES-256-GCM in libcrypto | start refused, one message |
+| no AES-128-GCM in libcrypto | start refused, one message |
 | `hydro_init` fails | `abort` inside libhydrogen; differs from the rule that a machine failure is raised as `std::system_error` |
 | failed handshake, failed tag, wrong length | the connection closes (input from outside) |
 | an EVP call fails during a seal or an open | raised; nothing catches it (fault of the machine or of ours) |
@@ -224,8 +234,10 @@ blocking findings); all its findings are folded in here.
   connection.
 - `tx` of the initiator equals `rx` of the responder, read from
   `hydro_kx_kk_2` and `hydro_kx_kk_3` directly.
-- A known-answer test of the seal with a published AES-256-GCM test
+- A known-answer test of the seal with a published AES-128-GCM test
   vector (key, nonce, AAD, plaintext, ciphertext and tag).
+- The key of AES-128-GCM differs between `tx` and `rx`, and equals on
+  the two sides of one direction.
 - The nonce of record n equals the form of RFC 8446 5.3 with an IV of
   zeros, for n = 0, 1, 2^8 and 2^64 - 1.
 - A flipped byte in a ciphertext, a tag or a length closes the
