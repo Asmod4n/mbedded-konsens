@@ -323,6 +323,39 @@ When a stop takes more than 60 s, the db writes the threads of konsensd
 with gdb and the sockets with `ss` to `konsensd-threads.log`; the node
 containers carry gdb and `SYS_PTRACE` for it.
 
+## 6f. The CRC on a row of data (2026-11-08)
+
+Branch data-row-crc 25b4ce5, release g++ 16 in Ubuntu 26.10, kernel
+io_uring, ten processes. The control container was Ubuntu 26.10 for
+these runs, because this environment refused registry.opensuse.org and
+download.opensuse.org. The change was not committed.
+
+| Faults | Workload | Time | Result |
+|---|---|---|---|
+| damage-data | register | 120 s | valid; 10 damages, no damaged value served; two nodes wait for the operator and retire |
+| all eight | register, 20 writes per key | 300 s | valid; 6 damages, no damaged value served; two nodes retire |
+| all eight | rw-register | 300 s | valid; 3 damages, no damaged value served; two nodes retire |
+
+The row of section 6d with "the node serves the damaged value" is
+now valid.
+
+Found on the way:
+
+- The first run with all eight faults did not end. A local read at a
+  node with no majority waited with no time limit, and the nemesis
+  waited with it. Branch jepsen-local-read-timeout 1e631f7 gives each
+  local read two seconds.
+- konsensd writes no line for an automatic repair of the state. The
+  node puts a `state_damage` record into `take_log_records`, and
+  konsensd never takes these records. So the log shows only the second
+  damage of a node, when the node waits for the operator.
+- The nemesis damages the data of a node a second time. The second
+  damage waits for the operator, the next stop is not clean, and the
+  node starts retired. damage-log takes only nodes with no repair;
+  damage-data does not.
+- Most local reads after a damage-data answer no value in the time,
+  so the check "no damaged value served" reads few values.
+
 ## 7. What this does not cover
 
 - Transactions over several keys: konsensd has none.
