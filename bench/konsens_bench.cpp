@@ -53,6 +53,7 @@ constexpr std::uint64_t warm_up_samples = 1;
 constexpr std::size_t entries_per_accept_decide = 64;
 constexpr std::size_t accept_decide_entry_bytes = 1024;
 constexpr std::size_t batch_size = 64;
+constexpr std::array state_row_key{std::byte{0x6b}};
 constexpr std::size_t batch_payload_bytes = 1024;
 constexpr std::size_t crc_buffer_count = 16;
 constexpr std::string_view crc32c_check_input = "123456789";
@@ -930,6 +931,81 @@ case_outcome measure_get_entries(const run_settings& s)
             }
             if (read->size() != 1 || read->front().payload != payload) [[unlikely]] {
                 return std::unexpected(failure{"compare the entry with the payload", check_failed()});
+            }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, s.ops));
+        }
+    }
+    return case_result{ns, std::string{}};
+}
+
+std::expected<konsens::persistent_storage, failure> store_with_one_row(const run_settings& s,
+                                                                       const std::vector<std::byte>& value)
+{
+    auto store = open_log(s.directory / "store", max_bytes_for(2, s.payload_bytes), s.user_id);
+    if (!store) [[unlikely]] {
+        return store;
+    }
+    auto t = store->begin();
+    if (!t) [[unlikely]] {
+        return std::unexpected(failure{"begin", t.error()});
+    }
+    if (auto w = t->insert_or_assign(state_row_key, value); !w) [[unlikely]] {
+        return std::unexpected(failure{"insert_or_assign", w.error()});
+    }
+    if (auto c = std::move(*t).commit(); !c) [[unlikely]] {
+        return std::unexpected(failure{"commit the row", c.error()});
+    }
+    return store;
+}
+
+case_outcome measure_state_find(const run_settings& s)
+{
+    const std::vector value(s.payload_bytes, std::byte{0x5a});
+    auto store = store_with_one_row(s, value);
+    if (!store) [[unlikely]] {
+        return std::unexpected(store.error());
+    }
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        auto t = store->begin();
+        if (!t) [[unlikely]] {
+            return std::unexpected(failure{"begin", t.error()});
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t k = 0; k < s.ops; ++k) {
+            const auto found = t->find(state_row_key);
+            if (!found || !found->has_value() || found->value().size() != value.size()) [[unlikely]] {
+                return std::unexpected(failure{"find the row", found ? check_failed() : found.error()});
+            }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, s.ops));
+        }
+    }
+    return case_result{ns, std::string{}};
+}
+
+case_outcome measure_state_put(const run_settings& s)
+{
+    const std::vector value(s.payload_bytes, std::byte{0x5a});
+    auto store = store_with_one_row(s, value);
+    if (!store) [[unlikely]] {
+        return std::unexpected(store.error());
+    }
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        auto t = store->begin();
+        if (!t) [[unlikely]] {
+            return std::unexpected(failure{"begin", t.error()});
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (std::uint64_t k = 0; k < s.ops; ++k) {
+            if (auto w = t->insert_or_assign(state_row_key, value); !w) [[unlikely]] {
+                return std::unexpected(failure{"insert_or_assign", w.error()});
             }
         }
         const auto end = std::chrono::steady_clock::now();
@@ -2051,6 +2127,8 @@ constexpr std::array<parameter_ops, 1> read_ops{{{0, 1700}}};
 constexpr std::array<parameter_ops, 3> write_batch_ops{{{64, 64}, {1024, 64}, {65536, 64}}};
 constexpr std::array<parameter_ops, 3> write_batch_size_ops{{{1, 4}, {16, 32}, {256, 256}}};
 constexpr std::array<parameter_ops, 3> get_entries_ops{{{64, 75000}, {1024, 55000}, {65536, 2000}}};
+constexpr std::array<parameter_ops, 3> state_find_ops{{{64, 100000}, {1024, 100000}, {65536, 5000}}};
+constexpr std::array<parameter_ops, 3> state_put_ops{{{64, 20000}, {1024, 10000}, {65536, 500}}};
 constexpr std::array<parameter_ops, 3> write_threads_ops{{{64, 5}, {1024, 5}, {65536, 3}}};
 constexpr std::array<parameter_ops, 1> read_threads_ops{{{0, 115}}};
 constexpr std::array<parameter_ops, 3> write_batch_threads_ops{{{64, 192}, {1024, 256}, {65536, 64}}};
@@ -2081,6 +2159,8 @@ constexpr auto cases = std::to_array<bench_case>({
     {"write_batch_size", measure_write_batch_size, write_batch_size_ops, argument_kind::parameter, true,
      true},
     {"get_entries", measure_get_entries, get_entries_ops, argument_kind::payload_bytes, true, true},
+    {"state_find", measure_state_find, state_find_ops, argument_kind::payload_bytes, true, true},
+    {"state_put", measure_state_put, state_put_ops, argument_kind::payload_bytes, true, true},
     {"write_threads", measure_write_threads, write_threads_ops, argument_kind::payload_bytes, true,
      true},
     {"read_threads", measure_read_threads, read_threads_ops, argument_kind::payload_bytes, true, true},
