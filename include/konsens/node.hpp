@@ -1273,6 +1273,10 @@ private:
         }
         write_or_throw(seq_paxos_.txn_->erase_the_state());
         write_or_throw(seq_paxos_.txn_->set_applied(0, *start));
+        if (auto r = write_the_last_results(applied_before); !r) [[unlikely]] {
+            roll_back_the_step(r.error());
+            return r;
+        }
         if (auto r = apply_the_done_records(applied_before); !r) [[unlikely]] {
             roll_back_the_step(r.error());
             return r;
@@ -1282,6 +1286,80 @@ private:
         }
         state_damaged_ = false;
         return finish_the_step();
+    }
+
+    result write_the_last_results(const std::uint64_t applied_before)
+    {
+        if (applied_before == 0) {
+            return {};
+        }
+        auto& w = *seq_paxos_.txn_;
+        const auto log = seq_paxos_.read_the_open_log(0, applied_before);
+        if (!log) [[unlikely]] {
+            return seq_paxos_.stop_voting(log.error());
+        }
+        std::set<std::vector<std::byte>> keys;
+        std::set<std::uint64_t> sessions;
+        bool stop_sign_read = false;
+        for (auto k = applied_before; k > 0; --k) {
+            const auto& e = log->entries[k - 1];
+            if (!stop_sign_read && entry_is_a_stop_sign(e) && k > seq_paxos_.get_config_first_idx()) [[unlikely]] {
+                next_config_ = read_the_next_configuration(e);
+                stop_sign_read = true;
+            }
+            if (!entry_is_a_request(e)) {
+                continue;
+            }
+            const auto r = e.rejected ? std::nullopt : decode_result(log->owner, e.result);
+            if (!r) [[unlikely]] {
+                continue;
+            }
+            if (const auto crc = compute_result_crc(k, e.result); crc != e.result_crc) [[unlikely]] {
+                write_the_proof_and_throw({proof_kind::result_crc, k, seq_paxos_.mark_.promise, e.result_crc, crc},
+                                          make_error_code(paxos_errc::result_differs),
+                                          "konsens: a chosen result fails its CRC on this node");
+            }
+            write_the_last_result(e, k, *r, w, keys, sessions);
+        }
+        const auto chain = seq_paxos_.read_prefix_chain_hash(applied_before);
+        if (!chain) [[unlikely]] {
+            return seq_paxos_.stop_voting(chain.error());
+        }
+        write_or_throw(w.set_applied(applied_before, *chain));
+        return {};
+    }
+
+    template <typename T>
+    static void write_the_last_result(const entry& e, const std::uint64_t index, const request_result_view& r, T& w,
+                                      std::set<std::vector<std::byte>>& keys, std::set<std::uint64_t>& sessions)
+    {
+        switch (e.kind) {
+        case entry_kind::register_client:
+            if (sessions.insert(index).second) {
+                write_or_throw(w.insert_or_assign_session(index, {}));
+            }
+            break;
+        case entry_kind::expire_session:
+            sessions.insert(e.session);
+            break;
+        case entry_kind::client_request:
+            if (r.error != 0) {
+                break;
+            }
+            for (const auto& m : r.mutations | std::views::reverse) {
+                if (keys.emplace(m.key.begin(), m.key.end()).second && m.value) {
+                    write_or_throw(w.insert_or_assign(m.key, *m.value));
+                }
+            }
+            if (sessions.insert(e.session).second) {
+                write_or_throw(
+                    w.insert_or_assign_session(e.session, {e.request_number, {r.reply.begin(), r.reply.end()}}));
+            }
+            break;
+        case entry_kind::normal:
+        case entry_kind::stop_sign:
+            break;
+        }
     }
 
     [[noreturn]] void write_the_proof_and_throw(const fault_proof& proof, const std::error_code e,
