@@ -152,7 +152,7 @@ run_one() {
     local round=$1 name=$2 argument=$3 binary=$4 samples=$5
     local directory=/storage/$round-$name-$argument-$binary other running steal_before steal_after line status=0
     local -a arguments=("$name" "$samples" "$argument")
-    if [[ $name == commit || $name == get_entries || $name == read || $name == read_threads || $name == write* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* || $name == state_* ]]; then
+    if [[ $name == commit || $name == get_entries || $name == read || $name == read_threads || $name == write* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* || $name == state_* || $name == repair_* ]]; then
         mkdir "$directory"
         chown "$bench_uid:$bench_uid" "$directory"
         arguments+=("$directory")
