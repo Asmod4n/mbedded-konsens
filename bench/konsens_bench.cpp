@@ -2112,13 +2112,13 @@ std::expected<void, failure> damage_the_first_row(const std::filesystem::path& d
     return {};
 }
 
-case_outcome measure_repair_of_the_state(const run_settings& s)
+std::expected<client_cluster<rows_machine>, failure> cluster_with_a_log_of_rows(const run_settings& s)
 {
     const auto machine_of = [&s](const konsens::node_id) { return rows_machine{s.payload_bytes}; };
     auto p = start_client_cluster<rows_machine>(
         sqlite_nodes<rows_machine>(s, s.parameter, max_in_flight, machine_of), 0, false);
     if (!p) [[unlikely]] {
-        return std::unexpected(p.error());
+        return p;
     }
     for (std::uint64_t written = 0; written < s.parameter; written += max_in_flight) {
         std::vector<std::vector<std::byte>> payloads;
@@ -2131,6 +2131,37 @@ case_outcome measure_repair_of_the_state(const run_settings& s)
     }
     if (auto settled = p->c.settle(); !settled) [[unlikely]] {
         return std::unexpected(failure{"apply the log at each node", settled.error()});
+    }
+    return p;
+}
+
+case_outcome measure_scan_for_damaged_ranges(const run_settings& s)
+{
+    auto p = cluster_with_a_log_of_rows(s);
+    if (!p) [[unlikely]] {
+        return std::unexpected(p.error());
+    }
+    const auto& n = p->c.nodes.at(p->at);
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto ranges = n.get_sequence_paxos().find_the_damaged_ranges();
+        const auto end = std::chrono::steady_clock::now();
+        if (!ranges || !ranges->empty()) [[unlikely]] {
+            return std::unexpected(failure{"find no damaged range", ranges ? check_failed() : ranges.error()});
+        }
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, 1));
+        }
+    }
+    return case_result{ns, std::format("entries_in_the_log={}", s.parameter)};
+}
+
+case_outcome measure_repair_of_the_state(const run_settings& s)
+{
+    auto p = cluster_with_a_log_of_rows(s);
+    if (!p) [[unlikely]] {
+        return std::unexpected(p.error());
     }
     auto& n = p->c.nodes.at(p->at);
     const auto directory = s.directory / std::format("node-{}", p->at + 1) / "log";
@@ -2306,6 +2337,7 @@ constexpr auto cases = std::to_array<bench_case>({
      false},
     {"read_back", measure_read_back, read_back_ops, argument_kind::payload_bytes, true, true},
     {"repair_of_the_state", measure_repair_of_the_state, repair_of_the_state_ops, argument_kind::parameter, true, true},
+    {"repair_scan_for_damaged_ranges", measure_scan_for_damaged_ranges, repair_of_the_state_ops, argument_kind::parameter, true, true},
     {"scan_the_whole_log", measure_scan_the_whole_log, scan_ops, argument_kind::parameter, true, scan_exists},
 });
 
