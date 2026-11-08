@@ -44,6 +44,8 @@ public:
         [[nodiscard]] std::expected<std::optional<last_entry>, std::error_code> get_last_entry() const;
         [[nodiscard]] std::expected<std::optional<chain_hash>, std::error_code>
         get_chain_hash(std::uint64_t index) const;
+        [[nodiscard]] std::expected<std::vector<std::optional<std::pair<entry, chain_hash>>>, std::error_code>
+        get_entries_and_chain_hashes(std::uint64_t from, std::uint64_t to) const;
         [[nodiscard]] std::expected<std::optional<entry>, std::error_code>
         get_unchecked_entry(std::uint64_t index) const;
         [[nodiscard]] std::expected<std::optional<std::uint64_t>, std::error_code> get_config_first_idx() const;

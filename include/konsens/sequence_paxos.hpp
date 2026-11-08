@@ -266,6 +266,7 @@ struct indexed_read {
 };
 
 inline constexpr std::size_t max_build_entries = 256;
+inline constexpr std::uint64_t entries_per_read_of_the_scan = 1024;
 
 enum class start_kind : std::uint8_t { first, clean, build, retired };
 
@@ -1100,30 +1101,29 @@ public:
         }
         std::vector<index_range> ranges;
         std::optional<chain_hash> previous = chain_hash{};
-        for (std::uint64_t index = 0; index < m->log_len; ++index) {
-            const auto stored = t->get_chain_hash(index);
-            if (!stored && !record_is_damaged(stored.error())) [[unlikely]] {
-                return std::unexpected(stored.error());
+        for (std::uint64_t first = 0; first < m->log_len; first += entries_per_read_of_the_scan) {
+            const auto last = std::min(m->log_len, first + entries_per_read_of_the_scan);
+            const auto records = t->get_entries_and_chain_hashes(first, last);
+            if (!records) [[unlikely]] {
+                return std::unexpected(records.error());
             }
-            if (!stored || !*stored) [[unlikely]] {
-                if (ranges.empty() || ranges.back().to_idx != index) {
-                    ranges.push_back({index, index + 1});
-                } else {
-                    ranges.back().to_idx = index + 1;
+            for (std::uint64_t index = first; index < last; ++index) {
+                const auto& record = records->at(index - first);
+                if (!record) [[unlikely]] {
+                    if (ranges.empty() || ranges.back().to_idx != index) {
+                        ranges.push_back({index, index + 1});
+                    } else {
+                        ranges.back().to_idx = index + 1;
+                    }
+                    previous.reset();
+                    continue;
                 }
-                previous.reset();
-                continue;
-            }
-            if (previous) {
-                const auto e = t->get_entries(index, index + 1);
-                if (!e) [[unlikely]] {
-                    return std::unexpected(e.error());
-                }
-                if (compute_chain_hash(sha256_, *previous, index, e->front()) != **stored) [[unlikely]] {
+                if (previous && compute_chain_hash(sha256_, *previous, index, record->first) != record->second)
+                    [[unlikely]] {
                     return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));
                 }
+                previous = record->second;
             }
-            previous = **stored;
         }
         if (previous && *previous != m->last_chain_hash) [[unlikely]] {
             return std::unexpected(make_error_code(paxos_errc::inconsistent_storage));

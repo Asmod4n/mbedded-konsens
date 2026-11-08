@@ -629,6 +629,43 @@ std::expected<std::vector<entry>, read_failure> read_entries_in(const link& l, c
     return entries;
 }
 
+std::expected<std::vector<std::optional<std::pair<entry, chain_hash>>>, std::error_code>
+read_entries_and_chain_hashes_in(const link& l, const std::uint64_t from, const std::uint64_t to)
+{
+    throw_if_from_after_to(from, to);
+    std::vector<std::optional<std::pair<entry, chain_hash>>> records(to - from);
+    if (!key_fits_in_an_sqlite_integer(from)) [[unlikely]] {
+        return records;
+    }
+    sqlite3_stmt* const s = l.s->get_entries_from.get();
+    sqlite3_reset(s);
+    if (const int bound = bind_key(s, 1, from); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    for (int status = sqlite3_step(s); status != SQLITE_DONE; status = sqlite3_step(s)) {
+        if (status != SQLITE_ROW) [[unlikely]] {
+            sqlite3_reset(s);
+            return std::unexpected(fail(l, status));
+        }
+        const auto index = column_key(s, 0);
+        if (index >= to) {
+            break;
+        }
+        const auto record = check_record(index, column_bytes(s, 1));
+        if (!record) [[unlikely]] {
+            continue;
+        }
+        auto decoded = decode_entry(record->encoded);
+        if (!decoded) [[unlikely]] {
+            sqlite3_reset(s);
+            return std::unexpected(make_error_code(storage_errc::malformed_record));
+        }
+        records.at(index - from).emplace(std::move(*decoded), record->chain);
+    }
+    sqlite3_reset(s);
+    return records;
+}
+
 std::expected<std::optional<last_entry>, std::error_code> read_last_entry(const link& l)
 {
     sqlite3_stmt* const s = l.s->get_last_entry.get();
@@ -1396,6 +1433,14 @@ persistent_storage::read_only_transaction::get_chain_hash(const std::uint64_t in
 {
     throw_if_no_environment(reading_);
     return read_chain_hash(reading_->of(), index);
+}
+
+std::expected<std::vector<std::optional<std::pair<entry, chain_hash>>>, std::error_code>
+persistent_storage::read_only_transaction::get_entries_and_chain_hashes(const std::uint64_t from,
+                                                                        const std::uint64_t to) const
+{
+    throw_if_no_environment(reading_);
+    return read_entries_and_chain_hashes_in(reading_->of(), from, to);
 }
 
 std::expected<std::optional<entry>, std::error_code>
