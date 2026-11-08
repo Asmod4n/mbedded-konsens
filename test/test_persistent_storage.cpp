@@ -1718,20 +1718,6 @@ TEST_CASE("the row of one key under another key gives crc_mismatch")
     CHECK(read_error_of(storage, b) == konsens::storage_errc::crc_mismatch);
 }
 
-// A row shorter than its CRC cannot hold one, so it is malformed and not
-// read as a value.
-TEST_CASE("a row of data shorter than its CRC gives malformed_record")
-{
-    const temporary_directory dir;
-    auto storage = open_storage(dir.path());
-    const std::array key{std::byte{1}};
-    put_value(storage, key, std::vector{std::byte{1}});
-    change_with_sqlite(dir.path(), [&](sqlite3* db) {
-        sqlite_damage::put_data_row(db, key, std::vector{std::byte{1}, std::byte{2}, std::byte{3}});
-    });
-    CHECK(read_error_of(storage, key) == konsens::storage_errc::malformed_record);
-}
-
 // Plan data-row-crc 3.2: the CRC of a session record covers the session
 // id, so the record of one session under another id fails its check.
 TEST_CASE("the record of one session under another id gives crc_mismatch")

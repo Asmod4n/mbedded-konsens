@@ -171,19 +171,36 @@ inline void put_entry_record(sqlite3* db, const std::uint64_t index, const std::
     REQUIRE(sqlite3_changes(db) == 1);
 }
 
+// Arm B: a row of data holds the value and the CRC in a column of its
+// own. A test reads and writes both as one row of bytes: the value, then
+// the CRC in 4 bytes little endian.
 inline std::vector<std::byte> data_row_of(sqlite3* db, const std::span<const std::byte> key)
 {
-    return select_bytes(db, "SELECT value FROM data WHERE key = ?1", [key](sqlite3_stmt* s) {
+    auto row = select_bytes(db, "SELECT value FROM data WHERE key = ?1", [key](sqlite3_stmt* s) {
         REQUIRE(sqlite3_bind_blob64(s, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK);
     });
+    const auto crc = static_cast<std::uint64_t>(integer_of(db, "SELECT crc FROM data WHERE key = ?1", [key](sqlite3_stmt* s) {
+        REQUIRE(sqlite3_bind_blob64(s, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK);
+    }));
+    for (std::size_t i = 0; i < 4; ++i) {
+        row.push_back(static_cast<std::byte>(crc >> (8 * i)));
+    }
+    return row;
 }
 
 inline void put_data_row(sqlite3* db, const std::span<const std::byte> key, const std::vector<std::byte>& bytes)
 {
-    run(db, "INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        [key, &bytes](sqlite3_stmt* s) {
+    REQUIRE(bytes.size() >= 4);
+    std::int64_t crc = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        crc |= std::to_integer<std::int64_t>(bytes[bytes.size() - 4 + i]) << (8 * i);
+    }
+    run(db, "INSERT INTO data (key, value, crc) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO UPDATE SET value = "
+            "excluded.value, crc = excluded.crc",
+        [key, &bytes, crc](sqlite3_stmt* s) {
             REQUIRE(sqlite3_bind_blob64(s, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK);
-            REQUIRE(sqlite3_bind_blob64(s, 2, bytes.data(), bytes.size(), SQLITE_TRANSIENT) == SQLITE_OK);
+            REQUIRE(sqlite3_bind_blob64(s, 2, bytes.data(), bytes.size() - 4, SQLITE_TRANSIENT) == SQLITE_OK);
+            REQUIRE(sqlite3_bind_int64(s, 3, crc) == SQLITE_OK);
         });
     REQUIRE(sqlite3_changes(db) == 1);
 }

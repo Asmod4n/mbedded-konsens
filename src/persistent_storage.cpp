@@ -53,7 +53,7 @@ constexpr std::string_view store_schema =
     "CREATE TABLE meta (name TEXT PRIMARY KEY, record BLOB NOT NULL) STRICT, WITHOUT ROWID;"
     "CREATE TABLE log (idx INTEGER PRIMARY KEY, record BLOB NOT NULL) STRICT;"
     "CREATE TABLE session (id INTEGER PRIMARY KEY, record BLOB NOT NULL) STRICT;"
-    "CREATE TABLE data (key BLOB PRIMARY KEY, value BLOB NOT NULL) STRICT, WITHOUT ROWID;";
+    "CREATE TABLE data (key BLOB PRIMARY KEY, value BLOB NOT NULL, crc INTEGER NOT NULL) STRICT, WITHOUT ROWID;";
 constexpr std::string_view node_schema =
     "CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, record BLOB NOT NULL) STRICT, WITHOUT ROWID;";
 
@@ -371,10 +371,10 @@ std::expected<statements, int> prepare_statements(sqlite3* db)
                   std::string_view{"INSERT INTO log (idx, record) VALUES (?1, ?2) "
                                    "ON CONFLICT (idx) DO UPDATE SET record = excluded.record"}},
         std::pair{&s.delete_entries_between, std::string_view{"DELETE FROM log WHERE idx >= ?1 AND idx < ?2"}},
-        std::pair{&s.get_value, std::string_view{"SELECT value FROM data WHERE key = ?1"}},
+        std::pair{&s.get_value, std::string_view{"SELECT value, crc FROM data WHERE key = ?1"}},
         std::pair{&s.put_value,
-                  std::string_view{"INSERT INTO data (key, value) VALUES (?1, ?2) "
-                                   "ON CONFLICT (key) DO UPDATE SET value = excluded.value"}},
+                  std::string_view{"INSERT INTO data (key, value, crc) VALUES (?1, ?2, ?3) "
+                                   "ON CONFLICT (key) DO UPDATE SET value = excluded.value, crc = excluded.crc"}},
         std::pair{&s.erase_value, std::string_view{"DELETE FROM data WHERE key = ?1"}},
         std::pair{&s.get_session, std::string_view{"SELECT record FROM session WHERE id = ?1"}},
         std::pair{&s.put_session,
@@ -816,31 +816,27 @@ find_value(const link& l, const std::span<const std::byte> key)
     if (!row || !row->has_value()) {
         return row;
     }
-    const auto bytes = row->value();
-    if (bytes.size() < crc_size) [[unlikely]] {
-        sqlite3_reset(s);
-        return std::unexpected(make_error_code(storage_errc::malformed_record));
-    }
-    const auto value = bytes.first(bytes.size() - crc_size);
-    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of_a_row(key, value)) [[unlikely]] {
+    const auto value = row->value();
+    if (sqlite3_column_int64(s, 1) != std::int64_t{crc_of_a_row(key, value)}) [[unlikely]] {
         sqlite3_reset(s);
         return std::unexpected(make_error_code(storage_errc::crc_mismatch));
     }
     return value;
 }
 
-std::expected<void, std::error_code> put_value(const link& l, std::vector<std::byte>& record,
-                                               const std::span<const std::byte> key,
+std::expected<void, std::error_code> put_value(const link& l, const std::span<const std::byte> key,
                                                const std::span<const std::byte> value)
 {
-    record.resize(value.size() + crc_size);
-    std::ranges::copy(to_little_endian(crc_of_a_row(key, value)), std::ranges::copy(value, record.begin()).out);
     sqlite3_stmt* const s = l.s->put_value.get();
     sqlite3_reset(s);
     if (const int bound = bind_bytes(s, 1, key); bound != SQLITE_OK) [[unlikely]] {
         return std::unexpected(fail(l, bound));
     }
-    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
+    if (const int bound = bind_bytes(s, 2, value); bound != SQLITE_OK) [[unlikely]] {
+        return std::unexpected(fail(l, bound));
+    }
+    if (const int bound = sqlite3_bind_int64(s, 3, std::int64_t{crc_of_a_row(key, value)}); bound != SQLITE_OK)
+        [[unlikely]] {
         return std::unexpected(fail(l, bound));
     }
     return run(l, s);
@@ -1696,7 +1692,7 @@ persistent_storage::transaction::insert_or_assign(const std::span<const std::byt
         return f;
     }
     env_->written = true;
-    return put_value(env_->of_writer(), env_->record, key, value);
+    return put_value(env_->of_writer(), key, value);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::erase(const std::span<const std::byte> key)
@@ -1892,7 +1888,7 @@ persistent_storage::nested_transaction::insert_or_assign(const std::span<const s
     if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
         return f;
     }
-    return put_value(env_->of_writer(), env_->record, key, value);
+    return put_value(env_->of_writer(), key, value);
 }
 
 std::expected<void, std::error_code> persistent_storage::nested_transaction::erase(const std::span<const std::byte> key)
