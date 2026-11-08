@@ -571,10 +571,10 @@ TEST_CASE("open refuses another format and a store with data and no format")
         write(storage, [&](auto& t) { REQUIRE(t.append_entries(written)); });
     }
     change_with_sqlite(dir.path(), [](sqlite3* db) {
-        const std::array<unsigned char, 8> version_4{4, 0, 0, 0, 0, 0, 0, 0};
-        const auto crc = crc32c::Crc32c(version_4.data(), 4);
-        std::vector<std::byte> value(version_4.size());
-        std::ranges::transform(version_4, value.begin(), [](const unsigned char c) { return std::byte{c}; });
+        const std::array<unsigned char, 8> version_8{8, 0, 0, 0, 0, 0, 0, 0};
+        const auto crc = crc32c::Crc32c(version_8.data(), 4);
+        std::vector<std::byte> value(version_8.size());
+        std::ranges::transform(version_8, value.begin(), [](const unsigned char c) { return std::byte{c}; });
         for (std::size_t i = 0; i < 4; ++i) {
             value.at(4 + i) = static_cast<std::byte>(crc >> (8 * i));
         }
@@ -1569,4 +1569,210 @@ TEST_CASE("config_first_idx is absent until a transaction sets it, and an open k
     const auto first = t->get_config_first_idx();
     REQUIRE(first.has_value());
     CHECK(*first == std::optional<std::uint64_t>{12});
+}
+
+namespace {
+
+std::vector<std::byte> little_endian_bytes(const std::uint64_t value)
+{
+    std::vector<std::byte> bytes(sizeof value);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        bytes[i] = static_cast<std::byte>(value >> (8 * i));
+    }
+    return bytes;
+}
+
+std::uint32_t crc32c_of(const std::vector<std::byte>& bytes)
+{
+    return crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+}
+
+std::uint32_t crc_of_the_tail(const std::vector<std::byte>& row)
+{
+    std::uint32_t crc = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+        crc |= std::to_integer<std::uint32_t>(row[row.size() - 4 + i]) << (8 * i);
+    }
+    return crc;
+}
+
+void put_value(konsens::persistent_storage& storage, const std::span<const std::byte> key,
+               const std::span<const std::byte> value)
+{
+    write(storage, [&](auto& t) { REQUIRE(t.insert_or_assign(key, value)); });
+}
+
+std::error_code read_error_of(const konsens::persistent_storage& storage, const std::span<const std::byte> key)
+{
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    const auto found = r->find(key);
+    REQUIRE_FALSE(found.has_value());
+    return found.error();
+}
+
+} // namespace
+
+// Plan data-row-crc 3.1: the CRC of a row covers the length of the key in
+// 8 bytes little endian, the key and the value, and stands in 4 bytes
+// little endian behind the value. The expectation is computed here from
+// that form, over one buffer, not with the chained CRC of the library.
+TEST_CASE("a row of data holds its value and the CRC over the key length, the key and the value")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::vector key{std::byte{7}, std::byte{8}};
+    const std::vector value{std::byte{1}, std::byte{2}, std::byte{3}};
+    put_value(storage, key, value);
+    std::vector<std::byte> row;
+    change_with_sqlite(dir.path(), [&](sqlite3* db) { row = sqlite_damage::data_row_of(db, key); });
+    REQUIRE(row.size() == value.size() + 4);
+    CHECK(std::ranges::equal(std::span(row).first(value.size()), value));
+    auto covered = little_endian_bytes(key.size());
+    covered.insert(covered.end(), key.begin(), key.end());
+    covered.insert(covered.end(), value.begin(), value.end());
+    CHECK(crc_of_the_tail(row) == crc32c_of(covered));
+}
+
+// A value of 0 bytes, 1 byte and 64 KiB comes back whole, and a second put
+// of the same key replaces the first value.
+TEST_CASE("a put and a find give the value back, and a second put replaces it")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array key{std::byte{1}};
+    for (const std::size_t size : {std::size_t{0}, std::size_t{1}, std::size_t{64} * 1024}) {
+        const std::vector value(size, std::byte{0x5a});
+        put_value(storage, key, value);
+        const auto r = storage.begin_read_only();
+        REQUIRE(r.has_value());
+        const auto found = r->find(key);
+        REQUIRE(found.has_value());
+        REQUIRE(found->has_value());
+        CHECK(std::ranges::equal(found->value(), value));
+    }
+    const std::vector second{std::byte{9}};
+    put_value(storage, key, second);
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(std::ranges::equal(r->find(key).value().value(), second));
+}
+
+// A changed byte of the value must not reach the state machine: each kind
+// of transaction gives crc_mismatch.
+TEST_CASE("a changed byte of a stored value gives crc_mismatch in every kind of transaction")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array key{std::byte{1}};
+    const std::vector value{std::byte{1}, std::byte{2}};
+    put_value(storage, key, value);
+    change_with_sqlite(dir.path(), [&](sqlite3* db) {
+        auto row = sqlite_damage::data_row_of(db, key);
+        row[0] ^= std::byte{1};
+        sqlite_damage::put_data_row(db, key, row);
+    });
+    CHECK(read_error_of(storage, key) == konsens::storage_errc::crc_mismatch);
+    auto w = storage.begin();
+    REQUIRE(w.has_value());
+    const auto in_write = w->find(key);
+    REQUIRE_FALSE(in_write.has_value());
+    CHECK(in_write.error() == konsens::storage_errc::crc_mismatch);
+    {
+        auto n = w->begin_nested();
+        REQUIRE(n.has_value());
+        const auto in_nested = n->find(key);
+        REQUIRE_FALSE(in_nested.has_value());
+        CHECK(in_nested.error() == konsens::storage_errc::crc_mismatch);
+    }
+}
+
+// A flip in the CRC itself is a damage as well.
+TEST_CASE("a changed byte of the CRC of a row gives crc_mismatch")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array key{std::byte{1}};
+    put_value(storage, key, std::vector{std::byte{1}});
+    change_with_sqlite(dir.path(), [&](sqlite3* db) {
+        auto row = sqlite_damage::data_row_of(db, key);
+        row.back() ^= std::byte{1};
+        sqlite_damage::put_data_row(db, key, row);
+    });
+    CHECK(read_error_of(storage, key) == konsens::storage_errc::crc_mismatch);
+}
+
+// A misdirected write puts the bytes of one row at the place of another
+// key. The CRC covers the key, so the copy fails its check.
+TEST_CASE("the row of one key under another key gives crc_mismatch")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array a{std::byte{1}};
+    const std::array b{std::byte{2}};
+    put_value(storage, a, std::vector{std::byte{1}});
+    put_value(storage, b, std::vector{std::byte{2}});
+    change_with_sqlite(dir.path(), [&](sqlite3* db) {
+        sqlite_damage::put_data_row(db, b, sqlite_damage::data_row_of(db, a));
+    });
+    CHECK(read_error_of(storage, b) == konsens::storage_errc::crc_mismatch);
+}
+
+// A row shorter than its CRC cannot hold one, so it is malformed and not
+// read as a value.
+TEST_CASE("a row of data shorter than its CRC gives malformed_record")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array key{std::byte{1}};
+    put_value(storage, key, std::vector{std::byte{1}});
+    change_with_sqlite(dir.path(), [&](sqlite3* db) {
+        sqlite_damage::put_data_row(db, key, std::vector{std::byte{1}, std::byte{2}, std::byte{3}});
+    });
+    CHECK(read_error_of(storage, key) == konsens::storage_errc::malformed_record);
+}
+
+// Plan data-row-crc 3.2: the CRC of a session record covers the session
+// id, so the record of one session under another id fails its check.
+TEST_CASE("the record of one session under another id gives crc_mismatch")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    write(storage, [](auto& t) {
+        REQUIRE(t.insert_or_assign_session(1, {5, {std::byte{1}}}));
+        REQUIRE(t.insert_or_assign_session(2, {6, {std::byte{2}}}));
+    });
+    change_with_sqlite(dir.path(), [](sqlite3* db) {
+        sqlite_damage::put_session_row(db, 2, sqlite_damage::session_row_of(db, 1));
+    });
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(r->find_session(1).value()->request_number == 5);
+    const auto moved = r->find_session(2);
+    REQUIRE_FALSE(moved.has_value());
+    CHECK(moved.error() == konsens::storage_errc::crc_mismatch);
+}
+
+// The repair of the state starts from an empty state: erase_the_state
+// removes every row of data and of session and keeps the log.
+TEST_CASE("erase_the_state removes every row of data and session and keeps the log")
+{
+    const temporary_directory dir;
+    auto storage = open_storage(dir.path());
+    const std::array a{std::byte{1}};
+    const std::array b{std::byte{2}};
+    const std::vector written{normal_entry("a")};
+    write(storage, [&](auto& t) {
+        REQUIRE(t.append_entries(written));
+        REQUIRE(t.insert_or_assign(a, a));
+        REQUIRE(t.insert_or_assign(b, b));
+        REQUIRE(t.insert_or_assign_session(3, {1, {}}));
+    });
+    write(storage, [](auto& t) { REQUIRE(t.erase_the_state()); });
+    const auto r = storage.begin_read_only();
+    REQUIRE(r.has_value());
+    CHECK(finds_no_value(r->find(a)));
+    CHECK(finds_no_value(r->find(b)));
+    CHECK(r->find_session(3).value() == std::nullopt);
+    CHECK(r->get_meta().value().log_len == 1);
 }

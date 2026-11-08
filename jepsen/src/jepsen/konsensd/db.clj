@@ -137,8 +137,9 @@
   (let [row (str/trim (sqlite! "SELECT hex(key) || ' ' || hex(value) FROM data ORDER BY random() LIMIT 1"))]
     (when-not (str/blank? row)
       (let [[key value] (str/split row #" ")
-            last-byte (Integer/parseInt (subs value (- (count value) 2)) 16)
-            changed (str (subs value 0 (- (count value) 2)) (format "%02X" (bit-xor last-byte 1)))]
+            at (max 0 (- (count value) 10))
+            flipped (Integer/parseInt (subs value at (+ at 2)) 16)
+            changed (str (subs value 0 at) (format "%02X" (bit-xor flipped 1)) (subs value (+ at 2)))]
         (sqlite! (str "UPDATE data SET value = X'" changed "' WHERE key = X'" key "'"))
         {:key key :from value :to changed}))))
 

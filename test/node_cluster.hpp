@@ -87,6 +87,7 @@ struct disk_storage {
             return t_.insert_or_assign_session(session, record);
         }
         auto erase_session(const std::uint64_t session) { return t_.erase_session(session); }
+        auto erase_the_state() { return t_.erase_the_state(); }
         auto set_applied(const std::uint64_t index, const konsens::chain_hash& crc)
         {
             return t_.set_applied(index, crc);

@@ -38,7 +38,7 @@ constexpr std::string_view clean_stop_key = "clean_stop";
 constexpr std::string_view repair_count_key = "repair_count";
 constexpr std::string_view first_start_key = "first_start";
 constexpr std::string_view config_first_key = "config_first";
-constexpr std::uint32_t format_version = 8;
+constexpr std::uint32_t format_version = 9;
 constexpr std::uint32_t node_format_version = 1;
 constexpr int synchronous_normal = 1;
 constexpr int synchronous_full = 2;
@@ -201,6 +201,19 @@ std::uint32_t crc_of(const std::span<const std::byte> bytes) noexcept
     return crc32c::Crc32c(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
 }
 
+std::uint32_t crc_of_a_row(const std::span<const std::byte> key, const std::span<const std::byte> value) noexcept
+{
+    const auto head = crc_of(to_little_endian(std::uint64_t{key.size()}));
+    const auto with_key = crc32c::Extend(head, reinterpret_cast<const std::uint8_t*>(key.data()), key.size());
+    return crc32c::Extend(with_key, reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
+}
+
+std::uint32_t crc_of_a_session(const std::uint64_t session, const std::span<const std::byte> body) noexcept
+{
+    return crc32c::Extend(crc_of(to_little_endian(session)), reinterpret_cast<const std::uint8_t*>(body.data()),
+                          body.size());
+}
+
 bool key_fits_in_an_sqlite_integer(const std::uint64_t key) noexcept
 {
     return key <= largest_key;
@@ -328,6 +341,8 @@ struct statements {
     statement get_session;
     statement put_session;
     statement erase_session;
+    statement erase_every_value;
+    statement erase_every_session;
     statement vacuum_into;
 };
 
@@ -366,6 +381,8 @@ std::expected<statements, int> prepare_statements(sqlite3* db)
                   std::string_view{"INSERT INTO session (id, record) VALUES (?1, ?2) "
                                    "ON CONFLICT (id) DO UPDATE SET record = excluded.record"}},
         std::pair{&s.erase_session, std::string_view{"DELETE FROM session WHERE id = ?1"}},
+        std::pair{&s.erase_every_value, std::string_view{"DELETE FROM data"}},
+        std::pair{&s.erase_every_session, std::string_view{"DELETE FROM session"}},
         std::pair{&s.vacuum_into, std::string_view{"VACUUM INTO ?1"}},
     };
     for (const auto& [target, sql] : list) {
@@ -795,18 +812,35 @@ find_value(const link& l, const std::span<const std::byte> key)
     if (const int bound = bind_bytes(s, 1, key); bound != SQLITE_OK) [[unlikely]] {
         return std::unexpected(fail(l, bound));
     }
-    return select_one(l, s);
+    const auto row = select_one(l, s);
+    if (!row || !row->has_value()) {
+        return row;
+    }
+    const auto bytes = row->value();
+    if (bytes.size() < crc_size) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::malformed_record));
+    }
+    const auto value = bytes.first(bytes.size() - crc_size);
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of_a_row(key, value)) [[unlikely]] {
+        sqlite3_reset(s);
+        return std::unexpected(make_error_code(storage_errc::crc_mismatch));
+    }
+    return value;
 }
 
-std::expected<void, std::error_code> put_value(const link& l, const std::span<const std::byte> key,
+std::expected<void, std::error_code> put_value(const link& l, std::vector<std::byte>& record,
+                                               const std::span<const std::byte> key,
                                                const std::span<const std::byte> value)
 {
+    record.resize(value.size() + crc_size);
+    std::ranges::copy(to_little_endian(crc_of_a_row(key, value)), std::ranges::copy(value, record.begin()).out);
     sqlite3_stmt* const s = l.s->put_value.get();
     sqlite3_reset(s);
     if (const int bound = bind_bytes(s, 1, key); bound != SQLITE_OK) [[unlikely]] {
         return std::unexpected(fail(l, bound));
     }
-    if (const int bound = bind_bytes(s, 2, value); bound != SQLITE_OK) [[unlikely]] {
+    if (const int bound = bind_bytes(s, 2, record); bound != SQLITE_OK) [[unlikely]] {
         return std::unexpected(fail(l, bound));
     }
     return run(l, s);
@@ -846,7 +880,7 @@ std::expected<std::optional<session_record>, std::error_code> find_session_in(co
         return std::unexpected(make_error_code(storage_errc::malformed_record));
     }
     const auto body = bytes.first(bytes.size() - crc_size);
-    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of(body)) [[unlikely]] {
+    if (from_little_endian<std::uint32_t>(bytes.last<crc_size>()) != crc_of_a_session(session, body)) [[unlikely]] {
         sqlite3_reset(s);
         return std::unexpected(make_error_code(storage_errc::crc_mismatch));
     }
@@ -865,7 +899,7 @@ std::expected<void, std::error_code> put_session(const link& l, std::vector<std:
     record.resize(session_head_size + r.reply.size() + crc_size);
     std::ranges::copy(r.reply, std::ranges::copy(to_little_endian(r.request_number), record.begin()).out);
     const auto body = std::span<const std::byte>(record).first(record.size() - crc_size);
-    std::ranges::copy(to_little_endian(crc_of(body)), std::span(record).last(crc_size).begin());
+    std::ranges::copy(to_little_endian(crc_of_a_session(session, body)), std::span(record).last(crc_size).begin());
     sqlite3_stmt* const s = l.s->put_session.get();
     sqlite3_reset(s);
     if (const int bound = bind_key(s, 1, session); bound != SQLITE_OK) [[unlikely]] {
@@ -1662,7 +1696,7 @@ persistent_storage::transaction::insert_or_assign(const std::span<const std::byt
         return f;
     }
     env_->written = true;
-    return put_value(env_->of_writer(), key, value);
+    return put_value(env_->of_writer(), env_->record, key, value);
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::erase(const std::span<const std::byte> key)
@@ -1699,6 +1733,21 @@ std::expected<void, std::error_code> persistent_storage::transaction::erase_sess
     return erase_session_in(env_->of_writer(), session).transform([this](const bool erased) {
         env_->written = env_->written || erased;
     });
+}
+
+std::expected<void, std::error_code> persistent_storage::transaction::erase_the_state()
+{
+    throw_if_no_environment(env_);
+    throw_if_nested_is_open(env_->nested_open);
+    if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
+        return f;
+    }
+    env_->written = true;
+    const auto l = env_->of_writer();
+    if (auto r = run(l, l.s->erase_every_value.get()); !r) [[unlikely]] {
+        return r;
+    }
+    return run(l, l.s->erase_every_session.get());
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::set_applied(const std::uint64_t applied_idx,
@@ -1843,7 +1892,7 @@ persistent_storage::nested_transaction::insert_or_assign(const std::span<const s
     if (auto f = refuse_after_a_failure(env_->of_writer()); !f) [[unlikely]] {
         return f;
     }
-    return put_value(env_->of_writer(), key, value);
+    return put_value(env_->of_writer(), env_->record, key, value);
 }
 
 std::expected<void, std::error_code> persistent_storage::nested_transaction::erase(const std::span<const std::byte> key)

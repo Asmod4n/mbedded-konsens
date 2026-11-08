@@ -171,6 +171,40 @@ inline void put_entry_record(sqlite3* db, const std::uint64_t index, const std::
     REQUIRE(sqlite3_changes(db) == 1);
 }
 
+inline std::vector<std::byte> data_row_of(sqlite3* db, const std::span<const std::byte> key)
+{
+    return select_bytes(db, "SELECT value FROM data WHERE key = ?1", [key](sqlite3_stmt* s) {
+        REQUIRE(sqlite3_bind_blob64(s, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK);
+    });
+}
+
+inline void put_data_row(sqlite3* db, const std::span<const std::byte> key, const std::vector<std::byte>& bytes)
+{
+    run(db, "INSERT INTO data (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [key, &bytes](sqlite3_stmt* s) {
+            REQUIRE(sqlite3_bind_blob64(s, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK);
+            REQUIRE(sqlite3_bind_blob64(s, 2, bytes.data(), bytes.size(), SQLITE_TRANSIENT) == SQLITE_OK);
+        });
+    REQUIRE(sqlite3_changes(db) == 1);
+}
+
+inline std::vector<std::byte> session_row_of(sqlite3* db, const std::uint64_t session)
+{
+    return select_bytes(db, "SELECT record FROM session WHERE id = ?1", [session](sqlite3_stmt* s) {
+        REQUIRE(sqlite3_bind_int64(s, 1, static_cast<sqlite3_int64>(session)) == SQLITE_OK);
+    });
+}
+
+inline void put_session_row(sqlite3* db, const std::uint64_t session, const std::vector<std::byte>& bytes)
+{
+    run(db, "INSERT INTO session (id, record) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET record = excluded.record",
+        [session, &bytes](sqlite3_stmt* s) {
+            REQUIRE(sqlite3_bind_int64(s, 1, static_cast<sqlite3_int64>(session)) == SQLITE_OK);
+            REQUIRE(sqlite3_bind_blob64(s, 2, bytes.data(), bytes.size(), SQLITE_TRANSIENT) == SQLITE_OK);
+        });
+    REQUIRE(sqlite3_changes(db) == 1);
+}
+
 // The WAL of SQLite (file format, section 4.1): a header of 32 bytes that
 // holds the page size at offset 8 in big-endian order, then frames, each a
 // header of 24 bytes and one page. A test reads the file itself, because a

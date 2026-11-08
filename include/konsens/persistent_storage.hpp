@@ -138,6 +138,7 @@ public:
         [[nodiscard]] std::expected<void, std::error_code> insert_or_assign_session(std::uint64_t session,
                                                                                     const session_record& record);
         [[nodiscard]] std::expected<void, std::error_code> erase_session(std::uint64_t session);
+        [[nodiscard]] std::expected<void, std::error_code> erase_the_state();
         [[nodiscard]] std::expected<void, std::error_code>
         set_applied(std::uint64_t applied_idx, const chain_hash& applied_chain_hash);
         [[nodiscard]] std::expected<nested_transaction, std::error_code> begin_nested();

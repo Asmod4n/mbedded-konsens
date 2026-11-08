@@ -234,6 +234,7 @@ concept storage_write = storage_read<T> && state_write<T> && state_write<nested_
                                 t.begin_nested()
                             } -> std::same_as<std::expected<nested_transaction_of<T>, std::error_code>>;
                             { t.set_applied(index, hash) } -> std::same_as<std::expected<void, std::error_code>>;
+                            { t.erase_the_state() } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.append_entries(entries) } -> std::same_as<std::expected<void, std::error_code>>;
                             { t.replace_entries(index, entries) } -> std::same_as<std::expected<void, std::error_code>>;
                             {
