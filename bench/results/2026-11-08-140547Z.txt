@@ -1,0 +1,220 @@
+# Bench: konsens_bench
+
+What: konsens_bench, built from bench/konsens_bench.cpp at the commit in
+the context below, and one binary for each arm commit. Each process runs
+one case with one argument (a payload in bytes or a parameter). It takes
+one warm-up sample and then 5 samples. A sample is a fixed number of
+operations (ops_per_sample in each raw line). The time of one operation is
+the time of the sample divided by that number. Each process prints the
+median, the minimum and the maximum of its samples.
+
+Cases of 06a52bf, with the same names, inputs and operations:
+- crc32c: crc32c::Crc32c over one payload, taken in turn from 16 buffers.
+- encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
+  entries of 1024 B. encode_decide, decode_decide: one Decide.
+- commit: one write transaction of the log with one append of one
+  entry and its commit, on a fresh store for each sample (06a52bf: one
+  write_atomically of one append_entries). This is the commit of a step.
+- write: three nodes in one process, messages through encode and
+  decode, the network a queue. One client_request at a follower, timed
+  from the call to its reply.
+- read: one client_query at a follower after one write, timed from
+  the call to its reply. This is a read after a step.
+- write_batch: 64 client_request calls at a follower before the
+  first round, timed until the last reply, divided by 64.
+- write_batch_size (new; the arm 06a52bf has it through
+  bench/arms/06a52bf.patch): as write_batch with a payload of 1024 B,
+  at the batch size of the argument (1, 16 or 256).
+- get_entries: get_entries(0, 1) of one entry in a read transaction.
+These cases had other names before 2026-10-30. An arm built before
+that knows only the old names, so this script cannot compare it with a
+later arm.
+- write_threads, read_threads, write_batch_threads: the
+  same operations with each node on its own thread, no tick.
+Removed at the branch: handle_accept_decide and handle_decide. They ran
+on a store that keeps no entry, and each step of the branch reads its
+entries back.
+
+New cases:
+- pipeline_<work>_<delay>_<rate>: one leader and two followers, each node
+  on its own thread, each message delayed by the delay (0 or 20 ms). A
+  thread puts a tick call into each inbox every tick_ms (1 ms at 0 ms
+  delay, 20 ms at 20 ms delay). Requests arrive at the leader in an open
+  loop at the rate (10000/s, the rate of
+  bench/results/2026-10-24-231534Z, or 20000/s), with an empty payload.
+  The argument is max_in_flight. Work put: one get and one put of a
+  counter. Work loop: the same and 63 more puts. ns per op: from the
+  planned arrival of the first request of a sample to the last reply of
+  that sample, divided by the requests of the sample. Latency: from the
+  planned arrival to the release of the reply, of each request after the
+  warm-up. processor_ns_per_op: getrusage of the process (all threads)
+  over the requests after the warm-up. runs_per_request: the calls of
+  apply at all nodes over all requests, warm-up included;
+  runs_again_per_1000: the calls above one per node and request, per
+  1000 requests.
+- execute_verify_int, execute_verify_float: the pipeline harness at 0 ms
+  delay and 10000 requests/s, argument max_in_flight. int: the counter.
+  float: each node returns (n + 1/3) * (1 + e) as a CBOR double, with e
+  0, 1e-14 and -1e-14 at nodes 1, 2 and 3, and float_digits 12 where the
+  commit has Execute-Verify.
+- read_back: a copy of the reads of node::written_values_read_back, done
+  in one open write transaction of a state_storage after one put of a
+  value of the payload size. Before the samples, the case compares the
+  copy with the state of each node after a step of the cluster.
+- scan_the_whole_log: sequence_paxos::scan_the_whole_log over a log of
+  the argument in entries of 64 B.
+
+Checks: as at 06a52bf for its cases. The cluster cases compare each
+reply with its request number. A process whose check fails exits with 1;
+its raw line shows the exit status.
+
+Run: 3 rounds. Each round runs every case in every binary that
+lists it (konsens_bench --list). The order of the cases and of the
+binaries turns around each second round. konsens_bench_aa is the source
+of the branch built a second time; the difference between
+konsens_bench and konsens_bench_aa is the A/A difference.
+
+User and priority: each process runs as the user bench (uid 1001, not
+root), started by setpriv. Not pinned. Each raw line gives nice,
+other_processes_of_user (the processes of the user bench before the
+start), procs_running of /proc/stat before the start, and the steal ticks
+of /proc/stat during the process.
+
+## Context
+
+# commit 18e9a4d75e725733696bc20d7fdc0bd3ed9b6e2e dirty
+# dirty path ?? bench/results/2026-11-08-135420Z.txt
+# arm 912599b 912599b683123b319844accff8ec8f7a2e2d4bd5 bench/konsens_bench.cpp of the working tree
+# podman podman version 4.9.3
+# container podman, image localhost/cxx-matrix-sqlite ce564ccf1ce66362beb76af110eeec733cf9480d76a886f60c3c8ae9b8572cbf created 2026-11-08 13:52:19.571451061 +0000 UTC
+# os Ubuntu 26.10
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# build type Release, CMAKE_CXX_FLAGS_RELEASE -O2 -DNDEBUG
+# build type Release, CMAKE_C_FLAGS_RELEASE -O2 -DNDEBUG
+# compile command ccache /usr/bin/g++-16  -I/src/src -I/src/include -I/src/deps/crc32c/include -isystem /deps/cbor/include -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -MF CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o.d -o CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -c /src/bench/konsens_bench.cpp
+# compile command ccache /usr/bin/g++-16 -D_GLIBCXX_ASSERTIONS -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -I/src/include -I/src/deps/crc32c/src -I/work/build/deps/crc32c/include -I/src/deps/crc32c/include -isystem /deps/cbor/include -isystem /deps/slip/src -isystem /work/build/liburing-out/include -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens.dir/src/persistent_storage.cpp.o -MF CMakeFiles/konsens.dir/src/persistent_storage.cpp.o.d -o CMakeFiles/konsens.dir/src/persistent_storage.cpp.o -c /src/src/persistent_storage.cpp
+# instruction set -march=x86-64 -mtune=generic 
+# instruction set macros __MMX__ __SSE2__ __SSE__ 
+# binary konsens_bench sha256 45893cc081aa8d2a needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.3 CXXABI_1.3.9 CXXABI_1.3.13 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.9 GLIBC_2.10 GLIBC_2.14 GLIBC_2.15 GLIBC_2.16 GLIBC_2.26 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 
+# binary konsens_bench comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary konsens_bench_aa sha256 45893cc081aa8d2a needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.3 CXXABI_1.3.9 CXXABI_1.3.13 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.9 GLIBC_2.10 GLIBC_2.14 GLIBC_2.15 GLIBC_2.16 GLIBC_2.26 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 
+# binary konsens_bench_aa comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary konsens_bench_912599b sha256 cba63ad8185e0b2d needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.3 CXXABI_1.3.9 CXXABI_1.3.13 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.9 GLIBC_2.10 GLIBC_2.14 GLIBC_2.15 GLIBC_2.16 GLIBC_2.26 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 
+# binary konsens_bench_912599b comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# libraries linux-vdso.so.1 ; libsqlite3.so.0 /usr/lib/x86_64-linux-gnu/libsqlite3.so.0; libcrypto.so.4 /usr/lib/x86_64-linux-gnu/libcrypto.so.4; libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6; libm.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6; libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1; libc.so.6 /usr/lib/x86_64-linux-gnu/libc.so.6; libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1; libzstd.so.1 /usr/lib/x86_64-linux-gnu/libzstd.so.1; /lib64/ld-linux-x86-64.so.2 ; 
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1; 
+# sqlite libsqlite3-0 3.53.4-2 of the distribution
+# kernel 6.18.44-fc-v310 #1 SMP @0
+# scheduler no /sys/kernel/sched_ext
+# virtual machine hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor @ 2.30GHz nproc 4
+# cpu flags sha256 0750228a0e310f80
+# user bench uid 1001 through setpriv, nice 0, threads 1 in a serial case; 4 in a case whose name ends in _threads (the main thread and three node threads); 5 in a pipeline or execute_verify case (the main thread, three node threads and a thread that ticks)
+# storage mount /dev/vda /storage ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# loadavg at start 1.46 1.07 0.66 1/125 716
+# cases chosen by the prefixes 'repair': 6
+# loadavg at end 1.00 1.01 0.82 1/123 1318
+
+## A/A difference of each case
+
+ns per operation: the median of the process medians of each binary.
+
+| case | argument | konsens_bench | konsens_bench_aa | A/A |
+|---|---|---|---|---|
+| repair_of_the_state | 1000 | 17131032.00 | 14911440.00 | -13.0 % |
+| repair_of_the_state | 10000 | 111567225.00 | 112666018.00 | +1.0 % |
+| repair_of_the_state | 100000 | 1006222509.00 | 1021953255.00 | +1.6 % |
+| repair_scan_for_damaged_ranges | 1000 | 3429229.00 | 3376910.00 | -1.5 % |
+| repair_scan_for_damaged_ranges | 10000 | 34311034.00 | 33980144.00 | -1.0 % |
+| repair_scan_for_damaged_ranges | 100000 | 326838583.00 | 333375109.00 | +2.0 % |
+
+Largest A/A difference: 13.0 %. This is the noise floor of the run.
+
+## Result of each binary
+
+ns per operation: the median of the process medians. Spread: the lowest and the highest process median.
+Each other arm: the branch binary konsens_bench against that arm, (branch - arm) / arm.
+
+| case | argument | konsens_bench | spread | konsens_bench_912599b | spread | branch vs arm |
+|---|---|---|---|---|---|---|
+| repair_of_the_state | 1000 | 17131032.00 | 17055230.00-19890269.00 | 16800812.00 | 13750051.00-18677773.00 | +2.0 % |
+| repair_of_the_state | 10000 | 111567225.00 | 101922642.00-114702878.00 | 70979684.00 | 69193334.00-74596545.00 | +57.2 % |
+| repair_of_the_state | 100000 | 1006222509.00 | 975723620.00-1071047119.00 | 530844728.00 | 525252101.00-536606048.00 | +89.6 % |
+| repair_scan_for_damaged_ranges | 1000 | 3429229.00 | 3371103.00-4360246.00 | 3275447.00 | 3155401.00-3443509.00 | +4.7 % |
+| repair_scan_for_damaged_ranges | 10000 | 34311034.00 | 32403878.00-35925035.00 | 35130181.00 | 33836534.00-35763890.00 | -2.3 % |
+| repair_scan_for_damaged_ranges | 100000 | 326838583.00 | 317863410.00-341303753.00 | 340263304.00 | 329405537.00-340749147.00 | -3.9 % |
+
+## Details of each binary
+
+The median over the processes of each field of the raw lines.
+
+| case | argument | binary | field | median | spread |
+|---|---|---|---|---|---|
+
+Processes that failed: 0.
+
+## Incremental SHA-256 vs CRC32C
+
+# SHA-256 via OpenSSL EVP; both hashes process each payload in 64-byte chunks
+# 31 measured samples after one warm-up; median ns/op; independent payloads, not chained log latency
+bytes,operations,crc32c_ns,sha256_ns,sha256_over_crc,crc_folded,sha_folded
+64,200000,5.63,184.36,32.75,00000000,00000000
+1024,20000,81.56,735.52,9.02,00000000,00000000
+65536,512,7073.23,37859.40,5.35,00000000,00000000
+
+## Raw lines
+
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=17131032.00 min=14569413.00 max=17736463.00 entries_in_the_log=1000 rows=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=14502520.00 min=14132064.00 max=15260454.00 entries_in_the_log=1000 rows=1000
+round=1 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=13750051.00 min=13339555.00 max=14135225.00 entries_in_the_log=1000 rows=1000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=4 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=101922642.00 min=100810048.00 max=105174169.00 entries_in_the_log=10000 rows=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=106550193.00 min=105552222.00 max=107185659.00 entries_in_the_log=10000 rows=1000
+round=1 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=70979684.00 min=69621055.00 max=78777612.00 entries_in_the_log=10000 rows=1000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=975723620.00 min=934530892.00 max=1048392335.00 entries_in_the_log=100000 rows=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1021953255.00 min=959408499.00 max=1037212207.00 entries_in_the_log=100000 rows=1000
+round=1 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=536606048.00 min=515610236.00 max=605289539.00 entries_in_the_log=100000 rows=1000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=4360246.00 min=4057656.00 max=5158187.00 entries_in_the_log=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3194994.00 min=3159983.00 max=3509759.00 entries_in_the_log=1000
+round=1 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3275447.00 min=3220272.00 max=3603346.00 entries_in_the_log=1000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=34311034.00 min=34248239.00 max=35642707.00 entries_in_the_log=10000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=32159735.00 min=31562891.00 max=33640981.00 entries_in_the_log=10000
+round=1 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=33836534.00 min=33229196.00 max=35481898.00 entries_in_the_log=10000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=20 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=341303753.00 min=321004613.00 max=346541151.00 entries_in_the_log=100000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=324263048.00 min=322400488.00 max=353086547.00 entries_in_the_log=100000
+round=1 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=340263304.00 min=328941887.00 max=361588002.00 entries_in_the_log=100000
+round=2 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=21 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=340749147.00 min=326899535.00 max=373620464.00 entries_in_the_log=100000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=333375109.00 min=327689469.00 max=353430879.00 entries_in_the_log=100000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=326838583.00 min=323696813.00 max=365691752.00 entries_in_the_log=100000
+round=2 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=35130181.00 min=34751440.00 max=37728161.00 entries_in_the_log=10000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=34575328.00 min=34257014.00 max=37794684.00 entries_in_the_log=10000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=35925035.00 min=35405072.00 max=37639156.00 entries_in_the_log=10000
+round=2 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3443509.00 min=3390483.00 max=3699198.00 entries_in_the_log=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3376910.00 min=3331873.00 max=3740004.00 entries_in_the_log=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3371103.00 min=3277137.00 max=4571206.00 entries_in_the_log=1000
+round=2 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=19 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=525252101.00 min=515417627.00 max=613438547.00 entries_in_the_log=100000 rows=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=16 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1058763578.00 min=973378075.00 max=1136773147.00 entries_in_the_log=100000 rows=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=12 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1071047119.00 min=1065641674.00 max=1134663534.00 entries_in_the_log=100000 rows=1000
+round=2 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=74596545.00 min=66665785.00 max=76578926.00 entries_in_the_log=10000 rows=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=114645831.00 min=113702753.00 max=115274643.00 entries_in_the_log=10000 rows=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=3 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=111567225.00 min=102129413.00 max=129201335.00 entries_in_the_log=10000 rows=1000
+round=2 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=16800812.00 min=16369529.00 max=17899209.00 entries_in_the_log=1000 rows=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=16180035.00 min=16011946.00 max=16410382.00 entries_in_the_log=1000 rows=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=19890269.00 min=19421855.00 max=20035534.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=17055230.00 min=16782009.00 max=19771013.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=14911440.00 min=14615430.00 max=15559540.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=18677773.00 min=15394750.00 max=22694578.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=114702878.00 min=112989322.00 max=115962811.00 entries_in_the_log=10000 rows=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=112666018.00 min=111682943.00 max=117658670.00 entries_in_the_log=10000 rows=1000
+round=3 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=69193334.00 min=68154570.00 max=74018975.00 entries_in_the_log=10000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=15 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1006222509.00 min=955626010.00 max=1034871186.00 entries_in_the_log=100000 rows=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=25 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1004500161.00 min=953056849.00 max=1031848163.00 entries_in_the_log=100000 rows=1000
+round=3 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=530844728.00 min=515975548.00 max=604541894.00 entries_in_the_log=100000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3429229.00 min=3374756.00 max=3643183.00 entries_in_the_log=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=4091937.00 min=4036251.00 max=4672938.00 entries_in_the_log=1000
+round=3 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=3155401.00 min=3044212.00 max=3443262.00 entries_in_the_log=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=32403878.00 min=31952367.00 max=43150314.00 entries_in_the_log=10000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=33980144.00 min=33303813.00 max=35824155.00 entries_in_the_log=10000
+round=3 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_scan_for_damaged_ranges parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=35763890.00 min=34622616.00 max=36179742.00 entries_in_the_log=10000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=18 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=317863410.00 min=317264424.00 max=329591129.00 entries_in_the_log=100000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=13 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=342471773.00 min=342297788.00 max=351592279.00 entries_in_the_log=100000
+round=3 binary=konsens_bench_912599b nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=repair_scan_for_damaged_ranges parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=329405537.00 min=322446311.00 max=339581588.00 entries_in_the_log=100000

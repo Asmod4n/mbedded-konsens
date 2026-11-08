@@ -1,0 +1,174 @@
+# Bench: konsens_bench
+
+What: konsens_bench, built from bench/konsens_bench.cpp at the commit in
+the context below, and one binary for each arm commit. Each process runs
+one case with one argument (a payload in bytes or a parameter). It takes
+one warm-up sample and then 5 samples. A sample is a fixed number of
+operations (ops_per_sample in each raw line). The time of one operation is
+the time of the sample divided by that number. Each process prints the
+median, the minimum and the maximum of its samples.
+
+Cases of 06a52bf, with the same names, inputs and operations:
+- crc32c: crc32c::Crc32c over one payload, taken in turn from 16 buffers.
+- encode_accept_decide, decode_accept_decide: one AcceptDecide with 64
+  entries of 1024 B. encode_decide, decode_decide: one Decide.
+- commit: one write transaction of the log with one append of one
+  entry and its commit, on a fresh store for each sample (06a52bf: one
+  write_atomically of one append_entries). This is the commit of a step.
+- write: three nodes in one process, messages through encode and
+  decode, the network a queue. One client_request at a follower, timed
+  from the call to its reply.
+- read: one client_query at a follower after one write, timed from
+  the call to its reply. This is a read after a step.
+- write_batch: 64 client_request calls at a follower before the
+  first round, timed until the last reply, divided by 64.
+- write_batch_size (new; the arm 06a52bf has it through
+  bench/arms/06a52bf.patch): as write_batch with a payload of 1024 B,
+  at the batch size of the argument (1, 16 or 256).
+- get_entries: get_entries(0, 1) of one entry in a read transaction.
+These cases had other names before 2026-10-30. An arm built before
+that knows only the old names, so this script cannot compare it with a
+later arm.
+- write_threads, read_threads, write_batch_threads: the
+  same operations with each node on its own thread, no tick.
+Removed at the branch: handle_accept_decide and handle_decide. They ran
+on a store that keeps no entry, and each step of the branch reads its
+entries back.
+
+New cases:
+- pipeline_<work>_<delay>_<rate>: one leader and two followers, each node
+  on its own thread, each message delayed by the delay (0 or 20 ms). A
+  thread puts a tick call into each inbox every tick_ms (1 ms at 0 ms
+  delay, 20 ms at 20 ms delay). Requests arrive at the leader in an open
+  loop at the rate (10000/s, the rate of
+  bench/results/2026-10-24-231534Z, or 20000/s), with an empty payload.
+  The argument is max_in_flight. Work put: one get and one put of a
+  counter. Work loop: the same and 63 more puts. ns per op: from the
+  planned arrival of the first request of a sample to the last reply of
+  that sample, divided by the requests of the sample. Latency: from the
+  planned arrival to the release of the reply, of each request after the
+  warm-up. processor_ns_per_op: getrusage of the process (all threads)
+  over the requests after the warm-up. runs_per_request: the calls of
+  apply at all nodes over all requests, warm-up included;
+  runs_again_per_1000: the calls above one per node and request, per
+  1000 requests.
+- execute_verify_int, execute_verify_float: the pipeline harness at 0 ms
+  delay and 10000 requests/s, argument max_in_flight. int: the counter.
+  float: each node returns (n + 1/3) * (1 + e) as a CBOR double, with e
+  0, 1e-14 and -1e-14 at nodes 1, 2 and 3, and float_digits 12 where the
+  commit has Execute-Verify.
+- read_back: a copy of the reads of node::written_values_read_back, done
+  in one open write transaction of a state_storage after one put of a
+  value of the payload size. Before the samples, the case compares the
+  copy with the state of each node after a step of the cluster.
+- scan_the_whole_log: sequence_paxos::scan_the_whole_log over a log of
+  the argument in entries of 64 B.
+
+Checks: as at 06a52bf for its cases. The cluster cases compare each
+reply with its request number. A process whose check fails exits with 1;
+its raw line shows the exit status.
+
+Run: 3 rounds. Each round runs every case in every binary that
+lists it (konsens_bench --list). The order of the cases and of the
+binaries turns around each second round. konsens_bench_aa is the source
+of the branch built a second time; the difference between
+konsens_bench and konsens_bench_aa is the A/A difference.
+
+User and priority: each process runs as the user bench (uid 1001, not
+root), started by setpriv. Not pinned. Each raw line gives nice,
+other_processes_of_user (the processes of the user bench before the
+start), procs_running of /proc/stat before the start, and the steal ticks
+of /proc/stat during the process.
+
+## Context
+
+# commit 8372367a5514aedbae2fcc522619f34d2b6ef5ff clean
+# podman podman version 4.9.3
+# container podman, image localhost/cxx-matrix-sqlite ce564ccf1ce66362beb76af110eeec733cf9480d76a886f60c3c8ae9b8572cbf created 2026-11-08 13:52:19.571451061 +0000 UTC
+# os Ubuntu 26.10
+# compiler g++-16 (Ubuntu 16.2.0-3ubuntu1) 16.2.0
+# build type Release, CMAKE_CXX_FLAGS_RELEASE -O2 -DNDEBUG
+# build type Release, CMAKE_C_FLAGS_RELEASE -O2 -DNDEBUG
+# compile command ccache /usr/bin/g++-16  -I/src/src -I/src/include -I/src/deps/crc32c/include -isystem /deps/cbor/include -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -MF CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o.d -o CMakeFiles/konsens_bench.dir/bench/konsens_bench.cpp.o -c /src/bench/konsens_bench.cpp
+# compile command ccache /usr/bin/g++-16 -D_GLIBCXX_ASSERTIONS -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -I/src/include -I/src/deps/crc32c/src -I/work/build/deps/crc32c/include -I/src/deps/crc32c/include -isystem /deps/cbor/include -isystem /deps/slip/src -isystem /work/build/liburing-out/include -O2 -DNDEBUG -std=c++23 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Werror -MD -MT CMakeFiles/konsens.dir/src/persistent_storage.cpp.o -MF CMakeFiles/konsens.dir/src/persistent_storage.cpp.o.d -o CMakeFiles/konsens.dir/src/persistent_storage.cpp.o -c /src/src/persistent_storage.cpp
+# instruction set -march=x86-64 -mtune=generic 
+# instruction set macros __MMX__ __SSE2__ __SSE__ 
+# binary konsens_bench sha256 4a30c99a03524db3 needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.3 CXXABI_1.3.9 CXXABI_1.3.13 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.9 GLIBC_2.10 GLIBC_2.14 GLIBC_2.15 GLIBC_2.16 GLIBC_2.26 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 
+# binary konsens_bench comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# binary konsens_bench_aa sha256 4a30c99a03524db3 needs CXXABI_1.3 CXXABI_1.3.2 CXXABI_1.3.3 CXXABI_1.3.9 CXXABI_1.3.13 GLIBCXX_3.4 GLIBCXX_3.4.9 GLIBCXX_3.4.11 GLIBCXX_3.4.19 GLIBCXX_3.4.20 GLIBCXX_3.4.21 GLIBCXX_3.4.22 GLIBCXX_3.4.26 GLIBCXX_3.4.28 GLIBCXX_3.4.29 GLIBCXX_3.4.30 GLIBCXX_3.4.31 GLIBCXX_3.4.32 GLIBCXX_3.4.35 GLIBCXX_3.4.36 GLIBC_2.2.5 GLIBC_2.3.2 GLIBC_2.3.4 GLIBC_2.4 GLIBC_2.9 GLIBC_2.10 GLIBC_2.14 GLIBC_2.15 GLIBC_2.16 GLIBC_2.26 GLIBC_2.32 GLIBC_2.33 GLIBC_2.34 
+# binary konsens_bench_aa comment GCC: (Ubuntu 16.2.0-3ubuntu1) 16.2.0 
+# libraries linux-vdso.so.1 ; libsqlite3.so.0 /usr/lib/x86_64-linux-gnu/libsqlite3.so.0; libcrypto.so.4 /usr/lib/x86_64-linux-gnu/libcrypto.so.4; libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6; libm.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6; libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1; libc.so.6 /usr/lib/x86_64-linux-gnu/libc.so.6; libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1; libzstd.so.1 /usr/lib/x86_64-linux-gnu/libzstd.so.1; /lib64/ld-linux-x86-64.so.2 ; 
+# packages libc6 2.44-1ubuntu2; libstdc++6 16.2.0-3ubuntu1; 
+# sqlite libsqlite3-0 3.53.4-2 of the distribution
+# kernel 6.18.44-fc-v310 #1 SMP @0
+# scheduler no /sys/kernel/sched_ext
+# virtual machine hypervisor flag 1
+# processor Intel(R) Xeon(R) Processor @ 2.30GHz nproc 4
+# cpu flags sha256 0750228a0e310f80
+# user bench uid 1001 through setpriv, nice 0, threads 1 in a serial case; 4 in a case whose name ends in _threads (the main thread and three node threads); 5 in a pipeline or execute_verify case (the main thread, three node threads and a thread that ticks)
+# storage mount /dev/vda /storage ext4 rw,relatime,discard,no_prefetch_block_bitmaps,resv_strict,resuid=65534,resgid=65534 0 0
+# loadavg at start 1.10 0.62 0.25 1/129 134
+# cases chosen by the prefixes 'repair_of_the_state': 3
+# loadavg at end 1.00 0.81 0.40 1/124 340
+
+## A/A difference of each case
+
+ns per operation: the median of the process medians of each binary.
+
+| case | argument | konsens_bench | konsens_bench_aa | A/A |
+|---|---|---|---|---|
+| repair_of_the_state | 1000 | 15910537.00 | 16744342.00 | +5.2 % |
+| repair_of_the_state | 10000 | 112341803.00 | 113966989.00 | +1.4 % |
+| repair_of_the_state | 100000 | 1036189039.00 | 1082215412.00 | +4.4 % |
+
+Largest A/A difference: 5.2 %. This is the noise floor of the run.
+
+## Result of each binary
+
+ns per operation: the median of the process medians. Spread: the lowest and the highest process median.
+Each other arm: the branch binary konsens_bench against that arm, (branch - arm) / arm.
+
+| case | argument | konsens_bench | spread |
+|---|---|---|---|
+| repair_of_the_state | 1000 | 15910537.00 | 14971343.00-18656792.00 |
+| repair_of_the_state | 10000 | 112341803.00 | 107492235.00-119321622.00 |
+| repair_of_the_state | 100000 | 1036189039.00 | 1013028547.00-1086896129.00 |
+
+## Details of each binary
+
+The median over the processes of each field of the raw lines.
+
+| case | argument | binary | field | median | spread |
+|---|---|---|---|---|---|
+
+Processes that failed: 0.
+
+## Incremental SHA-256 vs CRC32C
+
+# SHA-256 via OpenSSL EVP; both hashes process each payload in 64-byte chunks
+# 31 measured samples after one warm-up; median ns/op; independent payloads, not chained log latency
+bytes,operations,crc32c_ns,sha256_ns,sha256_over_crc,crc_folded,sha_folded
+64,200000,6.14,191.60,31.23,00000000,00000000
+1024,20000,85.56,755.73,8.83,00000000,00000000
+65536,512,7266.81,38842.50,5.35,00000000,00000000
+
+## Raw lines
+
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=18656792.00 min=16948798.00 max=20128869.00 entries_in_the_log=1000 rows=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=0 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=16744342.00 min=15425914.00 max=19536946.00 entries_in_the_log=1000 rows=1000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=2 steal_ticks=1 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=119321622.00 min=116404741.00 max=138013843.00 entries_in_the_log=10000 rows=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=118112082.00 min=116161995.00 max=126230384.00 entries_in_the_log=10000 rows=1000
+round=1 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=8 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1086896129.00 min=1057158882.00 max=1100206858.00 entries_in_the_log=100000 rows=1000
+round=1 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1018683833.00 min=950137930.00 max=1156600915.00 entries_in_the_log=100000 rows=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=11 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1094309966.00 min=1093724846.00 max=1127167316.00 entries_in_the_log=100000 rows=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=17 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1036189039.00 min=969159945.00 max=1145050485.00 entries_in_the_log=100000 rows=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=113966989.00 min=106559144.00 max=118472284.00 entries_in_the_log=10000 rows=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=107492235.00 min=105627715.00 max=108184606.00 entries_in_the_log=10000 rows=1000
+round=2 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=2 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=17883539.00 min=15505498.00 max=18713153.00 entries_in_the_log=1000 rows=1000
+round=2 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=15910537.00 min=15585824.00 max=20849426.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=14971343.00 min=14293884.00 max=16798038.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=1 exit=0 case=repair_of_the_state parameter=1000 ops_per_sample=1 samples=5 ns_per_op_median=15462300.00 min=14567358.00 max=18724376.00 entries_in_the_log=1000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=6 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=112341803.00 min=111062864.00 max=116575958.00 entries_in_the_log=10000 rows=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=5 exit=0 case=repair_of_the_state parameter=10000 ops_per_sample=1 samples=5 ns_per_op_median=113484726.00 min=109288826.00 max=117834346.00 entries_in_the_log=10000 rows=1000
+round=3 binary=konsens_bench nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=24 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1013028547.00 min=979574082.00 max=1112656450.00 entries_in_the_log=100000 rows=1000
+round=3 binary=konsens_bench_aa nice=0 other_processes_of_user=0 procs_running=1 steal_ticks=22 exit=0 case=repair_of_the_state parameter=100000 ops_per_sample=1 samples=5 ns_per_op_median=1082215412.00 min=1003691795.00 max=1114393265.00 entries_in_the_log=100000 rows=1000
