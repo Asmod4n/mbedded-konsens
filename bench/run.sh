@@ -4,6 +4,7 @@ set -euo pipefail
 image=${KONSENS_BENCH_IMAGE:-localhost/cxx-matrix-sqlite}
 compiler=${KONSENS_BENCH_CXX:-g++-16}
 c_compiler=${KONSENS_BENCH_CC:-gcc-16}
+optimization=${KONSENS_BENCH_OPT:--O2}
 build_jobs=2
 bench_user=bench
 bench_uid=1001
@@ -47,7 +48,7 @@ host() {
     podman --version > "$work/podman-version-$stamp.txt"
     podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
     podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/storage:/storage" -v "$ccache:/ccache" \
-        -e CCACHE_DIR=/ccache -e KONSENS_BENCH_CXX="$compiler" -e KONSENS_BENCH_CC="$c_compiler" "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
+        -e CCACHE_DIR=/ccache -e KONSENS_BENCH_CXX="$compiler" -e KONSENS_BENCH_CC="$c_compiler" -e KONSENS_BENCH_OPT="$optimization" "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
         "$prefixes" "${arms[@]}"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
     echo "$results/$stamp.txt"
@@ -80,8 +81,8 @@ prepare_arm() {
 
 configure() {
     local source=$1 build=$2 log=$3
-    cmake -S "$source" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" \
-        "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG" \
+    cmake -S "$source" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=$optimization -DNDEBUG" \
+        "-DCMAKE_C_FLAGS_RELEASE=$optimization -DNDEBUG" \
         -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_C_COMPILER=$c_compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
         > "$log" 2>&1 || { tail -n 40 "$log" >&2; exit 1; }
@@ -114,7 +115,7 @@ context() {
     echo "# build type Release, CMAKE_C_FLAGS_RELEASE $(grep -E '^CMAKE_C_FLAGS_RELEASE:' /work/build/CMakeCache.txt | cut -d= -f2-)"
     echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/bench/konsens_bench.cpp')"
     echo "# compile command $(ninja -C /work/build -t commands $main_binary | grep -F -- '-c /src/src/persistent_storage.cpp')"
-    echo "# instruction set $($compiler -O2 -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
+    echo "# instruction set $($compiler $optimization -Q --help=target | awk '$1 == "-march=" || $1 == "-mtune=" {printf "%s%s ", $1, $2}')"
     echo "# instruction set macros $(echo | $compiler -O2 -dM -E -x c++ - | grep -oE '__(MMX|SSE[0-9_]*|AVX[0-9A-Z_]*|POPCNT|BMI2?|FMA|CRC32)__' | sort -u | tr '\n' ' ')"
     for b in "${binaries[@]}"; do
         echo "# binary $b sha256 $(sha256sum "/work/build/$b" | cut -c1-16) needs $(objdump -T "/work/build/$b" | grep -oE '(GLIBCXX|CXXABI|GLIBC)_[0-9.]+' | sort -uV | tr '\n' ' ')"
@@ -141,7 +142,7 @@ run_one() {
     local round=$1 name=$2 argument=$3 binary=$4 samples=$5
     local directory=/storage/$round-$name-$argument-$binary other running steal_before steal_after line status=0
     local -a arguments=("$name" "$samples" "$argument")
-    if [[ $name == commit || $name == get_entries || $name == read || $name == read_threads || $name == write* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* ]]; then
+    if [[ $name == commit || $name == get_entries || $name == read || $name == read_threads || $name == write* || $name == pipeline* || $name == execute_verify* || $name == read_back || $name == scan* || $name == state_* ]]; then
         mkdir "$directory"
         chown "$bench_uid:$bench_uid" "$directory"
         arguments+=("$directory")
