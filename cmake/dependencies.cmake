@@ -8,5 +8,5 @@ FetchContent_Declare(slipstreamio
     SOURCE_SUBDIR none)
 FetchContent_Declare(mruby-webmachine
     GIT_REPOSITORY https://github.com/Asmod4n/mruby-webmachine
-    GIT_TAG 8c76f5166244caeaf85f08859bd2abf572747e7e
+    GIT_TAG 6a68c79947f5a2da38e4c9a1f734e3acac93b33d
     SOURCE_SUBDIR none)
