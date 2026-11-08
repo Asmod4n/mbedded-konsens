@@ -2,8 +2,8 @@
 
 Branch data-row-crc, from main 0ebb361. Owner 2026-11-08 07:01: the
 next gap of the storage is a CRC32C on each row of `data` (decision
-card). Review: doc/review-plan-data-row-crc.md; its findings are folded
-in. Owner 2026-11-08 07:42: a damaged row is repaired, and a lost write
+card). Reviews: doc/review-plan-data-row-crc.md (first and second
+round); their findings are folded in. Owner 2026-11-08 07:42: a damaged row is repaired, and a lost write
 is not part of the plan (fact 13). Sections 3.5, 3.7, 3.8, 4, 5, 6 and 7
 follow that answer.
 
@@ -159,31 +159,63 @@ log. It is shown, not asked.
      `transaction_view::find` and `read_or_throw` raise it when
      `error_is_a_damage` holds; every other read error stays a
      `read_error`.
-   - `throw_on_a_damage` catches this exact type on the node thread,
-     the rethrow from the check threads included. `node::with` does the
-     same around `apply_at_the_start`. These are the two places that
-     catch it. The catch rolls back the open step, so no state
-     transaction that read the damaged row commits.
-   - Then the node repairs the state. The repair goes through
-     `start_the_repair` and counts as one repair (fact 16). Past
-     `automatic_repairs`, the node stops voting and waits for the
-     operator, as at a damage of the log.
-   - The repair first runs the scan of the log
-     (`find_the_damaged_ranges`). A damaged range of the log is repaired
-     first by the present path, in the same counted repair.
-   - Then, in one write transaction of the state, the node erases every
-     row of `data` and `session`, sets the applied index to 0, and runs
-     the decided entries again with `apply_the_done_records` (fact 14).
-     It commits once. A crash inside this transaction leaves the old
-     state; the next start follows the present rules of the start.
+   - The body of each step catches this exact type and turns it into
+     `seq_paxos_.stop_voting(code)`, as a damage code of the log is
+     turned today. The check of `throw_on_a_damage` after the step
+     (`get_error` with `error_is_a_damage`, node.hpp:1136-1137) then
+     starts the repair. `node::with` does the same around
+     `apply_at_the_start`. A damage in `machine_.query` comes from
+     `serve_reads` in `finish_the_step` (node.hpp:515, :2556), after
+     `commit_phase_two` committed (:353-357). There is nothing to roll
+     back then. Where the transaction holds ended steps,
+     `roll_back_the_step` keeps the step open (:961-968); the repair
+     closes it before `find_the_damaged_ranges` and `repair_locally`,
+     which refuse an open step (sequence_paxos.hpp:1094, :1141).
+   - The node gets a flag: the state is built again. `start_the_repair`
+     sets it at a damage of the state, and goes on when the log has no
+     damaged range (today it returns false then, node.hpp:1158). The
+     count rises once (fact 16). Past `automatic_repairs`, the node
+     waits for the operator. The wait, `allow_one_more_repair`
+     (:729), the tick (:303) and the refusal of client calls (:1028,
+     :1044) check "a repair of the log or the flag", not only
+     `seq_paxos_.repairs()`. `wait_for_the_repair` refuses an empty
+     list of ranges (sequence_paxos.hpp:1188), so the wait for the
+     state does not go through it.
+   - A damaged range of the log is repaired first by the present path,
+     local or from a peer, in the same counted repair.
+   - The state is built again in `vote_again_after_the_repair`
+     (node.hpp:1207-1219), before its `apply_at_the_start`. The end of a
+     repair from a peer calls it too (:464-471). So the build runs on a
+     whole log in both paths. In one write transaction of the state, the
+     node erases every row of `data` and `session`, sets the applied
+     index to 0, and runs the decided entries again with
+     `apply_the_done_records` (fact 14). It commits once. A crash inside
+     this transaction leaves the old state; the next start follows the
+     present rules of the start.
+   - The storage has no function that erases every row of `data` and
+     `session` (persistent_storage.cpp:363, :368 erase one row). A new
+     function of the storage concept does it (include/konsens/storage.hpp
+     near :236), in persistent_storage, in the test storages of
+     test/node_cluster.hpp and in test_storage_interface. Its name has
+     no source; the owner decides it.
    - The repair writes every row, not only the row that the read found.
      So a damaged row that no read found yet is repaired in the same
      repair and does not count as a second repair.
-   - The run again sends no reply to a client: the waiting calls got
-     `client_errc::repairing` at the start of the repair
-     (node.hpp:1167). It also writes no second `wrong_list` record for
-     an entry. Provisional: how the run again leaves out both. The
-     review decides the form.
+   - The run again sends no reply to a client. `reply_to_the_waiting_calls`
+     (node.hpp:870-885) empties `registrations_`, `requests_` and
+     `expirations_` at the start of the repair, and `reply_to_the_client`
+     replies only to entries in them (:2117-2133).
+   - `apply_the_done_records` takes the applied index from before the
+     repair as a bound. An entry at or below it writes its chosen
+     result and skips `run_request`, the proof and `log_records_`
+     (today `listed || k > verified_idx` runs Execute-Verify again,
+     :2045-2058). Without the bound, a contract that changed since then
+     fails `results_agree` and the repair ends the node, and each listed
+     entry writes a second `wrong_list` record.
+   - `drop_held_messages_and_replies` (:1015-1017) clears the replies of
+     steps that committed. After a damage in `serve_reads`, the clients
+     of those entries get no reply. The repair releases the output of
+     the committed steps first.
    - After the commit, the node votes again through
      `vote_again_after_the_repair`, as after a repair of the log.
    - The damage reaches the log sink of the user as a record with the
@@ -238,6 +270,12 @@ says that no read gives back a value that the node did not write last.
 | MC_drc_mut_NoCheck | 1 | violated: the flip reaches the reply |
 | MC_drc_mut_CrcWithoutKey | 1 | violated: the misdirected row reaches the reply |
 | MC_drc_mut_RepairTheCrc | 1 | violated: a repair that computes a new CRC over the stored value gives the flip to the next read |
+| MC_drc_mut_RepairOnlyTheReadRow | 2 | `RepairLeavesNoDamage` violated: a row that no read found stays damaged |
+
+`RepairLeavesNoDamage` says: with no damage after the last repair, every
+row is what the log gives. The run again of Execute-Verify and the
+replies to clients are outside the model; section 3.5 and the tests
+cover them.
 
 Every config has `AutoRepairs = 1` and `CHECK_DEADLOCK FALSE`. Results:
 model/results/20261108T075032Z-data-row-crc.md.
@@ -283,7 +321,6 @@ In test/test_node.cpp:
 
 ## 6. Measurement
 
-Noise floor first: one binary built twice, `sysbench cpu` ten runs.
 Then two new bench cases in bench/konsens_bench.cpp, `find` and `put`
 of one row in a write transaction, at a value of 64 B, 1 KiB and 64
 KiB. The cases stand in every arm. bench/raw_konsens.cpp keeps the old
@@ -294,14 +331,19 @@ five. One result file with a time stamp in bench/results/.
 
 The time of one repair of the state is measured too: a store with a log
 of 10^4 and of 10^5 entries, one mutation of 64 B in each, g++ 16 at
-`-O2`, median of five. It goes in the same result file.
+`-O2`, median of five, with the peak of resident memory:
+`read_the_open_log(0, log_len)` holds the whole log in memory
+(sequence_paxos.hpp:1359-1374). It is a figure, not a comparison of
+arms, and goes in the same result file. The noise floor comes from the
+bench binary built twice, with the run length that the state file keeps
+for this machine. The arm main is 0ebb361 with the new bench cases
+committed on top.
 
 ## 7. Checks
 
 The changed code is tested on this machine: test_persistent_storage,
 test_node, test_storage_interface, in Release with g++ 16 and clang 22.
-ASan and UBSan once before the merge. The CI runs every build.
-konsensd and three_nodes are built here too. main f40582f fetches
+The CI runs every build, ASan and UBSan included. main f40582f fetches
 mruby-webmachine at 6a68c79 on its branch integration, so a fresh clone
 builds konsensd again.
 

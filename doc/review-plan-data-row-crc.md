@@ -60,3 +60,34 @@ process still ends.
 ## Not checked by the reviewer
 
 TLC, the build and the tests. The sources of section 2.
+
+## Second round (plan at 2f4b82e)
+
+Verdict: approve with changes. Findings 1 to 4 are blocking; all eight
+are folded into the plan.
+
+1. Blocking. `start_the_repair` returns false when the log has no
+   damaged range (node.hpp:1158), and the wait, `allow_one_more_repair`
+   (:729), the tick (:303) and the refusal of calls (:1028, :1044) need
+   a repair of the log. A flag for the state, and the build in
+   `vote_again_after_the_repair` (:1207-1219).
+2. Blocking. The catch cannot roll back a step that holds ended steps
+   (:961-968), and a damage in `serve_reads` comes after the commit
+   (:353-357, :515). The step body turns the damage into `stop_voting`.
+3. Blocking. The run again from index 0 runs Execute-Verify again for
+   listed entries (:2045-2058). A bound at the old applied index.
+4. Blocking. No function of the storage erases every row of `data` and
+   `session` (persistent_storage.cpp:363, :368).
+5. Not blocking. The run again sends no client reply (:870-885,
+   :2117-2133); the replies of committed steps are lost at a damage in
+   `serve_reads` (:1015-1017).
+6. Not blocking. The whole log stands in memory during the build
+   (sequence_paxos.hpp:1359-1374); measure the peak.
+7. Not blocking. A mutation for "every row is repaired"
+   (`RepairOnlyTheReadRow`).
+8. Not blocking. The noise floor comes from the bench binary built
+   twice; ASan and UBSan run in the CI; the names wait on the owner.
+
+Checked by the reviewer: facts 3, 5, 7, 8, 14, 15, 16. Not checked: the
+TLC runs, the build, fact 10 and 11, the sources of section 2, the type
+of an exception that a check thread throws again.

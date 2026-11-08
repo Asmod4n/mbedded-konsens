@@ -16,18 +16,20 @@ CONSTANTS Keys, Values, None,
           CheckOnRead,     \* the read compares the stored CRC
           CrcCoversKey,    \* the CRC covers the key of the row
           RepairFromLog,   \* the repair writes the rows that the log gives
+          RepairAll,       \* the repair writes every row, not only the read one
           AutoRepairs,     \* repairs that start without the operator
           MaxDamages
 
 VARIABLES truth,    \* key -> the value of the decided log, or None
           disk,     \* key -> [v, crc] as the disk gives it, or None
-          damaged,  \* a read found a damage; the node does no work
+          damaged,  \* the key where a read found a damage, or None
           waits,    \* the node waits for the operator
           repairs,  \* the durable count of repairs
           wrong,    \* a reply held a value that the node did not write last
-          damages
+          damages,
+          repaired  \* the count of damages at the last repair
 
-vars == <<truth, disk, damaged, waits, repairs, wrong, damages>>
+vars == <<truth, disk, damaged, waits, repairs, wrong, damages, repaired>>
 
 Crc(k, v) == IF CrcCoversKey THEN <<k, v>> ELSE <<None, v>>
 Row(k, v) == [v |-> v, crc |-> Crc(k, v)]
@@ -35,24 +37,25 @@ RowOf(k) == IF truth[k] = None THEN None ELSE Row(k, truth[k])
 
 Init == /\ truth = [k \in Keys |-> None]
         /\ disk = [k \in Keys |-> None]
-        /\ damaged = FALSE
+        /\ damaged = None
         /\ waits = FALSE
         /\ repairs = 0
         /\ wrong = FALSE
         /\ damages = 0
+        /\ repaired = 0
 
 Write(k, v) ==
-    /\ ~damaged
+    /\ damaged = None
     /\ truth' = [truth EXCEPT ![k] = v]
     /\ disk' = [disk EXCEPT ![k] = Row(k, v)]
-    /\ UNCHANGED <<damaged, waits, repairs, wrong, damages>>
+    /\ UNCHANGED <<damaged, waits, repairs, wrong, damages, repaired>>
 
 Erase(k) ==
-    /\ ~damaged
+    /\ damaged = None
     /\ truth[k] # None
     /\ truth' = [truth EXCEPT ![k] = None]
     /\ disk' = [disk EXCEPT ![k] = None]
-    /\ UNCHANGED <<damaged, waits, repairs, wrong, damages>>
+    /\ UNCHANGED <<damaged, waits, repairs, wrong, damages, repaired>>
 
 \* A bit of the value flips. The stored CRC stays.
 Flip(k, v) ==
@@ -61,7 +64,7 @@ Flip(k, v) ==
     /\ disk[k].v # v
     /\ disk' = [disk EXCEPT ![k] = [v |-> v, crc |-> disk[k].crc]]
     /\ damages' = damages + 1
-    /\ UNCHANGED <<truth, damaged, waits, repairs, wrong>>
+    /\ UNCHANGED <<truth, damaged, waits, repairs, wrong, repaired>>
 
 \* A bit of the stored CRC flips. The value stays.
 FlipCrc(k) ==
@@ -69,7 +72,7 @@ FlipCrc(k) ==
     /\ disk[k] # None
     /\ disk' = [disk EXCEPT ![k] = [v |-> disk[k].v, crc |-> <<None, None>>]]
     /\ damages' = damages + 1
-    /\ UNCHANGED <<truth, damaged, waits, repairs, wrong>>
+    /\ UNCHANGED <<truth, damaged, waits, repairs, wrong, repaired>>
 
 \* The bytes of the row of k1 stand at the place of the row of k2.
 \* A second misdirect can carry an older row of k2 back to k2. That is a
@@ -83,38 +86,40 @@ Misdirect(k1, k2) ==
     /\ disk[k2] # disk[k1]
     /\ disk' = [disk EXCEPT ![k2] = disk[k1]]
     /\ damages' = damages + 1
-    /\ UNCHANGED <<truth, damaged, waits, repairs, wrong>>
+    /\ UNCHANGED <<truth, damaged, waits, repairs, wrong, repaired>>
 
 \* A read that finds a damage gives no reply and stops the work. The
 \* first AutoRepairs repairs start at once; after them the node waits.
 Read(k) ==
-    /\ ~damaged
+    /\ damaged = None
     /\ IF disk[k] # None /\ CheckOnRead /\ disk[k].crc # Crc(k, disk[k].v)
-       THEN /\ damaged' = TRUE
+       THEN /\ damaged' = k
             /\ waits' = (repairs >= AutoRepairs)
             /\ UNCHANGED wrong
        ELSE /\ wrong' = (wrong \/ (IF disk[k] = None THEN None ELSE disk[k].v) # truth[k])
             /\ UNCHANGED <<damaged, waits>>
-    /\ UNCHANGED <<truth, disk, repairs, damages>>
+    /\ UNCHANGED <<truth, disk, repairs, damages, repaired>>
 
 \* The repair writes every row again in one transaction. The mutation
-\* RepairFromLog = FALSE computes a new CRC over the stored value.
+\* RepairFromLog = FALSE computes a new CRC over the stored value. The
+\* mutation RepairAll = FALSE writes only the row that the read found.
+Repaired(k) == IF RepairFromLog THEN RowOf(k)
+               ELSE IF disk[k] = None THEN None ELSE Row(k, disk[k].v)
 Repair ==
-    /\ damaged
+    /\ damaged # None
     /\ ~waits
-    /\ disk' = IF RepairFromLog
-               THEN [k \in Keys |-> RowOf(k)]
-               ELSE [k \in Keys |-> IF disk[k] = None THEN None
-                                    ELSE Row(k, disk[k].v)]
-    /\ damaged' = FALSE
+    /\ disk' = [k \in Keys |-> IF RepairAll \/ k = damaged
+                                THEN Repaired(k) ELSE disk[k]]
+    /\ damaged' = None
     /\ repairs' = repairs + 1
+    /\ repaired' = damages
     /\ UNCHANGED <<truth, waits, wrong, damages>>
 
 \* The operator allows one more repair.
 OperatorAllowsRepair ==
     /\ waits
     /\ waits' = FALSE
-    /\ UNCHANGED <<truth, disk, damaged, repairs, wrong, damages>>
+    /\ UNCHANGED <<truth, disk, damaged, repairs, wrong, damages, repaired>>
 
 Next == \/ \E k \in Keys, v \in Values : Write(k, v) \/ Flip(k, v)
         \/ \E k \in Keys : Erase(k) \/ Read(k) \/ FlipCrc(k)
@@ -125,6 +130,11 @@ Next == \/ \E k \in Keys, v \in Values : Write(k, v) \/ Flip(k, v)
 Spec == Init /\ [][Next]_vars
 
 ReadGivesTheLastWrite == ~wrong
+
+\* With no damage after the last repair, every row is what the log gives.
+RepairLeavesNoDamage ==
+    (repairs > 0 /\ damaged = None /\ damages = repaired)
+        => \A k \in Keys : disk[k] = RowOf(k)
 
 \* Covers: each is violated in some run.
 NoRepair == repairs = 0
