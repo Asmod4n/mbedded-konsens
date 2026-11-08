@@ -155,7 +155,7 @@ log. It is shown, not asked.
 5. The node at a damage of a row.
    - A damage of a row raises a type of its own, derived from
      `read_error`, with the error code `crc_mismatch` or
-     `malformed_record`. Provisional name: `state_damage`.
+     `malformed_record`: `state_damage` (owner 2026-11-08 08:02).
      `transaction_view::find` and `read_or_throw` raise it when
      `error_is_a_damage` holds; every other read error stays a
      `read_error`.
@@ -197,7 +197,7 @@ log. It is shown, not asked.
      function of the storage concept does it (include/konsens/storage.hpp
      near :236), in persistent_storage, in the test storages of
      test/node_cluster.hpp and in test_storage_interface. Its name has
-     no source; the owner decides it.
+     no source: `erase_the_state` (owner 2026-11-08 08:02).
    - The repair writes every row, not only the row that the read found.
      So a damaged row that no read found yet is repaired in the same
      repair and does not count as a second repair.
@@ -220,7 +220,7 @@ log. It is shown, not asked.
      `vote_again_after_the_repair`, as after a repair of the log.
    - The damage reaches the log sink of the user as a record with the
      applied index (owner rule 2026-10-17: each hardware fault reports
-     its evidence). Provisional name of the kind: `state_damage`.
+     its evidence), of the kind `state_damage`.
      node.db gets a `fault_proof` of this kind only when the repair does
      not start (fact 16). The proof holds no key, so node.db keeps its
      size of record and its format 1.
