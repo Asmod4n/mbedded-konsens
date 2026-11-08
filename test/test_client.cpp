@@ -18,6 +18,7 @@
 #include "batches.hpp"
 #include "konsens/client.hpp"
 #include "konsens/node.hpp"
+#include "sqlite_damage.hpp"
 #include "sqlite_storage.hpp"
 
 namespace {
@@ -712,4 +713,235 @@ TEST_CASE("a request in work at the stop gets stopped with its request number")
     CHECK(failed_with(replies[0].response, client_errc::stopped));
     CHECK(replies[0].session == s);
     CHECK(replies[0].request_number == 7);
+}
+
+namespace {
+
+// A cluster whose stores stand in known directories, so that a test can
+// damage a row of one node as a disk would.
+struct cluster_in_directories {
+    cluster c;
+    std::vector<std::filesystem::path> directories;
+};
+
+cluster_in_directories elected_in_directories(const node_id with_check_threads = 0)
+{
+    cluster_in_directories d;
+    for (node_id p = 1; p <= node_count; ++p) {
+        d.directories.push_back(sqlite_storage::new_directory());
+        auto config = config_of(p);
+        if (p == with_check_threads) {
+            config.check_threads = 2;
+        }
+        d.c.nodes.push_back(*node_t::with(config, sqlite_storage::open_in(d.directories.back()),
+                                          sqlite_storage::open_new_node_storage(), concatenation{}, 0));
+    }
+    d.c.run(rounds, once);
+    REQUIRE(d.c.at(3).get_sequence_paxos().get_state() == std::pair{role::leader, phase::accept});
+    return d;
+}
+
+struct state_rows {
+    std::vector<std::byte> value;
+    std::vector<std::byte> session;
+
+    friend bool operator==(const state_rows&, const state_rows&) = default;
+};
+
+state_rows state_rows_in(const std::filesystem::path& directory, const std::uint64_t session)
+{
+    state_rows rows;
+    sqlite_damage::change_with_sqlite(directory, [&](sqlite3* db) {
+        rows.value = sqlite_damage::data_row_of(db, concatenation::key);
+        rows.session = sqlite_damage::session_row_of(db, session);
+    });
+    return rows;
+}
+
+void flip_the_first_byte_of_the_value(const std::filesystem::path& directory)
+{
+    sqlite_damage::change_with_sqlite(directory, [](sqlite3* db) {
+        auto row = sqlite_damage::data_row_of(db, concatenation::key);
+        row.at(0) ^= std::byte{1};
+        sqlite_damage::put_data_row(db, concatenation::key, row);
+    });
+}
+
+void flip_the_first_byte_of_the_session(const std::filesystem::path& directory, const std::uint64_t session)
+{
+    sqlite_damage::change_with_sqlite(directory, [session](sqlite3* db) {
+        auto row = sqlite_damage::session_row_of(db, session);
+        row.at(0) ^= std::byte{1};
+        sqlite_damage::put_session_row(db, session, row);
+    });
+}
+
+std::size_t state_damage_records(std::vector<konsens::fault_proof> records)
+{
+    return static_cast<std::size_t>(std::ranges::count(records, konsens::proof_kind::state_damage, &konsens::fault_proof::kind));
+}
+
+bool holds_the_damaged_bytes(const std::vector<konsens::client_reply>& replies, const std::vector<std::byte>& damaged)
+{
+    return std::ranges::any_of(replies, [&damaged](const konsens::client_reply& r) {
+        return r.response && *r.response == damaged;
+    });
+}
+
+std::vector<std::byte> damaged_value_of(const std::vector<std::byte>& value)
+{
+    auto damaged = value;
+    damaged.at(0) ^= std::byte{1};
+    return damaged;
+}
+
+}
+
+// Plan data-row-crc 3.5: a follower whose row of data is damaged finds the
+// damage at a read. It gives no reply with the damaged bytes, builds its
+// state again from its own log in one repair, keeps one record of the
+// damage for the log sink, and votes again. The row then holds the bytes
+// it held before the damage.
+TEST_CASE("a damaged row of data is built again from the own log, and the node votes again")
+{
+    auto d = elected_in_directories();
+    auto& c = d.c;
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.deliver(once);
+    c.run(rounds, once);
+    const auto before = state_rows_in(d.directories[0], s);
+    flip_the_first_byte_of_the_value(d.directories[0]);
+    batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
+    std::vector<konsens::client_reply> replies;
+    std::vector<konsens::fault_proof> records;
+    for (int i = 0; i < rounds; ++i) {
+        c.run(1, once);
+        std::ranges::move(c.at(1).take_client_replies(), std::back_inserter(replies));
+        std::ranges::move(c.at(1).take_log_records(), std::back_inserter(records));
+    }
+    CHECK_FALSE(holds_the_damaged_bytes(replies, damaged_value_of(bytes_of("a"))));
+    CHECK(state_damage_records(records) == 1);
+    CHECK(c.at(1).get_sequence_paxos().votes());
+    CHECK_FALSE(c.at(1).waits_for_the_operator());
+    CHECK(state_rows_in(d.directories[0], s) == before);
+    CHECK(concatenation_of(c.at(1)) == bytes_of("a"));
+}
+
+// Plan data-row-crc 3.5: the repair writes every row, so a damaged session
+// record that no read found yet is repaired with the row that the read
+// found, in one repair. The run again of the log answers no client a
+// second time and writes no record of a wrong list.
+TEST_CASE("one repair of the state repairs a row that no read found, and replies to nobody again")
+{
+    auto d = elected_in_directories();
+    auto& c = d.c;
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.deliver(once);
+    c.run(rounds, once);
+    static_cast<void>(c.at(1).take_client_replies());
+    static_cast<void>(c.at(1).take_log_records());
+    const auto before = state_rows_in(d.directories[0], s);
+    flip_the_first_byte_of_the_value(d.directories[0]);
+    flip_the_first_byte_of_the_session(d.directories[0], s);
+    batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
+    std::vector<konsens::client_reply> replies;
+    std::vector<konsens::fault_proof> records;
+    for (int i = 0; i < rounds; ++i) {
+        c.run(1, once);
+        std::ranges::move(c.at(1).take_client_replies(), std::back_inserter(replies));
+        std::ranges::move(c.at(1).take_log_records(), std::back_inserter(records));
+    }
+    CHECK(state_rows_in(d.directories[0], s) == before);
+    CHECK(state_damage_records(records) == 1);
+    CHECK(std::ranges::count(records, konsens::proof_kind::wrong_list, &konsens::fault_proof::kind) == 0);
+    CHECK(std::ranges::none_of(replies, [](const konsens::client_reply& r) { return r.client_id == client_a; }));
+    CHECK(c.at(1).get_sequence_paxos().votes());
+}
+
+// Plan data-row-crc 3.5 and the repair plan, item 8: one repair runs by
+// itself. A second damage of the state leaves the node out of the vote
+// until the operator allows one more repair.
+TEST_CASE("a second damage of the state waits for the operator, and allow_one_more_repair repairs it")
+{
+    auto d = elected_in_directories();
+    auto& c = d.c;
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.deliver(once);
+    c.run(rounds, once);
+    const auto before = state_rows_in(d.directories[0], s);
+    const auto damage_and_read = [&]() {
+        flip_the_first_byte_of_the_value(d.directories[0]);
+        batches::commit(c.at(1), c.at(1).client_query(client_b, {}));
+        c.run(rounds, once);
+    };
+    damage_and_read();
+    REQUIRE(c.at(1).get_sequence_paxos().votes());
+    damage_and_read();
+    CHECK(c.at(1).waits_for_the_operator());
+    CHECK_FALSE(c.at(1).get_sequence_paxos().votes());
+    REQUIRE(c.at(1).allow_one_more_repair());
+    c.run(rounds, once);
+    CHECK_FALSE(c.at(1).waits_for_the_operator());
+    CHECK(c.at(1).get_sequence_paxos().votes());
+    CHECK(state_rows_in(d.directories[0], s) == before);
+}
+
+// Plan data-row-crc 3.5: a request reads the session record of its
+// client. A damaged session record is found there and repaired, and the
+// node answers the next request of the client.
+TEST_CASE("a damaged session record is found by a request and built again from the own log")
+{
+    auto d = elected_in_directories();
+    auto& c = d.c;
+    const auto s = registered(c, 1, client_a);
+    batches::commit(c.at(1), c.at(1).client_request(client_a, s, 1, bytes_of("a")));
+    c.run(rounds, once);
+    static_cast<void>(c.at(1).take_client_replies());
+    flip_the_first_byte_of_the_session(d.directories[0], s);
+    batches::commit(c.at(1), c.at(1).client_request(client_a, s, 2, bytes_of("b")));
+    c.run(rounds, once);
+    CHECK(c.at(1).get_sequence_paxos().votes());
+    CHECK(concatenation_of(c.at(1)) == bytes_of("ab"));
+    static_cast<void>(c.at(1).take_client_replies());
+    batches::commit(c.at(1), c.at(1).client_request(client_a, s, 2, bytes_of("b")));
+    c.run(rounds, once);
+    const auto replies = c.at(1).take_client_replies();
+    REQUIRE(replies.size() == 1);
+    CHECK(replies[0].response == bytes_of("ab"));
+}
+
+// Plan data-row-crc 3.5: a follower with check threads runs the request of
+// the leader on a check thread, which reads the damaged row there. The
+// damage reaches the node thread with its type, and the node repairs.
+TEST_CASE("a damage that a check thread reads is repaired as well")
+{
+    auto d = elected_in_directories(1);
+    auto& c = d.c;
+    const auto s = registered(c, 3, client_a);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 1, bytes_of("a")));
+    c.run(rounds, once);
+    flip_the_first_byte_of_the_value(d.directories[0]);
+    batches::commit(c.at(3), c.at(3).client_request(client_a, s, 2, bytes_of("b")));
+    c.run(rounds, once);
+    CHECK(c.at(1).get_sequence_paxos().votes());
+    CHECK(concatenation_of(c.at(1)) == bytes_of("ab"));
+    CHECK(concatenation_of(c.at(3)) == bytes_of("ab"));
+}
+
+// Plan data-row-crc 3.5: find_client_session is a read outside a step. It
+// cannot start a repair, so it gives the damage as a value and raises
+// nothing.
+TEST_CASE("find_client_session gives crc_mismatch for a damaged session record")
+{
+    auto d = elected_in_directories();
+    auto& c = d.c;
+    const auto s = registered(c, 3, client_a);
+    c.run(rounds, once);
+    flip_the_first_byte_of_the_session(d.directories[0], s);
+    const auto found = c.at(1).find_client_session(s);
+    REQUIRE_FALSE(found.has_value());
+    CHECK(found.error() == konsens::storage_errc::crc_mismatch);
 }

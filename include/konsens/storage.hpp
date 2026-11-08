@@ -187,6 +187,24 @@ public:
     using std::system_error::system_error;
 };
 
+class state_damage : public read_error {
+public:
+    using read_error::read_error;
+};
+
+inline bool record_is_damaged(const std::error_code e) noexcept
+{
+    return e == make_error_code(storage_errc::crc_mismatch) || e == make_error_code(storage_errc::malformed_record);
+}
+
+[[noreturn]] inline void throw_the_read_error(const std::error_code e, const char* const what)
+{
+    if (record_is_damaged(e)) [[unlikely]] {
+        throw state_damage(e, what);
+    }
+    throw read_error(e, what);
+}
+
 class write_error : public std::system_error {
 public:
     using std::system_error::system_error;

@@ -90,11 +90,6 @@ inline bool error_is_a_damage(const std::error_code e) noexcept
            e == make_error_code(storage_errc::missing_entry) || e == make_error_code(storage_errc::missing_meta_record);
 }
 
-inline bool record_is_damaged(const std::error_code e) noexcept
-{
-    return e == make_error_code(storage_errc::crc_mismatch) || e == make_error_code(storage_errc::malformed_record);
-}
-
 constexpr bool meta_values_are_consistent(const meta_record& m) noexcept
 {
     return !(m.log_len > 0 && m.accepted_round == ballot{}) && m.accepted_round <= m.promise &&
@@ -1182,18 +1177,23 @@ public:
         return left;
     }
 
-    void wait_for_the_repair(const std::span<const index_range> ranges)
+    void stop_voting_until_the_repair()
     {
         throw_if_a_step_is_open();
-        if (ranges.empty()) [[unlikely]] {
-            throw std::logic_error("konsens: a repair needs at least one damaged range");
-        }
         error_.reset();
         hardware_fault_.reset();
         drop_incoming_and_outgoing();
         buffered_proposals_.clear();
         state_ = {role::follower, phase::none};
         repair_.emplace();
+    }
+
+    void wait_for_the_repair(const std::span<const index_range> ranges)
+    {
+        if (ranges.empty()) [[unlikely]] {
+            throw std::logic_error("konsens: a repair needs at least one damaged range");
+        }
+        stop_voting_until_the_repair();
         for (const auto r : ranges) {
             repair_->push_back({r, {}, std::nullopt});
         }

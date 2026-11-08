@@ -93,7 +93,7 @@ constexpr std::size_t mark_meta_offset = mark_configuration_id_offset + sizeof(c
 constexpr std::size_t mark_verified_idx_offset = mark_meta_offset + meta_record_size;
 constexpr std::size_t clean_stop_mark_size = mark_verified_idx_offset + sizeof(clean_stop_mark::verified_idx);
 constexpr std::size_t first_start_record_size = sizeof(first_start_record::pid);
-constexpr auto last_proof_kind = proof_kind::chosen_result_differs;
+constexpr auto last_proof_kind = proof_kind::state_damage;
 
 class storage_error_category final : public std::error_category {
 public:

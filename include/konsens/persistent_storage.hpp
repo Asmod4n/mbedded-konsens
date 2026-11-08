@@ -189,7 +189,8 @@ enum class proof_kind : std::uint8_t {
     refused_by_a_majority,
     listed_result_differs,
     wrong_list,
-    chosen_result_differs
+    chosen_result_differs,
+    state_damage
 };
 
 struct fault_proof {

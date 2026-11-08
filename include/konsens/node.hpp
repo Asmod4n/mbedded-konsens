@@ -245,8 +245,10 @@ public:
             static_cast<void>(n.ble_.take_outgoing_messages());
         }
         if (n.seq_paxos_.votes()) {
-            if (auto r = n.apply_at_the_start(); !r) [[unlikely]] {
-                return std::unexpected(r.error());
+            if (auto r = n.stop_voting_at_a_state_damage([&n] { return n.apply_at_the_start(); }); !r) [[unlikely]] {
+                if (!n.state_damaged_ || !n.start_the_repair()) {
+                    return std::unexpected(r.error());
+                }
             }
         }
         if (!*record && (*kind == start_kind::first || *kind == start_kind::clean)) {
@@ -759,9 +761,13 @@ public:
     {
         return read_the_newest_state([](const auto& t) { return t.get_meta(); }).applied_idx;
     }
-    std::optional<session_record> find_client_session(const std::uint64_t session) const
+    std::expected<std::optional<session_record>, std::error_code> find_client_session(const std::uint64_t session) const
     {
-        return read_the_newest_state([session](const auto& t) { return t.find_session(session); });
+        if (seq_paxos_.txn_) {
+            return seq_paxos_.txn_->find_session(session);
+        }
+        return seq_paxos_.internal_storage_.begin_read_only().and_then(
+            [session](const auto& t) { return t.find_session(session); });
     }
 
     [[nodiscard]] std::expected<transaction, std::error_code> reconnected(const node_id pid)
@@ -1067,7 +1073,7 @@ private:
     static T read_or_throw(std::expected<T, std::error_code> r)
     {
         if (!r) [[unlikely]] {
-            throw read_error(r.error(), "konsens: the storage failed to read the state");
+            throw_the_read_error(r.error(), "konsens: the storage failed to read the state");
         }
         return std::move(*r);
     }
@@ -1130,9 +1136,28 @@ private:
     }
 
     template <typename Step>
+    auto stop_voting_at_a_state_damage(const Step step) -> decltype(step())
+    {
+        try {
+            return step();
+        } catch (const state_damage& d) {
+            state_damaged_ = true;
+            return seq_paxos_.stop_voting(d.code());
+        }
+    }
+
+    std::uint64_t committed_applied_idx_or_zero() const
+    {
+        return seq_paxos_.internal_storage_.begin_read_only()
+            .and_then([](const auto& t) { return t.get_meta(); })
+            .transform([](const meta_record& m) { return m.applied_idx; })
+            .value_or(0);
+    }
+
+    template <typename Step>
     auto throw_on_a_damage(const Step step) -> decltype(step())
     {
-        auto r = step();
+        auto r = stop_voting_at_a_state_damage(step);
         const auto e = seq_paxos_.get_error();
         if (e && error_is_a_damage(*e) && !waits_for_the_operator_ && !seq_paxos_.retired()) [[unlikely]] {
             if (start_the_repair()) {
@@ -1141,6 +1166,11 @@ private:
                 } else {
                     return current_transaction();
                 }
+            }
+            if (state_damaged_) {
+                write_the_proof_and_throw({proof_kind::state_damage, committed_applied_idx_or_zero(),
+                                           seq_paxos_.mark_.promise, 0, 0},
+                                          *e, "konsens: a step found a damage of the own state");
             }
             const auto fault = seq_paxos_.get_hardware_fault();
             const bool known = *e == make_error_code(paxos_errc::hardware_fault) && fault;
@@ -1155,7 +1185,7 @@ private:
     bool start_the_repair()
     {
         const auto ranges = seq_paxos_.find_the_damaged_ranges();
-        if (!ranges || ranges->empty()) {
+        if (!ranges || (ranges->empty() && !state_damaged_)) {
             return false;
         }
         const auto count = own_storage_.get_repair_count();
@@ -1165,8 +1195,16 @@ private:
         drop_held_messages_and_replies();
         drop_the_client_rounds();
         reply_to_the_waiting_calls(make_error_code(client_errc::repairing));
+        if (state_damaged_) {
+            released_log_records_.push_back(
+                {proof_kind::state_damage, committed_applied_idx_or_zero(), seq_paxos_.mark_.promise, 0, 0});
+        }
         if (*count >= automatic_repairs) {
-            seq_paxos_.wait_for_the_repair(*ranges);
+            if (ranges->empty()) {
+                seq_paxos_.stop_voting_until_the_repair();
+            } else {
+                seq_paxos_.wait_for_the_repair(*ranges);
+            }
             static_cast<void>(seq_paxos_.take_outgoing_messages());
             waits_for_the_operator_ = true;
             return true;
@@ -1174,14 +1212,16 @@ private:
         if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
             throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
         }
-        const auto left = seq_paxos_.repair_locally(*ranges);
-        if (!left) [[unlikely]] {
-            return false;
-        }
-        if (!left->empty()) {
-            seq_paxos_.wait_for_the_repair(*left);
-            release_the_output();
-            return true;
+        if (!ranges->empty()) {
+            const auto left = seq_paxos_.repair_locally(*ranges);
+            if (!left) [[unlikely]] {
+                return false;
+            }
+            if (!left->empty()) {
+                seq_paxos_.wait_for_the_repair(*left);
+                release_the_output();
+                return true;
+            }
         }
         if (auto r = seq_paxos_.vote_again(); !r) [[unlikely]] {
             return false;
@@ -1215,7 +1255,33 @@ private:
             [[unlikely]] {
             return r;
         }
+        if (state_damaged_) {
+            return build_the_state_again();
+        }
         return apply_at_the_start();
+    }
+
+    result build_the_state_again()
+    {
+        const auto applied_before = read_the_committed_meta().applied_idx;
+        if (auto r = seq_paxos_.begin_step(); !r) [[unlikely]] {
+            return r;
+        }
+        const auto start = seq_paxos_.read_prefix_chain_hash(0);
+        if (!start) [[unlikely]] {
+            return seq_paxos_.stop_voting(start.error());
+        }
+        write_or_throw(seq_paxos_.txn_->erase_the_state());
+        write_or_throw(seq_paxos_.txn_->set_applied(0, *start));
+        if (auto r = apply_the_done_records(applied_before); !r) [[unlikely]] {
+            roll_back_the_step(r.error());
+            return r;
+        }
+        if (auto r = seq_paxos_.commit(); !r) [[unlikely]] {
+            return r;
+        }
+        state_damaged_ = false;
+        return finish_the_step();
     }
 
     [[noreturn]] void write_the_proof_and_throw(const fault_proof& proof, const std::error_code e,
@@ -1244,7 +1310,7 @@ private:
 
     result serve_clients_in_the_step()
     {
-        if (auto r = apply_the_done_records(); !r) [[unlikely]] {
+        if (auto r = apply_the_done_records(0); !r) [[unlikely]] {
             return r;
         }
         return execute_verify();
@@ -1259,7 +1325,7 @@ private:
             roll_back_the_step(r.error());
             return r;
         }
-        if (auto r = apply_the_done_records(); !r) [[unlikely]] {
+        if (auto r = apply_the_done_records(0); !r) [[unlikely]] {
             roll_back_the_step(r.error());
             return std::unexpected(r.error());
         }
@@ -2009,7 +2075,7 @@ private:
         }
     }
 
-    result apply_the_done_records()
+    result apply_the_done_records(const std::uint64_t applied_before)
     {
         auto& w = *seq_paxos_.txn_;
         const auto m = seq_paxos_.read_meta();
@@ -2043,7 +2109,7 @@ private:
                                           "konsens: a chosen result fails its CRC on this node");
             }
             const bool listed = std::ranges::contains(e.out, seq_paxos_.get_pid());
-            if (listed || k > seq_paxos_.get_verified_idx()) {
+            if (k > applied_before && (listed || k > seq_paxos_.get_verified_idx())) {
                 const auto own = encode_result(run_request(request_of(e), begin_an_empty_write_set()));
                 const fault_proof proof{listed ? proof_kind::listed_result_differs : proof_kind::chosen_result_differs,
                                         k, seq_paxos_.mark_.promise, e.result_crc, compute_result_crc(k, own)};
@@ -2602,6 +2668,7 @@ private:
     std::optional<std::uint64_t> requested_sync_;
     bool build_started_{};
     bool waits_for_the_operator_{};
+    bool state_damaged_{};
     bool faulted_{};
     bool stopped_{};
     bool phase_two_open_{};

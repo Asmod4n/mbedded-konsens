@@ -482,7 +482,7 @@ TEST_CASE("a session registered in the open transaction does not expire as unkno
     REQUIRE(leader.get_sequence_paxos().the_transaction_holds_ended_steps());
     const auto session = value_of(leader.get_sequence_paxos().get_accepted_idx());
     REQUIRE(leader.get_applied_idx() >= session);
-    REQUIRE(leader.find_client_session(session));
+    REQUIRE(leader.find_client_session(session).value());
     {
         const auto committed = leader.get_sequence_paxos().get_internal_storage().begin_read_only();
         REQUIRE(committed);
@@ -496,7 +496,7 @@ TEST_CASE("a session registered in the open transaction does not expire as unkno
     CHECK(std::ranges::any_of(replies, [session](const konsens::client_reply& r) {
         return r.session == session && r.response;
     }));
-    CHECK_FALSE(leader.find_client_session(session));
+    CHECK_FALSE(leader.find_client_session(session).value());
 }
 
 // Q3 of section 17: a clean stop while steps wait in the open transaction

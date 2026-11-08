@@ -42,7 +42,7 @@ public:
     {
         auto found = txn_->find(key);
         if (!found) [[unlikely]] {
-            throw read_error(found.error(), "konsens: the storage failed to read the state");
+            throw_the_read_error(found.error(), "konsens: the storage failed to read the state");
         }
         return *found;
     }

@@ -237,6 +237,27 @@ log. It is shown, not asked.
      (plan-storage-only-source.md 2.4 item 9). It is needed only when
      the own log does not start at index 0, which comes with
      compaction mode 1.
+5a. The form as built.
+   - `stop_voting_at_a_state_damage` runs the body of each step and of
+     `apply_at_the_start` in `node::with`. It catches `state_damage`,
+     sets the flag and calls `seq_paxos_.stop_voting`. `stop_voting`
+     drops the open transaction, the ended steps that it holds included
+     (sequence_paxos.hpp `roll_back_the_transaction`), so no open step
+     is left for `find_the_damaged_ranges`.
+   - `throw_the_read_error` (storage.hpp) is the one place that raises
+     `state_damage` for `crc_mismatch` and `malformed_record` and
+     `read_error` for every other code. `record_is_damaged` moved there.
+   - At the wait for the operator with no damaged range of the log, the
+     node calls `stop_voting_until_the_repair`: the phase of a repair
+     with no range. It refuses client calls with `repairing`, as a repair
+     of the log does, and `allow_one_more_repair` starts the repair.
+   - `build_the_state_again` runs in `vote_again_after_the_repair` when
+     the flag is set. `apply_the_done_records(applied_before)` runs no
+     request again at or below the applied index of before the repair.
+   - A client whose reply was dropped at a damage after a commit sends
+     the request again; its session gives the kept reply.
+   - Not built: arm B and the measurement of section 6.
+
 6. konsens.db goes to format 9. A store of format 8 is refused at the
    open. There is no conversion: no release has shipped a store.
 7. Not in this plan:
