@@ -5,6 +5,7 @@ image=${KONSENS_BENCH_IMAGE:-localhost/cxx-matrix-sqlite}
 compiler=${KONSENS_BENCH_CXX:-g++-16}
 c_compiler=${KONSENS_BENCH_CC:-gcc-16}
 optimization=${KONSENS_BENCH_OPT:--O2}
+dependencies=${KONSENS_BENCH_DEPS:-}
 build_jobs=2
 bench_user=bench
 bench_uid=1001
@@ -47,8 +48,12 @@ host() {
     done
     podman --version > "$work/podman-version-$stamp.txt"
     podman image inspect --format "$image {{.Id}} created {{.Created}}" "$image" > "$work/image-$stamp.txt"
-    podman run --rm -v "$repo:/src:ro" -v "$work:/work" -v "$work/storage:/storage" -v "$ccache:/ccache" \
-        -e CCACHE_DIR=/ccache -e KONSENS_BENCH_CXX="$compiler" -e KONSENS_BENCH_CC="$c_compiler" -e KONSENS_BENCH_OPT="$optimization" "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
+    local -a mounts=()
+    if [[ -n $dependencies ]]; then
+        mounts=(-v "$dependencies/cbor:/deps/cbor:ro" -v "$dependencies/slip:/deps/slip:ro" -v "$dependencies/webm:/deps/webm:ro")
+    fi
+    podman run --rm "${mounts[@]}" -v "$repo:/src:ro" -v "$work:/work" -v "$work/storage:/storage" -v "$ccache:/ccache" \
+        -e CCACHE_DIR=/ccache -e KONSENS_BENCH_CXX="$compiler" -e KONSENS_BENCH_CC="$c_compiler" -e KONSENS_BENCH_OPT="$optimization" -e KONSENS_BENCH_DEPS="$dependencies" "$image" bash /src/bench/run.sh --inside "$samples" "$rounds" "$commit" "$dirty" "$stamp" \
         "$prefixes" "${arms[@]}"
     cp "$work/result-$stamp.txt" "$results/$stamp.txt"
     echo "$results/$stamp.txt"
@@ -81,10 +86,15 @@ prepare_arm() {
 
 configure() {
     local source=$1 build=$2 log=$3
+    local -a fetched=()
+    if [[ -n $dependencies ]]; then
+        fetched=(-DFETCHCONTENT_SOURCE_DIR_MBEDDED-CBOR=/deps/cbor -DFETCHCONTENT_SOURCE_DIR_SLIPSTREAMIO=/deps/slip
+            -DFETCHCONTENT_SOURCE_DIR_MRUBY-WEBMACHINE=/deps/webm -DFETCHCONTENT_FULLY_DISCONNECTED=ON)
+    fi
     cmake -S "$source" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS_RELEASE=$optimization -DNDEBUG" \
         "-DCMAKE_C_FLAGS_RELEASE=$optimization -DNDEBUG" \
         -DCMAKE_CXX_COMPILER=$compiler -DCMAKE_C_COMPILER=$c_compiler -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-        -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache -DKONSENS_BENCH=ON -Wno-dev "${fetched[@]}" \
         > "$log" 2>&1 || { tail -n 40 "$log" >&2; exit 1; }
 }
 
