@@ -18,6 +18,7 @@
 (def pid-file (str home "/konsensd.pid"))
 (def peer-port 7151)
 (def client-port 7161)
+(def seconds-of-one-local-read 2)
 
 (defn pid-of
   [test node]
@@ -155,7 +156,7 @@
 (defn local-value
   [key-hex]
   (try (util/await-fn (fn []
-                        (let [r (c/exec :curl :-s :-w "\n%{http_code}"
+                        (let [r (c/exec :curl :-s :--max-time seconds-of-one-local-read :-w "\n%{http_code}"
                                         (str "http://127.0.0.1:" client-port "/kv/" (text-of-hex key-hex)))
                               [body status] (str/split r #"\n" 2)]
                           (case status
