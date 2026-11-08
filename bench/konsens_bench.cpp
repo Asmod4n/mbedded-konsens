@@ -32,6 +32,7 @@
 #include <vector>
 
 #include <sys/resource.h>
+#include <sqlite3.h>
 #include <unistd.h>
 
 #include <crc32c/crc32c.h>
@@ -2043,6 +2044,130 @@ case_outcome measure_read_back(const run_settings& s)
     return case_result{ns, std::format("mutations_per_op={}", mutations.size())};
 }
 
+
+struct rows_machine {
+    std::size_t value_bytes;
+
+    static std::span<const std::byte> key_of(std::span<const std::byte> payload)
+    {
+        return payload.first(sizeof(std::uint64_t));
+    }
+
+    konsens::applied apply(std::span<const std::byte> payload, const konsens::state_view auto&) const
+    {
+        const auto key = key_of(payload);
+        return {{}, {{{key.begin(), key.end()}, std::vector<std::byte>(payload.begin(), payload.end())}}};
+    }
+
+    std::vector<std::byte> query(std::span<const std::byte>, const konsens::state_view auto& view) const
+    {
+        const auto key = std::bit_cast<std::array<std::byte, sizeof(std::uint64_t)>>(std::uint64_t{0});
+        const auto found = view.find(key);
+        return found ? std::vector<std::byte>{found->begin(), found->end()} : std::vector<std::byte>{};
+    }
+};
+
+constexpr std::uint64_t rows_of_the_repair = 1000;
+constexpr std::string_view store_file_name = "konsens.db";
+
+std::vector<std::byte> payload_of_the_row(const std::uint64_t row, const std::size_t payload_bytes)
+{
+    std::vector<std::byte> payload(std::max(payload_bytes, sizeof(std::uint64_t)), payload_byte);
+    const auto key = std::bit_cast<std::array<std::byte, sizeof(std::uint64_t)>>(row);
+    std::ranges::copy(key, payload.begin());
+    return payload;
+}
+
+std::expected<void, failure> damage_the_first_row(const std::filesystem::path& directory)
+{
+    sqlite3* db = nullptr;
+    sqlite3_stmt* read = nullptr;
+    sqlite3_stmt* write = nullptr;
+    const auto file = (directory / store_file_name).string();
+    const auto key = std::bit_cast<std::array<std::byte, sizeof(std::uint64_t)>>(std::uint64_t{0});
+    std::vector<std::byte> value;
+    bool done = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK &&
+                sqlite3_prepare_v2(db, "SELECT value FROM data WHERE key = ?1", -1, &read, nullptr) == SQLITE_OK &&
+                sqlite3_bind_blob64(read, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK &&
+                sqlite3_step(read) == SQLITE_ROW;
+    if (done) {
+        const std::span bytes(static_cast<const std::byte*>(sqlite3_column_blob(read, 0)),
+                              static_cast<std::size_t>(sqlite3_column_bytes(read, 0)));
+        value.assign(bytes.begin(), bytes.end());
+        done = !value.empty();
+    }
+    if (done) {
+        value.front() ^= std::byte{1};
+        done = sqlite3_prepare_v2(db, "UPDATE data SET value = ?2 WHERE key = ?1", -1, &write, nullptr) == SQLITE_OK &&
+               sqlite3_bind_blob64(write, 1, key.data(), key.size(), SQLITE_TRANSIENT) == SQLITE_OK &&
+               sqlite3_bind_blob64(write, 2, value.data(), value.size(), SQLITE_TRANSIENT) == SQLITE_OK &&
+               sqlite3_step(write) == SQLITE_DONE && sqlite3_changes(db) == 1;
+    }
+    sqlite3_finalize(read);
+    sqlite3_finalize(write);
+    sqlite3_close(db);
+    if (!done) [[unlikely]] {
+        return std::unexpected(failure{"damage the first row of data", check_failed()});
+    }
+    return {};
+}
+
+case_outcome measure_repair_of_the_state(const run_settings& s)
+{
+    const auto machine_of = [&s](const konsens::node_id) { return rows_machine{s.payload_bytes}; };
+    auto p = start_client_cluster<rows_machine>(
+        sqlite_nodes<rows_machine>(s, s.parameter, max_in_flight, machine_of), 0, false);
+    if (!p) [[unlikely]] {
+        return std::unexpected(p.error());
+    }
+    for (std::uint64_t written = 0; written < s.parameter; written += max_in_flight) {
+        std::vector<std::vector<std::byte>> payloads;
+        for (std::uint64_t k = written; k < std::min(s.parameter, written + max_in_flight); ++k) {
+            payloads.push_back(payload_of_the_row(k % rows_of_the_repair, s.payload_bytes));
+        }
+        if (auto r = p->c.send_requests(p->at, p->session, written + 1, payloads); !r) [[unlikely]] {
+            return std::unexpected(failure{"write the log before the samples", r.error()});
+        }
+    }
+    if (auto settled = p->c.settle(); !settled) [[unlikely]] {
+        return std::unexpected(failure{"apply the log at each node", settled.error()});
+    }
+    auto& n = p->c.nodes.at(p->at);
+    const auto directory = s.directory / std::format("node-{}", p->at + 1) / "log";
+    std::vector<double> ns;
+    for (std::uint64_t sample = 0; sample < warm_up_samples + s.samples; ++sample) {
+        if (auto d = damage_the_first_row(directory); !d) [[unlikely]] {
+            return std::unexpected(d.error());
+        }
+        const auto call = p->c.next_call++;
+        auto start = std::chrono::steady_clock::now();
+        if (auto r = p->c.add(p->at, n.client_query(call, {})); !r) [[unlikely]] {
+            return std::unexpected(failure{"send the query that finds the damage", r.error()});
+        }
+        if (auto reply = p->c.wait_for_replies(call, 1); !reply) [[unlikely]] {
+            return std::unexpected(failure{"wait for the reply to the query", reply.error()});
+        }
+        if (n.waits_for_the_operator()) {
+            start = std::chrono::steady_clock::now();
+            if (auto r = n.allow_one_more_repair(); !r) [[unlikely]] {
+                return std::unexpected(failure{"allow one more repair", r.error()});
+            }
+            if (auto c = p->c.commit_and_collect(); !c) [[unlikely]] {
+                return std::unexpected(failure{"commit the repair", c.error()});
+            }
+        }
+        const auto end = std::chrono::steady_clock::now();
+        if (n.waits_for_the_operator() || !n.get_sequence_paxos().votes() || n.get_sequence_paxos().repairs())
+            [[unlikely]] {
+            return std::unexpected(failure{"vote again after the repair", check_failed()});
+        }
+        if (sample >= warm_up_samples) {
+            ns.push_back(ns_per_op_of(start, end, 1));
+        }
+    }
+    return case_result{ns, std::format("entries_in_the_log={} rows={}", s.parameter, rows_of_the_repair)};
+}
+
 template <typename S>
 case_outcome measure_scan_the_whole_log_on([[maybe_unused]] const run_settings& s)
 {
@@ -2141,6 +2266,7 @@ constexpr std::span<const parameter_ops> execute_verify_ops =
     branch_has_execute_verify ? std::span<const parameter_ops>(execute_verify_ops_of_the_branch)
                               : std::span<const parameter_ops>(execute_verify_ops_without);
 constexpr std::array<parameter_ops, 3> read_back_ops{{{64, 100000}, {1024, 100000}, {65536, 20000}}};
+constexpr std::array<parameter_ops, 3> repair_of_the_state_ops{{{1000, 1}, {10000, 1}, {100000, 1}}};
 constexpr std::array<parameter_ops, 3> scan_ops{{{1000, 20}, {10000, 2}, {100000, 1}}};
 
 constexpr bool scan_exists = has_scan_the_whole_log<konsens::persistent_storage>;
@@ -2179,6 +2305,7 @@ constexpr auto cases = std::to_array<bench_case>({
     {"execute_verify_float", measure_execute_verify_float, execute_verify_ops, argument_kind::parameter, true, true,
      false},
     {"read_back", measure_read_back, read_back_ops, argument_kind::payload_bytes, true, true},
+    {"repair_of_the_state", measure_repair_of_the_state, repair_of_the_state_ops, argument_kind::parameter, true, true},
     {"scan_the_whole_log", measure_scan_the_whole_log, scan_ops, argument_kind::parameter, true, scan_exists},
 });
 
