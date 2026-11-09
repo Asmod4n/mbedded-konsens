@@ -35,7 +35,8 @@ enum class entry_kind : std::uint8_t {
     stop_sign,
     register_client,
     client_request,
-    expire_session
+    expire_session,
+    cluster_shutdown
 };
 
 struct entry {
@@ -58,6 +59,7 @@ inline std::optional<std::size_t> field_count_of(const entry_kind kind) noexcept
     switch (kind) {
     case entry_kind::normal:
     case entry_kind::stop_sign:
+    case entry_kind::cluster_shutdown:
         return 0;
     case entry_kind::register_client:
     case entry_kind::client_request:
@@ -77,6 +79,16 @@ constexpr bool entry_is_a_request(const entry& e) noexcept
 constexpr bool entry_is_a_stop_sign(const entry& e) noexcept
 {
     return e.kind == entry_kind::stop_sign;
+}
+
+constexpr bool entry_is_a_cluster_shutdown(const entry& e) noexcept
+{
+    return e.kind == entry_kind::cluster_shutdown;
+}
+
+constexpr bool entry_ends_the_appends_of_the_leader(const entry& e) noexcept
+{
+    return entry_is_a_stop_sign(e) || entry_is_a_cluster_shutdown(e);
 }
 
 constexpr bool entry_is_done(const entry& e) noexcept
@@ -104,6 +116,8 @@ inline bool entry_has_a_field_of_another_kind(const entry& e) noexcept
     case entry_kind::normal:
     case entry_kind::stop_sign:
         return has_request || has_result;
+    case entry_kind::cluster_shutdown:
+        return has_request || has_result || !e.payload.empty();
     case entry_kind::register_client:
         return has_session || has_request_number;
     case entry_kind::client_request:

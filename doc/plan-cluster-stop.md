@@ -42,30 +42,30 @@ lists the open questions.
 
 ## 2. The form
 
-1. `node::stop_the_cluster()` (provisional) appends an entry of the kind
-   `entry_kind::cluster_stop` (provisional, appended at the end of the
+1. `node::shutdown_cluster()` appends an entry of the kind
+   `entry_kind::cluster_shutdown` (appended at the end of the
    enum). On a follower the entry goes to the leader as every other
    entry does. The entry has no payload, is not a request
    (`entry_is_a_request` is false for it), and changes no state when it
    is applied.
 2. Rules for the entry, beside the StopSign:
    - it is refused after an accepted StopSign, and `reconfigure` is
-     refused after an accepted `cluster_stop`;
+     refused after an accepted `cluster_shutdown`;
    - after the leader accepted it, it appends nothing else in its
      ballot; entries in `buffered_proposals_` after it are cut, as
      `cut_the_buffer_after_a_stop_sign` does (sequence_paxos.hpp:1711),
      and their callers get `client_errc::stopped`.
 3. When the leader decides the entry under its own ballot, it sends the
-   decide, and after it the message `cluster_stop` (provisional) with
+   decide, and after it the message `cluster_shutdown` with
    its ballot and the decided index, to every peer of the configuration,
    not only to the promised followers (`decide_if_chosen` sends to the
    promised followers only, sequence_paxos.hpp:2119). TCP keeps the
    order (owner, 2026-10-20).
-4. A peer acknowledges `cluster_stop` with `cluster_stop_ack`
-   (provisional). The leader sends `cluster_stop` again at each resend
+4. A peer acknowledges `cluster_shutdown` with `cluster_shutdown_ack`
+  . The leader sends `cluster_shutdown` again at each resend
    timeout to every peer that has not acknowledged. No fixed wait stands
    in this path.
-5. A node takes `cluster_stop`:
+5. A node takes `cluster_shutdown`:
    - as a voting node, when the ballot of the message is its promise;
    - in a repair, when the ballot of the message is not below its
      stored promise, and only when `find_the_damaged_ranges` succeeds
@@ -73,13 +73,13 @@ lists the open questions.
      `repair_` (sequence_paxos.hpp:676-688), which today takes only
      `repair_request` and `repair_entries`;
    - a retired node ignores it.
-   It sends the acknowledgement, and `node::stops()` (provisional) is
+   It sends the acknowledgement, and `node::shutting_down()` is
    true.
 6. A follower that acknowledged has stopped and cannot acknowledge a
    resend, so a lost acknowledgement is never sent again. The leader
-   therefore says `stops()` when every peer has acknowledged, or after
-   `cluster_stop_resends` (provisional) resend timeouts.
-   `node::peers_that_did_not_acknowledge()` (provisional) names the
+   therefore says `shutting_down()` when every peer has acknowledged, or after
+   `cluster_shutdown_resends` resend timeouts.
+   `node::peers_that_did_not_acknowledge()` names the
    peers with no acknowledgement. Such a peer has either stopped or did
    not get the message; konsensd writes the list, and the operator stops
    each running one with SIGTERM.
@@ -117,12 +117,12 @@ lists the open questions.
    stop interrupts does not count, so the next start repairs by itself
    again. A repair that waits for the operator still waits after a
    clean stop and the next start.
-10. konsensd: `POST /cluster/stop` (provisional) on the control socket
-    calls `stop_the_cluster`. The call answers 200 when this node says
-    `stops()`. It answers 503 when the leader changes before the
+10. konsensd: `POST /cluster/shutdown` on the control socket
+    calls `shutdown_cluster`. The call answers 200 when this node says
+    `shutting_down()`. It answers 503 when the leader changes before the
     decide, and the error of the call otherwise. The answer and the
    error log name the peers in `peers_that_did_not_acknowledge()`. The loop of `serve`
-    ends when `stops()` is true and every send has completed; a socket
+    ends when `shutting_down()` is true and every send has completed; a socket
     closes with `shutdown(SHUT_WR)` before `close`. Then `stopped`
     calls `stop()`, also in a repair. A repair that failed to start
     after the operator allowed it (`the_repair_failed`, serve.cpp:654,
@@ -150,7 +150,7 @@ gets what the code has:
    verified index bounded at the damage; it must find the violation of
    S2b.
 4. `ClusterStop`, as a safety invariant: a node stops only on a
-   `cluster_stop` whose ballot equals its promise when it takes it (or
+   `cluster_shutdown` whose ballot equals its promise when it takes it (or
    is not below it in a repair), and only for an entry decided under
    that ballot. Mutation: a leader of a later ballot sends the message
    for an old entry; the invariant must fail. A reachability check: a
@@ -169,24 +169,24 @@ result is one file in `model/results/`.
    the repair and a new leader, the entries between them are kept.
 3. test/test_repair.cpp: a node that waits for the operator stops
    cleanly and waits for the operator again after its start.
-4. test/test_cluster_stop.cpp (new): three nodes, a call on a follower;
-   every node says `stops()`, every node stops cleanly, every node
+4. test/test_cluster_shutdown.cpp (new): three nodes, a call on a follower;
+   every node says `shutting_down()`, every node stops cleanly, every node
    starts clean and votes at once; a write after the restart is
    decided. A node that was stopped before the call starts after the
    restart, catches up over the entry and stays running. A node that
    starts while the leader still resends takes the leader's ballot and
    stops on the resend: that is the deciding ballot.
-5. test/test_cluster_stop.cpp: a lost `cluster_stop` is sent again at
+5. test/test_cluster_shutdown.cpp: a lost `cluster_shutdown` is sent again at
    the resend timeout; a peer that never answers is in
-   `peers_that_did_not_acknowledge()`, and the leader says `stops()`
-   after `cluster_stop_resends` timeouts; a leader change before the decide
+   `peers_that_did_not_acknowledge()`, and the leader says `shutting_down()`
+   after `cluster_shutdown_resends` timeouts; a leader change before the decide
    stops nobody.
-6. test/test_cluster_stop.cpp: a node in a repair takes the message and
+6. test/test_cluster_shutdown.cpp: a node in a repair takes the message and
    stops; a message with a ballot below its promise does not stop it.
-7. test/test_wire.cpp: `cluster_stop` and `cluster_stop_ack` round trip,
+7. test/test_wire.cpp: `cluster_shutdown` and `cluster_shutdown_ack` round trip,
    and the old tags keep their numbers.
 8. program/test/three_nodes.sh: the block of the repair ends with
-   `POST /cluster/stop` on node 1; all three processes end with 0, and
+   `POST /cluster/shutdown` on node 1; all three processes end with 0, and
    all three start clean.
 9. Each change fails its test without it.
 
@@ -213,7 +213,7 @@ One review (2026-11-09) rejected the first form. What changed:
 4. A lost message left a node running: 2.4 and 2.6 add the
    acknowledgement, the resend and the list of nodes that did not stop.
 5. "202 when appended" was wrong on a follower: 2.10 answers at
-   `stops()`.
+   `shutting_down()`.
 6. A node in a repair drops every other message: 2.3 and 2.5.
 7. The count has two end points: 2.9.
 8. konsensd and a failed repair: 2.10.
@@ -227,15 +227,15 @@ claimed a stop (2.6); a node that starts during the resends stops
 (4.4).
 
 Not checked: an older binary that reads the new `entry_kind` value. The
-wire only grows at its end; a store with a `cluster_stop` entry is read
+wire only grows at its end; a store with a `cluster_shutdown` entry is read
 by this version and later ones.
 
 ## 7. Open questions to the owner
 
-1. The names: `stop_the_cluster`, `stops`, `peers_that_did_not_acknowledge`,
-   `cluster_stop_resends`,
-   `entry_kind::cluster_stop`, the messages `cluster_stop` and
-   `cluster_stop_ack`, the path `/cluster/stop`. No
+1. The names: `shutdown_cluster`, `stops`, `peers_that_did_not_acknowledge`,
+   `cluster_shutdown_resends`,
+   `entry_kind::cluster_shutdown`, the messages `cluster_shutdown` and
+   `cluster_shutdown_ack`, the path `/cluster/shutdown`. No
    specification names them. Proposal: these.
 2. A SIGTERM in a repair waits today until the repair ends. With 2.8, it
    can stop cleanly at once, and the repair runs again at the next

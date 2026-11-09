@@ -56,8 +56,24 @@ public:
 };
 
 template <std::size_t I>
-using body_of_kind = std::conditional_t<(I < paxos_kind_count), std::variant_alternative<I, paxos_msg>,
-                                        std::variant_alternative<I - paxos_kind_count, heartbeat_msg>>::type;
+struct body_of_kind_at {
+    using type = std::variant_alternative_t<I - paxos_kind_count - heartbeat_kind_count, shutdown_msg>;
+};
+
+template <std::size_t I>
+    requires(I < paxos_kind_count)
+struct body_of_kind_at<I> {
+    using type = std::variant_alternative_t<I, paxos_msg>;
+};
+
+template <std::size_t I>
+    requires(I >= paxos_kind_count && I < paxos_kind_count + heartbeat_kind_count)
+struct body_of_kind_at<I> {
+    using type = std::variant_alternative_t<I - paxos_kind_count, heartbeat_msg>;
+};
+
+template <std::size_t I>
+using body_of_kind = body_of_kind_at<I>::type;
 
 std::error_code check_entries(const std::span<const entry> entries) noexcept
 {
@@ -177,10 +193,13 @@ std::uint8_t kind_of(const message& m) noexcept
 {
     const auto index = std::visit(
         [](const auto& x) {
-            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(x)>, paxos_message>) {
+            using T = std::remove_cvref_t<decltype(x)>;
+            if constexpr (std::is_same_v<T, paxos_message>) {
                 return x.msg.index();
-            } else {
+            } else if constexpr (std::is_same_v<T, ble_message>) {
                 return paxos_kind_count + x.msg.index();
+            } else {
+                return paxos_kind_count + heartbeat_kind_count + x.msg.index();
             }
         },
         m);

@@ -277,7 +277,27 @@ struct ble_message {
     friend bool operator==(const ble_message&, const ble_message&) = default;
 };
 
-using message = std::variant<paxos_message, ble_message>;
+struct cluster_shutdown {
+    ballot n;
+    std::uint64_t decided_idx;
+    friend bool operator==(const cluster_shutdown&, const cluster_shutdown&) = default;
+};
+
+struct cluster_shutdown_ack {
+    ballot n;
+    friend bool operator==(const cluster_shutdown_ack&, const cluster_shutdown_ack&) = default;
+};
+
+using shutdown_msg = std::variant<cluster_shutdown, cluster_shutdown_ack>;
+
+struct shutdown_message {
+    node_id from;
+    node_id to;
+    shutdown_msg msg;
+    friend bool operator==(const shutdown_message&, const shutdown_message&) = default;
+};
+
+using message = std::variant<paxos_message, ble_message, shutdown_message>;
 
 }
 
@@ -341,3 +361,6 @@ CBOR_DEFINE_TYPE(konsens::heartbeat_request, cbor::tag{35697}, CBOR_MEMBER(konse
 CBOR_DEFINE_TYPE(konsens::heartbeat_reply, cbor::tag{35698}, CBOR_MEMBER(konsens::heartbeat_reply, round),
                  CBOR_MEMBER(konsens::heartbeat_reply, ballot), CBOR_MEMBER(konsens::heartbeat_reply, leader),
                  CBOR_MEMBER(konsens::heartbeat_reply, happy));
+CBOR_DEFINE_TYPE(konsens::cluster_shutdown, cbor::tag{35702}, CBOR_MEMBER(konsens::cluster_shutdown, n),
+                 CBOR_MEMBER(konsens::cluster_shutdown, decided_idx));
+CBOR_DEFINE_TYPE(konsens::cluster_shutdown_ack, cbor::tag{35703}, CBOR_MEMBER(konsens::cluster_shutdown_ack, n));
