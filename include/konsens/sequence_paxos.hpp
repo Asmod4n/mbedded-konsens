@@ -367,6 +367,9 @@ public:
         if (!m && error_is_a_damage(m.error())) [[unlikely]] {
             sp.nonce_ = nonce;
             sp.error_ = m.error();
+            if (config.start == start_kind::clean) {
+                sp.verified_idx_ = config.verified_idx;
+            }
             return sp;
         }
         if (!m) [[unlikely]] {
@@ -384,6 +387,9 @@ public:
             return std::unexpected(t.error());
         }
         sp.verified_idx_ = find_the_verified_idx(*t, m->decided_idx, m->log_len).value_or(m->decided_idx);
+        if (config.start == start_kind::clean) {
+            sp.verified_idx_ = std::max(sp.verified_idx_, std::min(config.verified_idx, m->log_len));
+        }
         const auto first = t->get_config_first_idx();
         if (!first && error_is_a_damage(first.error())) [[unlikely]] {
             sp.error_ = first.error();
@@ -423,7 +429,6 @@ public:
             break;
         case start_kind::clean:
             sp.state_ = {role::follower, phase::recover};
-            sp.verified_idx_ = std::max(sp.verified_idx_, std::min(config.verified_idx, m->log_len));
             sp.send_preparereq_to_all_peers(m->promise);
             break;
         case start_kind::retired:

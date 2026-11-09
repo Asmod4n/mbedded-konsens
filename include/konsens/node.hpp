@@ -264,9 +264,11 @@ public:
         throw_if_phase_two_is_open();
         seq_paxos_.throw_if_a_write_did_not_finish();
         seq_paxos_.throw_if_a_step_is_open();
-        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired() || seq_paxos_.repairs()) [[unlikely]] {
-            throw std::logic_error(
-                "konsens: stop on a node after a fault, after an error of its storage, in retirement or in a repair");
+        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired()) [[unlikely]] {
+            throw std::logic_error("konsens: stop on a node after a fault, after an error of its storage or in retirement");
+        }
+        if (seq_paxos_.repairs() && !seq_paxos_.find_the_damaged_ranges()) [[unlikely]] {
+            throw std::logic_error("konsens: stop in a repair on a store whose damage the node cannot read");
         }
         drop_held_messages_and_replies();
         reply_to_the_waiting_calls(make_error_code(client_errc::stopped));
@@ -1171,9 +1173,6 @@ private:
             waits_for_the_operator_ = true;
             return true;
         }
-        if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
-            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
-        }
         const auto left = seq_paxos_.repair_locally(*ranges);
         if (!left) [[unlikely]] {
             return false;
@@ -1206,6 +1205,13 @@ private:
 
     result vote_again_after_the_repair()
     {
+        const auto count = own_storage_.get_repair_count();
+        if (!count) [[unlikely]] {
+            return std::unexpected(count.error());
+        }
+        if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
+        }
         const auto promise = seq_paxos_.get_promise();
         if (!promise) [[unlikely]] {
             return std::unexpected(promise.error());

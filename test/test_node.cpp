@@ -721,17 +721,23 @@ TEST_CASE("a leader that finds a damage in a step repairs it from its peers and 
     }
 }
 
-// Plan of the repair, item 8: stop writes a clean-stop mark, and a start
-// with that mark keeps the identity. A node in repair has a damaged log,
-// so a stop during the repair is a wrong use.
-TEST_CASE("a stop during a repair is a wrong use")
+// Plan cluster-stop 2.8 and 2.9, owner 2026-11-09: a whole cluster that
+// stops ends clean on every node, also on a node in a repair. Before, a
+// stop in a repair was a wrong use, and a SIGTERM waited for a peer that
+// was gone (Jepsen, rw-register, node 2). The repair that the stop
+// interrupts does not count, so the next start repairs by itself and does
+// not wait for the operator. The mark keeps the verified index: a lower
+// one made a promise report fewer entries (plan clean-stop, item 17).
+TEST_CASE("a node that stops in a repair starts clean, repairs by itself and votes")
 {
     std::vector<std::filesystem::path> directories;
+    std::vector<std::filesystem::path> own_directories;
     std::vector<node_t> nodes;
     for (node_id p = 1; p <= 3; ++p) {
         directories.push_back(sqlite_storage::new_directory());
+        own_directories.push_back(sqlite_storage::new_directory());
         nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_in(directories.back()),
-                                      sqlite_storage::open_new_node_storage(), echo{}, 0));
+                                      sqlite_storage::open_node_storage_in(own_directories.back()), echo{}, 0));
     }
     const std::array<bool, 3> all{true, true, true};
     for (int i = 0; i < rounds; ++i) {
@@ -741,10 +747,88 @@ TEST_CASE("a stop during a repair is a wrong use")
     for (int i = 0; i < rounds; ++i) {
         step(nodes, all);
     }
+    const auto verified = nodes.front().get_sequence_paxos().get_verified_idx();
     flip_the_kind_of_the_last_record(directories.front());
     batches::commit(nodes.front(), nodes.front().handle_incoming(std::vector<konsens::message>{}));
     REQUIRE(nodes.front().get_sequence_paxos().repairs());
-    CHECK_THROWS_AS(nodes.front().stop(), std::logic_error);
+    nodes.front().stop();
+    end_without_stop(nodes.front());
+    auto later = config_of(1);
+    later.first_start = false;
+    nodes.front() = *node_t::with(later, sqlite_storage::open_in(directories.front()),
+                                  sqlite_storage::open_node_storage_in(own_directories.front()), echo{}, 10);
+    CHECK_FALSE(nodes.front().retired());
+    CHECK(nodes.front().get_sequence_paxos().repairs());
+    CHECK_FALSE(nodes.front().waits_for_the_operator());
+    CHECK(nodes.front().get_sequence_paxos().get_verified_idx() >= verified);
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes.front().get_sequence_paxos().votes());
+    const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+    batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(2)));
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    for (const auto& n : nodes) {
+        CHECK(*n.read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
+    }
+}
+
+// Plan cluster-stop 2.9: a node that waits for the operator stops clean,
+// and its start finds the damage and waits for the operator again. The
+// clean stop does not take the place of the operator.
+TEST_CASE("a node that waits for the operator stops clean and waits again after its start")
+{
+    std::vector<std::filesystem::path> directories;
+    std::vector<std::filesystem::path> own_directories;
+    std::vector<node_t> nodes;
+    for (node_id p = 1; p <= 3; ++p) {
+        directories.push_back(sqlite_storage::new_directory());
+        own_directories.push_back(sqlite_storage::new_directory());
+        nodes.push_back(*node_t::with(config_of(p), sqlite_storage::open_in(directories.back()),
+                                      sqlite_storage::open_node_storage_in(own_directories.back()), echo{}, 0));
+    }
+    const std::array<bool, 3> all{true, true, true};
+    const auto decide = [&nodes, &all](const std::uint8_t v) {
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+        const auto leader = nodes[0].get_sequence_paxos().get_promise()->pid;
+        batches::commit(nodes.at(leader - 1), nodes.at(leader - 1).append(make_entry(v)));
+        for (int i = 0; i < rounds; ++i) {
+            step(nodes, all);
+        }
+    };
+    const auto damage_and_step = [&directories, &nodes]() {
+        flip_the_kind_of_the_last_record(directories.front());
+        batches::commit(nodes.front(), nodes.front().handle_incoming(std::vector<konsens::message>{}));
+        REQUIRE(nodes.front().get_sequence_paxos().repairs());
+    };
+    decide(1);
+    damage_and_step();
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    REQUIRE(nodes.front().get_sequence_paxos().votes());
+    decide(2);
+    damage_and_step();
+    REQUIRE(nodes.front().waits_for_the_operator());
+    nodes.front().stop();
+    end_without_stop(nodes.front());
+    auto later = config_of(1);
+    later.first_start = false;
+    nodes.front() = *node_t::with(later, sqlite_storage::open_in(directories.front()),
+                                  sqlite_storage::open_node_storage_in(own_directories.front()), echo{}, 10);
+    CHECK_FALSE(nodes.front().retired());
+    CHECK(nodes.front().get_sequence_paxos().repairs());
+    CHECK(nodes.front().waits_for_the_operator());
+    REQUIRE(nodes.front().allow_one_more_repair());
+    for (int i = 0; i < rounds; ++i) {
+        step(nodes, all);
+    }
+    CHECK(nodes.front().get_sequence_paxos().votes());
+    CHECK(*nodes.front().read_decided_suffix(0) == std::vector{make_entry(1), make_entry(2)});
 }
 
 // Plan of the repair, item 8, owner 2026-10-24: one repair runs by itself.
