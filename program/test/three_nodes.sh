@@ -278,9 +278,11 @@ check "node 3 stops cleanly" stop 3
 start 3 --first-start
 check "--first-start after a clean stop serves a write" put_until_stored 3 after-flag yes
 
-# A SIGTERM during a repair waits for the end of the repair, and the node
-# then stops cleanly. Without that wait the stop ends the node as a crash,
-# and the next start retires it. The changed byte is the first byte of the
+# Owner 2026-11-09: a SIGTERM during a repair stops the node cleanly at
+# once. Before, it waited for the end of the repair, and a node whose peers
+# were gone waited until SIGKILL and was retired (Jepsen, rw-register,
+# node 2). The repair that the stop interrupts does not count, so the next
+# start repairs by itself. The changed byte is the first byte of the
 # encoded entry, so the CRC of the record fails; a changed byte in the
 # tail is repaired at the start and opens no repair. Node 2 starts alone,
 # so no peer answers its repair until nodes 1 and 3 start.
@@ -293,6 +295,14 @@ sqlite3 "$dir/data2/log/konsens.db" "UPDATE log SET record = unhex(
 check "the changed record is a BLOB" test "$(sqlite3 -readonly "$dir/data2/log/konsens.db" \
     "SELECT typeof(record) FROM log WHERE idx = (SELECT min(idx) FROM log)")" = blob
 start 2
+count_soon() {
+    local i
+    for i in $(seq 50); do
+        [ "$(grep -c "$2" "$3")" = "$1" ] && return 0
+        sleep 0.2
+    done
+    return 1
+}
 grep_soon() {
     local i
     for i in $(seq 50); do
@@ -305,19 +315,18 @@ check "node 2 repairs its store" grep_soon "node 2 repairs its store" "$dir/log2
 check "node 2 did not start retired" test -z "$(grep "started.*retired" "$dir/log2")"
 check "a read at node 2 during the repair answers 503" test "$(get 2 a)" = 503
 kill -TERM "${pids[2]}"
-sleep 1
-check "node 2 still runs one second after SIGTERM" alive 2
-check "node 2 says that it stops after its repair" grep -q "node 2 stops cleanly after its repair" "$dir/log2"
-start 1
-start 3
-check "node 2 ends within 30 s after its peers start" ends_within "${pids[2]}" 30
+check "node 2 ends within 30 s after SIGTERM, with no peer" ends_within "${pids[2]}" 30
 wait "${pids[2]}"
 check "node 2 exits with 0" test $? = 0
 unset "pids[2]"
-check "node 2 ended its repair" grep -q "node 2 ended its repair" "$dir/log2"
 check "node 2 stopped cleanly" test "$(tail -1 "$dir/log2")" = "konsensd: node 2 stopped cleanly"
 check "the addresses of node 2 are released" released 2
+start 1
+start 3
 start 2
+check "node 2 repairs its store again" count_soon 2 "node 2 repairs its store" "$dir/log2"
+check "node 2 does not wait for the operator" test -z "$(grep "waits for the operator" "$dir/log2")"
+check "node 2 ended its repair" grep_soon "node 2 ended its repair" "$dir/log2"
 check "node 2 serves a write after its repair" put_until_stored 2 after-repair yes
 check "node 1 reads it" holds_soon 1 after-repair yes
 
@@ -334,14 +343,6 @@ control_soon() {
     for i in $(seq 50); do
         status=$(control "$1")
         [ "$status" != 000 ] && { [ "$status" = "$2" ]; return; }
-        sleep 0.2
-    done
-    return 1
-}
-count_soon() {
-    local i
-    for i in $(seq 50); do
-        [ "$(grep -c "$2" "$3")" = "$1" ] && return 0
         sleep 0.2
     done
     return 1

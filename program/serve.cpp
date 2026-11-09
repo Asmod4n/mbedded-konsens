@@ -147,7 +147,6 @@ struct loop {
     buffer_ring client_buffers;
     std::vector<std::uint64_t> waiting_for_buffers;
     bool last_repairs{};
-    bool stop_waits_for_the_repair{};
     int control_listener{-1};
     std::filesystem::path control_socket{};
     std::vector<std::uint64_t> control_calls{};
@@ -649,18 +648,6 @@ void log_a_change_of_state(loop& l)
     }
 }
 
-bool the_repair_holds_the_stop(loop& l)
-{
-    if (!l.node.get_sequence_paxos().repairs() || l.node.waits_for_the_operator() || l.the_repair_failed) {
-        return false;
-    }
-    if (!l.stop_waits_for_the_repair) {
-        std::println(std::cerr, "konsensd: node {} stops cleanly after its repair", l.c.pid);
-        l.stop_waits_for_the_repair = true;
-    }
-    return true;
-}
-
 void arm_the_sends(loop& l);
 
 void commit_the_step(loop& l)
@@ -975,8 +962,9 @@ int stopped(loop& l)
         std::println(std::cerr, "konsensd: node {} has an error of its store and ends without a clean stop", l.c.pid);
         return exit_failed;
     }
-    if (l.node.get_sequence_paxos().repairs()) [[unlikely]] {
-        std::println(std::cerr, "konsensd: node {} waits for the operator to repair it and ends without a clean stop",
+    if (l.the_repair_failed) [[unlikely]] {
+        std::println(std::cerr, "konsensd: node {} did not start the repair that the operator allowed and ends without "
+                                "a clean stop",
                      l.c.pid);
         return exit_failed;
     }
@@ -1078,7 +1066,7 @@ int serve(const config& c, const start_options options)
     arm_signal(l);
     const auto tick = std::chrono::milliseconds{c.tick_milliseconds};
     auto next_tick = clock::now();
-    while (!l.stop_requested || the_repair_holds_the_stop(l)) {
+    while (!l.stop_requested) {
         const auto wait = l.step ? clock::duration::zero() : std::max(clock::duration::zero(), next_tick - clock::now());
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count();
         __kernel_timespec ts{ns / 1'000'000'000, ns % 1'000'000'000};

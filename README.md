@@ -421,10 +421,10 @@ cleanly and keeps its vote. A node that ends without a clean stop
 takes no part in the cluster. The other two nodes serve the clients.
 
 A node that repairs its store answers 503 during the repair. A SIGTERM
-during the repair waits for its end, and the node then stops cleanly.
-The repair ends when a peer answers. A SIGKILL before that ends the
-node without a clean stop. A repair that waits for the operator does
-not hold the stop: the node ends at once, without a clean stop.
+during the repair stops the node cleanly at once. The next start finds
+the damage again and repairs it; the stopped repair does not count. A
+node that waits for the operator stops cleanly too, and waits for the
+operator again after its next start.
 
 ### Clients
 
