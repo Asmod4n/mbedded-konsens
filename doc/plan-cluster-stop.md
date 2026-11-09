@@ -43,105 +43,177 @@ lists the open questions.
 ## 2. The form
 
 1. `node::stop_the_cluster()` (provisional) appends an entry of the kind
-   `entry_kind::cluster_stop` (provisional, appended to the enum). On a
-   follower the entry goes to the leader as every other entry does. The
-   entry has no payload and changes no state when it is applied.
-2. After the leader accepted a `cluster_stop` entry, it appends nothing
-   else in its ballot. Each later call answers
-   `client_errc::stopped`.
+   `entry_kind::cluster_stop` (provisional, appended at the end of the
+   enum). On a follower the entry goes to the leader as every other
+   entry does. The entry has no payload, is not a request
+   (`entry_is_a_request` is false for it), and changes no state when it
+   is applied.
+2. Rules for the entry, beside the StopSign:
+   - it is refused after an accepted StopSign, and `reconfigure` is
+     refused after an accepted `cluster_stop`;
+   - after the leader accepted it, it appends nothing else in its
+     ballot; entries in `buffered_proposals_` after it are cut, as
+     `cut_the_buffer_after_a_stop_sign` does (sequence_paxos.hpp:1711),
+     and their callers get `client_errc::stopped`.
 3. When the leader decides the entry under its own ballot, it sends the
-   decide to every peer, and after it the message `cluster_stop`
-   (provisional) with its ballot. TCP keeps the order (owner,
-   2026-10-20). The node then says to its caller that it stops:
-   `node::stops()` (provisional) is true.
-4. A node takes `cluster_stop` from the peer that leads its promised
-   ballot, and only when the ballot of the message is its promise. A
-   node in a repair takes it when the ballot of the message is not below
-   its stored promise. A retired node ignores it. After that,
-   `stops()` is true.
-5. The two rules of the owner:
-   - The entry acts once. The entry itself does nothing when it is
-     applied, so a start that applies it again does nothing. Only the
-     message stops a node, and no start sends the message.
+   decide, and after it the message `cluster_stop` (provisional) with
+   its ballot and the decided index, to every peer of the configuration,
+   not only to the promised followers (`decide_if_chosen` sends to the
+   promised followers only, sequence_paxos.hpp:2119). TCP keeps the
+   order (owner, 2026-10-20).
+4. A peer acknowledges `cluster_stop` with `cluster_stop_ack`
+   (provisional). The leader sends `cluster_stop` again at each resend
+   timeout to every peer that has not acknowledged. No fixed wait stands
+   in this path.
+5. A node takes `cluster_stop`:
+   - as a voting node, when the ballot of the message is its promise;
+   - in a repair, when the ballot of the message is not below its
+     stored promise. `handle` gets a branch for it in the block for
+     `repair_` (sequence_paxos.hpp:676-688), which today takes only
+     `repair_request` and `repair_entries`;
+   - a retired node ignores it.
+   It sends the acknowledgement, and `node::stops()` (provisional) is
+   true.
+6. The leader says `stops()` when every peer has acknowledged.
+   `node::peers_that_did_not_stop()` (provisional) names the others, so
+   that the operator stops them with SIGTERM.
+7. The two rules of the owner:
+   - The entry acts once. The entry does nothing when it is applied, so
+     a start that applies it again does nothing. Only the message stops
+     a node, and no start sends the message.
    - The entry acts only under the ballot that decided it. Only the
-     leader that decided it sends the message, at that decide. A leader
-     of a later ballot sends nothing for an old entry. A node that was
-     down at the stop catches up and stays running.
-6. `node::stop()` is allowed in a repair:
-   - the mark carries the verified index bounded by the first damaged
-     index;
-   - the next clean start finds the damage again (fact 5) and repairs.
-7. The count of repairs is written when a repair ends, not when it
-   starts. A repair that a clean stop interrupts does not count, so the
-   next start repairs by itself again. A repair that waits for the
-   operator stays waiting after a clean stop and the next start.
-8. konsensd: `POST /cluster/stop` (provisional) on the control socket
-   calls `stop_the_cluster`. It answers 202 when the entry is appended,
-   and the error of the call otherwise. The loop of `serve` ends when
-   `stops()` is true and every send has completed. Then `stopped`
-   calls `stop()`, also in a repair.
-9. A SIGTERM keeps its behaviour (question 2 in section 7).
+     leader that decided it sends the message. A leader of a later
+     ballot sends nothing for an old entry. A node that was down at the
+     stop catches up and stays running. When the leader changes before
+     the decide, the call on the node answers that the stop did not
+     happen, and the operator calls again.
+8. `node::stop()` is allowed in a repair. The mark keeps
+   `get_verified_idx()` unchanged, as `stop()` writes it today
+   (node.hpp:275-277). `verified_idx_` is the Execute-Verify index
+   (sequence_paxos.hpp:1299-1317) and not a CRC check; a lower value
+   makes a promise report fewer accepted entries (wrong assumption 17
+   of doc/plan-clean-stop.md). The next clean start scans the whole log
+   (fact 5), finds the damage again and repairs.
+9. The count of repairs is written when a repair ends, not when it
+   starts. A repair ends at two places, and both write the count, read
+   again at that moment, plus one:
+   - the local repair in `start_the_repair` that reaches `vote_again`
+     (node.hpp:1177-1189);
+   - `write_the_passed_copies` reaching `vote_again`
+     (sequence_paxos.hpp:2334), which the node sees at
+     `repaired && votes()` (node.hpp:464-470).
+   `allow_one_more_repair` writes 0 as before. A repair that a clean
+   stop interrupts does not count, so the next start repairs by itself
+   again. A repair that waits for the operator still waits after a
+   clean stop and the next start.
+10. konsensd: `POST /cluster/stop` (provisional) on the control socket
+    calls `stop_the_cluster`. The call answers 200 when this node says
+    `stops()`. It answers 503 when the leader changes before the
+    decide, and the error of the call otherwise. The loop of `serve`
+    ends when `stops()` is true and every send has completed; a socket
+    closes with `shutdown(SHUT_WR)` before `close`. Then `stopped`
+    calls `stop()`, also in a repair. A repair that failed to start
+    after the operator allowed it (`the_repair_failed`, serve.cpp:654,
+    704-709) also stops cleanly now: the next start finds the damage
+    and waits for the operator again.
+11. A SIGTERM keeps its behaviour (question 2 in section 7).
 
 ## 3. The model first
 
-Before the code, the model checks the two parts that touch safety:
+`SequencePaxos.tla` has no clean stop and no start without recovery. A
+node that `LeaveRunning` takes is refused for ever, and `DamageFound`
+copies the whole durable state of a source in one step, where the code
+replaces ranges in place and keeps its own promise. So the model first
+gets what the code has:
 
-1. `CleanStopInRepair(i)`: a node that waits in a repair (it left
-   `running` through `LeaveRunning` or waits for the operator) restarts
-   later with its own durable state and no recovery, and the start
-   finds the damage again. The invariants of `SequencePaxos.tla` hold.
-   Mutation: the restart takes the verified index of the mark above the
-   damage, so the damaged entry counts as verified. The mutation must
-   find a violation.
-2. `ClusterStop`: the leader decides the entry and every node with that
-   promise stops cleanly and restarts with no recovery. A node that was
-   down catches up and does not stop. Mutation: a later leader sends the
-   message for the old entry; the check that the cluster serves again
-   after the restart must fail.
+1. `CleanStop(i)` and the clean start: a restart from the node's own
+   durable state, with no recovery, with the verified index of the
+   mark. This is form B of doc/plan-clean-stop.md, which the model did
+   not have.
+2. A repair in place: a node with a damage waits in a repair, keeps its
+   promise, takes the damaged entries from a source and votes again;
+   the count of repairs moves to the end of the repair (`RepairsBounded`
+   and `DamageFound` count at the start today).
+3. `CleanStop` is enabled in a repair. Mutation: the mark carries the
+   verified index bounded at the damage; it must find the violation of
+   S2b.
+4. `ClusterStop`, as a safety invariant: a node stops only on a
+   `cluster_stop` whose ballot equals its promise when it takes it (or
+   is not below it in a repair), and only for an entry decided under
+   that ballot. Mutation: a leader of a later ballot sends the message
+   for an old entry; the invariant must fail. A reachability check: a
+   node that is down at the stop catches up over the entry and runs.
 
 BFS with small bounds (owner, 2026-10-25): three nodes, one damage, one
-stop. Each result is one file in `model/results/`.
+stop, each run under five minutes or reported with its time. Each
+result is one file in `model/results/`.
 
 ## 4. Tests
 
 1. test/test_repair.cpp: a node in a repair stops cleanly; its next
-   start repairs from a peer by itself; the count is still 0 before the
-   end of the repair and 1 after it.
-2. test/test_repair.cpp: a node that waits for the operator stops
+   start repairs from a peer by itself; the count is 0 before the end
+   of the repair and 1 after it. The same for a local repair.
+2. test/test_repair.cpp: the verified index is above the damage; after
+   the repair and a new leader, the entries between them are kept.
+3. test/test_repair.cpp: a node that waits for the operator stops
    cleanly and waits for the operator again after its start.
-3. test/test_cluster_stop.cpp (new): three nodes, a call on a follower;
+4. test/test_cluster_stop.cpp (new): three nodes, a call on a follower;
    every node says `stops()`, every node stops cleanly, every node
    starts clean and votes at once; a write after the restart is
    decided. A node that was stopped before the call starts after the
    restart, catches up over the entry and stays running.
-4. test/test_cluster_stop.cpp: a node in a repair takes the message and
+5. test/test_cluster_stop.cpp: a lost `cluster_stop` is sent again at
+   the resend timeout; a peer that never answers stays in
+   `peers_that_did_not_stop()`; a leader change before the decide
+   stops nobody.
+6. test/test_cluster_stop.cpp: a node in a repair takes the message and
    stops; a message with a ballot below its promise does not stop it.
-5. test/test_wire.cpp: `cluster_stop` round trip, and the old tags keep
-   their numbers.
-6. program/test/three_nodes.sh: the block of the repair (plan
-   konsensd-stop-and-repair section 3) ends with `POST /cluster/stop`
-   on node 1 instead of the start of nodes 1 and 3 for the repair; all
-   three processes end with 0, and all three start clean.
-7. Each change fails its test without it.
+7. test/test_wire.cpp: `cluster_stop` and `cluster_stop_ack` round trip,
+   and the old tags keep their numbers.
+8. program/test/three_nodes.sh: the block of the repair ends with
+   `POST /cluster/stop` on node 1; all three processes end with 0, and
+   all three start clean.
+9. Each change fails its test without it.
 
-Release g++ 16 in podman with the io_uring seccomp profile: the tests
-above, test_node, test_rest. The CI runs every build.
+Release g++ 16 in podman with the io_uring seccomp profile, only the
+tests above. The CI runs every build.
 
 ## 5. Order of the work
 
 1. Model (section 3), results pushed.
-2. Library: 2.6 and 2.7 with tests 4.1 and 4.2.
-3. Library: 2.1 to 2.5 with tests 4.3 to 4.5.
-4. konsensd: 2.8 with test 4.6, README.
+2. Library: 2.8 and 2.9 with tests 4.1 to 4.3.
+3. Library: 2.1 to 2.7 with tests 4.4 to 4.7.
+4. konsensd: 2.10 with test 4.8, README.
 
 ## 6. Review
 
-(to be filled by the review)
+One review (2026-11-09) rejected the first form. What changed:
+
+1. The mark bounded the verified index at the damage. That is the S2b
+   fault of wrong assumption 17: 2.8 keeps the index.
+2. The model has no clean stop and no repair in place: section 3 adds
+   both first, and the mutation is item 1.
+3. "Serves again" is no BFS invariant: 3.4 states a safety invariant
+   and a reachability check.
+4. A lost message left a node running: 2.4 and 2.6 add the
+   acknowledgement, the resend and the list of nodes that did not stop.
+5. "202 when appended" was wrong on a follower: 2.10 answers at
+   `stops()`.
+6. A node in a repair drops every other message: 2.3 and 2.5.
+7. The count has two end points: 2.9.
+8. konsensd and a failed repair: 2.10.
+9. Rules for the entry beside the StopSign: 2.1 and 2.2.
+10. Only the tests of the change run: section 4.
+
+Not checked: an older binary that reads the new `entry_kind` value. The
+wire only grows at its end; a store with a `cluster_stop` entry is read
+by this version and later ones.
 
 ## 7. Open questions to the owner
 
-1. The names: `stop_the_cluster`, `stops`, `entry_kind::cluster_stop`,
-   the message `cluster_stop`, the path `/cluster/stop`. No
+1. The names: `stop_the_cluster`, `stops`, `peers_that_did_not_stop`,
+   `entry_kind::cluster_stop`, the messages `cluster_stop` and
+   `cluster_stop_ack`, the path `/cluster/stop`. No
    specification names them. Proposal: these.
 2. A SIGTERM in a repair waits today until the repair ends. With 2.6, it
    can stop cleanly at once, and the repair runs again at the next
