@@ -68,15 +68,21 @@ lists the open questions.
 5. A node takes `cluster_stop`:
    - as a voting node, when the ballot of the message is its promise;
    - in a repair, when the ballot of the message is not below its
-     stored promise. `handle` gets a branch for it in the block for
+     stored promise, and only when `find_the_damaged_ranges` succeeds
+     (see 2.8). `handle` gets a branch for it in the block for
      `repair_` (sequence_paxos.hpp:676-688), which today takes only
      `repair_request` and `repair_entries`;
    - a retired node ignores it.
    It sends the acknowledgement, and `node::stops()` (provisional) is
    true.
-6. The leader says `stops()` when every peer has acknowledged.
-   `node::peers_that_did_not_stop()` (provisional) names the others, so
-   that the operator stops them with SIGTERM.
+6. A follower that acknowledged has stopped and cannot acknowledge a
+   resend, so a lost acknowledgement is never sent again. The leader
+   therefore says `stops()` when every peer has acknowledged, or after
+   `cluster_stop_resends` (provisional) resend timeouts.
+   `node::peers_that_did_not_acknowledge()` (provisional) names the
+   peers with no acknowledgement. Such a peer has either stopped or did
+   not get the message; konsensd writes the list, and the operator stops
+   each running one with SIGTERM.
 7. The two rules of the owner:
    - The entry acts once. The entry does nothing when it is applied, so
      a start that applies it again does nothing. Only the message stops
@@ -93,7 +99,12 @@ lists the open questions.
    (sequence_paxos.hpp:1299-1317) and not a CRC check; a lower value
    makes a promise report fewer accepted entries (wrong assumption 17
    of doc/plan-clean-stop.md). The next clean start scans the whole log
-   (fact 5), finds the damage again and repairs.
+   (fact 5), finds the damage again and repairs. In a repair, `stop()`
+   writes the mark only when `find_the_damaged_ranges` succeeds. Its
+   error `inconsistent_storage` means a meta record below the mark of
+   the start (sequence_paxos.hpp:1101-1103), so the store was rolled
+   back, and a mark of that meta would make the rollback a clean start
+   (node.hpp:76). Then the stop stays a wrong use, as today.
 9. The count of repairs is written when a repair ends, not when it
    starts. A repair ends at two places, and both write the count, read
    again at that moment, plus one:
@@ -109,13 +120,14 @@ lists the open questions.
 10. konsensd: `POST /cluster/stop` (provisional) on the control socket
     calls `stop_the_cluster`. The call answers 200 when this node says
     `stops()`. It answers 503 when the leader changes before the
-    decide, and the error of the call otherwise. The loop of `serve`
+    decide, and the error of the call otherwise. The answer and the
+   error log name the peers in `peers_that_did_not_acknowledge()`. The loop of `serve`
     ends when `stops()` is true and every send has completed; a socket
     closes with `shutdown(SHUT_WR)` before `close`. Then `stopped`
     calls `stop()`, also in a repair. A repair that failed to start
     after the operator allowed it (`the_repair_failed`, serve.cpp:654,
-    704-709) also stops cleanly now: the next start finds the damage
-    and waits for the operator again.
+    704-709) keeps ending without a clean stop: it can be a rollback
+    (2.8).
 11. A SIGTERM keeps its behaviour (question 2 in section 7).
 
 ## 3. The model first
@@ -161,10 +173,13 @@ result is one file in `model/results/`.
    every node says `stops()`, every node stops cleanly, every node
    starts clean and votes at once; a write after the restart is
    decided. A node that was stopped before the call starts after the
-   restart, catches up over the entry and stays running.
+   restart, catches up over the entry and stays running. A node that
+   starts while the leader still resends takes the leader's ballot and
+   stops on the resend: that is the deciding ballot.
 5. test/test_cluster_stop.cpp: a lost `cluster_stop` is sent again at
-   the resend timeout; a peer that never answers stays in
-   `peers_that_did_not_stop()`; a leader change before the decide
+   the resend timeout; a peer that never answers is in
+   `peers_that_did_not_acknowledge()`, and the leader says `stops()`
+   after `cluster_stop_resends` timeouts; a leader change before the decide
    stops nobody.
 6. test/test_cluster_stop.cpp: a node in a repair takes the message and
    stops; a message with a ballot below its promise does not stop it.
@@ -205,13 +220,20 @@ One review (2026-11-09) rejected the first form. What changed:
 9. Rules for the entry beside the StopSign: 2.1 and 2.2.
 10. Only the tests of the change run: section 4.
 
+A second look at the changed plan approved it with changes: a repair
+that found a rollback must not stop cleanly (2.8, 2.10); a lost
+acknowledgement kept the leader running, and the name of the list
+claimed a stop (2.6); a node that starts during the resends stops
+(4.4).
+
 Not checked: an older binary that reads the new `entry_kind` value. The
 wire only grows at its end; a store with a `cluster_stop` entry is read
 by this version and later ones.
 
 ## 7. Open questions to the owner
 
-1. The names: `stop_the_cluster`, `stops`, `peers_that_did_not_stop`,
+1. The names: `stop_the_cluster`, `stops`, `peers_that_did_not_acknowledge`,
+   `cluster_stop_resends`,
    `entry_kind::cluster_stop`, the messages `cluster_stop` and
    `cluster_stop_ack`, the path `/cluster/stop`. No
    specification names them. Proposal: these.
