@@ -112,6 +112,8 @@ std::string text_of(const konsens::entry& e)
         return std::format("request {} of session {}: {}", e.request_number, e.session, text_of(e.payload));
     case konsens::entry_kind::expire_session:
         return std::format("ExpireSession of session {}", e.session);
+    case konsens::entry_kind::cluster_shutdown:
+        return "ClusterShutdown";
     case konsens::entry_kind::normal:
     case konsens::entry_kind::stop_sign:
         break;
