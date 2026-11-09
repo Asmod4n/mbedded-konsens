@@ -215,7 +215,7 @@ by this version and later ones.
    `entry_kind::cluster_stop`, the messages `cluster_stop` and
    `cluster_stop_ack`, the path `/cluster/stop`. No
    specification names them. Proposal: these.
-2. A SIGTERM in a repair waits today until the repair ends. With 2.6, it
+2. A SIGTERM in a repair waits today until the repair ends. With 2.8, it
    can stop cleanly at once, and the repair runs again at the next
    start, uncounted. Proposal: stop at once, so a single node never
    waits for a peer that is gone.
