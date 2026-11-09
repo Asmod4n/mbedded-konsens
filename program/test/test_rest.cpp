@@ -205,7 +205,7 @@ TEST_CASE("take_control_request reads POST /repair/allow-one-more")
     const auto r = take_control_request(request);
     REQUIRE(r);
     REQUIRE(*r);
-    CHECK(**r == control_request{request.size(), false});
+    CHECK(**r == control_request{konsensd::allow_one_more_repair_path, request.size(), false});
     const std::string_view closing = "POST /repair/allow-one-more HTTP/1.1\r\nConnection: close\r\n\r\n";
     CHECK(take_control_request(closing)->value().closes);
     const std::string_view empty_body = "POST /repair/allow-one-more HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
@@ -226,7 +226,20 @@ TEST_CASE("take_control_request waits for the whole request and takes only its b
     CHECK((*r)->bytes == first.size());
 }
 
-// The control socket knows one target and one method. RFC 9110 15.5.6:
+// Plan cluster-stop 2.10: the operator shuts the whole cluster down with
+// this request on any node.
+TEST_CASE("take_control_request reads POST /cluster/shutdown")
+{
+    const std::string_view request = "POST /cluster/shutdown HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n";
+    const auto r = take_control_request(request);
+    REQUIRE(r);
+    REQUIRE(*r);
+    CHECK(**r == control_request{konsensd::cluster_shutdown_path, request.size(), false});
+    CHECK(control_problem_of("GET /cluster/shutdown HTTP/1.1\r\n\r\n").status == 405);
+    CHECK(control_problem_of("POST /cluster HTTP/1.1\r\n\r\n").status == 404);
+}
+
+// The control socket knows two targets and one method. RFC 9110 15.5.6:
 // a 405 carries the methods that the target takes.
 TEST_CASE("take_control_request refuses another target, another method and a body")
 {
@@ -243,7 +256,7 @@ TEST_CASE("take_control_request refuses another target, another method and a bod
     CHECK(control_problem_of("POST /repair/allow-one-more HTTP/2.0\r\n\r\n").status == 505);
 }
 
-// The two problems of the control socket have their types in
+// The three problems of the control socket have their types in
 // doc/problems.md.
 TEST_CASE("the problems of the control socket have their types")
 {
@@ -252,4 +265,7 @@ TEST_CASE("the problems of the control socket have their types")
     CHECK(konsensd::not_waiting_for_the_operator.type == base + "not-waiting-for-the-operator");
     CHECK(konsensd::repair_does_not_start.status == 500);
     CHECK(konsensd::repair_does_not_start.type == base + "repair-does-not-start");
+    CHECK(konsensd::cluster_did_not_shut_down.status == 503);
+    CHECK(konsensd::cluster_did_not_shut_down.retry_after);
+    CHECK(konsensd::cluster_did_not_shut_down.type == base + "cluster-did-not-shut-down");
 }

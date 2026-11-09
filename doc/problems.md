@@ -74,7 +74,8 @@ No result of the write has a majority. The write changed nothing.
 - Status: 503, without `Retry-After`
 
 The node stopped before the write was decided. The write may still be
-decided.
+decided. A node of a cluster that shuts down refuses each new write with
+this answer, and such a write changed nothing.
 
 ## not-waiting-for-the-operator
 
@@ -98,3 +99,13 @@ operator allowed the repair, but the store of the node is not
 consistent, and the repair does not start. The node takes no part in
 the cluster. A stop ends it without a clean stop, so it is retired at
 its next start. Replace the node.
+
+## cluster-did-not-shut-down
+
+- Type: `https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#cluster-did-not-shut-down`
+- Title: The cluster did not shut down
+- Status: 503, with `Retry-After`
+
+The answer of `POST /cluster/shutdown` on the control socket. The leader
+changed before it decided the entry of the shutdown, so no node shut
+down. Call again.

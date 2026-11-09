@@ -7,8 +7,10 @@ node in a repair stops cleanly too, and the repair does not count.
 
 Base: main 4199485. Branch: `cluster-stop`.
 
-Marks: "provisional" marks a name that waits on the owner. Section 7
-lists the open questions.
+The names come from Hazelcast: `Cluster.shutdown()`, the REST call
+`clusterShutdown` and the lifecycle state `SHUTTING_DOWN` (owner,
+2026-11-09 18:26: the names come from an implementation). Section 7
+lists the decisions of the owner.
 
 ## 1. Facts checked in this session
 
@@ -49,20 +51,23 @@ lists the open questions.
    (`entry_is_a_request` is false for it), and changes no state when it
    is applied.
 2. Rules for the entry, beside the StopSign:
-   - it is refused after an accepted StopSign, and `reconfigure` is
-     refused after an accepted `cluster_shutdown`;
+   - it is refused with `reconfiguring` after a StopSign, and
+     `reconfigure` is refused with `stopped` after a `cluster_shutdown`;
+   - on the leader, the call is refused with `retry` while a request is
+     in work, as a StopSign is;
    - after the leader accepted it, it appends nothing else in its
      ballot; entries in `buffered_proposals_` after it are cut, as
-     `cut_the_buffer_after_a_stop_sign` does (sequence_paxos.hpp:1711),
-     and their callers get `client_errc::stopped`.
+     after a StopSign, and each new write of a client is refused with
+     `client_errc::stopped`.
 3. When the leader decides the entry under its own ballot, it sends the
-   decide, and after it the message `cluster_shutdown` with
-   its ballot and the decided index, to every peer of the configuration,
-   not only to the promised followers (`decide_if_chosen` sends to the
-   promised followers only, sequence_paxos.hpp:2119). TCP keeps the
-   order (owner, 2026-10-20).
-4. A peer acknowledges `cluster_shutdown` with `cluster_shutdown_ack`
-  . The leader sends `cluster_shutdown` again at each resend
+   message `cluster_shutdown` with its ballot and the decided index to
+   every peer of the configuration, not only to the promised followers
+   (`decide_if_chosen` sends to the promised followers only). The
+   message is released at the end of the step, and it can arrive before
+   the decide. A follower needs no decide to stop: the entry is chosen,
+   and the follower catches up after its next start.
+4. A peer acknowledges `cluster_shutdown` with `cluster_shutdown_ack`.
+   The leader sends `cluster_shutdown` again at each resend
    timeout to every peer that has not acknowledged. No fixed wait stands
    in this path.
 5. A node takes `cluster_shutdown`:
@@ -121,14 +126,20 @@ lists the open questions.
     calls `shutdown_cluster`. The call answers 200 when this node says
     `shutting_down()`. It answers 503 when the leader changes before the
     decide, and the error of the call otherwise. The answer and the
-   error log name the peers in `peers_that_did_not_acknowledge()`. The loop of `serve`
+    error log name the peers in `peers_that_did_not_acknowledge()`, the
+    answer as `{"peers_that_did_not_acknowledge":[3]}`. The loop of `serve`
     ends when `shutting_down()` is true and every send has completed; a socket
     closes with `shutdown(SHUT_WR)` before `close`. Then `stopped`
     calls `stop()`, also in a repair. A repair that failed to start
     after the operator allowed it (`the_repair_failed`, serve.cpp:654,
     704-709) keeps ending without a clean stop: it can be a rollback
     (2.8).
-11. A SIGTERM keeps its behaviour (question 2 in section 7).
+11. A SIGTERM in a repair stops cleanly at once (decision 2 in section
+    7).
+12. The wire: `cluster_shutdown` and `cluster_shutdown_ack` form a
+    third group, `shutdown_msg`, after `paxos_msg` and `heartbeat_msg`.
+    The kind byte counts on over the groups, so every old kind keeps
+    its number, and the new kinds are 24 and 25.
 
 ## 3. The model first
 
@@ -226,21 +237,23 @@ acknowledgement kept the leader running, and the name of the list
 claimed a stop (2.6); a node that starts during the resends stops
 (4.4).
 
+Built and tested (2026-11-09): three mutants of the library each fail
+test/test_cluster_shutdown.cpp: a node that takes a message of any
+ballot, a leader with no resend, and a later leader that sends for an
+old entry. Not tested: a node that starts while the leader still
+resends (4.4, last sentence), and a node in a repair on a rolled-back
+store that gets `cluster_shutdown` (2.5).
+
 Not checked: an older binary that reads the new `entry_kind` value. The
 wire only grows at its end; a store with a `cluster_shutdown` entry is read
 by this version and later ones.
 
-## 7. Open questions to the owner
+## 7. Decisions of the owner
 
-1. The names: `shutdown_cluster`, `stops`, `peers_that_did_not_acknowledge`,
-   `cluster_shutdown_resends`,
-   `entry_kind::cluster_shutdown`, the messages `cluster_shutdown` and
-   `cluster_shutdown_ack`, the path `/cluster/shutdown`. No
-   specification names them. Proposal: these.
-2. A SIGTERM in a repair waits today until the repair ends. With 2.8, it
-   can stop cleanly at once, and the repair runs again at the next
-   start, uncounted. Proposal: stop at once, so a single node never
-   waits for a peer that is gone.
+1. The names (2026-11-09 18:26): taken from Hazelcast, see the head of
+   this plan.
+2. A SIGTERM in a repair (2026-11-09, card): the node stops cleanly at
+   once, and the repair runs again at the next start, uncounted.
 
 ## 8. Data
 

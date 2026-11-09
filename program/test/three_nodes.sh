@@ -330,6 +330,32 @@ check "node 2 ended its repair" grep_soon "node 2 ended its repair" "$dir/log2"
 check "node 2 serves a write after its repair" put_until_stored 2 after-repair yes
 check "node 1 reads it" holds_soon 1 after-repair yes
 
+# Plan cluster-stop 4.8: one call on the control socket of one node shuts
+# the whole cluster down. The entry goes through the log, every node
+# ends with 0 after a clean stop, and every node starts clean.
+check "POST /cluster/shutdown at node 1 answers 200" test "$(status_of --unix-socket \
+    "$dir/data1/control/control.sock" -X POST http://localhost/cluster/shutdown)" = 200
+check "the answer names no peer that did not acknowledge" grep -q '"peers_that_did_not_acknowledge":\[\]' \
+    "$dir/body"
+for p in 1 2 3; do
+    check "node $p ends after the shutdown of the cluster" ends_within "${pids[$p]}" 30
+    wait "${pids[$p]}"
+    check "node $p exits with 0 after the shutdown of the cluster" test $? = 0
+    unset "pids[$p]"
+    check "node $p stopped cleanly after the shutdown of the cluster" \
+        test "$(tail -1 "$dir/log$p")" = "konsensd: node $p stopped cleanly"
+    check "the addresses of node $p are released after the shutdown" released "$p"
+done
+for p in 1 2 3; do
+    start "$p"
+done
+check "a write after the shutdown of the cluster" put_until_stored 3 after-shutdown yes
+check "a read at node 1 sees the write after the shutdown" holds_soon 1 after-shutdown yes
+for p in 1 2 3; do
+    check "node $p started clean after the shutdown of the cluster" \
+        test -z "$(grep "started.*retired" "$dir/log$p")"
+done
+
 # The operator allows one more repair on the control socket of a node
 # (plan of the control socket). A node that votes does not wait for the
 # operator, so the call changes nothing there and the node lives.

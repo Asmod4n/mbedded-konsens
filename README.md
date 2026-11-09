@@ -354,8 +354,28 @@ curl --unix-socket /var/lib/konsensd/control/control.sock -X POST http://localho
 
 The answer is 204 when the repair starts, and 409 when the node does
 not wait for the operator. [doc/problems.md](doc/problems.md) states
-each answer. A stop of a node that waits for the operator retires the
-node.
+each answer.
+
+The operator shuts the whole cluster down with one call on any node:
+
+```sh
+curl --unix-socket /var/lib/konsensd/control/control.sock -X POST http://localhost/cluster/shutdown
+```
+
+The call writes an entry into the log. When the leader decides the
+entry, it tells each node to shut down, and each node stops cleanly and
+ends with 0. A node in a repair stops cleanly too. The answer is 200
+when the node shuts down. Its body names the peers that did not
+acknowledge the shutdown:
+
+```json
+{"peers_that_did_not_acknowledge":[]}
+```
+
+Stop each named peer that still runs with SIGTERM. The answer is 503
+when the leader changed before it decided the entry. Then no node shut
+down, and the operator calls again. A node that was down at the call
+catches up over the entry at its next start and serves.
 
 The default seccomp profile of podman refuses io_uring, and konsensd
 then runs on the engine of slipstreamIO. Write a profile that adds the

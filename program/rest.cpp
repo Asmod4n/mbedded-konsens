@@ -19,7 +19,6 @@ constexpr std::uint16_t status_length_required = 411;
 constexpr std::uint16_t status_content_too_large = 413;
 constexpr std::uint16_t status_request_header_fields_too_large = 431;
 constexpr std::uint16_t status_not_implemented = 501;
-constexpr std::uint16_t status_service_unavailable = 503;
 constexpr std::uint16_t status_http_version_not_supported = 505;
 
 constexpr std::string_view problem_type_retry =
@@ -41,7 +40,7 @@ constexpr std::string_view http_1_1 = "HTTP/1.1";
 constexpr std::string_view http_1_0 = "HTTP/1.0";
 
 constexpr std::string_view allow_of_a_key = "GET, PUT, DELETE";
-constexpr std::string_view allow_of_the_repair = "POST";
+constexpr std::string_view allow_of_a_control_target = "POST";
 
 std::unexpected<problem> refused(const std::uint16_t status, const std::string_view detail)
 {
@@ -167,13 +166,15 @@ std::expected<std::optional<control_request>, problem> take_control_request(cons
         return std::nullopt;
     }
     const auto& r = (*h)->request;
-    if (r.request_line.request_target != allow_one_more_repair_path) [[unlikely]] {
-        return refused(status_not_found, "the control socket serves /repair/allow-one-more");
+    const auto target = r.request_line.request_target;
+    if (target != allow_one_more_repair_path && target != cluster_shutdown_path) [[unlikely]] {
+        return refused(status_not_found, "the control socket serves /repair/allow-one-more and /cluster/shutdown");
     }
     if (r.request_line.method != http::Method::kPost) [[unlikely]] {
-        return refused_method("/repair/allow-one-more takes POST", allow_of_the_repair);
+        return refused_method("a target of the control socket takes POST", allow_of_a_control_target);
     }
-    return control_request{r.bytes, asks_to_close(r)};
+    return control_request{target == cluster_shutdown_path ? cluster_shutdown_path : allow_one_more_repair_path,
+                           r.bytes, asks_to_close(r)};
 }
 
 problem problem_of(const std::error_code& e)

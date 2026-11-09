@@ -152,6 +152,8 @@ struct loop {
     std::vector<std::uint64_t> control_calls{};
     bool last_waits_in_a_repair{};
     bool the_repair_failed{};
+    std::vector<std::pair<std::uint64_t, konsens::ballot>> cluster_shutdown_calls{};
+    bool last_shutting_down{};
 };
 
 std::uint64_t user_data_of(const op o, const std::uint64_t id)
@@ -646,6 +648,11 @@ void log_a_change_of_state(loop& l)
         }
         l.last_waits_in_a_repair = waits;
     }
+    if (l.node.shutting_down() != l.last_shutting_down) {
+        std::println(std::cerr, "konsensd: node {} shuts down with the cluster; peers that did not acknowledge: {}",
+                     l.c.pid, l.node.peers_that_did_not_acknowledge());
+        l.last_shutting_down = true;
+    }
 }
 
 void arm_the_sends(loop& l);
@@ -699,6 +706,24 @@ std::string response_to_the_control_call(loop& l, const bool closes)
     return response_of(status_no_content, {}, {}, closes);
 }
 
+void take_the_cluster_shutdown_call(loop& l, const std::uint64_t id, connection& c)
+{
+    const bool closes = c.control->closes;
+    const auto promise = l.node.get_sequence_paxos().get_promise();
+    if (!promise) [[unlikely]] {
+        answer(l, id, c, problem_response_of(problem_of(promise.error()), closes), closes);
+        return;
+    }
+    const auto t = l.node.shutdown_cluster();
+    if (!t) [[unlikely]] {
+        answer(l, id, c, problem_response_of(problem_of(t.error()), closes), closes);
+        return;
+    }
+    std::println(std::cerr, "konsensd: node {} asks the cluster to shut down", l.c.pid);
+    l.step = *t;
+    l.cluster_shutdown_calls.emplace_back(id, *promise);
+}
+
 void answer_the_control_calls(loop& l)
 {
     if (l.control_calls.empty()) {
@@ -711,12 +736,71 @@ void answer_the_control_calls(loop& l)
                 continue;
             }
             connection& c = *it->second;
+            if (c.control->request_target == cluster_shutdown_path) {
+                take_the_cluster_shutdown_call(l, id, c);
+                continue;
+            }
             const bool closes = c.control->closes;
             answer(l, id, c, response_to_the_control_call(l, closes), closes);
         }
     }
     release_the_output(l);
     log_a_change_of_state(l);
+}
+
+std::string response_to_the_shutdown_of_the_cluster(loop& l, const bool closes)
+{
+    const auto body = std::format("{{\"peers_that_did_not_acknowledge\":{}}}", l.node.peers_that_did_not_acknowledge());
+    return response_of(status_ok, "application/json", std::as_bytes(std::span(body)), closes);
+}
+
+void answer_the_cluster_shutdown_calls(loop& l)
+{
+    if (l.cluster_shutdown_calls.empty()) {
+        return;
+    }
+    const auto promise = l.node.get_sequence_paxos().get_promise();
+    std::erase_if(l.cluster_shutdown_calls, [&l, &promise](const std::pair<std::uint64_t, konsens::ballot>& call) {
+        const auto it = l.connections.find(call.first);
+        if (it == l.connections.end() || it->second->closing) {
+            return true;
+        }
+        connection& c = *it->second;
+        const bool closes = c.control->closes;
+        if (l.node.shutting_down()) {
+            answer(l, call.first, c, response_to_the_shutdown_of_the_cluster(l, closes), closes);
+            return true;
+        }
+        if (promise && *promise != call.second) {
+            std::println(std::cerr, "konsensd: node {} saw a new leader before the decide; the cluster did not shut down",
+                         l.c.pid);
+            answer(l, call.first, c, problem_response_of(cluster_did_not_shut_down, closes), closes);
+            return true;
+        }
+        return false;
+    });
+}
+
+bool every_send_completed(const loop& l)
+{
+    return std::ranges::all_of(l.connections, [](const auto& x) {
+        const connection& c = *x.second;
+        return c.closing || !c.open || (c.out.empty() && !c.sending);
+    });
+}
+
+bool the_node_shut_down_and_sent_everything(const loop& l)
+{
+    return l.node.shutting_down() && !l.step && every_send_completed(l);
+}
+
+void shut_down_the_writes_of_the_connections(const loop& l)
+{
+    for (const auto& [id, c] : l.connections) {
+        if (c->open && !c->closing) {
+            ::shutdown(c->fd, SHUT_WR);
+        }
+    }
 }
 
 void start_a_connect(loop& l, const konsens::node_id pid, const socket_address& to)
@@ -1066,7 +1150,7 @@ int serve(const config& c, const start_options options)
     arm_signal(l);
     const auto tick = std::chrono::milliseconds{c.tick_milliseconds};
     auto next_tick = clock::now();
-    while (!l.stop_requested) {
+    while (!l.stop_requested && !the_node_shut_down_and_sent_everything(l)) {
         const auto wait = l.step ? clock::duration::zero() : std::max(clock::duration::zero(), next_tick - clock::now());
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count();
         __kernel_timespec ts{ns / 1'000'000'000, ns % 1'000'000'000};
@@ -1103,9 +1187,11 @@ int serve(const config& c, const start_options options)
         }
         commit_the_step(l);
         answer_the_control_calls(l);
+        answer_the_cluster_shutdown_calls(l);
         submit_the_sync(l);
         arm_the_sends(l);
     }
+    shut_down_the_writes_of_the_connections(l);
     const int status = stopped(l);
     io_uring_free_buf_ring(&l.ring, l.peer_buffers.ring, l.peer_buffers.shape.count, l.peer_buffers.shape.group);
     io_uring_free_buf_ring(&l.ring, l.client_buffers.ring, l.client_buffers.shape.count, l.client_buffers.shape.group);
