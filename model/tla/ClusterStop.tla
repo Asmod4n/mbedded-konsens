@@ -9,7 +9,7 @@
 (* A clean stop writes a mark with the verified index; a clean start takes *)
 (* it back and runs no recovery.                                           *)
 (***************************************************************************)
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, MaxBallot, MaxLog, MaxCrash, MaxDamage, MaxStop,
           AutoRepairs,
@@ -29,10 +29,11 @@ VARIABLES st,       \* durable: [prom, acc, log, dec]
           msgs,
           crashes, damages, stops,
           chosen,   \* ghost: the longest chosen log
+          chosen_b, \* ghost: the ballot that chose it
           stopped_by \* ghost: the ballots of the cluster_stop messages that stopped a node
 
 vars == <<st, ver, mark, status, damaged, count, lead, msgs, crashes, damages, stops,
-          chosen, stopped_by>>
+          chosen, chosen_b, stopped_by>>
 
 N == Cardinality(Nodes)
 IsMajority(Q) == 2 * Cardinality(Q) > N
@@ -72,6 +73,7 @@ Init ==
     /\ msgs = {}
     /\ crashes = 0 /\ damages = 0 /\ stops = 0
     /\ chosen = <<>>
+    /\ chosen_b = 0
     /\ stopped_by = {}
 
 Prepare(l, b) ==
@@ -82,7 +84,7 @@ Prepare(l, b) ==
     /\ lead' = [lead EXCEPT ![l] = [NoLead EXCEPT !.b = b, !.phase = "prepare",
                     !.promises = {[from |-> l, acc |-> st[l].acc, log |-> Reported(l)]}]]
     /\ msgs' = msgs \cup {[type |-> "prepare", b |-> b]}
-    /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 HandlePrepare(n, m) ==
     /\ Votes(n)
@@ -90,7 +92,7 @@ HandlePrepare(n, m) ==
     /\ st' = [st EXCEPT ![n].prom = m.b]
     /\ lead' = [lead EXCEPT ![n] = NoLead]
     /\ msgs' = msgs \cup {[type |-> "promise", b |-> m.b, from |-> n, acc |-> st[n].acc, log |-> Reported(n)]}
-    /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 HandlePromise(l, m) ==
     /\ Votes(l)
@@ -105,7 +107,7 @@ HandlePromise(l, m) ==
                   /\ msgs' = msgs \cup {[type |-> "accept", b |-> m.b, log |-> lg]}
           ELSE /\ lead' = [lead EXCEPT ![l].promises = ps]
                /\ UNCHANGED <<st, ver, msgs>>
-    /\ UNCHANGED <<mark, status, damaged, count, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<mark, status, damaged, count, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* The leader appends a value. After a stop entry it appends nothing else.
 Propose(l, v) ==
@@ -119,7 +121,7 @@ Propose(l, v) ==
        IN /\ st' = [st EXCEPT ![l].acc = lead[l].b, ![l].log = lg]
           /\ lead' = [lead EXCEPT ![l].log = lg, ![l].acks[l] = Min(ver[l], Len(lg))]
           /\ msgs' = msgs \cup {[type |-> "accept", b |-> lead[l].b, log |-> lg]}
-    /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, chosen, stopped_by>>
+    /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, chosen, chosen_b, stopped_by>>
 
 HandleAccept(n, m) ==
     /\ Votes(n)
@@ -134,14 +136,14 @@ HandleAccept(n, m) ==
                                                         /\ SubSeq(m.log, 1, j) = SubSeq(st[n].log, 1, j)) => j <= k
                                               IN k)]
     /\ lead' = [lead EXCEPT ![n] = IF lead[n].b = m.b THEN lead[n] ELSE NoLead]
-    /\ UNCHANGED <<mark, status, damaged, count, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<mark, status, damaged, count, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* Execute-Verify passes the entries of the log.
 Verify(n) ==
     /\ Votes(n)
     /\ ver[n] < Len(st[n].log)
     /\ ver' = [ver EXCEPT ![n] = Len(st[n].log)]
-    /\ UNCHANGED <<st, mark, status, damaged, count, lead, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, mark, status, damaged, count, lead, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* A node acknowledges its log up to its verified index.
 Ack(n) ==
@@ -150,7 +152,7 @@ Ack(n) ==
     /\ LET a == [type |-> "ack", b |-> st[n].acc, from |-> n, idx |-> Min(ver[n], Len(st[n].log))]
        IN /\ a \notin msgs
           /\ msgs' = msgs \cup {a}
-    /\ UNCHANGED <<st, ver, mark, status, damaged, count, lead, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, mark, status, damaged, count, lead, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 HandleAck(l, m) ==
     /\ Votes(l)
@@ -164,15 +166,16 @@ HandleAck(l, m) ==
           /\ IF d > st[l].dec
              THEN /\ st' = [st EXCEPT ![l].dec = d]
                   /\ chosen' = IF Len(chosen) < d THEN SubSeq(lead[l].log, 1, d) ELSE chosen
+                  /\ chosen_b' = IF Len(chosen) < d THEN m.b ELSE chosen_b
                   /\ msgs' = msgs \cup {[type |-> "decide", b |-> m.b, idx |-> d]}
-             ELSE UNCHANGED <<st, chosen, msgs>>
+             ELSE UNCHANGED <<st, chosen, chosen_b, msgs>>
     /\ UNCHANGED <<ver, mark, status, damaged, count, crashes, damages, stops, stopped_by>>
 
 HandleDecide(n, m) ==
     /\ Votes(n)
     /\ m.type = "decide" /\ m.b = st[n].acc /\ m.idx > st[n].dec /\ m.idx <= Len(st[n].log)
     /\ st' = [st EXCEPT ![n].dec = m.idx]
-    /\ UNCHANGED <<ver, mark, status, damaged, count, lead, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<ver, mark, status, damaged, count, lead, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* Plan 2.3: the leader that decided its own stop entry sends cluster_stop
 \* to every peer. Mutation LaterLeaderSends: a leader sends it for a stop
@@ -185,7 +188,7 @@ SendClusterStop(l) ==
          /\ st[l].log[k].b = lead[l].b \/ Mutation = "LaterLeaderSends"
     /\ lead' = [lead EXCEPT ![l].sent_stop = TRUE]
     /\ msgs' = msgs \cup {[type |-> "cluster_stop", b |-> lead[l].b]}
-    /\ UNCHANGED <<st, ver, mark, status, damaged, count, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, mark, status, damaged, count, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* Plan 2.8: the mark keeps the verified index. Mutation MarkBelowDamage
 \* bounds it at the damage.
@@ -197,11 +200,13 @@ CleanStopOf(n) ==
     /\ mark' = [mark EXCEPT ![n] = MarkOf(n)]
     /\ lead' = [lead EXCEPT ![n] = NoLead]
 
-\* An operator stops one node (SIGTERM, question 2 of the plan: also in a repair).
+\* An operator stops one node in a repair (SIGTERM, question 2 of the
+\* plan). The clean stop of a running node is the form that the code has;
+\* the bounds of the run leave it out.
 CleanStop(n) ==
-    /\ status[n] \in {"running", "repair", "waitop"}
+    /\ status[n] \in {"repair", "waitop"}
     /\ CleanStopOf(n)
-    /\ UNCHANGED <<st, ver, damaged, count, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, damaged, count, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* Plan 2.5: a voting node takes cluster_stop under its promise; a node in
 \* a repair takes it when the ballot is not below its stored promise. The
@@ -212,7 +217,7 @@ TakeClusterStop(n, m) ==
        \/ status[n] \in {"repair", "waitop"} /\ m.b >= st[n].prom
     /\ CleanStopOf(n)
     /\ stopped_by' = stopped_by \cup {m.b}
-    /\ UNCHANGED <<st, ver, damaged, count, msgs, crashes, damages, stops, chosen>>
+    /\ UNCHANGED <<st, ver, damaged, count, msgs, crashes, damages, stops, chosen, chosen_b>>
 
 \* A clean start takes the verified index of the mark and runs no
 \* recovery. The scan of the whole log finds a damage again.
@@ -222,7 +227,7 @@ CleanStart(n) ==
     /\ ver' = [ver EXCEPT ![n] = Min(mark[n], Len(st[n].log))]
     /\ status' = [status EXCEPT ![n] = IF damaged[n] = 0 THEN "running"
                                        ELSE IF count[n] < AutoRepairs THEN "repair" ELSE "waitop"]
-    /\ UNCHANGED <<st, damaged, count, lead, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, damaged, count, lead, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* A crash retires the node: it never votes again under its identity.
 Crash(n) ==
@@ -231,7 +236,7 @@ Crash(n) ==
     /\ crashes' = crashes + 1
     /\ status' = [status EXCEPT ![n] = "retired"]
     /\ lead' = [lead EXCEPT ![n] = NoLead]
-    /\ UNCHANGED <<st, ver, mark, damaged, count, msgs, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, mark, damaged, count, msgs, damages, stops, chosen, chosen_b, stopped_by>>
 
 \* A step finds a damaged entry of the log. The node stops voting and
 \* repairs while its count allows it, else it waits for the operator.
@@ -243,7 +248,7 @@ Damage(n, k) ==
     /\ damaged' = [damaged EXCEPT ![n] = k]
     /\ status' = [status EXCEPT ![n] = IF count[n] < AutoRepairs THEN "repair" ELSE "waitop"]
     /\ lead' = [lead EXCEPT ![n] = NoLead]
-    /\ UNCHANGED <<st, ver, mark, count, msgs, crashes, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, mark, count, msgs, crashes, stops, chosen, chosen_b, stopped_by>>
 
 \* The repair in place: a peer that is not retired holds the entry, the
 \* copy fits the chain, the node keeps its promise and votes again. Plan
@@ -256,13 +261,13 @@ RepairDone(n, p) ==
     /\ damaged' = [damaged EXCEPT ![n] = 0]
     /\ count' = [count EXCEPT ![n] = count[n] + 1]
     /\ status' = [status EXCEPT ![n] = "running"]
-    /\ UNCHANGED <<st, ver, mark, lead, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, mark, lead, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 OperatorAllowsRepair(n) ==
     /\ status[n] = "waitop"
     /\ count' = [count EXCEPT ![n] = 0]
     /\ status' = [status EXCEPT ![n] = "repair"]
-    /\ UNCHANGED <<st, ver, mark, damaged, lead, msgs, crashes, damages, stops, chosen, stopped_by>>
+    /\ UNCHANGED <<st, ver, mark, damaged, lead, msgs, crashes, damages, stops, chosen, chosen_b, stopped_by>>
 
 Next ==
     \/ \E l \in Nodes, b \in Ballots : Prepare(l, b)
@@ -283,7 +288,8 @@ TypeOK ==
 \* A chosen log is a prefix of every log a leader works with, and of every
 \* decided prefix.
 ChosenKept ==
-    /\ \A l \in Nodes : lead[l].phase = "accept" /\ status[l] = "running" => Prefix(chosen, lead[l].log)
+    /\ \A l \in Nodes : lead[l].phase = "accept" /\ status[l] = "running" /\ lead[l].b >= chosen_b
+                        => Prefix(chosen, lead[l].log)
     /\ \A n \in Nodes : LET d == SubSeq(st[n].log, 1, st[n].dec)
                         IN Prefix(d, chosen) \/ Prefix(chosen, d)
 
