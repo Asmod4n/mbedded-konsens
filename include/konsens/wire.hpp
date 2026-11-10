@@ -31,19 +31,20 @@ std::error_code make_error_code(wire_errc code) noexcept;
 inline constexpr std::uint8_t post = 2;
 
 inline constexpr std::size_t paxos_kind_count = std::variant_size_v<paxos_msg>;
-inline constexpr std::size_t kind_count = paxos_kind_count + std::variant_size_v<heartbeat_msg>;
+inline constexpr std::size_t heartbeat_kind_count = std::variant_size_v<heartbeat_msg>;
+inline constexpr std::size_t kind_count = paxos_kind_count + heartbeat_kind_count + std::variant_size_v<shutdown_msg>;
 
 static_assert(kind_count <= std::size_t{std::numeric_limits<std::uint8_t>::max()} + 1);
 
-template <typename Paxos, typename Heartbeat>
+template <typename Paxos, typename Heartbeat, typename Shutdown>
 struct received_msg_of;
 
-template <typename... Paxos, typename... Heartbeat>
-struct received_msg_of<std::variant<Paxos...>, std::variant<Heartbeat...>> {
-    using type = std::variant<cbor::ref<Paxos>..., cbor::ref<Heartbeat>...>;
+template <typename... Paxos, typename... Heartbeat, typename... Shutdown>
+struct received_msg_of<std::variant<Paxos...>, std::variant<Heartbeat...>, std::variant<Shutdown...>> {
+    using type = std::variant<cbor::ref<Paxos>..., cbor::ref<Heartbeat>..., cbor::ref<Shutdown>...>;
 };
 
-using received_msg = received_msg_of<paxos_msg, heartbeat_msg>::type;
+using received_msg = received_msg_of<paxos_msg, heartbeat_msg, shutdown_msg>::type;
 
 struct received {
     node_id from;

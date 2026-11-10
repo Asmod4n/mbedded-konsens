@@ -46,6 +46,8 @@ inline constexpr bool built_for_debugging = false;
 inline constexpr bool built_for_debugging = true;
 #endif
 
+inline constexpr std::uint32_t default_cluster_shutdown_resends = 3;
+
 struct node_config {
     std::uint32_t configuration_id;
     node_id pid;
@@ -57,6 +59,7 @@ struct node_config {
     bool first_start{};
     bool sync_by_the_caller{};
     std::size_t check_threads{};
+    std::uint32_t cluster_shutdown_resends{default_cluster_shutdown_resends};
 };
 
 struct sync_request {
@@ -264,9 +267,11 @@ public:
         throw_if_phase_two_is_open();
         seq_paxos_.throw_if_a_write_did_not_finish();
         seq_paxos_.throw_if_a_step_is_open();
-        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired() || seq_paxos_.repairs()) [[unlikely]] {
-            throw std::logic_error(
-                "konsens: stop on a node after a fault, after an error of its storage, in retirement or in a repair");
+        if (faulted_ || seq_paxos_.get_error() || seq_paxos_.retired()) [[unlikely]] {
+            throw std::logic_error("konsens: stop on a node after a fault, after an error of its storage or in retirement");
+        }
+        if (seq_paxos_.repairs() && !seq_paxos_.find_the_damaged_ranges()) [[unlikely]] {
+            throw std::logic_error("konsens: stop in a repair on a store whose damage the node cannot read");
         }
         drop_held_messages_and_replies();
         reply_to_the_waiting_calls(make_error_code(client_errc::stopped));
@@ -300,6 +305,7 @@ public:
                 }
             }
             if (resend_message_clock_.tick_and_check_timeout()) {
+                resend_the_cluster_shutdown();
                 if (seq_paxos_.repairs() && waits_for_the_operator_) {
                     return current_transaction();
                 }
@@ -500,9 +506,14 @@ private:
                 }
                 start_the_election_after_the_build();
             }
+            acknowledge_the_taken_cluster_shutdown();
             if (!seq_paxos_.votes()) {
                 release_the_output();
                 return {};
+            }
+            if (auto r = send_the_cluster_shutdown_after_its_decide(); !r) [[unlikely]] {
+                drop_held_messages_and_replies();
+                return r;
             }
             drop_the_reads_for_the_stop_sign();
             const auto promise = seq_paxos_.get_promise();
@@ -541,7 +552,25 @@ public:
         if (entry_is_a_stop_sign(e)) [[unlikely]] {
             throw std::logic_error("konsens: a StopSign comes from reconfigure, not from append");
         }
+        if (entry_is_a_cluster_shutdown(e)) [[unlikely]] {
+            throw std::logic_error("konsens: a cluster shutdown comes from shutdown_cluster, not from append");
+        }
         return append_an_entry(std::move(e));
+    }
+
+    [[nodiscard]] std::expected<transaction, std::error_code> shutdown_cluster()
+    {
+        return append_an_entry({entry_kind::cluster_shutdown});
+    }
+
+    bool shutting_down() const { return shutting_down_; }
+
+    std::vector<node_id> peers_that_did_not_acknowledge() const
+    {
+        if (!sent_cluster_shutdown_) {
+            return {};
+        }
+        return sent_cluster_shutdown_->unacknowledged;
     }
 
 private:
@@ -559,10 +588,13 @@ private:
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
+            if (auto r = refuse_if_the_cluster_shuts_down(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
             if (entry_is_done(e)) [[unlikely]] {
                 throw std::logic_error("konsens: only the leader appends a done record");
             }
-            if (e.kind == entry_kind::stop_sign && seq_paxos_.get_state().first == role::leader &&
+            if (entry_ends_the_appends_of_the_leader(e) && seq_paxos_.get_state().first == role::leader &&
                 holds_a_request_in_work()) [[unlikely]] {
                 return std::unexpected(make_error_code(client_errc::retry));
             }
@@ -589,6 +621,9 @@ public:
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = refuse_if_the_cluster_shuts_down(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (auto r = propose_a_request({entry_kind::register_client, {}, 0, 0, client_id, seq_paxos_.get_pid()}); !r)
@@ -618,6 +653,9 @@ public:
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = refuse_if_the_cluster_shuts_down(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (request_number == 0) [[unlikely]] {
@@ -684,6 +722,9 @@ public:
                 return std::unexpected(r.error());
             }
             if (auto r = refuse_if_reconfiguring(); !r) [[unlikely]] {
+                return std::unexpected(r.error());
+            }
+            if (auto r = refuse_if_the_cluster_shuts_down(); !r) [[unlikely]] {
                 return std::unexpected(r.error());
             }
             if (!read_the_newest_state([session](const auto& t) { return t.find_session(session); })) [[unlikely]] {
@@ -899,6 +940,13 @@ private:
             m);
     }
 
+    struct sent_cluster_shutdown {
+        ballot n;
+        std::uint64_t decided_idx;
+        std::vector<node_id> unacknowledged;
+        std::uint32_t resends;
+    };
+
     struct held_output {
         std::vector<message> messages;
         std::vector<client_reply> replies;
@@ -918,6 +966,8 @@ private:
         }
         std::ranges::move(execute_verify_outgoing_, std::back_inserter(out.messages));
         execute_verify_outgoing_.clear();
+        std::ranges::move(cluster_shutdown_outgoing_, std::back_inserter(out.messages));
+        cluster_shutdown_outgoing_.clear();
         out.replies = std::exchange(replies_before_the_sync_, {});
         std::ranges::move(client_replies_, std::back_inserter(out.replies));
         client_replies_.clear();
@@ -989,6 +1039,8 @@ private:
         }
         std::ranges::move(execute_verify_outgoing_, std::back_inserter(released_messages_));
         execute_verify_outgoing_.clear();
+        std::ranges::move(cluster_shutdown_outgoing_, std::back_inserter(released_messages_));
+        cluster_shutdown_outgoing_.clear();
         if (held_steps_.empty() && step.sync_number && *step.sync_number <= seq_paxos_.get_synced_sync_number()) {
             std::ranges::move(step.messages, std::back_inserter(released_messages_));
             std::ranges::move(step.replies, std::back_inserter(released_replies_));
@@ -1012,6 +1064,7 @@ private:
         static_cast<void>(seq_paxos_.take_outgoing_messages());
         static_cast<void>(ble_.take_outgoing_messages());
         execute_verify_outgoing_.clear();
+        cluster_shutdown_outgoing_.clear();
         client_replies_.clear();
         replies_before_the_sync_.clear();
         log_records_.clear();
@@ -1040,6 +1093,12 @@ private:
             return {};
         } else if constexpr (requires { paxos_msg{std::in_place_type<T>, msg}; }) {
             return seq_paxos_.handle(from, to, msg);
+        } else if constexpr (std::is_same_v<T, cluster_shutdown>) {
+            take_the_cluster_shutdown(from, to, msg);
+            return {};
+        } else if constexpr (std::is_same_v<T, cluster_shutdown_ack>) {
+            count_the_acknowledgement(from, to, msg);
+            return {};
         } else {
             if (seq_paxos_.building() || seq_paxos_.retired() || seq_paxos_.repairs()) {
                 return {};
@@ -1049,6 +1108,89 @@ private:
         }
     }
 
+    void take_the_cluster_shutdown(const node_id from, const node_id to, const cluster_shutdown& msg)
+    {
+        if (to != seq_paxos_.get_pid() || !std::ranges::contains(seq_paxos_.peers_, from) || seq_paxos_.building() ||
+            seq_paxos_.retired() || seq_paxos_.get_error()) {
+            return;
+        }
+        const auto promise = seq_paxos_.get_promise();
+        if (!promise) [[unlikely]] {
+            return;
+        }
+        if (seq_paxos_.repairs() ? msg.n < *promise : msg.n != *promise) {
+            return;
+        }
+        taken_cluster_shutdown_ = {from, msg.n};
+    }
+
+    void count_the_acknowledgement(const node_id from, const node_id to, const cluster_shutdown_ack& ack)
+    {
+        if (to != seq_paxos_.get_pid() || !sent_cluster_shutdown_ || ack.n != sent_cluster_shutdown_->n) {
+            return;
+        }
+        std::erase(sent_cluster_shutdown_->unacknowledged, from);
+        if (sent_cluster_shutdown_->unacknowledged.empty()) {
+            shutting_down_ = true;
+        }
+    }
+
+    void acknowledge_the_taken_cluster_shutdown()
+    {
+        const auto taken = std::exchange(taken_cluster_shutdown_, std::nullopt);
+        if (!taken || seq_paxos_.get_error() || seq_paxos_.retired()) {
+            return;
+        }
+        if (seq_paxos_.repairs() && !seq_paxos_.find_the_damaged_ranges()) [[unlikely]] {
+            return;
+        }
+        cluster_shutdown_outgoing_.emplace_back(
+            shutdown_message{seq_paxos_.get_pid(), taken->first, cluster_shutdown_ack{taken->second}});
+        shutting_down_ = true;
+    }
+
+    void send_the_cluster_shutdown_to_the_unacknowledged_peers()
+    {
+        for (const auto peer : sent_cluster_shutdown_->unacknowledged) {
+            cluster_shutdown_outgoing_.emplace_back(
+                shutdown_message{seq_paxos_.get_pid(), peer,
+                                 cluster_shutdown{sent_cluster_shutdown_->n, sent_cluster_shutdown_->decided_idx}});
+        }
+    }
+
+    result send_the_cluster_shutdown_after_its_decide()
+    {
+        const auto& leader = seq_paxos_.get_leader_state();
+        if (sent_cluster_shutdown_ || seq_paxos_.get_state() != std::pair{role::leader, phase::accept} ||
+            !leader.accepted_cluster_shutdown_idx) {
+            return {};
+        }
+        const auto decided = seq_paxos_.get_decided_idx();
+        if (!decided) [[unlikely]] {
+            return std::unexpected(decided.error());
+        }
+        if (*decided < *leader.accepted_cluster_shutdown_idx) {
+            return {};
+        }
+        sent_cluster_shutdown_ = sent_cluster_shutdown{leader.n_leader, *decided, seq_paxos_.peers_, 0};
+        send_the_cluster_shutdown_to_the_unacknowledged_peers();
+        shutting_down_ = sent_cluster_shutdown_->unacknowledged.empty();
+        return {};
+    }
+
+    void resend_the_cluster_shutdown()
+    {
+        if (!sent_cluster_shutdown_ || shutting_down_) {
+            return;
+        }
+        if (sent_cluster_shutdown_->resends == cluster_shutdown_resends_) {
+            shutting_down_ = true;
+            return;
+        }
+        sent_cluster_shutdown_->resends += 1;
+        send_the_cluster_shutdown_to_the_unacknowledged_peers();
+    }
+
     using base_write_set = write_set<typename S::transaction>;
 
     node(const node_config& config, sequence_paxos<S> seq_paxos, konsens::node_storage own_storage,
@@ -1056,7 +1198,7 @@ private:
         : seq_paxos_(std::move(seq_paxos)), own_storage_(std::move(own_storage)), ble_(std::move(ble)),
           ble_config_(ble_config_of(config)), election_clock_{0, config.election_tick_timeout},
           resend_message_clock_{0, config.resend_message_tick_timeout}, machine_(std::move(machine)), nonce_(nonce),
-          sync_by_the_caller_(config.sync_by_the_caller)
+          sync_by_the_caller_(config.sync_by_the_caller), cluster_shutdown_resends_(config.cluster_shutdown_resends)
     {
         nodes_ = config.peers;
         nodes_.push_back(config.pid);
@@ -1171,9 +1313,6 @@ private:
             waits_for_the_operator_ = true;
             return true;
         }
-        if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
-            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
-        }
         const auto left = seq_paxos_.repair_locally(*ranges);
         if (!left) [[unlikely]] {
             return false;
@@ -1206,6 +1345,13 @@ private:
 
     result vote_again_after_the_repair()
     {
+        const auto count = own_storage_.get_repair_count();
+        if (!count) [[unlikely]] {
+            return std::unexpected(count.error());
+        }
+        if (auto w = own_storage_.write_the_repair_count(*count + 1); !w) [[unlikely]] {
+            throw sync_error(w.error(), "konsens: the node storage failed to keep the count of repairs");
+        }
         const auto promise = seq_paxos_.get_promise();
         if (!promise) [[unlikely]] {
             return std::unexpected(promise.error());
@@ -1460,6 +1606,16 @@ private:
         if (next_config_ || seq_paxos_.holds_a_stop_sign() || std::ranges::any_of(waiting_, entry_is_a_stop_sign) ||
             std::ranges::any_of(tasks_, [](const auto& t) { return entry_is_a_stop_sign(t.second); })) [[unlikely]] {
             return std::unexpected(make_error_code(client_errc::reconfiguring));
+        }
+        return {};
+    }
+
+    result refuse_if_the_cluster_shuts_down() const
+    {
+        if (shutting_down_ || sent_cluster_shutdown_ || seq_paxos_.holds_a_cluster_shutdown() ||
+            std::ranges::any_of(tasks_, [](const auto& t) { return entry_is_a_cluster_shutdown(t.second); }))
+            [[unlikely]] {
+            return std::unexpected(make_error_code(client_errc::stopped));
         }
         return {};
     }
@@ -1909,7 +2065,7 @@ private:
         auto proposals = std::exchange(seq_paxos_.buffered_proposals_, {});
         std::ranges::move(std::exchange(waiting_, {}), std::back_inserter(proposals));
         for (auto& e : proposals) {
-            if (!refuse_if_reconfiguring()) [[unlikely]] {
+            if (!refuse_if_reconfiguring() || !refuse_if_the_cluster_shuts_down()) [[unlikely]] {
                 break;
             }
             if (entry_is_a_stop_sign(e) && !decode_cluster_config(e.payload)) [[unlikely]] {
@@ -2133,6 +2289,7 @@ private:
             break;
         case entry_kind::normal:
         case entry_kind::stop_sign:
+        case entry_kind::cluster_shutdown:
             break;
         }
     }
@@ -2222,6 +2379,7 @@ private:
             break;
         case entry_kind::normal:
         case entry_kind::stop_sign:
+        case entry_kind::cluster_shutdown:
             break;
         }
     }
@@ -2627,6 +2785,11 @@ private:
     std::vector<entry> waiting_;
     bool resend_answer_{};
     std::optional<cluster_config> next_config_;
+    std::uint32_t cluster_shutdown_resends_;
+    std::optional<std::pair<node_id, ballot>> taken_cluster_shutdown_;
+    std::optional<sent_cluster_shutdown> sent_cluster_shutdown_;
+    std::vector<message> cluster_shutdown_outgoing_;
+    bool shutting_down_{};
 };
 
 }

@@ -254,8 +254,12 @@ std::string name_of(const message& m)
         "refused",        "work",          "build_request",    "build_response",   "build_refused",
         "repair_request", "repair_entries"};
     static constexpr std::array<const char*, 2> ble{"heartbeat_request", "heartbeat_reply"};
+    static constexpr std::array<const char*, 2> shutdown{"cluster_shutdown", "cluster_shutdown_ack"};
     if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
         return paxos.at(p->msg.index());
+    }
+    if (const auto* s = std::get_if<konsens::shutdown_message>(&m)) {
+        return shutdown.at(s->msg.index());
     }
     return ble.at(std::get<konsens::ble_message>(m).msg.index());
 }
@@ -269,6 +273,8 @@ std::string text_of(const entry& e)
         return "request(" + std::to_string(e.session) + "." + std::to_string(e.request_number) + ")";
     case konsens::entry_kind::expire_session:
         return "expire(" + std::to_string(e.session) + ")";
+    case konsens::entry_kind::cluster_shutdown:
+        return "cluster_shutdown";
     case konsens::entry_kind::normal:
     case konsens::entry_kind::stop_sign:
         break;

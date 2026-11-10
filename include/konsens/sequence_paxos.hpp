@@ -149,6 +149,7 @@ struct leader_state {
     std::optional<konsens::log_sync> max_promise_sync;
     bool accepted_stop_sign;
     std::optional<taken_log> taken{};
+    std::optional<std::uint64_t> accepted_cluster_shutdown_idx{};
     std::uint64_t first_changed_idx{std::numeric_limits<std::uint64_t>::max()};
 
     static leader_state with(ballot n_leader, std::span<const node_id> nodes)
@@ -367,6 +368,9 @@ public:
         if (!m && error_is_a_damage(m.error())) [[unlikely]] {
             sp.nonce_ = nonce;
             sp.error_ = m.error();
+            if (config.start == start_kind::clean) {
+                sp.verified_idx_ = config.verified_idx;
+            }
             return sp;
         }
         if (!m) [[unlikely]] {
@@ -384,6 +388,9 @@ public:
             return std::unexpected(t.error());
         }
         sp.verified_idx_ = find_the_verified_idx(*t, m->decided_idx, m->log_len).value_or(m->decided_idx);
+        if (config.start == start_kind::clean) {
+            sp.verified_idx_ = std::max(sp.verified_idx_, std::min(config.verified_idx, m->log_len));
+        }
         const auto first = t->get_config_first_idx();
         if (!first && error_is_a_damage(first.error())) [[unlikely]] {
             sp.error_ = first.error();
@@ -423,7 +430,6 @@ public:
             break;
         case start_kind::clean:
             sp.state_ = {role::follower, phase::recover};
-            sp.verified_idx_ = std::max(sp.verified_idx_, std::min(config.verified_idx, m->log_len));
             sp.send_preparereq_to_all_peers(m->promise);
             break;
         case start_kind::retired:
@@ -463,7 +469,7 @@ public:
             return r;
         }
         if (state_ == std::pair{role::leader, phase::accept}) {
-            cut_the_buffer_after_a_stop_sign();
+            cut_the_buffer_after_a_stop_sign_or_a_cluster_shutdown();
             if (auto r = accept_entries_leader(buffered_proposals_); !r) [[unlikely]] {
                 drop_incoming_and_outgoing();
                 return r;
@@ -895,6 +901,12 @@ public:
     {
         return state_.first == role::leader &&
                (leader_state_.accepted_stop_sign || std::ranges::any_of(buffered_proposals_, entry_is_a_stop_sign));
+    }
+
+    bool holds_a_cluster_shutdown() const
+    {
+        return state_.first == role::leader && (leader_state_.accepted_cluster_shutdown_idx ||
+                                                std::ranges::any_of(buffered_proposals_, entry_is_a_cluster_shutdown));
     }
 
     result error_unless_retired() const
@@ -1708,13 +1720,13 @@ private:
         }
     }
 
-    void cut_the_buffer_after_a_stop_sign()
+    void cut_the_buffer_after_a_stop_sign_or_a_cluster_shutdown()
     {
-        if (leader_state_.accepted_stop_sign) [[unlikely]] {
+        if (leader_state_.accepted_stop_sign || leader_state_.accepted_cluster_shutdown_idx) [[unlikely]] {
             buffered_proposals_.clear();
             return;
         }
-        if (const auto s = std::ranges::find_if(buffered_proposals_, entry_is_a_stop_sign);
+        if (const auto s = std::ranges::find_if(buffered_proposals_, entry_ends_the_appends_of_the_leader);
             s != buffered_proposals_.end()) [[unlikely]] {
             buffered_proposals_.erase(std::next(s), buffered_proposals_.end());
         }
@@ -1725,18 +1737,22 @@ private:
         if (entries.empty()) {
             return {};
         }
-        const auto s = std::ranges::find_if(entries, entry_is_a_stop_sign);
-        if (leader_state_.accepted_stop_sign || (s != entries.end() && std::next(s) != entries.end())) [[unlikely]] {
-            throw std::logic_error("konsens: the leader appends an entry after a StopSign");
+        const auto s = std::ranges::find_if(entries, entry_ends_the_appends_of_the_leader);
+        if (leader_state_.accepted_stop_sign || leader_state_.accepted_cluster_shutdown_idx ||
+            (s != entries.end() && std::next(s) != entries.end())) [[unlikely]] {
+            throw std::logic_error("konsens: the leader appends an entry after a StopSign or a cluster shutdown");
         }
         write_or_throw(txn_->append_entries(entries));
-        leader_state_.accepted_stop_sign = s != entries.end();
+        leader_state_.accepted_stop_sign = s != entries.end() && entry_is_a_stop_sign(*s);
         if (auto r = extend_the_verified_idx(verified_idx_); !r) [[unlikely]] {
             return r;
         }
         const auto m = read_meta();
         if (!m) [[unlikely]] {
             return stop_voting(m.error());
+        }
+        if (s != entries.end() && entry_is_a_cluster_shutdown(*s)) [[unlikely]] {
+            leader_state_.accepted_cluster_shutdown_idx = m->log_len;
         }
         const auto decided_chain = read_prefix_chain_hash(m->decided_idx);
         if (!decided_chain) [[unlikely]] {

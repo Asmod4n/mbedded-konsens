@@ -36,6 +36,7 @@ entry_fields fields_of(const entry& e) noexcept
         return {e.session, 0};
     case entry_kind::normal:
     case entry_kind::stop_sign:
+    case entry_kind::cluster_shutdown:
         break;
     }
     return {};
@@ -58,6 +59,7 @@ entry entry_of(const entry_kind kind, const entry_fields& fields)
         break;
     case entry_kind::normal:
     case entry_kind::stop_sign:
+    case entry_kind::cluster_shutdown:
         break;
     }
     return e;

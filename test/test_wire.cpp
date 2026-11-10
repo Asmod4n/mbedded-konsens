@@ -23,15 +23,16 @@
 
 // Provisional names, made in this tree, for the owner to decide:
 // wire_errc and its values unknown_kind, unknown_entry_kind and
-// entry_field_of_another_kind; kind_of, kind_count and paxos_kind_count;
-// in src/wire.cpp body_of_kind, check_entries, check_entries_of,
+// entry_field_of_another_kind; kind_of, kind_count, paxos_kind_count and
+// heartbeat_kind_count; in src/wire.cpp body_of_kind, body_of_kind_at,
+// check_entries, check_entries_of,
 // decode_body, decode_body_of_kind and encode_parts; the flag --cbor of
 // counter_stress. The names with a source: header (RFC 7252 section 3),
 // post (RFC 7252 section 12.1.1), method_not_allowed (RFC 7252 section
 // 5.9.2.6), extraneous_data (RFC 8949 section 1.2).
 //
 // Provisional names: received and received_msg, the result of decode, and
-// received_msg_of, which builds the variant of cbor::ref from the two
+// received_msg_of, which builds the variant of cbor::ref from the three
 // variants of message.hpp.
 //
 // Provisional names of the recovery after a power loss
@@ -118,7 +119,7 @@ constexpr konsens::node_id paxos_to = 102;
 constexpr konsens::node_id ble_from = 103;
 constexpr konsens::node_id ble_to = 104;
 constexpr std::size_t uint8_values = std::size_t{std::numeric_limits<std::uint8_t>::max()} + 1;
-constexpr std::size_t entry_kind_count = 5;
+constexpr std::size_t entry_kind_count = 6;
 
 std::string head(const std::uint8_t major, const std::uint64_t argument)
 {
@@ -246,6 +247,11 @@ message ble(konsens::heartbeat_msg m)
     return konsens::ble_message{ble_from, ble_to, std::move(m)};
 }
 
+message shutdown(konsens::shutdown_msg m)
+{
+    return konsens::shutdown_message{paxos_from, paxos_to, std::move(m)};
+}
+
 std::vector<message> every_kind()
 {
     return {
@@ -293,6 +299,8 @@ std::vector<message> every_kind()
         ble(konsens::heartbeat_request{10}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}),
         ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), false}),
+        shutdown(konsens::cluster_shutdown{ballot_from(10), 20}),
+        shutdown(konsens::cluster_shutdown_ack{ballot_from(10)}),
     };
 }
 
@@ -305,6 +313,8 @@ message message_of(const konsens::received& r)
             using T = std::remove_cvref_t<decltype(*body)>;
             if constexpr (requires { konsens::paxos_msg{std::in_place_type<T>, *body}; }) {
                 return konsens::paxos_message{r.from, r.to, konsens::paxos_msg{std::in_place_type<T>, *body}};
+            } else if constexpr (requires { konsens::shutdown_msg{std::in_place_type<T>, *body}; }) {
+                return konsens::shutdown_message{r.from, r.to, konsens::shutdown_msg{std::in_place_type<T>, *body}};
             } else {
                 return konsens::ble_message{r.from, r.to, konsens::heartbeat_msg{std::in_place_type<T>, *body}};
             }
@@ -352,7 +362,8 @@ TEST_CASE("decode of encode gives the message, and a second encode gives the sam
 }
 
 // The kind byte is the only name of a message on the wire, and it is the
-// index of the type in paxos_msg, then in heartbeat_msg. A new type in the
+// index of the type in paxos_msg, then in heartbeat_msg, then in
+// shutdown_msg. A new type in the
 // middle of a variant moves every later kind, so that an old node and a new
 // node no longer understand each other. This table fixes each kind byte, so
 // that such a change fails here and is made on purpose.
@@ -385,6 +396,8 @@ TEST_CASE("each kind of message has its fixed kind byte")
         {paxos(konsens::repair_entries{10, 20, {}}), 21},
         {ble(konsens::heartbeat_request{10}), 22},
         {ble(konsens::heartbeat_reply{10, ballot_from(20), ballot_from(30), true}), 23},
+        {shutdown(konsens::cluster_shutdown{ballot_from(10), 20}), 24},
+        {shutdown(konsens::cluster_shutdown_ack{ballot_from(10)}), 25},
     };
     CHECK(table.size() == konsens::kind_count);
     for (const auto& [m, kind] : table) {
@@ -531,8 +544,8 @@ TEST_CASE("an entry kind that is not a value of entry_kind gives unknown_entry_k
 // Storage ends the process when an entry carries a field that its kind does
 // not carry, because that is a wrong use. From the wire it is a value of
 // another node, so decode refuses it before it reaches storage. The fields of
-// each kind come from the definition of entry: normal and stop_sign carry
-// none, register_client carries client_id and pid, client_request carries
+// each kind come from the definition of entry: normal, stop_sign and
+// cluster_shutdown carry none, register_client carries client_id and pid, client_request carries
 // session and request_number, expire_session carries session, and each
 // request kind carries the result fields of its done record
 // (plan-one-environment 3.3).
@@ -560,6 +573,7 @@ TEST_CASE("an entry with a field that its kind does not carry gives entry_field_
         {entry_kind::register_client, {false, false, true, true, true, true, true, true}},
         {entry_kind::client_request, {true, true, false, false, true, true, true, true}},
         {entry_kind::expire_session, {true, false, false, false, true, true, true, true}},
+        {entry_kind::cluster_shutdown, {false, false, false, false, false, false, false, false}},
     }};
     for (const auto& [kind, fields] : table) {
         for (std::uint8_t f = 0; f < field_count; ++f) {
@@ -583,6 +597,20 @@ TEST_CASE("an entry with a field that its kind does not carry gives entry_field_
             }
         }
     }
+}
+
+// Plan cluster-stop 2.1: the entry of a cluster shutdown has no payload. A
+// payload on the wire is a value of another node that no node of this
+// version writes, so decode refuses it.
+TEST_CASE("a cluster shutdown with a payload gives entry_field_of_another_kind")
+{
+    constexpr std::uint8_t proposal_forward_kind = 8;
+    const auto bytes = [](const std::vector<std::byte>& payload) {
+        return header_bytes(proposal_forward_kind, paxos_from, paxos_to) +
+               packed(konsens::proposal_forward{{entry{entry_kind::cluster_shutdown, payload}}});
+    };
+    CHECK(konsens::decode(bytes({})).has_value());
+    CHECK(error_of(bytes(payload_of({1}))) == wire_errc::entry_field_of_another_kind);
 }
 
 // Plan-one-environment 2 item 2: work carries a request without its result.

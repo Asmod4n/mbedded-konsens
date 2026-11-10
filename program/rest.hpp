@@ -14,6 +14,7 @@ namespace konsensd {
 
 inline constexpr std::string_view key_value_path = "/kv/";
 inline constexpr std::string_view allow_one_more_repair_path = "/repair/allow-one-more";
+inline constexpr std::string_view cluster_shutdown_path = "/cluster/shutdown";
 inline constexpr std::uint64_t max_control_body_bytes = 0;
 inline constexpr std::size_t most_request_head_bytes = 8192;
 inline constexpr std::uint32_t retry_after_seconds = 1;
@@ -22,6 +23,7 @@ inline constexpr std::uint16_t status_no_content = 204;
 inline constexpr std::uint16_t status_not_found = 404;
 inline constexpr std::uint16_t status_conflict = 409;
 inline constexpr std::uint16_t status_internal_server_error = 500;
+inline constexpr std::uint16_t status_service_unavailable = 503;
 
 enum class rest_method : std::uint8_t {
     get = 1,
@@ -51,6 +53,7 @@ struct problem {
 };
 
 struct control_request {
+    std::string_view request_target;
     std::size_t bytes;
     bool closes;
 
@@ -66,6 +69,11 @@ inline constexpr problem repair_does_not_start{
     status_internal_server_error, "the store of the node is not consistent, so the repair does not start", false,
     "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#repair-does-not-start",
     "The repair does not start"};
+
+inline constexpr problem cluster_did_not_shut_down{
+    status_service_unavailable, "the leader changed before it decided the shutdown, so the cluster did not shut down; call again", true,
+    "https://github.com/Asmod4n/mbedded-konsens/blob/main/doc/problems.md#cluster-did-not-shut-down",
+    "The cluster did not shut down"};
 
 [[nodiscard]] std::expected<std::optional<rest_request>, problem> take_request(std::string_view bytes,
                                                                                std::uint64_t max_body_bytes);
