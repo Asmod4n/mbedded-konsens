@@ -25,11 +25,24 @@ in phase Recover.
 
 ## 3. Check
 
-TLC, BFS, one worker each, on MC_base, MC_base_monotone and MC_base_s7
-(invariants AcceptedIdxIsLogLength S1 S2 S2b S3 S5, property
-S2Grows). A run that does not end in one hour stops, and its state
-count is written down as partial. A violation is a finding for the
-owner, because the code has the same form.
+After review round 1: MC_base, MC_base_monotone and MC_base_s7 have no
+loss, no duplicate and no timeout. In them a follower gets a Prepare of
+its promised ballot only in phase Recover, so they do not reach the new
+path. Their runs stopped after 757 678 distinct states with no
+violation; they stay out of this check.
+
+- Invariant `RecoverIsFollower`: the phase Recover comes with the role
+  Follower. Then the old condition is a part of the new one, and the two
+  differ only for a follower in phase Prepare, Accept or None.
+- TLC, BFS, one worker each, on MC_a_F1_dup.cfg (one duplicate) and
+  MC_a_F1_loss.cfg (one loss, one timeout), with the invariants of each
+  config and `RecoverIsFollower`.
+- Cover `NoPromiseAgainReached` on MC_a_F1_dup.cfg: a run must violate
+  it. Then a follower out of phase Recover gets a Prepare of the ballot
+  it promised.
+- `Mutation = "NoPromiseAgain"` is the old form. It is stricter and not
+  wrong, so no violation is expected under it. It is not run as a check
+  of the check.
 
 ## 4. What this plan does not do
 
@@ -37,6 +50,11 @@ owner, because the code has the same form.
   keeps the log on a sync of the same ballot; the model does neither.
   That waits for the next refusal of the trace spike.
 - No change to the code.
+- Two older differences between the THEN branch and the code stay
+  open. The code keeps the prepare and computes the promise again at
+  each resend; the model keeps the finished promise. The model sends
+  the promise through `IfVotes`; the code pushes it without a check in
+  `handle_prepare`.
 
 ## 5. Data this plan leaves on the disk
 

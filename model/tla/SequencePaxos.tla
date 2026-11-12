@@ -4067,6 +4067,19 @@ View ==
 \* Cover of doc/plan-decide-on-resend.md: a follower in Recover at sequence
 \* number {1, 2} with decided index 0 while a leader in Accept has decided
 \* index 1. A run must violate it.
+\* The phase Recover comes with the role Follower, as in the code. Then the
+\* old condition of HandlePrepare is a part of the new one.
+RecoverIsFollower == \A k \in Nodes : phase[k] = "Recover" => role[k] = "Follower"
+
+\* A cover, not a property: a run must violate it, so that a follower out
+\* of phase Recover gets a Prepare of the ballot it promised.
+NoPromiseAgainReached ==
+  ~\E p \in Pairs :
+     /\ role[p[2]] = "Follower" /\ phase[p[2]] # "Recover"
+     /\ chan[p] # <<>>
+     /\ Head(chan[p]).type = "Prepare"
+     /\ Head(chan[p]).n = promise[p[2]]
+
 NoSeed4 == ~\E k, l \in Nodes : role[k] = "Follower" /\ phase[k] = "Recover"
              /\ current_seq_num[k] = [session |-> 1, counter |-> 2] /\ decided_idx[k] = 0
              /\ role[l] = "Leader" /\ phase[l] = "Accept" /\ decided_idx[l] = 1
