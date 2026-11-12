@@ -156,7 +156,7 @@ bool status_is_a_wrong_use(const int status) noexcept
            primary == SQLITE_LOCKED || primary == SQLITE_RANGE;
 }
 
-std::error_code to_error_code(const int status, sqlite3* db) noexcept
+std::error_code to_error_code(const int status, const int system_errno) noexcept
 {
     switch (status & 0xff) {
     case SQLITE_FULL:
@@ -168,7 +168,7 @@ std::error_code to_error_code(const int status, sqlite3* db) noexcept
         return std::make_error_code(std::errc::value_too_large);
     case SQLITE_IOERR:
     case SQLITE_CANTOPEN:
-        if (const int system_errno = db == nullptr ? 0 : sqlite3_system_errno(db); system_errno != 0) {
+        if (system_errno != 0) {
             return {system_errno, std::generic_category()};
         }
         return {status, sqlite_category()};
@@ -177,23 +177,33 @@ std::error_code to_error_code(const int status, sqlite3* db) noexcept
     }
 }
 
+std::error_code to_error_code(const int status, sqlite3* db) noexcept
+{
+    return to_error_code(status, db == nullptr ? 0 : sqlite3_system_errno(db));
+}
+
 enum class access { read, write };
 
-std::error_code error_code_or_throw(const int status, sqlite3* db, const access a)
+std::error_code error_code_or_throw(const int status, const int system_errno, const access a)
 {
     if (status_is_a_failed_sync(status)) [[unlikely]] {
-        throw sync_error(to_error_code(status, db), "konsens: SQLite failed to sync the storage");
+        throw sync_error(to_error_code(status, system_errno), "konsens: SQLite failed to sync the storage");
     }
     if ((status & 0xff) == SQLITE_IOERR) [[unlikely]] {
         if (a == access::write) {
-            throw write_error(to_error_code(status, db), "konsens: SQLite failed to write the storage");
+            throw write_error(to_error_code(status, system_errno), "konsens: SQLite failed to write the storage");
         }
-        throw read_error(to_error_code(status, db), "konsens: SQLite failed to read the storage");
+        throw read_error(to_error_code(status, system_errno), "konsens: SQLite failed to read the storage");
     }
     if (status_is_a_wrong_use(status)) [[unlikely]] {
         throw std::logic_error(std::format("konsens: the storage refused a statement: {}", sqlite3_errstr(status)));
     }
-    return to_error_code(status, db);
+    return to_error_code(status, system_errno);
+}
+
+std::error_code error_code_or_throw(const int status, sqlite3* db, const access a)
+{
+    return error_code_or_throw(status, db == nullptr ? 0 : sqlite3_system_errno(db), a);
 }
 
 std::uint32_t crc_of(const std::span<const std::byte> bytes) noexcept
@@ -1096,7 +1106,9 @@ std::expected<void, std::error_code> sync_the_wal(sqlite3* db)
         return std::unexpected(std::make_error_code(std::errc::not_supported));
     }
     if (const int synced = wal->pMethods->xSync(wal, SQLITE_SYNC_NORMAL); synced != SQLITE_OK) [[unlikely]] {
-        return std::unexpected(to_error_code(synced, db));
+        int system_errno = 0;
+        wal->pMethods->xFileControl(wal, SQLITE_FCNTL_LAST_ERRNO, &system_errno);
+        return std::unexpected(error_code_or_throw(synced, system_errno, access::write));
     }
     return {};
 }
@@ -1755,11 +1767,14 @@ std::uint64_t persistent_storage::transaction::count_of_entry_writes() const
 std::expected<void, std::error_code> persistent_storage::transaction::commit() &&
 {
     throw_if_no_environment(env_);
-    sqlite3* const db = env_->writer_db.get();
+    environment& env = *env_;
     if (auto c = std::move(*this).commit_without_a_sync(); !c) [[unlikely]] {
         return c;
     }
-    return sync_the_wal(db);
+    env.write_unfinished = true;
+    auto synced = sync_the_wal(env.writer_db.get());
+    env.write_unfinished = false;
+    return synced;
 }
 
 std::expected<void, std::error_code> persistent_storage::transaction::commit_without_a_sync() &&
