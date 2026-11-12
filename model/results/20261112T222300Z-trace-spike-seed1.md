@@ -53,8 +53,9 @@ by one at record 50 is refused at record 50 (TLC, 2 s).
 
 At record 93 the code delivers a Promise from node 1 to node 3. In each
 model state at that line, the head of the channel from node 1 to node 3
-is a ProposalForward. The code had delivered the ProposalForward of
-value 8 at record 81, so in the code the Promise stood behind it.
+is a ProposalForward. In the code the head is a Promise: the code
+delivered the ProposalForward of value 7 at record 81, and two Promises
+of ballot 13 stood behind it.
 
 Cause, found with a second run that also records the messages in
 flight. In the code the channel holds, from record 69 on, a Promise for
