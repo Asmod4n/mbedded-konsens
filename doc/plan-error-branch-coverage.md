@@ -49,14 +49,16 @@ test. This is the second form, after review round 1.
    `KONSENS_PROGRAM=ON`, in the build image, with `/dev/fuse` given to
    the container. The build directory and the results lie in a
    directory that the container mounts. ctest runs every test once,
-   with the default seed counts. The run is a measurement, not a test
-   run of a change; its time is written into the result file.
+   with the default seed counts. Its time is written into the result
+   file. If the spike shows that the run takes more than five minutes,
+   the owner decides first (Q3).
 2. A script `test/coverage/unreached_error_branches.py` (python3 of the
    build image) reads the gcov JSON of every object, adds the counts of
    each source line over all objects, and finds each marker. It writes
    one result file `test/coverage/results/<UTC time stamp>.md`: the
    commit with its dirty mark, the compiler, the flags, the debug
-   build, the tests that ran, the tests that end by SIGKILL, and a
+   build, the version of `gcov-16`, the tests that ran, the tests that
+   end by SIGKILL or on an uncaught fault, and a
    table per file. Each marker is "reached", "not reached", "not
    instantiated" (a template member with no line in any object) or "not
    decided" (a form the spike cannot map). A marker that covers several
