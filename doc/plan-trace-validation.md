@@ -132,10 +132,10 @@ because sub-steps make a behaviour longer than the trace. The
 counter-check of step 0 shows that this form refuses a wrong trace. Its metadir and its trace files go to the
 compressing disk, not into `model/tla`.
 
-F9. The check runs in a script `model/trace/validate.sh`, outside
-ctest. ctest writes the traces only when the test case gets a trace
-directory. The build and the default test run stay free of Java
-(question Q1).
+F9. The check is a ctest test (owner, 2026-11-12 21:52 UTC, answer
+(b) to Q1). Java comes from the package of the distribution into the
+build image. The TLC jar comes from its origin, only to check the model
+and the traces against it, as Apalache and TLAPS.
 
 ## 3. Steps
 
@@ -160,9 +160,8 @@ directory. The build and the default test run stay free of Java
 2. The harness writes the records when it gets a trace directory. The
    draws of the random generator do not change, so a seed runs the same
    steps with and without traces. A test checks that.
-3. `TraceSimulation.tla`, its config, and `validate.sh`. The script runs
-   TLC once per trace, as many at once as the machine has processors
-   less one, and writes one result file.
+3. `TraceSimulation.tla`, its config, and a ctest test that runs TLC
+   once per trace and fails when TLC refuses a trace.
 4. Counter-check in the code: a mutation that the checks of the
    simulation do not see must make a trace fail. Candidate: a follower
    that takes an accept sync below its promise, guarded so that the
@@ -196,12 +195,8 @@ directory. The build and the default test run stay free of Java
 
 ## 6. Questions for the owner
 
-- Q1. Where TLC runs. This use of TLC checks the code against the
-  model, which the decision on Apalache and TLAPS (only to check the
-  model) does not name. (a) A script outside ctest; TLC from its origin,
-  for the model and for this check, and for nothing that builds the
-  tree. (b) A ctest test that
-  needs Java in the build image. Proposal: (a).
+- Q1. Where TLC runs. Answered (owner, 2026-11-12 21:52 UTC): (b), a
+  ctest test with Java in the build image.
 - Q2. Which model the trace checks. (a) SequencePaxos.tla, message
   level, older than form 7, no retirement. (b) AcceptWithResult.tla,
   form 7, no message level. (c) A new model at message level with form
