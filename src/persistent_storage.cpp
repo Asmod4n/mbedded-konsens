@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <exception>
+#include <experimental/scope>
 #include <format>
 #include <limits>
 #include <optional>
@@ -1210,6 +1211,7 @@ std::expected<void, std::error_code> begin_a_read(persistent_storage::reading& r
         return std::unexpected(begun.error());
     }
     r.open = true;
+    std::experimental::scope_fail end_the_read_on_a_raise{[&r] { r.end(); }};
     const auto m = read_meta(l);
     if (!m && m.error().category() != storage_category()) [[unlikely]] {
         r.end();
