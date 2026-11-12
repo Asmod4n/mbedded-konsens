@@ -123,6 +123,7 @@ target_include_directories(test_sequence_paxos PRIVATE ${PROJECT_SOURCE_DIR}/src
 target_link_libraries(test_node PRIVATE crc32c SQLite::SQLite3)
 target_include_directories(test_node PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(test_repair PRIVATE SQLite::SQLite3)
+target_link_libraries(test_io_errors PRIVATE SQLite::SQLite3)
 target_link_libraries(test_cluster_shutdown PRIVATE SQLite::SQLite3)
 
 add_test(NAME counter_stress COMMAND counter_stress --clients 2 --increments 50 --allow-root-for-test)
