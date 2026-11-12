@@ -135,7 +135,10 @@ compressing disk, not into `model/tla`.
 F9. The check is a ctest test (owner, 2026-11-12 21:52 UTC, answer
 (b) to Q1). Java comes from the package of the distribution into the
 build image. The TLC jar comes from its origin, only to check the model
-and the traces against it, as Apalache and TLAPS.
+and the traces against it, as Apalache and TLAPS. The test runs in
+every ctest run until the refusals that the traces find are fixed. After
+that it moves to the nightly run (owner, 2026-11-12 21:53 UTC). A CMake
+option switches it, so the move changes one default.
 
 ## 3. Steps
 
@@ -196,7 +199,8 @@ and the traces against it, as Apalache and TLAPS.
 ## 6. Questions for the owner
 
 - Q1. Where TLC runs. Answered (owner, 2026-11-12 21:52 UTC): (b), a
-  ctest test with Java in the build image.
+  ctest test with Java in the build image, until the refusals are
+  fixed; then nightly (21:53 UTC).
 - Q2. Which model the trace checks. (a) SequencePaxos.tla, message
   level, older than form 7, no retirement. (b) AcceptWithResult.tla,
   form 7, no message level. (c) A new model at message level with form
