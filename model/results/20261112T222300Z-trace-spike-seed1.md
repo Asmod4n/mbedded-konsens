@@ -56,14 +56,20 @@ model state at that line, the head of the channel from node 1 to node 3
 is a ProposalForward. The code had delivered the ProposalForward of
 value 8 at record 81, so in the code the Promise stood behind it.
 
-Not decided yet: which side is wrong. Two causes stand open.
+Cause, found with a second run that also records the messages in
+flight. In the code the channel holds, from record 69 on, a Promise for
+each Prepare of ballot 13 that node 1 received: node 1 promises the same
+ballot again (plan doc/plan-promise-again-on-the-same-ballot.md, owner
+card 2026-10-31). `HandlePrepare` of SequencePaxos.tla (line 1039)
+promises the same ballot again only in phase Recover. So the model has
+fewer Promise messages in the channel, and the head differs.
+AcceptWithResult.tla holds the new form (`NoPromiseAgain`, line 134);
+SequencePaxos.tla does not.
 
-1. A tick of the code builds a new Promise, where
-   `ResendMessageTimeout` resends the cached one (risk R1 of the plan).
-2. The node holds a message until its sync and releases messages that
-   need no sync earlier (`node.hpp:493`,
-   `sequence_paxos.hpp:650-666`). That code keeps the order per peer.
-   The model sends each message in the action that makes it.
+So the first refusal is a fault of the model, not of the code: the
+model is older than the code (risk R1 of the plan). The second
+suspected cause, the release of messages before the sync, keeps the
+order per peer and is not the cause here.
 
 ## Not done
 
