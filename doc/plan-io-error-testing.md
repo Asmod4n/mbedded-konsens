@@ -129,6 +129,22 @@ failed allocation; the size, CRC and decode branches, which need damage
 or input; the `::open` calls of persistent_storage.cpp:940-991. So the
 plan does not cover the 430.
 
+## 2b. Result of step 0 (2026-11-12)
+
+Spike in the scratchpad, built in the image (g++-16, SQLite 3.53.4,
+`-O1`), raw SQLite and no library:
+
+- The wrapper works as the default VFS over `unix`, in WAL mode.
+- `PRAGMA mmap_size` is 0 by default in this build, and `xFetch` was
+  not called.
+- One open, one commit of one row with `synchronous=FULL` and one read
+  take 23 counted operations. N runs from 1 to 24.
+- One sweep: 22.1 ms with one failure, 15.0 ms with persistent failure.
+  16 of 23 runs failed, and `PRAGMA integrity_check` answered "ok" after
+  each of them.
+- The time of a sweep over scenario e is not measured yet. It is
+  measured in step 2 before Q1 is asked.
+
 ## 3. What this plan does not do
 
 - No change to the library. A fault the test finds goes to the owner
