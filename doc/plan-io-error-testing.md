@@ -145,6 +145,26 @@ Spike in the scratchpad, built in the image (g++-16, SQLite 3.53.4,
 - The time of a sweep over scenario e is not measured yet. It is
   measured in step 2 before Q1 is asked.
 
+## 2c. Result of step 2 (2026-11-12, image konsens-g16, debug build)
+
+- Scenarios a to d, test_io_errors: green, 103 to 110 s. A failed
+  sync in the first transaction of a new store, which switches it to
+  WAL, reaches no caller in SQLite 3.53.4; the test reports it only.
+- Finding fixed on branch read-error-ends-the-read: a read_error at
+  the first read of a read-only transaction left the reading open, and
+  the destructor of the storage called std::terminate.
+- Scenario e, test_io_errors_cluster, seed 1, clients, node 1 fails:
+  1695 runs with one failure (198 s), 1695 with persistent failure
+  (196 s), 709 with a full disk (81 s). Every failure ended in a
+  restart of the node. No violation, every crash kept the decided
+  prefix, a majority decided the markers, and no node wrote a proof of
+  a fault. 479 s in all, so it stands behind the CMake option
+  KONSENS_CLUSTER_IO_ERROR_TESTS, off by default, until the owner
+  answers Q1.
+- After a crash a node retires (plan clean-stop 4.9), so the check
+  "the node does not retire" of step 2 became "the node writes no proof
+  of a fault".
+
 ## 3. What this plan does not do
 
 - No change to the library. A fault the test finds goes to the owner

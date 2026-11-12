@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -472,7 +473,8 @@ struct world {
     void commit(std::size_t i, const std::expected<konsens::transaction, std::error_code>& t)
     {
         REQUIRE(t);
-        REQUIRE(nodes[i].commit(*t));
+        const auto committed = nodes[i].commit(*t);
+        REQUIRE(committed);
         collect(i);
     }
 
@@ -542,7 +544,8 @@ struct world {
         REQUIRE((r || r.error() == konsens::client_errc::building || r.error() == konsens::client_errc::retired));
         if (r) {
             proposed.insert(fields_of(e));
-            REQUIRE(nodes[i].commit(*r));
+            const auto committed = nodes[i].commit(*r);
+            REQUIRE(committed);
         }
         collect(i);
     }
@@ -732,7 +735,8 @@ struct world {
         const auto r = send();
         if (r) {
             calls.emplace(id, std::move(k));
-            REQUIRE(nodes[i].commit(*r));
+            const auto committed = nodes[i].commit(*r);
+            REQUIRE(committed);
         } else {
             const auto e = r.error();
             if (e != konsens::client_errc::building && e != konsens::client_errc::retry &&
@@ -944,11 +948,44 @@ struct outcome {
     bool survived_crash;
     coverage counts;
     bool majority_retired;
+    int storage_failures = 0;
+    bool fault_proof_written = false;
 };
+
+// Plan io-error-testing step 2 scenario e: the storage of one node fails.
+// arm gets the directories of that node when the run starts, and disarm ends
+// the failure. A node that raises write_error, sync_error or read_error is
+// handled as a crash: the simulation destroys it, ends the failure and starts
+// it again, as an operator restarts a process that ended. After a crash the
+// node retires (plan clean-stop 4.9), so the run reports instead whether the
+// node wrote a proof of a fault: an I/O error is not damage.
+struct storage_fault {
+    std::size_t node;
+    std::function<void(const std::vector<std::filesystem::path>&)> arm;
+    std::function<void()> disarm;
+};
+
+template <typename Cluster, typename F>
+std::optional<std::string> run_or_restart_after_a_storage_failure(world<Cluster>& w, const storage_fault* fault,
+                                                                  int& storage_failures, F step)
+{
+    if (fault == nullptr) {
+        return step();
+    }
+    try {
+        return step();
+    } catch (const konsens::write_error&) {
+    } catch (const konsens::read_error&) {
+    }
+    storage_failures += 1;
+    fault->disarm();
+    w.crash(fault->node, false);
+    return w.check();
+}
 
 template <typename Cluster>
 outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = rollback::none,
-            clients people = clients::none, batches sizes = batches::random)
+            clients people = clients::none, batches sizes = batches::random, const storage_fault* fault = nullptr)
 {
     std::mt19937_64 rng(seed);
     const auto pick = [&rng](std::size_t n) { return std::uniform_int_distribution<std::size_t>(0, n - 1)(rng); };
@@ -964,6 +1001,12 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);
     }
+    int storage_failures = 0;
+    if (fault != nullptr) {
+        if constexpr (requires { w.cluster.paths; }) {
+            fault->arm({w.cluster.paths.at(fault->node), w.own_directories.at(fault->node)});
+        }
+    }
     const auto failed = [&w](std::string v) {
         for (std::size_t i = 0; i < node_count; ++i) {
             w.note([&] { return std::string(state_of(i + 1, w.views[i], w.nodes[i])); });
@@ -971,80 +1014,92 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
         return outcome{std::move(v), std::move(w.trace), false, false, w.survived_crash, w.counts, false};
     };
     for (int s = 0; s < random_steps; ++s) {
-        const auto action = pick(100);
-        if (action < 60 && !w.network.empty()) {
-            const auto k = pick(w.network.size());
-            w.deliver(mode == delivery::reorder ? k : w.first_of_channel(k));
-        } else if (action < 85) {
-            w.tick(pick(node_count));
-        } else if (action < 95) {
-            if (people == clients::two && pick(client_share) != 0) {
-                const auto c = pick(client_count);
-                const auto i = pick(node_count);
-                w.act(c, i, pick(call_choices), s);
-            } else {
-                w.append(pick(node_count));
-            }
-        } else if (action == 96 && !w.dropped && !w.network.empty()) {
-            const auto k = pick(w.network.size());
-            w.note([&] { return std::string("drop " + name_of(w.network[k])); });
-            w.network.erase(std::next(w.network.begin(), static_cast<std::ptrdiff_t>(k)));
-            w.dropped = true;
-        } else if (action == 97 && !w.duplicated && !w.network.empty()) {
-            const auto k = pick(w.network.size());
-            w.note([&] { return std::string("duplicate " + name_of(w.network[k])); });
-            w.network.push_back(w.network[k]);
-            w.duplicated = true;
-        } else if (action == 98 && !w.crashed) {
-            const auto i = pick(node_count);
-            w.crash(i, pick(2) == 0);
-            w.crashed = true;
-        } else if constexpr (requires { typename Cluster::earlier_type; }) {
-            if (faults == rollback::one && action == 95 && !w.earlier) {
-                const auto i = pick(node_count);
-                if (w.nodes[i].get_sequence_paxos().get_promise() != ballot{}) {
-                    w.keep_earlier(i);
+        const auto violation = run_or_restart_after_a_storage_failure(w, fault, storage_failures, [&]() -> std::optional<std::string> {
+            const auto action = pick(100);
+            if (action < 60 && !w.network.empty()) {
+                const auto k = pick(w.network.size());
+                w.deliver(mode == delivery::reorder ? k : w.first_of_channel(k));
+            } else if (action < 85) {
+                w.tick(pick(node_count));
+            } else if (action < 95) {
+                if (people == clients::two && pick(client_share) != 0) {
+                    const auto c = pick(client_count);
+                    const auto i = pick(node_count);
+                    w.act(c, i, pick(call_choices), s);
+                } else {
+                    w.append(pick(node_count));
                 }
-            } else if (faults == rollback::one && action == 99 && w.earlier && !w.rolled_back) {
-                w.roll_back();
+            } else if (action == 96 && !w.dropped && !w.network.empty()) {
+                const auto k = pick(w.network.size());
+                w.note([&] { return std::string("drop " + name_of(w.network[k])); });
+                w.network.erase(std::next(w.network.begin(), static_cast<std::ptrdiff_t>(k)));
+                w.dropped = true;
+            } else if (action == 97 && !w.duplicated && !w.network.empty()) {
+                const auto k = pick(w.network.size());
+                w.note([&] { return std::string("duplicate " + name_of(w.network[k])); });
+                w.network.push_back(w.network[k]);
+                w.duplicated = true;
+            } else if (action == 98 && !w.crashed) {
+                const auto i = pick(node_count);
+                w.crash(i, pick(2) == 0);
+                w.crashed = true;
+            } else if constexpr (requires { typename Cluster::earlier_type; }) {
+                if (faults == rollback::one && action == 95 && !w.earlier) {
+                    const auto i = pick(node_count);
+                    if (w.nodes[i].get_sequence_paxos().get_promise() != ballot{}) {
+                        w.keep_earlier(i);
+                    }
+                } else if (faults == rollback::one && action == 99 && w.earlier && !w.rolled_back) {
+                    w.roll_back();
+                }
             }
-        }
-        if (auto v = w.check()) {
-            return failed(std::move(*v));
+            return w.check();
+        });
+        if (violation) {
+            return failed(std::move(*violation));
         }
     }
     std::vector<std::vector<std::byte>> markers;
     for (int r = 0; r < quiet_rounds; ++r) {
-        if (markers.empty() && r >= marker_round && w.settled()) {
-            for (std::size_t i = 0; i < node_count; ++i) {
-                if (!w.nodes[i].retired()) {
-                    markers.push_back(entry_of(w.next_value).payload);
-                    w.append(i);
+        const auto violation = run_or_restart_after_a_storage_failure(w, fault, storage_failures, [&]() -> std::optional<std::string> {
+            if (markers.empty() && r >= marker_round && w.settled()) {
+                for (std::size_t i = 0; i < node_count; ++i) {
+                    if (!w.nodes[i].retired()) {
+                        markers.push_back(entry_of(w.next_value).payload);
+                        w.append(i);
+                    }
                 }
             }
-        }
-        if (people == clients::two) {
-            for (std::size_t c = 0; c < client_count; ++c) {
-                const auto i = pick(node_count);
-                w.act(c, i, pick(call_choices), random_steps + r * quiet_round_steps);
+            if (people == clients::two) {
+                for (std::size_t c = 0; c < client_count; ++c) {
+                    const auto i = pick(node_count);
+                    w.act(c, i, pick(call_choices), random_steps + r * quiet_round_steps);
+                }
             }
-        }
-        while (!w.network.empty()) {
-            const bool paxos = std::holds_alternative<konsens::paxos_message>(w.network.front());
-            w.deliver(0);
-            if (!paxos) {
-                continue;
+            while (!w.network.empty()) {
+                const bool paxos = std::holds_alternative<konsens::paxos_message>(w.network.front());
+                w.deliver(0);
+                if (!paxos) {
+                    continue;
+                }
+                if (auto found = w.check()) {
+                    return found;
+                }
             }
-            if (auto v = w.check()) {
-                return failed(std::move(*v));
+            for (std::size_t i = 0; i < node_count; ++i) {
+                w.tick(i);
             }
+            if (auto found = w.check()) {
+                return found;
+            }
+            return std::nullopt;
+        });
+        if (violation) {
+            return failed(std::move(*violation));
         }
-        for (std::size_t i = 0; i < node_count; ++i) {
-            w.tick(i);
-        }
-        if (auto v = w.check()) {
-            return failed(std::move(*v));
-        }
+    }
+    if (fault != nullptr) {
+        fault->disarm();
     }
     bool majority_decided = !markers.empty();
     bool all_decided = !markers.empty();
@@ -1059,8 +1114,19 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
         majority_decided = majority_decided && holders > node_count / 2;
         all_decided = all_decided && holders == node_count - w.retired_count();
     }
-    return {std::nullopt, {}, majority_decided, all_decided, w.survived_crash, w.counts,
-            w.retired_count() > node_count / 2};
+    const bool fault_proof_written =
+        fault != nullptr &&
+        read_value(sqlite_storage::open_node_storage_in(w.own_directories.at(fault->node)).get_fault_proof())
+            .has_value();
+    return {std::nullopt,
+            {},
+            majority_decided,
+            all_decided,
+            w.survived_crash,
+            w.counts,
+            w.retired_count() > node_count / 2,
+            storage_failures,
+            fault_proof_written};
 }
 
 template <typename Cluster>

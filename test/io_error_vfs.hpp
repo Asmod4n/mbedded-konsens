@@ -37,13 +37,18 @@ struct counters {
     std::atomic<bool> first_hit_before_the_wal{false};
 };
 
+struct state;
+
 struct watched_file {
     sqlite3_file base;
     sqlite3_file* real;
     counters* count;
-    bool watched;
+    const state* vfs_state;
+    const char* name;
     int last_errno;
 };
+
+inline bool is_watched(const state& s, const char* name);
 
 inline watched_file& file_of(sqlite3_file* f)
 {
@@ -97,9 +102,16 @@ inline int failed(sqlite3_file* f, const int code, const int system_errno)
     return hit(c, code);
 }
 
+// A file is watched by its name at each operation, so that a file that was
+// opened before the directories were named is watched too.
+inline bool watched(sqlite3_file* f)
+{
+    return is_watched(*file_of(f).vfs_state, file_of(f).name);
+}
+
 inline bool fails(sqlite3_file* f)
 {
-    return file_of(f).watched && io_error_now(*file_of(f).count);
+    return watched(f) && io_error_now(*file_of(f).count);
 }
 
 inline int x_close(sqlite3_file* f)
@@ -122,7 +134,7 @@ inline int x_write(sqlite3_file* f, const void* buffer, const int amount, const 
     if (fails(f)) {
         return failed(f, SQLITE_IOERR_WRITE, EIO);
     }
-    if (file_of(f).watched && diskfull_now(*file_of(f).count)) {
+    if (watched(f) && diskfull_now(*file_of(f).count)) {
         return failed(f, SQLITE_FULL, ENOSPC);
     }
     return real_of(f)->pMethods->xWrite(real_of(f), buffer, amount, offset);
@@ -277,8 +289,9 @@ inline int v_open(sqlite3_vfs* vfs, sqlite3_filename name, sqlite3_file* f, cons
     std::ranges::fill(std::span{reinterpret_cast<std::byte*>(w.real), static_cast<std::size_t>(s.base->szOsFile)},
                       std::byte{0});
     w.count = &s.count;
-    w.watched = is_watched(s, name);
-    if (w.watched && std::string_view{name}.ends_with("-wal")) {
+    w.vfs_state = &s;
+    w.name = name;
+    if (is_watched(s, name) && std::string_view{name}.ends_with("-wal")) {
         s.count.wal_opened = true;
     }
     w.last_errno = 0;
