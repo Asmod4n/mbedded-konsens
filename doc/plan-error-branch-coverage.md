@@ -42,8 +42,8 @@ test. This is the second form, after review round 1.
    read `gcov-16 --json-format`. The spike answers how a branch that was
    never taken shows, how an uncalled template member shows, and how
    the counts of one header line from two objects add up. It also
-   measures the time of one simulation test with and without
-   `--coverage`.
+   measures the time of the whole ctest run of a debug build with and
+   without `--coverage`.
 1. A debug build with g++ 16 and `--coverage -fprofile-update=atomic`
    (the library has a thread pool), with `KONSENS_FUSE_TESTS=ON` and
    `KONSENS_PROGRAM=ON`, in the build image, with `/dev/fuse` given to
@@ -60,7 +60,8 @@ test. This is the second form, after review round 1.
    table per file. Each marker is "reached", "not reached", "not
    instantiated" (a template member with no line in any object) or "not
    decided" (a form the spike cannot map). A marker that covers several
-   exits counts as reached when one of them ran. A second table lists
+   exits counts as reached when one of them ran, and a column "exits not
+   reached" lists the others. A second table lists
    the error exits with no marker.
 3. The session sorts each branch that no test reached into one of four
    kinds: a failure of the machine (disk, memory, kernel), input from
@@ -88,6 +89,11 @@ test. This is the second form, after review round 1.
 - Q2. Where the run takes place, because this session has no podman:
   (a) a session with the build image, as the earlier build sessions;
   (b) a Remote Control session on the owner's machine. Proposal: (a).
+
+- Q3. Only if the spike shows more than five minutes: (a) an
+  exception from the five-minute rule for this one run; (b) the run
+  without the simulation tests at their default seed counts. Proposal:
+  (a), because the run is done once.
 
 ## 5. Data this plan leaves on the disk
 
