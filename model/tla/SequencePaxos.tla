@@ -1033,10 +1033,15 @@ HandlePrepareReq(i, j, m, c) ==
   ELSE /\ chan' = c
        /\ UNCHANGED <<durable, volatile>>
 
-\* follower.rs:13-51 handle_prepare
+\* follower.rs:13-51 handle_prepare. A follower promises the same ballot
+\* again (sequence_paxos.hpp handle_prepare); Mutation NoPromiseAgain
+\* keeps the older form that promised again only in phase Recover.
 \* @type: (Int, Int, $msg, <<Int, Int>> -> Seq($msg)) => Bool;
 HandlePrepare(i, j, m, c) ==
-  IF promise[i] < m.n \/ (promise[i] = m.n /\ phase[i] = "Recover")
+  IF promise[i] < m.n
+     \/ (promise[i] = m.n /\ IF Mutation = "NoPromiseAgain"
+                             THEN phase[i] = "Recover"
+                             ELSE role[i] = "Follower")
   THEN LET na  == n_accepted[i]
            acc == PromiseAcc(i)
            ls  == IF na > m.n_accepted
