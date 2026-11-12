@@ -111,16 +111,25 @@ has them (question Q2). `delivery::reorder` is not validated: the model
 and the library assume FIFO (owner, 2026-10-20 06:22).
 
 F7. One record can need several model actions, for example a batch of
-messages or a tick that resends to two peers. The trace spec allows up
-to `MaxSubSteps` actions that do not move `l`, and moves `l` only when
-the state equals the record. TLC does not evaluate the composition
-operator, so this is the form.
+messages, a tick that resends to two peers, or a `HandleLeader` inside a
+delivery (node.hpp:1971-1972). The kind of the record fixes which
+actions may run as its sub-steps, and only for the nodes it names;
+every variable the record does not name stays unchanged. A `Lose` or a
+`Duplicate` runs only for a record of that kind. Up to `MaxSubSteps`
+such actions run without moving `l`; `l` moves only when the state
+equals the record. A record with no model action (a BLE delivery, a
+tick before the resend timeout, a resend that sends nothing) is one
+step that moves `l` and changes nothing else. TLC does not evaluate
+the composition operator, so this is the form.
 
 F8. The trace spec `model/tla/TraceSimulation.tla` extends the chosen
 model. Its bounds (MaxBallot, MaxCrash, Cap, MaxTimeout, MaxLog,
 MaxElection, MaxLoss, MaxDuplicate, Values) come from the trace, so no
-bound cuts a trace. TLC runs BFS with one worker and checks
-`TraceAccepted` of the paper. Its metadir and its trace files go to the
+bound cuts a trace. TLC runs BFS with one worker. The end of the trace is
+tested with the line counter: the invariant `l <= Len(Trace)` must be
+reported as violated. The diameter of the paper does not work here,
+because sub-steps make a behaviour longer than the trace. The
+counter-check of step 0 shows that this form refuses a wrong trace. Its metadir and its trace files go to the
 compressing disk, not into `model/tla`.
 
 F9. The check runs in a script `model/trace/validate.sh`, outside
@@ -187,8 +196,11 @@ directory. The build and the default test run stay free of Java
 
 ## 6. Questions for the owner
 
-- Q1. Where TLC runs. (a) A script outside ctest; TLC from its origin
-  only to check the model, as Apalache and TLAPS. (b) A ctest test that
+- Q1. Where TLC runs. This use of TLC checks the code against the
+  model, which the decision on Apalache and TLAPS (only to check the
+  model) does not name. (a) A script outside ctest; TLC from its origin,
+  for the model and for this check, and for nothing that builds the
+  tree. (b) A ctest test that
   needs Java in the build image. Proposal: (a).
 - Q2. Which model the trace checks. (a) SequencePaxos.tla, message
   level, older than form 7, no retirement. (b) AcceptWithResult.tla,
