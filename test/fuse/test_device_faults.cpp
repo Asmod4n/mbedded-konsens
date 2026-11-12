@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <variant>
 #include <vector>
 
 #include <sys/types.h>
@@ -160,13 +161,14 @@ TEST_CASE("a failed fsync at commit throws sync_error and keeps the last commit"
     }
     std::optional<std::error_code> thrown;
     {
-        mounted_error_fs failing(d.backing, d.mount_point, "error_fsync");
+        mounted_error_fs failing(d.backing, d.mount_point, "");
         {
             auto storage = open_storage(d.mount_point);
             const std::vector<konsens::entry> later{{konsens::entry_kind::normal, bytes_of("later")}};
             auto t = storage.begin();
             REQUIRE(t.has_value());
             REQUIRE(t->append_entries(later).has_value());
+            failing.set_faults("error_fsync");
             try {
                 static_cast<void>(std::move(*t).commit());
             } catch (const konsens::sync_error& e) {
@@ -360,6 +362,18 @@ node_cluster::cluster cluster_on(const std::filesystem::path& mount_point)
     return {.disks = disks, .nodes = {}, .next_nonce = 1};
 }
 
+// Arm A of plan-write-path: the leader sends AcceptDecide and Decide
+// before its own sync. So after a failed commit, these two may have left,
+// and no other message.
+bool only_messages_before_the_sync(const std::vector<konsens::message>& released)
+{
+    return std::ranges::all_of(released, [](const konsens::message& m) {
+        const auto* p = std::get_if<konsens::paxos_message>(&m);
+        return p != nullptr &&
+               (std::holds_alternative<konsens::accept_decide>(p->msg) || std::holds_alternative<konsens::decide>(p->msg));
+    });
+}
+
 }
 
 // The decision of the owner (2026-10-21) for a write that fails at the
@@ -373,7 +387,7 @@ node_cluster::cluster cluster_on(const std::filesystem::path& mount_point)
 // owner chose (2026-10-24) that the fault comes from the file system under
 // the storage: error_fs fails each write of konsens.db and of its WAL with
 // ENOSPC while the node runs. SQLite gives SQLITE_FULL for ENOSPC.
-TEST_CASE("a write that fails at the commit throws write_error and releases nothing")
+TEST_CASE("a write that fails at the commit throws write_error and releases only what leaves before the sync")
 {
     using namespace node_cluster;
     const mount_directories d;
@@ -394,7 +408,7 @@ TEST_CASE("a write that fails at the commit throws write_error and releases noth
             CHECK(e.code() == std::errc::no_space_on_device);
         }
         CHECK(thrown);
-        CHECK(c.nodes.at(l).take_outgoing_messages().empty());
+        CHECK(only_messages_before_the_sync(c.nodes.at(l).take_outgoing_messages()));
         CHECK(c.nodes.at(l).take_client_replies().empty());
         fs.set_faults("none");
         CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(value_of(c.nodes.at(l).tick()))), std::logic_error);
@@ -405,9 +419,10 @@ TEST_CASE("a write that fails at the commit throws write_error and releases noth
 
 // The same decision for a sync that fails at the commit, which
 // persistent_storage raises as sync_error: nothing in the library catches
-// it, and nothing of the transaction leaves the node. error_fs fails each
+// it, and nothing of the transaction leaves the node but what arm A sends
+// before the sync. error_fs fails each
 // fsync while the node runs. The append makes the leader write.
-TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
+TEST_CASE("a failed sync at the commit throws sync_error and releases only what leaves before the sync")
 {
     using namespace node_cluster;
     const mount_directories d;
@@ -420,7 +435,7 @@ TEST_CASE("a failed sync at the commit throws sync_error and releases nothing")
         t += value_of(c.nodes.at(l).append(make_entry(1)));
         fs.set_faults("error_fsync");
         CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(t)), konsens::sync_error);
-        CHECK(c.nodes.at(l).take_outgoing_messages().empty());
+        CHECK(only_messages_before_the_sync(c.nodes.at(l).take_outgoing_messages()));
         CHECK(c.nodes.at(l).take_client_replies().empty());
         fs.set_faults("none");
         CHECK_THROWS_AS(static_cast<void>(c.nodes.at(l).commit(value_of(c.nodes.at(l).tick()))), std::logic_error);
