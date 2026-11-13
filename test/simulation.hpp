@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
+#include <fstream>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -454,6 +456,105 @@ struct world {
         }
     }
 
+    // F2 and F3 of doc/plan-trace-validation.md: one record for each step of
+    // the harness, as a TLA+ value that model/tla/TraceSimulation.tla reads.
+    // A record holds the events of the step, the state of each node and the
+    // Paxos messages in flight. The records end before the first crash that
+    // retires a node (F6, phase 1), because the trace spec has no retirement.
+    // Writing the records draws no random number, so a seed runs the same
+    // steps with and without records.
+    static constexpr std::uint64_t tla_pid_base = 10;
+    static_assert(node_count < tla_pid_base);
+    bool tracing = false;
+    std::vector<std::string> events;
+    std::vector<std::string> records;
+
+    static std::uint64_t tla_ballot(const ballot& b) { return b.n * tla_pid_base + b.pid; }
+
+    static std::string tla_value(const entry& e)
+    {
+        return e.kind == konsens::entry_kind::normal ? std::to_string(value_of(e)) : "-1";
+    }
+
+    static std::string tla_values(const std::vector<entry>& es)
+    {
+        std::string r;
+        for (const auto& e : es) {
+            r += (r.empty() ? "" : ", ") + tla_value(e);
+        }
+        return r;
+    }
+
+    static std::string tla_message(const char* kind, const message& m)
+    {
+        return std::format("[k |-> \"{}\", from |-> {}, to |-> {}, paxos |-> {}, name |-> \"{}\"]", kind, from_of(m),
+                           to_of(m), std::holds_alternative<konsens::paxos_message>(m) ? "TRUE" : "FALSE", name_of(m));
+    }
+
+    void event(std::string e)
+    {
+        if (tracing) {
+            events.push_back(std::move(e));
+        }
+    }
+
+    std::string tla_state_of(const std::size_t i) const
+    {
+        const auto& sp = nodes[i].get_sequence_paxos();
+        const auto t = read_value(sp.get_internal_storage().begin_read_only());
+        const auto m = read_value(t.get_meta());
+        const auto log = read_value(t.get_entries(0, m.log_len));
+        const auto [r, p] = sp.get_state();
+        const auto promise = read_value(sp.get_promise());
+        const char* phase = p == konsens::phase::prepare   ? "Prepare"
+                            : p == konsens::phase::accept  ? "Accept"
+                            : p == konsens::phase::recover ? "Recover"
+                                                           : "None";
+        return std::format("[promise |-> {}, n_accepted |-> {}, decided |-> {}, role |-> \"{}\", phase |-> \"{}\", "
+                           "cfg |-> {}, retired |-> {}, log |-> <<{}>>]",
+                           tla_ballot(promise), tla_ballot(m.accepted_round), m.decided_idx,
+                           r == konsens::role::leader ? "Leader" : "Follower", phase, promise.config_id,
+                           nodes[i].retired() ? "TRUE" : "FALSE", tla_values(log));
+    }
+
+    std::string tla_network() const
+    {
+        std::string r;
+        for (const auto& m : network) {
+            if (const auto* p = std::get_if<konsens::paxos_message>(&m)) {
+                const auto values = std::visit(
+                    [](const auto& x) {
+                        if constexpr (requires { x.entries; }) {
+                            return tla_values(x.entries);
+                        }
+                        return std::string{};
+                    },
+                    p->msg);
+                r += std::format("{}<<{}, {}, \"{}\", <<{}>>>>", r.empty() ? "" : ", ", from_of(m), to_of(m),
+                                 name_of(m), values);
+            }
+        }
+        return r;
+    }
+
+    void record()
+    {
+        if (!tracing) {
+            return;
+        }
+        std::string r = "[ev |-> <<";
+        for (std::size_t k = 0; k < events.size(); ++k) {
+            r += (k == 0 ? "" : ", ") + events[k];
+        }
+        r += ">>, s |-> <<";
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            r += (i == 0 ? "" : ", ") + tla_state_of(i);
+        }
+        r += ">>, net |-> <<" + tla_network() + ">>]";
+        records.push_back(std::move(r));
+        events.clear();
+    }
+
     bool dropped = false;
     bool duplicated = false;
     bool crashed = false;
@@ -505,6 +606,7 @@ struct world {
             }
         }
         for (const auto& m : batch) {
+            event(tla_message("deliver", m));
             note([&] {
                 return std::string("deliver " + std::to_string(from_of(m)) + "->" + std::to_string(to_of(m)) + " " +
                                    detail_of(m));
@@ -513,6 +615,7 @@ struct world {
         note([&] { return std::string("commit " + std::to_string(to) + " after " + std::to_string(batch.size())); });
         const auto i = to - 1;
         commit(i, nodes[i].handle_incoming(std::move(batch)));
+        record();
     }
 
     std::size_t first_of_channel(std::size_t k) const
@@ -530,7 +633,9 @@ struct world {
     void tick(std::size_t i)
     {
         note([&] { return std::string("tick " + std::to_string(i + 1)); });
+        event(std::format("[k |-> \"tick\", node |-> {}]", i + 1));
         commit(i, nodes[i].tick());
+        record();
     }
 
     void append(std::size_t i)
@@ -540,11 +645,14 @@ struct world {
         next_value += 1;
         const auto r = nodes[i].append(e);
         REQUIRE((r || r.error() == konsens::client_errc::building || r.error() == konsens::client_errc::retired));
+        event(std::format("[k |-> \"append\", node |-> {}, value |-> {}, ok |-> {}]", i + 1, value_of(e),
+                          r ? "TRUE" : "FALSE"));
         if (r) {
             proposed.insert(fields_of(e));
             REQUIRE(nodes[i].commit(*r));
         }
         collect(i);
+        record();
     }
 
     static konsens::node_config later_config_of(const std::size_t i)
@@ -557,6 +665,7 @@ struct world {
     void crash(std::size_t i, const bool clean)
     {
         note([&] { return std::string(clean ? "stop and start " : "crash ") + std::to_string(i + 1); });
+        tracing = tracing && clean;
         const std::vector<entry> decided_before(views[i].decided_prefix().begin(), views[i].decided_prefix().end());
         if (clean && !nodes[i].retired() && !nodes[i].get_sequence_paxos().get_error()) {
             nodes[i].stop();
@@ -573,6 +682,8 @@ struct world {
                                  sqlite_storage::open_node_storage_in(own_directories[i]), concatenation{}, nonce);
         collect(i);
         survived_crash = survived_crash && is_prefix(std::span<const entry>(decided_before), views[i].decided_prefix());
+        event(std::format("[k |-> \"crash\", node |-> {}, clean |-> TRUE]", i + 1));
+        record();
     }
 
     void keep_earlier(std::size_t i)
@@ -651,7 +762,9 @@ struct world {
         calls.erase(it);
         auto& c = users[k.client];
         if (!r.response && r.response.error() == konsens::client_errc::stopped) {
-            note([&] { return std::string("call " + std::to_string(id) + " stopped at node " + std::to_string(i + 1)); });
+            note([&] {
+                return std::string("call " + std::to_string(id) + " stopped at node " + std::to_string(i + 1));
+            });
             if (c.pending == id) {
                 c.pending.reset();
             }
@@ -948,7 +1061,8 @@ struct outcome {
 
 template <typename Cluster>
 outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = rollback::none,
-            clients people = clients::none, batches sizes = batches::random)
+            clients people = clients::none, batches sizes = batches::random,
+            const std::filesystem::path& trace_file = {})
 {
     std::mt19937_64 rng(seed);
     const auto pick = [&rng](std::size_t n) { return std::uniform_int_distribution<std::size_t>(0, n - 1)(rng); };
@@ -964,6 +1078,9 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
     for (std::size_t i = 0; i < node_count; ++i) {
         w.collect(i);
     }
+    w.tracing = !trace_file.empty();
+    w.event("[k |-> \"init\"]");
+    w.record();
     const auto failed = [&w](std::string v) {
         for (std::size_t i = 0; i < node_count; ++i) {
             w.note([&] { return std::string(state_of(i + 1, w.views[i], w.nodes[i])); });
@@ -988,13 +1105,17 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
         } else if (action == 96 && !w.dropped && !w.network.empty()) {
             const auto k = pick(w.network.size());
             w.note([&] { return std::string("drop " + name_of(w.network[k])); });
+            w.event(w.tla_message("drop", w.network[k]));
             w.network.erase(std::next(w.network.begin(), static_cast<std::ptrdiff_t>(k)));
             w.dropped = true;
+            w.record();
         } else if (action == 97 && !w.duplicated && !w.network.empty()) {
             const auto k = pick(w.network.size());
             w.note([&] { return std::string("duplicate " + name_of(w.network[k])); });
+            w.event(w.tla_message("duplicate", w.network[k]));
             w.network.push_back(w.network[k]);
             w.duplicated = true;
+            w.record();
         } else if (action == 98 && !w.crashed) {
             const auto i = pick(node_count);
             w.crash(i, pick(2) == 0);
@@ -1059,7 +1180,21 @@ outcome run(std::uint64_t seed, delivery mode, bool detailed, rollback faults = 
         majority_decided = majority_decided && holders > node_count / 2;
         all_decided = all_decided && holders == node_count - w.retired_count();
     }
-    return {std::nullopt, {}, majority_decided, all_decided, w.survived_crash, w.counts,
+    if (!trace_file.empty()) {
+        std::ofstream out(trace_file);
+        out << "---- MODULE TraceData ----\nTrace == <<\n";
+        for (std::size_t k = 0; k < w.records.size(); ++k) {
+            out << w.records[k] << (k + 1 < w.records.size() ? ",\n" : "\n");
+        }
+        out << ">>\n====\n";
+        REQUIRE(out.good());
+    }
+    return {std::nullopt,
+            {},
+            majority_decided,
+            all_decided,
+            w.survived_crash,
+            w.counts,
             w.retired_count() > node_count / 2};
 }
 

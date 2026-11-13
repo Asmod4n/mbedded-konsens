@@ -152,6 +152,42 @@ if(KONSENS_FUSE_TESTS)
     set_tests_properties(test_device_faults PROPERTIES TIMEOUT 60)
 endif()
 
+option(KONSENS_TRACE_VALIDATION "Check traces of the simulation against model/tla/TraceSimulation.tla with TLC" ON)
+if(KONSENS_TRACE_VALIDATION)
+    find_package(Java 21 REQUIRED COMPONENTS Runtime)
+    set(KONSENS_TLA2TOOLS_URL "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar")
+    set(KONSENS_TLA2TOOLS_SHA256 "e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f")
+    set(KONSENS_TLA2TOOLS_JAR "" CACHE FILEPATH "tla2tools.jar; empty downloads it from its origin")
+    if(KONSENS_TLA2TOOLS_JAR STREQUAL "")
+        set(KONSENS_TLA2TOOLS_JAR ${CMAKE_BINARY_DIR}/tla2tools.jar)
+        file(DOWNLOAD ${KONSENS_TLA2TOOLS_URL} ${KONSENS_TLA2TOOLS_JAR}
+             EXPECTED_HASH SHA256=${KONSENS_TLA2TOOLS_SHA256} TLS_VERIFY ON)
+    endif()
+    file(SHA256 ${KONSENS_TLA2TOOLS_JAR} tla2tools_sha256)
+    if(NOT tla2tools_sha256 STREQUAL KONSENS_TLA2TOOLS_SHA256)
+        message(FATAL_ERROR "${KONSENS_TLA2TOOLS_JAR} has SHA256 ${tla2tools_sha256}, "
+                            "not ${KONSENS_TLA2TOOLS_SHA256}")
+    endif()
+    set(KONSENS_TRACED_SEEDS 10)
+    set(KONSENS_TRACE_DIRECTORY ${CMAKE_BINARY_DIR}/traces)
+    add_executable(test_trace_records test/trace_validation/test_trace_records.cpp)
+    target_link_libraries(test_trace_records PRIVATE konsens doctest::doctest)
+    target_compile_options(test_trace_records PRIVATE ${KONSENS_WARNINGS})
+    target_compile_definitions(test_trace_records PRIVATE KONSENS_TRACED_SEEDS=${KONSENS_TRACED_SEEDS}
+                                                          "KONSENS_TRACE_DIRECTORY=\"${KONSENS_TRACE_DIRECTORY}\"")
+    add_test(NAME test_trace_records COMMAND test_trace_records)
+    set_tests_properties(test_trace_records PROPERTIES FIXTURES_SETUP traces)
+    foreach(seed RANGE 1 ${KONSENS_TRACED_SEEDS})
+        add_test(NAME trace_check_seed_${seed}
+                 COMMAND ${CMAKE_COMMAND} -DJAVA=${Java_JAVA_EXECUTABLE} -DTLA2TOOLS_JAR=${KONSENS_TLA2TOOLS_JAR}
+                         -DMODEL_DIRECTORY=${PROJECT_SOURCE_DIR}/model/tla
+                         -DTRACE_FILE=${KONSENS_TRACE_DIRECTORY}/TraceData_${seed}.tla
+                         -DWORK_DIRECTORY=${KONSENS_TRACE_DIRECTORY}/check_${seed}
+                         -P ${PROJECT_SOURCE_DIR}/test/trace_validation/check_trace.cmake)
+        set_tests_properties(trace_check_seed_${seed} PROPERTIES FIXTURES_REQUIRED traces TIMEOUT 120)
+    endforeach()
+endif()
+
 option(KONSENS_BENCH "Build konsens_bench and its A/A copy konsens_bench_aa, and test each case once" ON)
 if(KONSENS_BENCH)
     foreach(bench_name konsens_bench konsens_bench_aa)
