@@ -44,9 +44,45 @@ resend that sends nothing" is a step of its own).
 The old form is refused at record 55 now, not at 93: the channel match
 sees the second Promise when it is sent, not when it is delivered.
 
+## Seeds 2 to 10
+
+The same spike binary (code 654c088) wrote the traces of seeds 2 to 10.
+TLC checked each against the same trace spec, three runs at a time,
+`-Xmx700m`.
+
+| seed | records | end | first record not matched | time (s) |
+|---|---|---|---|---|
+| 2 | 807 | refused | 21: deliver promise 2 to 3 | 5 |
+| 3 | 558 | refused | 26: crash of node 1, not clean | 5 |
+| 4 | 616 | refused | 33: deliver promise 3 to 2 | 5 |
+| 5 | 839 | refused | 160: deliver promise 1 to 2 | 7 |
+| 6 | 796 | refused | 27: deliver promise 1 to 2 | 8 |
+| 7 | 570 | refused | 56: crash of node 1, not clean | 5 |
+| 8 | 594 | refused | 30: deliver promise 2 to 3 | 4 |
+| 9 | 602 | refused | 27: deliver promise 1 to 3 | 5 |
+| 10 | 872 | whole trace accepted | none | 10 |
+
+Seeds 3 and 7 end at a crash that is not clean. The trace spec maps
+only a clean crash. A crash that is not clean retires the node (plan
+clean-stop 4.9), so F6 of the plan ends the trace there, and phase 1
+needs no more.
+
+Seeds 2, 4, 5, 6, 8 and 9 are refused for one cause. A node holds a
+proposal in its buffer and then becomes leader. At the majority of
+promises the code sends an AcceptSync with an empty suffix, and then,
+at the end of the step, an AcceptDecide that carries the buffered
+proposal (`end_step`, include/konsens/sequence_paxos.hpp:471-477, the
+group commit). `HandleMajorityPromises` of SequencePaxos.tla appends
+the buffer to the log before the sync, so the model sends one
+AcceptSync that carries the proposal. In each of the six traces the
+network holds `accept_sync` and then `accept_decide` from the new
+leader at the refused record.
+
+So this refusal is also a fault of the model: the model is older than
+the group commit.
+
 ## Not done
 
-- No other seed was traced.
 - Batches, clients, crashes that retire a node, and rollback were not
   traced.
 - The values in the messages are not compared, only the types.
