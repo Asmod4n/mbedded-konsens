@@ -1069,6 +1069,9 @@ HandlePrepare(i, j, m, c) ==
 
 \* leader.rs:257-285 handle_majority_promises with
 \* internal_storage.rs:313-360 sync_log as one atomic write.
+\* The buffer goes out as an AcceptDecide behind the AcceptSync, in the same
+\* step, as end_step of the code does (model/plan-buffer-after-sync.md).
+\* BufferInSync is the form of Omni-Paxos: the sync holds the buffer.
 \* @type: (Int, $leaderState, <<Int, Int>> -> Seq($msg)) => Bool;
 HandleMajorityPromises(i, ls1, c) ==
   LET sync == ls1.max_promise_sync
@@ -1087,6 +1090,14 @@ HandleMajorityPromises(i, ls1, c) ==
       ls2  == [ls1 EXCEPT !.max_promise_sync = <<>>,
                           !.accepted_indexes[i] = IF Votes(i) THEN AccBound(i, lg2, acc2) ELSE @]
       fs   == PromisedFollowers(ls2)
+      after == Mutation # "BufferInSync" /\ bss = <<>> /\ bp # <<>>
+      lsS  == WithAccSyncSeqs(ls2, fs)
+      lsD  == IF after THEN NextSeqNums(lsS, fs) ELSE lsS
+      lgS  == IF after THEN lg1 ELSE lg2
+      ad(k) == [EmptyMessage EXCEPT !.type = "AcceptDecide", !.n = ls2.n_leader,
+                                    !.seq_num = lsD.follower_seq_nums[k],
+                                    !.decided_idx = dec, !.entries = bp,
+                                    !.last = PrefixAt(lg2, dec)]
   IN /\ n_accepted' = [n_accepted EXCEPT ![i] = ls1.n_leader]
      /\ decided_idx' = [decided_idx EXCEPT ![i] = dec]
      /\ log' = [log EXCEPT ![i] = lg2]
@@ -1096,8 +1107,9 @@ HandleMajorityPromises(i, ls1, c) ==
      /\ buffered_stopsign' = IF stop THEN buffered_stopsign
                              ELSE [buffered_stopsign EXCEPT ![i] = <<>>]
      /\ phase' = [phase EXCEPT ![i] = "Accept"]
-     /\ leader_state' = [leader_state EXCEPT ![i] = WithAccSyncSeqs(ls2, fs)]
-     /\ chan' = Send(c, i, [k \in fs |-> <<AccSyncMsg(ls2, k, lg2, dec)>>])
+     /\ leader_state' = [leader_state EXCEPT ![i] = lsD]
+     /\ chan' = Send(c, i, [k \in fs |-> <<AccSyncMsg(ls2, k, lgS, dec)>>
+                                          \o (IF after THEN <<ad(k)>> ELSE <<>>)])
      /\ UNCHANGED <<promise, role, current_seq_num, cached_promise_message>>
 
 \* mod.rs:267-271 dispatch, leader.rs:287-299 handle_promise_prepare,
@@ -3487,6 +3499,9 @@ ASSUME MaxRollback < Cardinality(Nodes)
 \* (EpochFromConfiguration, NoConcurrentWriters).
 \* ReadWithoutLease: a leader starts a read round with no valid lease
 \* (ReadRoundHonoursLease, StaleReadAfterForce).
+\* BufferInSync: the AcceptSync of a new leader holds its buffer, the form
+\* before model/plan-buffer-after-sync.md (no property; the old arm; the
+\* action property NoSyncAndDecideInOneStep holds under it).
 \* NoDecideOnResend: the leader sends no Decide at a resend timeout, the form
 \* before doc/plan-decide-on-resend.md (no property; the old arm).
 \* DecideOnResendOldSeq: the Decide at a resend timeout carries the sequence
@@ -3514,7 +3529,7 @@ ASSUME Mutation \in {"none", "StopSignUnchecked", "PromiseWithoutAccepted", "Syn
                      "DecideWithoutLease", "ForcedWithoutWait", "WitnessGrantsAnyEpoch",
                      "ForceWithoutRaise", "WitnessForgetsEpoch", "LeaseFromReply",
                      "AdoptEpochFromRefusal", "ReadWithoutLease",
-                     "NoDecideOnResend", "DecideOnResendOldSeq",
+                     "NoDecideOnResend", "DecideOnResendOldSeq", "BufferInSync",
                      "PowerLossWithF", "PowerLossStartAtAccepted", "PrimaryStartAtAccepted",
                      "StartCheckMissing", "StartAsNewNode", "NoAbortOnCut",
                      "ApplyOwnResult", "CountOtherBase", "SelectWithoutMajority",
@@ -4070,6 +4085,17 @@ View ==
 \* The phase Recover comes with the role Follower, as in the code. Then the
 \* old condition of HandlePrepare is a part of the new one.
 RecoverIsFollower == \A k \in Nodes : phase[k] = "Recover" => role[k] = "Follower"
+
+\* model/plan-buffer-after-sync.md: no step appends an AcceptSync and an
+\* AcceptDecide behind it to one channel. Only the buffer of a new leader
+\* does that, so a run must violate it.
+NoSyncAndDecideInOneStep ==
+  [][\A p \in Pairs :
+       LET n == Len(chan[p]) IN
+       ~(/\ p \in DOMAIN chan'
+         /\ Len(chan'[p]) >= n + 2
+         /\ chan'[p][n + 1].type = "AcceptSync"
+         /\ chan'[p][n + 2].type = "AcceptDecide")]_vars
 
 \* A cover, not a property: a run must violate it, so that a follower out
 \* of phase Recover gets a Prepare of the ballot it promised.
