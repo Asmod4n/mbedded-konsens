@@ -18,6 +18,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <type_traits>
@@ -465,6 +466,7 @@ struct world {
     // steps with and without records.
     static constexpr std::uint64_t tla_pid_base = 10;
     static_assert(node_count < tla_pid_base);
+    static constexpr std::string_view tla_value_of_an_entry_that_is_not_normal = "-1";
     bool tracing = false;
     std::vector<std::string> events;
     std::vector<std::string> records;
@@ -473,7 +475,8 @@ struct world {
 
     static std::string tla_value(const entry& e)
     {
-        return e.kind == konsens::entry_kind::normal ? std::to_string(value_of(e)) : "-1";
+        return e.kind == konsens::entry_kind::normal ? std::to_string(value_of(e))
+                                                     : std::string(tla_value_of_an_entry_that_is_not_normal);
     }
 
     static std::string tla_values(const std::vector<entry>& es)
